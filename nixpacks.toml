@@ -4,7 +4,7 @@ providers = ["python"]
 nixPkgs = ["python312", "python312Packages.pip"]
 
 [phases.install]
-cmds = ["cd apps/api && python -m ensurepip --upgrade && python -m pip install -r requirements.txt"]
+cmds = ["cd apps/api && pip install --break-system-packages -r requirements.txt"]
 
 [start]
 cmd = "cd apps/api && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
