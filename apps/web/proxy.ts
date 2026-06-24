@@ -1,0 +1,32 @@
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { NextRequest, NextResponse } from "next/server";
+
+const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/admin(.*)"]);
+
+function securityHeaders() {
+  const res = NextResponse.next();
+  res.headers.set("X-Frame-Options", "DENY");
+  res.headers.set("X-Content-Type-Options", "nosniff");
+  res.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  return res;
+}
+
+function bypassMiddleware(_req: NextRequest) {
+  return securityHeaders();
+}
+
+const protectedMiddleware = clerkMiddleware(async (auth, req) => {
+  const res = securityHeaders();
+  if (isProtectedRoute(req)) {
+    await auth.protect();
+  }
+
+  return res;
+});
+
+export default process.env.CLERK_E2E_BYPASS === "true" ? bypassMiddleware : protectedMiddleware;
+
+export const config = {
+  matcher: ["/((?!.*\\..*|_next).*)", "/", "/(api|trpc)(.*)"]
+};
