@@ -11,9 +11,6 @@
     "api:dev": "PYTHONPATH=apps/api uvicorn app.main:app --reload --app-dir apps/api",
     "api:test": "PYTHONPATH=apps/api pytest apps/api/tests"
   },
-  "workspaces": [
-    "apps/web"
-  ],
   "engines": {
     "node": ">=20.0.0",
     "npm": ">=10.0.0"

@@ -13,7 +13,8 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm install
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm --prefix apps/web install
       - run: npm --prefix apps/web run lint
       - run: npm --prefix apps/web run test
       - run: npm --prefix apps/web run build
