@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 import { BarChart3, CreditCard, Inbox, LayoutDashboard, Megaphone, Search, Shield, Users } from "lucide-react";
+import { hasClerkPublishableKey } from "@/lib/env";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -16,8 +17,6 @@ const nav = [
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
-  const hasClerk = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
-
   return (
     <div className="min-h-screen bg-slate-50">
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white px-4 py-5 lg:block">
@@ -37,7 +36,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       <div className="lg:pl-64">
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-5 backdrop-blur">
           <span className="text-sm font-semibold text-slate-600">Revenue workspace</span>
-          {hasClerk ? (
+          {hasClerkPublishableKey ? (
             <UserButton />
           ) : (
             <div className="grid size-8 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600" aria-label="User profile">

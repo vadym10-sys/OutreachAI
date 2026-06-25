@@ -1,10 +1,10 @@
 import { ClerkProvider } from "@clerk/nextjs";
 import type { Metadata } from "next";
-import { hasClerkPublishableKey } from "@/lib/env";
+import { appUrl, clerkPublishableKey, hasClerkPublishableKey } from "@/lib/env";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://outreachai.example"),
+  metadataBase: new URL(appUrl),
   title: {
     default: "OutreachAI - AI outbound platform for B2B growth",
     template: "%s | OutreachAI"
@@ -31,7 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   }
 
   return (
-    <ClerkProvider>
+    <ClerkProvider publishableKey={clerkPublishableKey}>
       <html lang="en">
         <body>{children}</body>
       </html>

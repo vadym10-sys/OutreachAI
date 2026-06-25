@@ -1,11 +1,10 @@
 import { auth } from "@clerk/nextjs/server";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { apiUrl } from "@/lib/env";
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { getToken } = await auth();
   const token = await getToken();
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetch(`${apiUrl}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
