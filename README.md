@@ -22,15 +22,10 @@ docker compose up --build
 Frontend: http://localhost:3000
 Backend API: http://localhost:8000/docs
 
-## Local Without Docker
+## Local Development
 
 ```bash
-npm install
-npm run dev
-python -m venv .venv
-source .venv/bin/activate
-pip install -r apps/api/requirements.txt
-uvicorn app.main:app --reload --app-dir apps/api
+docker compose up --build
 ```
 
 ## Required API Keys

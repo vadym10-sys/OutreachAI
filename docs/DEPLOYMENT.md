@@ -11,15 +11,12 @@
 
 1. Create PostgreSQL on Railway.
 2. Create a Railway service for `apps/api`.
-3. Set the build command to install `apps/api/requirements.txt`.
-4. Set the start command:
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port $PORT
-```
-
-5. Add `DATABASE_URL`, Clerk, OpenAI, Resend, Stripe, and encryption environment variables.
-6. Run `db/schema.sql` against the production database.
+3. Set Root Directory to `apps/api`.
+4. Use Dockerfile builder with Dockerfile Path `Dockerfile`.
+5. Leave Build Command empty.
+6. Leave Start Command empty so Railway uses the Dockerfile `CMD`.
+7. Add `DATABASE_URL`, Clerk, OpenAI, Resend, Stripe, and encryption environment variables.
+8. Run `db/schema.sql` against the production database.
 
 ## Stripe
 
