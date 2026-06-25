@@ -17,10 +17,13 @@ def main() -> None:
         force=True
     )
     logger = logging.getLogger("outreachai.api.serve")
-    port = int(os.getenv("PORT", "8000"))
+    raw_port = os.getenv("PORT")
+    if raw_port is None:
+        raise RuntimeError("PORT environment variable is required")
+    port = int(raw_port)
     logger.info("Startup diagnostics: python=%s", sys.version.replace("\n", " "))
     logger.info("Startup diagnostics: cwd=%s", os.getcwd())
-    logger.info("Startup diagnostics: PORT=%s", os.getenv("PORT", "<unset>"))
+    logger.info("Startup diagnostics: PORT=%s", raw_port)
     logger.info("Startup diagnostics: DATABASE_URL present=%s", bool(os.getenv("DATABASE_URL")))
 
     try:
@@ -36,7 +39,7 @@ def main() -> None:
         traceback.print_exc(file=sys.stdout)
         raise
 
-    logger.info("Starting uvicorn app.main:app on 0.0.0.0:%s", port)
+    logger.info("Starting uvicorn app.main:app on host=0.0.0.0 port=%s", port)
 
     try:
         uvicorn.run("app.main:app", host="0.0.0.0", port=port, log_level="info")
