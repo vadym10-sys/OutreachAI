@@ -21,8 +21,9 @@ class Settings(BaseSettings):
     stripe_price_pro: str = ""
     stripe_price_agency: str = ""
     encryption_key: str = "replace-with-32-byte-url-safe-key"
+    auto_create_tables: bool = False
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("database_url")
     @classmethod
