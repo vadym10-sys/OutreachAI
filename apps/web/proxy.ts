@@ -1,5 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
+import { hasClerkRuntimeConfig } from "@/lib/env";
 
 const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/admin(.*)"]);
 
@@ -16,6 +17,14 @@ function bypassMiddleware(_req: NextRequest) {
   return securityHeaders();
 }
 
+function missingClerkMiddleware(req: NextRequest) {
+  if (isProtectedRoute(req)) {
+    return NextResponse.redirect(new URL("/sign-in?error=clerk_not_configured", req.url));
+  }
+
+  return securityHeaders();
+}
+
 const protectedMiddleware = clerkMiddleware(async (auth, req) => {
   const res = securityHeaders();
   if (isProtectedRoute(req)) {
@@ -25,7 +34,11 @@ const protectedMiddleware = clerkMiddleware(async (auth, req) => {
   return res;
 });
 
-export default process.env.CLERK_E2E_BYPASS === "true" ? bypassMiddleware : protectedMiddleware;
+export default process.env.CLERK_E2E_BYPASS === "true"
+  ? bypassMiddleware
+  : hasClerkRuntimeConfig
+    ? protectedMiddleware
+    : missingClerkMiddleware;
 
 export const config = {
   matcher: ["/((?!.*\\..*|_next).*)", "/", "/(api|trpc)(.*)"]

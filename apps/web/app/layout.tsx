@@ -1,5 +1,6 @@
 import { ClerkProvider } from "@clerk/nextjs";
 import type { Metadata } from "next";
+import { hasClerkPublishableKey } from "@/lib/env";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -21,7 +22,7 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  if (process.env.CLERK_E2E_BYPASS === "true") {
+  if (process.env.CLERK_E2E_BYPASS === "true" || !hasClerkPublishableKey) {
     return (
       <html lang="en">
         <body>{children}</body>

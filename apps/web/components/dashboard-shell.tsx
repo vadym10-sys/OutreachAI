@@ -16,6 +16,8 @@ const nav = [
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
+  const hasClerk = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+
   return (
     <div className="min-h-screen bg-slate-50">
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white px-4 py-5 lg:block">
@@ -35,7 +37,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       <div className="lg:pl-64">
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-5 backdrop-blur">
           <span className="text-sm font-semibold text-slate-600">Revenue workspace</span>
-          <UserButton />
+          {hasClerk ? (
+            <UserButton />
+          ) : (
+            <div className="grid size-8 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600" aria-label="User profile">
+              AI
+            </div>
+          )}
         </header>
         <main className="p-5 lg:p-8">{children}</main>
       </div>
