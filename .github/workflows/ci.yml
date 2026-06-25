@@ -14,9 +14,9 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm install
-      - run: npm --workspace apps/web run lint
-      - run: npm --workspace apps/web run test
-      - run: npm --workspace apps/web run build
+      - run: npm --prefix apps/web run lint
+      - run: npm --prefix apps/web run test
+      - run: npm --prefix apps/web run build
 
   api:
     runs-on: ubuntu-latest
