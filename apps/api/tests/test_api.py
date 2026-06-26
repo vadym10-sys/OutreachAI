@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import datetime
+import base64
 import hashlib
 import hmac
 import json
@@ -9,6 +10,10 @@ import time
 from uuid import UUID
 
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jose import jwt as jose_jwt
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
 if db_path.exists():
@@ -28,6 +33,8 @@ os.environ["RESEND_API_KEY"] = "resend_test"
 os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
+from app.core import security  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
 from app.schemas.dto import CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.main import app  # noqa: E402
@@ -46,10 +53,103 @@ def stripe_signature(payload: dict) -> tuple[str, str]:
     return raw, f"t={timestamp},v1={digest}"
 
 
+def _b64url_int(value: int) -> str:
+    raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _auth_test_keypair() -> tuple[bytes, dict]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_numbers = private_key.public_key().public_numbers()
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    jwk = {
+        "kty": "RSA",
+        "kid": "test-kid",
+        "use": "sig",
+        "alg": "RS256",
+        "n": _b64url_int(public_numbers.n),
+        "e": _b64url_int(public_numbers.e),
+    }
+    return private_pem, {"keys": [jwk]}
+
+
 def test_health() -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_production_auth_rejects_unsigned_clerk_token(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CLERK_JWT_ISSUER", "https://clerk.test")
+    monkeypatch.setenv("JWT_AUDIENCE", "outreachai-api")
+    get_settings.cache_clear()
+    security._fetch_clerk_jwks.cache_clear()
+
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps({"iss": "https://clerk.test", "sub": "forged"}).encode()).rstrip(b"=").decode()
+
+    try:
+        security.get_current_user(f"Bearer {header}.{payload}.")
+    except HTTPException as exc:
+        assert exc.status_code == 401
+    else:
+        raise AssertionError("Unsigned token was accepted")
+    finally:
+        get_settings.cache_clear()
+        security._fetch_clerk_jwks.cache_clear()
+
+
+def test_production_auth_accepts_verified_clerk_jwt(monkeypatch) -> None:
+    issuer = "https://clerk.test"
+    audience = "outreachai-api"
+    private_pem, jwks = _auth_test_keypair()
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CLERK_JWT_ISSUER", issuer)
+    monkeypatch.setenv("JWT_AUDIENCE", audience)
+    monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
+    get_settings.cache_clear()
+
+    token = jose_jwt.encode(
+        {"iss": issuer, "sub": "user_verified", "aud": audience, "iat": int(time.time()), "exp": int(time.time()) + 300},
+        private_pem,
+        algorithm="RS256",
+        headers={"kid": "test-kid"},
+    )
+
+    assert security.get_current_user(f"Bearer {token}") == "user_verified"
+    get_settings.cache_clear()
+
+
+def test_production_auth_rejects_expired_clerk_jwt(monkeypatch) -> None:
+    issuer = "https://clerk.test"
+    audience = "outreachai-api"
+    private_pem, jwks = _auth_test_keypair()
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CLERK_JWT_ISSUER", issuer)
+    monkeypatch.setenv("JWT_AUDIENCE", audience)
+    monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
+    get_settings.cache_clear()
+
+    token = jose_jwt.encode(
+        {"iss": issuer, "sub": "user_expired", "aud": audience, "iat": int(time.time()) - 600, "exp": int(time.time()) - 300},
+        private_pem,
+        algorithm="RS256",
+        headers={"kid": "test-kid"},
+    )
+
+    try:
+        security.get_current_user(f"Bearer {token}")
+    except HTTPException as exc:
+        assert exc.status_code == 401
+    else:
+        raise AssertionError("Expired token was accepted")
+    finally:
+        get_settings.cache_clear()
 
 
 def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
