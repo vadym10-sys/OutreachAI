@@ -209,6 +209,21 @@ export type Workspace = {
   members: WorkspaceMember[];
 };
 
-export type BillingPlan = { name: string; price: number; limits: Record<string, number>; current: boolean; active_subscription?: boolean };
-export type Usage = { plan: string; period: string; limits: Record<string, number>; usage: Record<string, number> };
+export type PlanLimits = Record<string, number | boolean>;
+export type BillingPlan = { name: string; price: number; limits: PlanLimits; current: boolean; active_subscription?: boolean };
+export type BillingStatus = {
+  plan: string;
+  price: number;
+  status: string;
+  trial_end?: string | null;
+  current_period_end?: string | null;
+  trial_days_remaining: number;
+  stripe_customer_id: string;
+  stripe_subscription_id: string;
+  limits: PlanLimits;
+  usage: Record<string, number>;
+  sales_employees_used: number;
+  workspaces_used: number;
+};
+export type Usage = { plan: string; period: string; limits: PlanLimits; usage: Record<string, number> };
 export type AdminSummary = { users: number; workspaces: number; subscriptions: number; revenue: number; usage: Record<string, number>; system_health: Record<string, string> };

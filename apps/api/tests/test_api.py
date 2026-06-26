@@ -28,7 +28,7 @@ os.environ["RESEND_API_KEY"] = "resend_test"
 os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
-from app.models.entities import AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
 from app.schemas.dto import CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -223,6 +223,14 @@ def test_ai_sales_copilot_endpoints(monkeypatch) -> None:
     followups = client.post(f"/api/leads/{lead['id']}/follow-ups", headers=AUTH)
     assert followups.status_code == 200
     assert followups.json()["opened"]
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    db = get_sessionmaker()()
+    try:
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
+        settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+        db.commit()
+    finally:
+        db.close()
     analytics = client.post(f"/api/campaigns/{campaign['id']}/ai-analytics", headers=AUTH)
     assert analytics.status_code == 200
     assert analytics.json()["campaign_success"] == 68
@@ -382,7 +390,7 @@ def test_workspace_onboarding_usage_and_campaign_duplicate() -> None:
 
     usage = client.get("/api/billing/usage", headers=AUTH)
     assert usage.status_code == 200
-    assert usage.json()["plan"] == "Starter"
+    assert usage.json()["plan"] in {"Starter", "Pro"}
 
     admin = client.get("/api/admin/summary", headers=AUTH)
     assert admin.status_code == 200
@@ -390,6 +398,7 @@ def test_workspace_onboarding_usage_and_campaign_duplicate() -> None:
 
 
 def test_stripe_webhook_activates_subscription() -> None:
+    future = int(time.time()) + 14 * 24 * 60 * 60
     workspace = client.get("/api/workspace", headers=AUTH).json()
     payload = {
         "id": "evt_test_checkout",
@@ -413,6 +422,7 @@ def test_stripe_webhook_activates_subscription() -> None:
         subscription = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_live_test").one()
         assert subscription.plan == "Pro"
         assert subscription.status == "active"
+        assert subscription.plan_limits["leads"] == 5000
         settings = db.query(AppSettings).filter(AppSettings.workspace_id == subscription.workspace_id).one()
         assert settings.billing["plan"] == "Pro"
         assert settings.billing["stripeCustomerId"] == "cus_live_test"
@@ -421,6 +431,29 @@ def test_stripe_webhook_activates_subscription() -> None:
 
     unsigned = client.post("/webhooks/stripe", json=payload)
     assert unsigned.status_code == 400
+
+    update_payload = {
+        "id": "evt_test_subscription",
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": "sub_live_test",
+                "customer": "cus_live_test",
+                "status": "trialing",
+                "trial_end": future,
+                "current_period_end": future,
+                "metadata": {"user_id": "dev_user", "workspace_id": workspace["id"], "plan": "Agency"},
+                "items": {"data": [{"price": {"id": "price_agency_test"}}]},
+            }
+        },
+    }
+    raw, signature = stripe_signature(update_payload)
+    updated = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert updated.status_code == 200
+    status = client.get("/api/billing/status", headers=AUTH)
+    assert status.status_code == 200
+    assert status.json()["plan"] == "Agency"
+    assert status.json()["trial_days_remaining"] >= 13
 
 
 def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> None:
@@ -441,7 +474,7 @@ def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> N
     try:
         settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
         assert settings.billing["pendingPlan"] == "Starter"
-        assert settings.billing["status"] in {"inactive", "active"}
+        assert settings.billing["status"] in {"inactive", "active", "trialing"}
         assert settings.billing["checkoutSessionId"] == "cs_test_pending"
         assert settings.billing["stripeCustomerId"] in {"cus_pending", "cus_live_test"}
     finally:
@@ -450,6 +483,44 @@ def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> N
     diagnostics = client.get("/api/billing/diagnostics", headers=AUTH)
     assert diagnostics.status_code == 200
     assert diagnostics.json()["starter_price_id_loaded"] is True
+    assert "checkout_session_creation_works" in diagnostics.json()
+
+
+def test_starter_plan_blocks_sales_employee_limits_and_semi_auto_mode() -> None:
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    db = get_sessionmaker()()
+    try:
+        db.query(AISalesEmployee).filter(AISalesEmployee.workspace_id == UUID(workspace["id"])).delete()
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
+        settings.billing = {**(settings.billing or {}), "plan": "Starter", "status": "active"}
+        db.commit()
+    finally:
+        db.close()
+
+    payload = {
+        "name": "Starter Ava",
+        "role": "AI Sales Employee",
+        "product_service": "AI outbound",
+        "target_customer": "Small businesses",
+        "target_countries": ["Germany"],
+        "target_industries": ["B2B SaaS"],
+        "offer": "book qualified calls",
+        "cta": "Book a call",
+        "sending_mode": "Review Mode",
+        "daily_limit": 10,
+        "working_hours": "09:00-17:00",
+        "tone": "Professional",
+        "language": "English",
+        "signature": "Ava",
+    }
+    first = client.post("/api/sales-employees", headers=AUTH, json=payload)
+    assert first.status_code == 200
+    second = client.post("/api/sales-employees", headers=AUTH, json={**payload, "name": "Second Ava"})
+    assert second.status_code == 402
+    assert "Upgrade in Billing" in second.json()["detail"]
+    semi_auto = client.put(f"/api/sales-employees/{first.json()['id']}", headers=AUTH, json={**payload, "sending_mode": "Semi-Auto Mode"})
+    assert semi_auto.status_code == 402
+    assert "Semi-Automatic Campaigns" in semi_auto.json()["detail"]
 
 
 def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(monkeypatch) -> None:
@@ -579,6 +650,15 @@ def test_ai_sales_employee_review_mode_imports_qualifies_drafts_and_approves(mon
             ab_tests=[],
         ),
     )
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    db = get_sessionmaker()()
+    try:
+        db.query(AISalesEmployee).filter(AISalesEmployee.workspace_id == UUID(workspace["id"])).delete()
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
+        settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+        db.commit()
+    finally:
+        db.close()
 
     employee_response = client.post(
         "/api/sales-employees",

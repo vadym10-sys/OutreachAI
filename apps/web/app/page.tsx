@@ -12,10 +12,30 @@ const features = [
 ];
 
 const pricing = [
-  { name: "Starter", price: "€49", desc: "For solo operators", items: ["500 leads/month", "2 team members", "1,000 AI generations", "1,000 email sends"] },
-  { name: "Pro", price: "€149", desc: "For growing teams", items: ["2,500 leads/month", "8 team members", "7,500 AI generations", "7,500 email sends"] },
-  { name: "Agency", price: "€499", desc: "For client delivery", items: ["20,000 leads/month", "30 team members", "50,000 AI generations", "50,000 email sends"] }
-];
+  {
+    name: "Starter",
+    price: "€49",
+    desc: "Best for freelancers, consultants and small businesses.",
+    cta: "Start Starter Trial",
+    items: ["1 AI Sales Employee", "500 leads/month", "1,000 AI emails/month", "AI Website Analysis", "AI Email Generator", "AI Follow-up Generator", "Lead Finder", "CRM", "Inbox", "Campaigns", "Basic Analytics", "1 Workspace", "Review Mode only", "14-day free trial"]
+  },
+  {
+    name: "Pro",
+    price: "€149",
+    desc: "Best for growing companies and sales teams.",
+    cta: "Start Pro Trial",
+    items: ["Everything in Starter", "3 AI Sales Employees", "5,000 leads/month", "10,000 AI emails/month", "AI Reply Assistant", "Semi-Automatic Campaigns", "AI Campaign Optimization", "Full AI Website Audit", "AI Sales Copilot", "AI Meeting Preparation", "AI Follow-up Optimization", "Advanced Analytics", "Revenue Dashboard", "Multiple Campaigns", "3 Workspaces", "Priority Processing", "14-day free trial"]
+  },
+  {
+    name: "Agency",
+    price: "€499",
+    desc: "Best for agencies, SaaS companies and larger teams.",
+    cta: "Start Agency Trial",
+    items: ["Everything in Pro", "10 AI Sales Employees", "50,000 leads/month", "100,000 AI emails/month", "Autonomous Mode", "Voice AI Sales Employee", "AI Team Routing", "AI Lead Qualification", "AI Reply Automation", "AI Meeting Booking", "AI Sales Forecasting", "Unlimited Campaigns", "Unlimited Workspaces", "Team Members", "White Label Ready", "API Access", "Webhooks", "Priority Support", "Early Access to New AI Features", "14-day free trial"]
+  }
+] as const;
+
+const everyPlanIncludes = ["Secure Stripe Billing", "Cancel Anytime", "Automatic Monthly Billing", "SSL Security", "GDPR-ready", "Email Tracking", "Open Tracking", "Reply Tracking", "Production Infrastructure", "Continuous Updates", "Automatic Backups", "AI Improvements"];
 
 export default function Home() {
   const schema = {
@@ -107,21 +127,28 @@ export default function Home() {
       <section id="pricing" className="bg-white py-12 sm:py-16">
         <div className="mx-auto max-w-7xl px-4 min-[360px]:px-5">
           <h2 className="text-3xl font-bold min-[390px]:text-4xl">Pricing</h2>
-          <p className="mt-3 text-slate-600">All plans include a 14-day free trial.</p>
+          <p className="mt-3 text-slate-600">All plans include secure Stripe billing, automatic monthly renewal, cancel anytime, and a 14-day free trial.</p>
           <div className="mt-8 grid gap-4 lg:grid-cols-3">
-            {pricing.map(({ name, price, desc, items }) => (
+            {pricing.map(({ name, price, desc, cta, items }) => (
               <div key={name} className="min-w-0 rounded-lg border border-slate-200 p-5 min-[360px]:p-6">
                 <h3 className="text-xl font-bold">{name}</h3>
                 <p className="mt-3 text-3xl font-bold min-[360px]:text-4xl">{price}<span className="text-base font-medium text-slate-500">/mo</span></p>
                 <p className="mt-2 text-slate-600">{desc}</p>
+                <p className="mt-3 rounded-md bg-teal-50 px-3 py-2 text-sm font-semibold text-brand">14-day free trial included</p>
                 <ul className="mt-5 space-y-3 text-sm text-slate-700">
                   {items.map((item) => (
-                    <li key={item} className="flex gap-2"><CheckCircle2 className="text-brand" size={18} />{item}</li>
+                    <li key={item} className="flex gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-brand" size={18} />{item}</li>
                   ))}
                 </ul>
-                <div className="mt-6"><PricingCheckoutButton plan={name as "Starter" | "Pro" | "Agency"}>Subscribe</PricingCheckoutButton></div>
+                <div className="mt-6"><PricingCheckoutButton plan={name}>{cta}</PricingCheckoutButton></div>
               </div>
             ))}
+          </div>
+          <div className="mt-8 rounded-lg border border-slate-200 bg-slate-50 p-5">
+            <h3 className="text-lg font-bold">Every plan includes</h3>
+            <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-4">
+              {everyPlanIncludes.map((item) => <span key={item} className="inline-flex gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-brand" size={16} />{item}</span>)}
+            </div>
           </div>
         </div>
       </section>

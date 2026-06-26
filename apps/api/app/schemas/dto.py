@@ -11,9 +11,63 @@ PIPELINE_STATUSES = ["New", "Qualified", "Contacted", "Interested", "Meeting", "
 SALES_EMPLOYEE_MODES = ["Review Mode", "Semi-Auto Mode", "Autonomous Mode"]
 
 PLAN_LIMITS = {
-    "Starter": {"leads": 500, "ai_generations": 1000, "email_sends": 1000, "team_members": 2, "mrr": 49},
-    "Pro": {"leads": 2500, "ai_generations": 7500, "email_sends": 7500, "team_members": 8, "mrr": 149},
-    "Agency": {"leads": 20000, "ai_generations": 50000, "email_sends": 50000, "team_members": 30, "mrr": 499},
+    "Starter": {
+        "mrr": 49,
+        "leads": 500,
+        "ai_generations": 1000,
+        "email_sends": 1000,
+        "sales_employees": 1,
+        "workspaces": 1,
+        "team_members": 1,
+        "campaigns": 3,
+        "review_mode": True,
+        "semi_auto_mode": False,
+        "autonomous_mode": False,
+        "basic_analytics": True,
+        "advanced_analytics": False,
+        "reply_ai": False,
+        "api_access": False,
+        "webhooks": False,
+        "white_label": False,
+    },
+    "Pro": {
+        "mrr": 149,
+        "leads": 5000,
+        "ai_generations": 10000,
+        "email_sends": 10000,
+        "sales_employees": 3,
+        "workspaces": 3,
+        "team_members": 10,
+        "campaigns": 25,
+        "review_mode": True,
+        "semi_auto_mode": True,
+        "autonomous_mode": False,
+        "basic_analytics": True,
+        "advanced_analytics": True,
+        "reply_ai": True,
+        "api_access": False,
+        "webhooks": False,
+        "white_label": False,
+    },
+    "Agency": {
+        "mrr": 499,
+        "leads": 50000,
+        "ai_generations": 100000,
+        "email_sends": 100000,
+        "sales_employees": 10,
+        "workspaces": 0,
+        "team_members": 0,
+        "campaigns": 0,
+        "review_mode": True,
+        "semi_auto_mode": True,
+        "autonomous_mode": True,
+        "basic_analytics": True,
+        "advanced_analytics": True,
+        "reply_ai": True,
+        "api_access": True,
+        "webhooks": True,
+        "white_label": True,
+    },
 }
 
 
@@ -498,9 +552,24 @@ class MemberInvite(BaseModel):
 class BillingPlanOut(BaseModel):
     name: str
     price: int
-    limits: dict[str, int]
+    limits: dict[str, Any]
     current: bool = False
     active_subscription: bool = False
+
+
+class BillingStatusOut(BaseModel):
+    plan: str
+    price: int
+    status: str
+    trial_end: Optional[datetime] = None
+    current_period_end: Optional[datetime] = None
+    trial_days_remaining: int = 0
+    stripe_customer_id: str = ""
+    stripe_subscription_id: str = ""
+    limits: dict[str, Any]
+    usage: dict[str, int]
+    sales_employees_used: int = 0
+    workspaces_used: int = 0
 
 
 class BillingPortalRequest(BaseModel):
@@ -518,7 +587,7 @@ class InvoiceOut(BaseModel):
 class UsageOut(BaseModel):
     plan: str
     period: str
-    limits: dict[str, int]
+    limits: dict[str, Any]
     usage: dict[str, int]
 
 
@@ -529,6 +598,8 @@ class BillingDiagnosticsOut(BaseModel):
     starter_price_id_loaded: bool
     pro_price_id_loaded: bool
     agency_price_id_loaded: bool
+    checkout_session_creation_works: bool = False
+    webhook_receives_signed_events: bool = False
 
 
 class AdminSummaryOut(BaseModel):

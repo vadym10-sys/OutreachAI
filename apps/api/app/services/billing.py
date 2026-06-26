@@ -11,6 +11,14 @@ PLAN_CATALOG = {
 }
 
 
+def _validate_monthly_price(plan: str, price: object) -> None:
+    spec = PLAN_CATALOG[plan]
+    if not getattr(price, "recurring", None) or price.recurring.get("interval") != "month":
+        raise ValueError(f"{plan} Stripe price must be a recurring monthly price")
+    if int(getattr(price, "unit_amount", 0) or 0) != int(spec["amount"]) or str(getattr(price, "currency", "")).lower() != spec["currency"]:
+        raise ValueError(f"{plan} Stripe price must be €{spec['amount'] // 100}/month")
+
+
 def price_for_plan(plan: str) -> str:
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
@@ -25,14 +33,12 @@ def price_for_plan(plan: str) -> str:
         raise ValueError("STRIPE_SECRET_KEY is required to resolve billing prices")
     if prices[plan]:
         price = stripe.Price.retrieve(prices[plan])
-        if not getattr(price, "recurring", None) or price.recurring.get("interval") != "month":
-            raise ValueError(f"{plan} Stripe price must be a recurring monthly price")
+        _validate_monthly_price(plan, price)
         return prices[plan]
     found = stripe.Price.list(lookup_keys=[PLAN_CATALOG[plan]["lookup_key"]], active=True, limit=1)
     if found.data:
         price = found.data[0]
-        if not getattr(price, "recurring", None) or price.recurring.get("interval") != "month":
-            raise ValueError(f"{plan} Stripe price must be a recurring monthly price")
+        _validate_monthly_price(plan, price)
         return price.id
     raise ValueError(f"STRIPE_{plan.upper()}_PRICE_ID is required for {plan} checkout")
 
@@ -100,15 +106,21 @@ def ensure_subscription_catalog() -> list[dict]:
     for plan, spec in PLAN_CATALOG.items():
         products = stripe.Product.search(query=f"name:'OutreachAI {plan}' AND active:'true'", limit=1)
         product = products.data[0] if products.data else stripe.Product.create(name=f"OutreachAI {plan}", metadata={"plan": plan})
-        prices = stripe.Price.list(lookup_keys=[spec["lookup_key"]], active=True, limit=1)
-        price = prices.data[0] if prices.data else stripe.Price.create(
-            product=product.id,
-            unit_amount=spec["amount"],
-            currency=spec["currency"],
-            recurring={"interval": "month"},
-            lookup_key=spec["lookup_key"],
-            metadata={"plan": plan},
-        )
+        prices = stripe.Price.list(lookup_keys=[spec["lookup_key"]], active=True, limit=10)
+        price = next((item for item in prices.data if int(getattr(item, "unit_amount", 0) or 0) == spec["amount"] and str(getattr(item, "currency", "")).lower() == spec["currency"] and getattr(item, "recurring", None) and item.recurring.get("interval") == "month"), None)
+        if price is None:
+            price_payload = {
+                "product": product.id,
+                "unit_amount": spec["amount"],
+                "currency": spec["currency"],
+                "recurring": {"interval": "month"},
+                "metadata": {"plan": plan},
+            }
+            if not prices.data:
+                price_payload["lookup_key"] = spec["lookup_key"]
+            price = stripe.Price.create(
+                **price_payload,
+            )
         created.append({"plan": plan, "product_id": product.id, "price_id": price.id, "lookup_key": spec["lookup_key"]})
     return created
 

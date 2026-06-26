@@ -50,6 +50,7 @@ from app.schemas.dto import (
     BillingPlanOut,
     BillingDiagnosticsOut,
     BillingPortalRequest,
+    BillingStatusOut,
     CampaignCreate,
     CampaignAnalyticsOut,
     CampaignOut,
@@ -110,7 +111,7 @@ from app.services.ai import (
     website_audit,
 )
 from app.services.audit import log_event
-from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices
+from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices, price_for_plan
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError, find_leads
 from app.services.website import WebsiteFetchError, collect_website
@@ -222,6 +223,14 @@ def _has_active_subscription(db: Session, workspace: Workspace) -> bool:
     return _subscription_status_for_workspace(db, workspace) in {"active", "trialing"}
 
 
+def _latest_subscription(db: Session, workspace: Workspace) -> Subscription | None:
+    return db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
+
+
+def _upgrade_message(plan: str, feature: str) -> str:
+    return f"{feature} is not available on the {plan} plan. Upgrade in Billing to continue."
+
+
 def _require_active_subscription(db: Session, workspace: Workspace) -> None:
     if get_app_settings().app_env != "production":
         return
@@ -243,15 +252,33 @@ def _enforce_usage(db: Session, user_id: str, workspace: Workspace, metric: str,
     limits = PLAN_LIMITS[plan]
     usage = _usage_for_workspace(db, workspace)
     current = int(getattr(usage, metric))
-    if current + amount > int(limits[metric]):
-        raise HTTPException(status_code=402, detail=f"{metric} limit reached for the {plan} plan")
+    limit = int(limits[metric])
+    if limit and current + amount > limit:
+        raise HTTPException(status_code=402, detail=f"{metric.replace('_', ' ').title()} limit reached for the {plan} plan. Upgrade in Billing to continue.")
     setattr(usage, metric, current + amount)
     db.add(usage)
     return usage
 
 
 def _team_limit(db: Session, user_id: str, workspace: Workspace) -> int:
-    return int(PLAN_LIMITS[_plan_for_workspace(db, user_id, workspace)]["team_members"])
+    limit = int(PLAN_LIMITS[_plan_for_workspace(db, user_id, workspace)]["team_members"])
+    return limit or 1000000
+
+
+def _enforce_count_limit(db: Session, user_id: str, workspace: Workspace, metric: str, current: int) -> None:
+    plan = _plan_for_workspace(db, user_id, workspace)
+    limit = int(PLAN_LIMITS[plan][metric])
+    if limit and current >= limit:
+        raise HTTPException(status_code=402, detail=f"{metric.replace('_', ' ').title()} limit reached for the {plan} plan. Upgrade in Billing to continue.")
+
+
+def _enforce_sales_employee_mode(db: Session, user_id: str, workspace: Workspace, mode: SalesEmployeeMode) -> None:
+    plan = _plan_for_workspace(db, user_id, workspace)
+    limits = PLAN_LIMITS[plan]
+    if mode == SalesEmployeeMode.semi_auto and not limits["semi_auto_mode"]:
+        raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Semi-Automatic Campaigns"))
+    if mode == SalesEmployeeMode.autonomous and not limits["autonomous_mode"]:
+        raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Autonomous Mode"))
 
 
 def _sequence_defaults(campaign: Campaign) -> list[CampaignSequenceIn]:
@@ -705,6 +732,9 @@ def _upsert_employee_insight(db: Session, user_id: str, workspace: Workspace, em
 def create_sales_employee(payload: AISalesEmployeeCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AISalesEmployeeOut:
     workspace = _current_workspace(db, user_id)
     mode = _sales_employee_mode(payload.sending_mode)
+    _enforce_sales_employee_mode(db, user_id, workspace, mode)
+    current_count = db.scalar(select(func.count()).select_from(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id)) or 0
+    _enforce_count_limit(db, user_id, workspace, "sales_employees", int(current_count))
     employee = AISalesEmployee(
         user_id=user_id,
         workspace_id=workspace.id,
@@ -735,6 +765,7 @@ def update_sales_employee(employee_id: UUID, payload: AISalesEmployeeUpdate, req
     employee = _employee_scope(db, workspace, user_id, employee_id)
     data = payload.model_dump()
     data["sending_mode"] = _sales_employee_mode(payload.sending_mode)
+    _enforce_sales_employee_mode(db, user_id, workspace, data["sending_mode"])
     for key, value in data.items():
         setattr(employee, key, value)
     employee.strict_limits = _default_employee_limits(employee)
@@ -995,6 +1026,8 @@ def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardM
 @router.post("/campaigns", response_model=CampaignOut)
 def create_campaign(payload: CampaignCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
+    current_count = db.scalar(select(func.count()).select_from(Campaign).where(_workspace_stmt(Campaign, workspace, user_id))) or 0
+    _enforce_count_limit(db, user_id, workspace, "campaigns", int(current_count))
     data = _campaign_payload(payload.model_dump(exclude={"sequence"}), include_defaults=True)
     campaign = Campaign(user_id=user_id, workspace_id=workspace.id, **data, status=CampaignStatus.scheduled if payload.schedule_at else CampaignStatus.draft)
     db.add(campaign)
@@ -1036,6 +1069,9 @@ def update_campaign(campaign_id: UUID, payload: CampaignUpdate, request: Request
 @router.post("/campaigns/{campaign_id}/ai-analytics", response_model=CampaignAnalyticsOut)
 def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignAnalyticsOut:
     workspace = _current_workspace(db, user_id)
+    plan = _plan_for_workspace(db, user_id, workspace)
+    if not PLAN_LIMITS[plan]["advanced_analytics"]:
+        raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Advanced Analytics"))
     _enforce_usage(db, user_id, workspace, "ai_generations")
     campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
     if campaign is None:
@@ -1441,6 +1477,9 @@ def ai_rewrite(payload: RewriteEmailRequest, request: Request, user_id: CurrentU
 def ai_reply_assistant(payload: ReplyAssistantRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> ReplyAssistantOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace)
+    plan = _plan_for_workspace(db, user_id, workspace)
+    if not PLAN_LIMITS[plan]["reply_ai"]:
+        raise HTTPException(status_code=402, detail=_upgrade_message(plan, "AI Reply Assistant"))
     _enforce_usage(db, user_id, workspace, "ai_generations")
     try:
         result = suggest_reply(payload)
@@ -1728,6 +1767,12 @@ def billing_portal(payload: BillingPortalRequest, request: Request, user_id: Cur
 def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
     del user_id
     settings = get_app_settings()
+    checkout_works = False
+    if settings.stripe_secret_key and settings.stripe_webhook_secret:
+        try:
+            checkout_works = all(price_for_plan(plan) for plan in ("Starter", "Pro", "Agency"))
+        except Exception:
+            checkout_works = False
     return BillingDiagnosticsOut(
         stripe_secret_loaded=bool(settings.stripe_secret_key),
         webhook_secret_loaded=bool(settings.stripe_webhook_secret),
@@ -1735,6 +1780,40 @@ def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
         starter_price_id_loaded=bool(settings.stripe_starter_price_id),
         pro_price_id_loaded=bool(settings.stripe_pro_price_id),
         agency_price_id_loaded=bool(settings.stripe_agency_price_id),
+        checkout_session_creation_works=checkout_works,
+        webhook_receives_signed_events=bool(settings.stripe_webhook_secret),
+    )
+
+
+@router.get("/billing/status", response_model=BillingStatusOut)
+def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> BillingStatusOut:
+    workspace = _current_workspace(db, user_id)
+    plan = _plan_for_workspace(db, user_id, workspace)
+    usage = _usage_for_workspace(db, workspace)
+    subscription = _latest_subscription(db, workspace)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    billing = settings.billing or {}
+    status = subscription.status if subscription else str(billing.get("status") or "inactive")
+    trial_end = subscription.trial_end if subscription else None
+    current_period_end = subscription.current_period_end if subscription else None
+    trial_days_remaining = 0
+    if trial_end:
+        trial_days_remaining = max(0, (trial_end.date() - datetime.utcnow().date()).days)
+    sales_employees_used = db.scalar(select(func.count()).select_from(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id)) or 0
+    workspaces_used = db.scalar(select(func.count()).select_from(WorkspaceMember).where(WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active")) or 1
+    return BillingStatusOut(
+        plan=plan,
+        price=int(PLAN_LIMITS[plan]["mrr"]),
+        status=status,
+        trial_end=trial_end,
+        current_period_end=current_period_end,
+        trial_days_remaining=trial_days_remaining,
+        stripe_customer_id=str(billing.get("stripeCustomerId") or (subscription.stripe_customer_id if subscription else "") or ""),
+        stripe_subscription_id=str(billing.get("stripeSubscriptionId") or (subscription.stripe_subscription_id if subscription else "") or ""),
+        limits=PLAN_LIMITS[plan],
+        usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
+        sales_employees_used=int(sales_employees_used),
+        workspaces_used=int(workspaces_used),
     )
 
 

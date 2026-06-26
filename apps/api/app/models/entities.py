@@ -122,7 +122,9 @@ class Subscription(Base):
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     plan: Mapped[str] = mapped_column(String(32), default="Starter")
     status: Mapped[str] = mapped_column(String(64), default="trialing")
+    trial_end: Mapped[Optional[datetime]] = mapped_column(DateTime)
     current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    plan_limits: Mapped[dict] = mapped_column(JSON, default=dict)
     user: Mapped[User] = relationship()
 
 

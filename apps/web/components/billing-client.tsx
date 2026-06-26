@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
-import { CheckCircle2, CreditCard, Loader2 } from 'lucide-react';
+import { CalendarDays, CheckCircle2, CreditCard, Loader2, TrendingUp } from 'lucide-react';
 import { clientApi } from '@/lib/client-api';
 import { appUrl, hasClerkPublishableKey, isClerkE2EBypass, stripePublishableKey } from '@/lib/env';
-import type { BillingPlan } from '@/lib/types';
+import type { BillingPlan, BillingStatus } from '@/lib/types';
 
 const pendingPlanKey = 'outreachai.pendingPlan';
 const planNames = ['Starter', 'Pro', 'Agency'] as const;
@@ -19,6 +19,8 @@ type Diagnostics = {
   starter_price_id_loaded: boolean;
   pro_price_id_loaded: boolean;
   agency_price_id_loaded: boolean;
+  checkout_session_creation_works: boolean;
+  webhook_receives_signed_events: boolean;
 };
 
 function isPlan(value: string | null): value is PlanName {
@@ -42,6 +44,22 @@ function useBillingAuth() {
 function useClerkBillingAuth() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   return { getToken, isLoaded, isSignedIn };
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return 'Not scheduled';
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value));
+}
+
+function usagePercent(used: number, limit: number | boolean | undefined) {
+  if (!limit || typeof limit === 'boolean') return 0;
+  return Math.min(100, Math.round((used / limit) * 100));
+}
+
+function limitLabel(key: string, value: number | boolean) {
+  if (typeof value === 'boolean') return `${key.replaceAll('_', ' ')}: ${value ? 'Included' : 'Upgrade required'}`;
+  if (value === 0) return `${key.replaceAll('_', ' ')}: Unlimited`;
+  return `${key.replaceAll('_', ' ')}: ${value.toLocaleString()}`;
 }
 
 export function PricingCheckoutButton({ plan, children = 'Subscribe' }: { plan: PlanName; children?: React.ReactNode }) {
@@ -97,6 +115,7 @@ export function CheckoutContinuation() {
 export function BillingWorkspace() {
   const { getToken, isLoaded, isSignedIn } = useBillingAuth();
   const [plans, setPlans] = useState<BillingPlan[]>([]);
+  const [status, setStatus] = useState<BillingStatus | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
@@ -109,11 +128,13 @@ export function BillingWorkspace() {
     void Promise.resolve()
       .then(async () => {
         const authToken = await token();
-        const [nextPlans, nextDiagnostics] = await Promise.all([
+        const [nextPlans, nextDiagnostics, nextStatus] = await Promise.all([
           apiWithToken<BillingPlan[]>('/api/billing/plans', authToken),
-          apiWithToken<Diagnostics>('/api/billing/diagnostics', authToken)
+          apiWithToken<Diagnostics>('/api/billing/diagnostics', authToken),
+          apiWithToken<BillingStatus>('/api/billing/status', authToken)
         ]);
         setPlans(nextPlans);
+        setStatus(nextStatus);
         setDiagnostics({ ...nextDiagnostics, publishable_key_loaded: Boolean(stripePublishableKey) });
       })
       .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Billing could not be loaded.'))
@@ -143,10 +164,20 @@ export function BillingWorkspace() {
     ['Publishable key loaded', diagnostics.publishable_key_loaded],
     ['Starter price ID loaded', diagnostics.starter_price_id_loaded],
     ['Pro price ID loaded', diagnostics.pro_price_id_loaded],
-    ['Agency price ID loaded', diagnostics.agency_price_id_loaded]
+    ['Agency price ID loaded', diagnostics.agency_price_id_loaded],
+    ['Checkout session creation works', diagnostics.checkout_session_creation_works],
+    ['Webhook receives signed events', diagnostics.webhook_receives_signed_events]
   ] : [];
 
-  return <div className="min-w-0"><CheckoutContinuation /><h1 className="text-2xl font-bold min-[390px]:text-3xl">Billing</h1><p className="mt-2 text-slate-600">Choose a monthly Stripe subscription, upgrade or downgrade plans, and open the Billing Portal for active subscriptions.</p>{error && <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}{loading ? <div className="mt-6 h-48 animate-pulse rounded-lg bg-slate-200" /> : <><div className="mt-6 grid gap-4 lg:grid-cols-3">{plans.map((plan) => <section key={plan.name} className="rounded-lg border border-slate-200 bg-white p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-xl font-bold">{plan.name}</h2><p className="mt-2 text-3xl font-bold">€{plan.price}<span className="text-base font-medium text-slate-500">/mo</span></p></div>{plan.current && <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">Active</span>}</div><ul className="mt-5 space-y-2 text-sm text-slate-700">{Object.entries(plan.limits).filter(([key]) => key !== 'mrr').map(([key, value]) => <li key={key} className="flex gap-2"><CheckCircle2 className="text-brand" size={17} />{key.replaceAll('_', ' ')}: {value}</li>)}</ul><button onClick={() => checkout(plan.name)} disabled={busy === plan.name} className="focus-ring mt-6 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">{busy === plan.name ? <Loader2 className="animate-spin" size={18} /> : <CreditCard size={18} />}{plan.current ? 'Manage Billing' : `Subscribe to ${plan.name}`}</button></section>)}</div><section className="mt-6 rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Billing diagnostics</h2><div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{diagnosticsRows.map(([label, value]) => <div key={String(label)} className="rounded-md bg-slate-50 p-3 text-sm"><span className="font-semibold">{label}</span><span className={`ml-2 font-bold ${value ? 'text-brand' : 'text-red-700'}`}>{String(Boolean(value))}</span></div>)}</div></section></>}</div>;
+  const usageRows = status ? [
+    ['Leads used this month', status.usage.leads || 0, status.limits.leads],
+    ['AI emails used this month', status.usage.ai_generations || 0, status.limits.ai_generations],
+    ['Email sends used this month', status.usage.email_sends || 0, status.limits.email_sends],
+    ['AI Sales Employees used', status.sales_employees_used, status.limits.sales_employees],
+    ['Workspace usage', status.workspaces_used, status.limits.workspaces]
+  ] as const : [];
+
+  return <div className="min-w-0"><CheckoutContinuation /><h1 className="text-2xl font-bold min-[390px]:text-3xl">Billing</h1><p className="mt-2 text-slate-600">Choose a monthly Stripe subscription, upgrade or downgrade plans, and open the Billing Portal for active subscriptions.</p>{error && <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}{loading ? <div className="mt-6 h-48 animate-pulse rounded-lg bg-slate-200" /> : <><section className="mt-6 rounded-lg border border-slate-200 bg-white p-5"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div><p className="text-sm font-semibold text-brand">Current subscription</p><h2 className="mt-2 text-2xl font-bold">{status?.plan || 'Starter'} · €{status?.price || 49}/month</h2><p className="mt-1 text-sm text-slate-600">Status: <span className="font-semibold capitalize">{status?.status || 'inactive'}</span>{status?.trial_days_remaining ? ` · ${status.trial_days_remaining} trial days remaining` : ''}</p></div><div className="grid gap-2 text-sm text-slate-600 min-[390px]:grid-cols-2"><span className="inline-flex items-center gap-2"><CalendarDays size={16} />Trial ends: {formatDate(status?.trial_end)}</span><span className="inline-flex items-center gap-2"><TrendingUp size={16} />Next billing: {formatDate(status?.current_period_end)}</span></div></div><div className="mt-5 grid gap-3 md:grid-cols-2 lg:grid-cols-5">{usageRows.map(([label, used, limit]) => <div key={label} className="rounded-md bg-slate-50 p-3"><p className="text-xs font-semibold uppercase text-slate-500">{label}</p><p className="mt-2 text-lg font-bold">{used.toLocaleString()} / {limit === 0 ? 'Unlimited' : typeof limit === 'boolean' ? String(limit) : Number(limit || 0).toLocaleString()}</p><div className="mt-3 h-2 rounded-full bg-slate-200"><div className="h-2 rounded-full bg-brand" style={{ width: `${usagePercent(used, limit)}%` }} /></div></div>)}</div></section><div className="mt-6 grid gap-4 lg:grid-cols-3">{plans.map((plan) => <section key={plan.name} className="rounded-lg border border-slate-200 bg-white p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-xl font-bold">{plan.name}</h2><p className="mt-2 text-3xl font-bold">€{plan.price}<span className="text-base font-medium text-slate-500">/mo</span></p><p className="mt-1 text-sm font-semibold text-brand">14-day free trial</p></div>{plan.current && <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">Active</span>}</div><ul className="mt-5 space-y-2 text-sm text-slate-700">{Object.entries(plan.limits).filter(([key]) => !['mrr'].includes(key)).slice(0, 10).map(([key, value]) => <li key={key} className="flex gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-brand" size={17} />{limitLabel(key, value)}</li>)}</ul><button onClick={() => checkout(plan.name)} disabled={busy === plan.name} className="focus-ring mt-6 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">{busy === plan.name ? <Loader2 className="animate-spin" size={18} /> : <CreditCard size={18} />}{plan.current ? 'Manage Billing' : `Subscribe to ${plan.name}`}</button></section>)}</div><section className="mt-6 rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Billing diagnostics</h2><div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{diagnosticsRows.map(([label, value]) => <div key={String(label)} className="rounded-md bg-slate-50 p-3 text-sm"><span className="font-semibold">{label}</span><span className={`ml-2 font-bold ${value ? 'text-brand' : 'text-red-700'}`}>{String(Boolean(value))}</span></div>)}</div></section></>}</div>;
 }
 
 export function BillingDiagnosticsOnly() {

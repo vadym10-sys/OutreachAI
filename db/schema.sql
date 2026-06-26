@@ -56,7 +56,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   stripe_subscription_id VARCHAR(128),
   plan VARCHAR(32) NOT NULL DEFAULT 'Starter',
   status VARCHAR(64) NOT NULL DEFAULT 'trialing',
-  current_period_end TIMESTAMP
+  trial_end TIMESTAMP,
+  current_period_end TIMESTAMP,
+  plan_limits JSONB NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS campaigns (
