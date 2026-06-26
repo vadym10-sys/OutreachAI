@@ -67,9 +67,60 @@ export type Lead = {
   email?: string | null;
   status: string;
   campaign_id?: string | null;
+  sales_employee_id?: string | null;
   campaign?: string | null;
   notes?: string | null;
   revenue?: number;
+};
+
+export type AISalesEmployee = {
+  id: string;
+  name: string;
+  role: string;
+  product_service: string;
+  target_customer: string;
+  target_countries: string[];
+  target_industries: string[];
+  offer: string;
+  cta: string;
+  sending_mode: string;
+  daily_limit: number;
+  working_hours: string;
+  tone: string;
+  language: string;
+  signature: string;
+  status: string;
+  strict_limits: Record<string, unknown>;
+  leads: number;
+  pending_approval: number;
+  sent: number;
+  replies: number;
+  created_at: string;
+};
+
+export type SalesEmployeeLeadInsight = {
+  id: string;
+  lead_id: string;
+  sales_employee_id: string;
+  industry: string;
+  services: string[];
+  pain_points: string[];
+  icp_score: number;
+  purchase_probability: number;
+  best_sales_angle: string;
+  best_cta: string;
+  recommended_plan: string;
+  summary: string;
+  created_at: string;
+};
+
+export type SalesEmployeeRun = {
+  employee_id: string;
+  mode: string;
+  leads_qualified: number;
+  emails_generated: number;
+  emails_sent: number;
+  blocked: string[];
 };
 
 export type SalesCopilot = {
@@ -158,6 +209,6 @@ export type Workspace = {
   members: WorkspaceMember[];
 };
 
-export type BillingPlan = { name: string; price: number; limits: Record<string, number>; current: boolean };
+export type BillingPlan = { name: string; price: number; limits: Record<string, number>; current: boolean; active_subscription?: boolean };
 export type Usage = { plan: string; period: string; limits: Record<string, number>; usage: Record<string, number> };
 export type AdminSummary = { users: number; workspaces: number; subscriptions: number; revenue: number; usage: Record<string, number>; system_health: Record<string, string> };

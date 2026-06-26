@@ -34,6 +34,12 @@ class CampaignStatus(str, enum.Enum):
     stopped = "Stopped"
 
 
+class SalesEmployeeMode(str, enum.Enum):
+    review = "Review Mode"
+    semi_auto = "Semi-Auto Mode"
+    autonomous = "Autonomous Mode"
+
+
 class NotificationKind(str, enum.Enum):
     success = "success"
     error = "error"
@@ -162,6 +168,33 @@ class CampaignSequence(Base):
     campaign: Mapped[Campaign] = relationship()
 
 
+class AISalesEmployee(Base):
+    __tablename__ = "ai_sales_employees"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    role: Mapped[str] = mapped_column(String(160), default="AI Sales Development Representative")
+    product_service: Mapped[str] = mapped_column(Text, default="")
+    target_customer: Mapped[str] = mapped_column(String(240), default="")
+    target_countries: Mapped[list[str]] = mapped_column(JSON, default=list)
+    target_industries: Mapped[list[str]] = mapped_column(JSON, default=list)
+    offer: Mapped[str] = mapped_column(Text, default="")
+    cta: Mapped[str] = mapped_column(String(220), default="Book a quick call")
+    sending_mode: Mapped[SalesEmployeeMode] = mapped_column(Enum(SalesEmployeeMode), default=SalesEmployeeMode.review)
+    daily_limit: Mapped[int] = mapped_column(Integer, default=25)
+    working_hours: Mapped[str] = mapped_column(String(80), default="09:00-17:00")
+    tone: Mapped[str] = mapped_column(String(80), default="Professional")
+    language: Mapped[str] = mapped_column(String(80), default="English")
+    signature: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    strict_limits: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+
+
 class Lead(Base):
     __tablename__ = "leads"
     __table_args__ = (UniqueConstraint("user_id", "email", name="uq_user_lead_email"),)
@@ -170,6 +203,7 @@ class Lead(Base):
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaigns.id", ondelete="SET NULL"), index=True)
+    sales_employee_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("ai_sales_employees.id", ondelete="SET NULL"), index=True)
     company: Mapped[str] = mapped_column(String(220))
     website: Mapped[Optional[str]] = mapped_column(String(500))
     industry: Mapped[Optional[str]] = mapped_column(String(160))
@@ -186,6 +220,31 @@ class Lead(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     campaign: Mapped[Optional[Campaign]] = relationship()
+    sales_employee: Mapped[Optional[AISalesEmployee]] = relationship()
+
+
+class SalesEmployeeLeadInsight(Base):
+    __tablename__ = "sales_employee_lead_insights"
+    __table_args__ = (UniqueConstraint("sales_employee_id", "lead_id", name="uq_sales_employee_lead_insight"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    sales_employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_sales_employees.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    industry: Mapped[str] = mapped_column(String(160), default="")
+    services: Mapped[list[str]] = mapped_column(JSON, default=list)
+    pain_points: Mapped[list[str]] = mapped_column(JSON, default=list)
+    icp_score: Mapped[int] = mapped_column(Integer, default=0)
+    purchase_probability: Mapped[int] = mapped_column(Integer, default=0)
+    best_sales_angle: Mapped[str] = mapped_column(Text, default="")
+    best_cta: Mapped[str] = mapped_column(String(220), default="")
+    recommended_plan: Mapped[str] = mapped_column(String(120), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    employee: Mapped[AISalesEmployee] = relationship()
+    lead: Mapped[Lead] = relationship()
 
 
 class WebsiteAnalysis(Base):

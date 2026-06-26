@@ -265,6 +265,28 @@ def campaign_analytics(payload: dict[str, Any]) -> CampaignAnalyticsOut:
     )
 
 
+def qualify_for_sales_employee(payload: dict[str, Any]) -> dict[str, Any]:
+    system = (
+        "You are OutreachAI's AI Sales Employee qualification engine. Return only JSON with keys "
+        "industry, services, pain_points, icp_score, purchase_probability, best_sales_angle, "
+        "best_cta, recommended_plan, summary. Scores are integers 0-100. Use the AI employee's "
+        "product, offer, target customer, target countries, and target industries to decide fit. "
+        "Do not invent contact data."
+    )
+    data = _json_completion(system, payload)
+    return {
+        "industry": str(data.get("industry") or payload.get("lead", {}).get("industry") or ""),
+        "services": _list(data.get("services")),
+        "pain_points": _list(data.get("pain_points")),
+        "icp_score": _bounded_int(data.get("icp_score"), 0, 100),
+        "purchase_probability": _bounded_int(data.get("purchase_probability"), 0, 100),
+        "best_sales_angle": str(data.get("best_sales_angle") or ""),
+        "best_cta": str(data.get("best_cta") or payload.get("employee", {}).get("cta") or ""),
+        "recommended_plan": str(data.get("recommended_plan") or "Starter"),
+        "summary": str(data.get("summary") or ""),
+    }
+
+
 def stream_email_generation(payload: PersonalizeRequest) -> Iterator[str]:
     _enforce_rate_limit()
     settings = get_settings()

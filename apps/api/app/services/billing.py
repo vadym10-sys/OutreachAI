@@ -15,37 +15,50 @@ def price_for_plan(plan: str) -> str:
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
     prices = {
-        "Starter": settings.stripe_price_starter,
-        "Pro": settings.stripe_price_pro,
-        "Agency": settings.stripe_price_agency
+        "Starter": settings.stripe_starter_price_id,
+        "Pro": settings.stripe_pro_price_id,
+        "Agency": settings.stripe_agency_price_id
     }
     if plan not in prices:
         raise ValueError("Invalid billing plan")
-    if prices[plan]:
-        return prices[plan]
     if not settings.stripe_secret_key:
         raise ValueError("STRIPE_SECRET_KEY is required to resolve billing prices")
+    if prices[plan]:
+        price = stripe.Price.retrieve(prices[plan])
+        if not getattr(price, "recurring", None) or price.recurring.get("interval") != "month":
+            raise ValueError(f"{plan} Stripe price must be a recurring monthly price")
+        return prices[plan]
     found = stripe.Price.list(lookup_keys=[PLAN_CATALOG[plan]["lookup_key"]], active=True, limit=1)
     if found.data:
-        return found.data[0].id
-    raise ValueError(f"Stripe price is not configured for {plan}")
+        price = found.data[0]
+        if not getattr(price, "recurring", None) or price.recurring.get("interval") != "month":
+            raise ValueError(f"{plan} Stripe price must be a recurring monthly price")
+        return price.id
+    raise ValueError(f"STRIPE_{plan.upper()}_PRICE_ID is required for {plan} checkout")
 
 
-def create_checkout_session(user_id: str, workspace_id: str, plan: str, success_url: str, cancel_url: str) -> dict:
+def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer_id: str = "") -> dict:
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
     if not settings.stripe_secret_key:
         raise ValueError("STRIPE_SECRET_KEY is required for billing checkout")
+    if not settings.stripe_webhook_secret:
+        raise ValueError("STRIPE_WEBHOOK_SECRET is required before subscriptions can be activated")
+    if not customer_id:
+        customer = stripe.Customer.create(metadata={"user_id": user_id, "workspace_id": workspace_id})
+        customer_id = customer.id
     session = stripe.checkout.Session.create(
         mode="subscription",
+        customer=customer_id,
         line_items=[{"price": price_for_plan(plan), "quantity": 1}],
-        success_url=success_url,
-        cancel_url=cancel_url,
+        success_url=f"{settings.public_app_url.rstrip('/')}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{settings.public_app_url.rstrip('/')}/pricing",
+        allow_promotion_codes=True,
         client_reference_id=user_id,
         subscription_data={"trial_period_days": 14, "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": plan}},
         metadata={"user_id": user_id, "workspace_id": workspace_id, "plan": plan}
     )
-    return {"url": session.url, "id": session.id}
+    return {"url": session.url, "id": session.id, "customer_id": customer_id}
 
 
 def create_billing_portal_session(customer_id: str, return_url: str) -> dict:
@@ -103,9 +116,9 @@ def ensure_subscription_catalog() -> list[dict]:
 def plan_from_price_id(price_id: str) -> str | None:
     settings = get_settings()
     configured = {
-        settings.stripe_price_starter: "Starter",
-        settings.stripe_price_pro: "Pro",
-        settings.stripe_price_agency: "Agency",
+        settings.stripe_starter_price_id: "Starter",
+        settings.stripe_pro_price_id: "Pro",
+        settings.stripe_agency_price_id: "Agency",
     }
     if price_id in configured:
         return configured[price_id]

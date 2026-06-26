@@ -1,5 +1,6 @@
 import { CheckCircle2, Globe2, Mail, Search, ShieldCheck, TrendingUp, Users } from "lucide-react";
-import { PrimaryLink, SecondaryLink } from "@/components/button";
+import { SecondaryLink } from "@/components/button";
+import { PricingCheckoutButton } from "@/components/billing-client";
 
 const features = [
   { title: "Lead Finder", copy: "Find companies by niche, country, and city with verified enrichment fields.", Icon: Search },
@@ -46,7 +47,7 @@ export default function Home() {
             <h1 className="max-w-4xl text-4xl font-bold tracking-normal text-ink min-[360px]:text-5xl md:text-7xl">OutreachAI</h1>
             <p className="mt-5 max-w-2xl text-base leading-7 text-slate-600 min-[390px]:text-lg sm:mt-6 sm:text-xl sm:leading-8">Find qualified companies, analyze their websites, generate personal outreach, run campaigns, and manage replies from one production-ready CRM.</p>
             <div className="mt-8 flex flex-col gap-3 min-[360px]:flex-row min-[360px]:flex-wrap">
-              <PrimaryLink href="/sign-up">Start 14-day trial</PrimaryLink>
+              <PricingCheckoutButton plan="Starter">Start Starter</PricingCheckoutButton>
               <SecondaryLink href="/dashboard">View dashboard</SecondaryLink>
             </div>
           </div>
@@ -118,7 +119,7 @@ export default function Home() {
                     <li key={item} className="flex gap-2"><CheckCircle2 className="text-brand" size={18} />{item}</li>
                   ))}
                 </ul>
-                <div className="mt-6"><PrimaryLink href="/sign-up">Start trial</PrimaryLink></div>
+                <div className="mt-6"><PricingCheckoutButton plan={name as "Starter" | "Pro" | "Agency"}>Subscribe</PricingCheckoutButton></div>
               </div>
             ))}
           </div>
@@ -141,7 +142,7 @@ export default function Home() {
             <h2 className="text-3xl font-bold min-[390px]:text-4xl">Turn prospecting into pipeline.</h2>
             <p className="mt-3 text-slate-300">Launch outbound campaigns with AI research, personalization, inbox tracking, and CRM control.</p>
           </div>
-          <PrimaryLink href="/sign-up">Start free trial</PrimaryLink>
+          <PricingCheckoutButton plan="Starter">Start Starter</PricingCheckoutButton>
         </div>
       </section>
       <footer className="bg-white px-4 py-8 text-sm text-slate-500 min-[360px]:px-5">

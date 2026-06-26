@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session
@@ -13,6 +15,7 @@ from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
 from app.core.security import CurrentUser
 from app.models.entities import (
+    AISalesEmployee,
     AppSettings,
     AuditLog,
     Campaign,
@@ -23,6 +26,8 @@ from app.models.entities import (
     LeadStatus,
     Notification,
     NotificationKind,
+    SalesEmployeeLeadInsight,
+    SalesEmployeeMode,
     Subscription,
     UsageCounter,
     User,
@@ -34,12 +39,16 @@ from app.models.entities import (
 )
 from app.schemas.dto import (
     ActivityOut,
+    AISalesEmployeeCreate,
+    AISalesEmployeeOut,
+    AISalesEmployeeUpdate,
     AdminSummaryOut,
     AnalysisOut,
     AnalyzeRequest,
     AutomationRunOut,
     BulkLeadAction,
     BillingPlanOut,
+    BillingDiagnosticsOut,
     BillingPortalRequest,
     CampaignCreate,
     CampaignAnalyticsOut,
@@ -53,6 +62,7 @@ from app.schemas.dto import (
     EmailVariantOut,
     FollowUpSequenceOut,
     GenerateEmailRequest,
+    GoogleMapsImport,
     IntegrationStatusOut,
     LeadCreate,
     LeadFinderRequest,
@@ -71,10 +81,14 @@ from app.schemas.dto import (
     ReplyAssistantRequest,
     RewriteEmailRequest,
     SalesCopilotOut,
+    SalesEmployeeLeadImport,
+    SalesEmployeeLeadInsightOut,
+    SalesEmployeeRunOut,
     SettingsOut,
     SettingsUpdate,
     UsageOut,
     WebsiteAuditOut,
+    WebsiteListImport,
     WorkspaceMemberOut,
     WorkspaceOut,
     WorkspaceUpdate,
@@ -88,6 +102,7 @@ from app.services.ai import (
     campaign_analytics,
     meeting_preparation,
     personalize_email,
+    qualify_for_sales_employee,
     rewrite_email,
     sales_copilot,
     stream_email_generation,
@@ -195,6 +210,25 @@ def _plan_for_workspace(db: Session, user_id: str, workspace: Workspace) -> str:
     return plan if plan in PLAN_LIMITS else "Starter"
 
 
+def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str:
+    subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
+    if subscription:
+        return subscription.status
+    settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
+    return str((settings.billing or {}).get("status") or "inactive") if settings else "inactive"
+
+
+def _has_active_subscription(db: Session, workspace: Workspace) -> bool:
+    return _subscription_status_for_workspace(db, workspace) in {"active", "trialing"}
+
+
+def _require_active_subscription(db: Session, workspace: Workspace) -> None:
+    if get_app_settings().app_env != "production":
+        return
+    if not _has_active_subscription(db, workspace):
+        raise HTTPException(status_code=402, detail="Active subscription required. Choose a plan to continue.")
+
+
 def _usage_for_workspace(db: Session, workspace: Workspace) -> UsageCounter:
     usage = db.scalar(select(UsageCounter).where(UsageCounter.workspace_id == workspace.id, UsageCounter.period == _month_period()))
     if usage is None:
@@ -296,6 +330,7 @@ def _lead_out(lead: Lead) -> LeadOut:
         niche=lead.niche,
         status=_display_status(lead.status),
         campaign_id=lead.campaign_id,
+        sales_employee_id=lead.sales_employee_id,
         campaign=lead.campaign.name if lead.campaign else None,
         notes=lead.notes,
         revenue=float(lead.revenue or 0),
@@ -506,6 +541,394 @@ def automation_run(
         raise HTTPException(status_code=401, detail="Invalid automation secret")
     result = run_daily_acquisition(db, workspace_id=str(workspace_id) if workspace_id else None)
     return AutomationRunOut.model_validate(result.as_dict())
+
+
+def _sales_employee_mode(value: str) -> SalesEmployeeMode:
+    for item in SalesEmployeeMode:
+        if item.value == value:
+            return item
+    raise HTTPException(status_code=400, detail="Unsupported AI Sales Employee mode")
+
+
+def _employee_scope(db: Session, workspace: Workspace, user_id: str, employee_id: UUID) -> AISalesEmployee:
+    employee = db.scalar(select(AISalesEmployee).where(AISalesEmployee.id == employee_id, AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id))
+    if employee is None:
+        raise HTTPException(status_code=404, detail="AI Sales Employee not found")
+    return employee
+
+
+def _employee_out(db: Session, employee: AISalesEmployee) -> AISalesEmployeeOut:
+    lead_count = db.scalar(select(func.count()).select_from(Lead).where(Lead.sales_employee_id == employee.id)) or 0
+    pending = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.delivery_status == "pending_approval")) or 0
+    sent = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.sent_at.is_not(None))) or 0
+    replies = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.replied_at.is_not(None))) or 0
+    return AISalesEmployeeOut.model_validate(employee, from_attributes=True).model_copy(
+        update={"leads": lead_count, "pending_approval": pending, "sent": sent, "replies": replies}
+    )
+
+
+def _default_employee_limits(employee: AISalesEmployee) -> dict:
+    return {
+        "daily_limit": employee.daily_limit,
+        "max_autonomous_leads_per_run": min(employee.daily_limit, 50),
+        "requires_review_by_default": employee.sending_mode == SalesEmployeeMode.review,
+        "allow_autonomous_send": employee.sending_mode == SalesEmployeeMode.autonomous,
+    }
+
+
+def _lead_from_employee_payload(db: Session, workspace: Workspace, user_id: str, employee: AISalesEmployee, payload: LeadCreate, source: str) -> Lead:
+    duplicate_terms = []
+    if payload.email:
+        duplicate_terms.append(Lead.email == str(payload.email))
+    if payload.website:
+        duplicate_terms.append(Lead.website == payload.website)
+    existing = db.scalar(select(Lead).where(Lead.workspace_id == workspace.id, or_(*duplicate_terms))) if duplicate_terms else None
+    if existing:
+        existing.sales_employee_id = employee.id
+        existing.campaign_id = payload.campaign_id or existing.campaign_id
+        return existing
+    _enforce_usage(db, user_id, workspace, "leads")
+    lead = Lead(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        sales_employee_id=employee.id,
+        campaign_id=payload.campaign_id,
+        company=payload.company,
+        website=payload.website,
+        industry=payload.industry or (employee.target_industries[0] if employee.target_industries else None),
+        country=payload.country or (employee.target_countries[0] if employee.target_countries else None),
+        city=payload.city,
+        contact=payload.contact,
+        email=str(payload.email) if payload.email else None,
+        phone=payload.phone,
+        linkedin=payload.linkedin,
+        niche=payload.industry or employee.target_customer,
+        status=_status(payload.status),
+        notes=f"Source: {source}",
+    )
+    db.add(lead)
+    db.flush()
+    _analyze_lead_if_possible(db, user_id, workspace, lead)
+    return lead
+
+
+def _lead_create_from_row(row: dict, employee: AISalesEmployee) -> LeadCreate:
+    company = str(row.get("company") or row.get("Company") or row.get("name") or row.get("Name") or row.get("business_name") or "").strip()
+    website = str(row.get("website") or row.get("Website") or row.get("url") or row.get("URL") or "").strip() or None
+    email = str(row.get("email") or row.get("Email") or "").strip() or None
+    return LeadCreate(
+        company=company or website or "Imported company",
+        website=website,
+        industry=str(row.get("industry") or row.get("Industry") or (employee.target_industries[0] if employee.target_industries else "")) or None,
+        country=str(row.get("country") or row.get("Country") or (employee.target_countries[0] if employee.target_countries else "")) or None,
+        city=str(row.get("city") or row.get("City") or "") or None,
+        contact=str(row.get("contact") or row.get("Contact") or row.get("person") or "") or None,
+        email=email,
+        phone=str(row.get("phone") or row.get("Phone") or "") or None,
+        linkedin=str(row.get("linkedin") or row.get("LinkedIn") or "") or None,
+        status="New",
+    )
+
+
+def _employee_lead_context(db: Session, workspace: Workspace, user_id: str, employee_id: UUID, lead_id: UUID) -> tuple[AISalesEmployee, Lead, WebsiteAnalysis | None]:
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    lead = db.scalar(select(Lead).where(Lead.id == lead_id, Lead.workspace_id == workspace.id, Lead.sales_employee_id == employee.id))
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Employee lead not found")
+    analysis = db.scalar(select(WebsiteAnalysis).where(WebsiteAnalysis.workspace_id == workspace.id, WebsiteAnalysis.lead_id == lead.id).order_by(WebsiteAnalysis.created_at.desc()))
+    return employee, lead, analysis
+
+
+def _employee_ai_payload(employee: AISalesEmployee, lead: Lead, analysis: WebsiteAnalysis | None) -> dict:
+    return {
+        "employee": {
+            "name": employee.name,
+            "role": employee.role,
+            "product_service": employee.product_service,
+            "target_customer": employee.target_customer,
+            "target_countries": employee.target_countries,
+            "target_industries": employee.target_industries,
+            "offer": employee.offer,
+            "cta": employee.cta,
+            "tone": employee.tone,
+            "language": employee.language,
+        },
+        "lead": {
+            "company": lead.company,
+            "website": lead.website,
+            "industry": lead.industry,
+            "country": lead.country,
+            "city": lead.city,
+            "contact": lead.contact,
+            "notes": lead.notes,
+        },
+        "website_analysis": _analysis_payload(analysis),
+    }
+
+
+def _analysis_payload(analysis: WebsiteAnalysis | None) -> dict:
+    if not analysis:
+        return {}
+    return {
+        "summary": analysis.summary,
+        "industry": analysis.industry,
+        "services": analysis.services,
+        "technologies": analysis.technologies,
+        "strengths": analysis.strengths,
+        "weaknesses": analysis.weaknesses,
+    }
+
+
+def _upsert_employee_insight(db: Session, user_id: str, workspace: Workspace, employee: AISalesEmployee, lead: Lead, data: dict) -> SalesEmployeeLeadInsight:
+    insight = db.scalar(select(SalesEmployeeLeadInsight).where(SalesEmployeeLeadInsight.sales_employee_id == employee.id, SalesEmployeeLeadInsight.lead_id == lead.id))
+    if insight is None:
+        insight = SalesEmployeeLeadInsight(user_id=user_id, workspace_id=workspace.id, sales_employee_id=employee.id, lead_id=lead.id)
+        db.add(insight)
+    insight.industry = str(data.get("industry") or lead.industry or "")
+    insight.services = list(data.get("services") or [])
+    insight.pain_points = list(data.get("pain_points") or [])
+    insight.icp_score = int(data.get("icp_score") or 0)
+    insight.purchase_probability = int(data.get("purchase_probability") or 0)
+    insight.best_sales_angle = str(data.get("best_sales_angle") or "")
+    insight.best_cta = str(data.get("best_cta") or employee.cta)
+    insight.recommended_plan = str(data.get("recommended_plan") or "Starter")
+    insight.summary = str(data.get("summary") or "")
+    insight.updated_at = datetime.utcnow()
+    lead.industry = lead.industry or insight.industry
+    lead.revenue = lead.revenue or max(0, insight.purchase_probability * 250)
+    lead.status = LeadStatus.qualified if insight.icp_score >= 55 else LeadStatus.archive
+    lead.notes = "\n".join(part for part in [lead.notes or "", f"AI Sales Employee qualification: ICP {insight.icp_score}/100, purchase {insight.purchase_probability}/100. {insight.best_sales_angle}"] if part)
+    return insight
+
+
+@router.post("/sales-employees", response_model=AISalesEmployeeOut)
+def create_sales_employee(payload: AISalesEmployeeCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AISalesEmployeeOut:
+    workspace = _current_workspace(db, user_id)
+    mode = _sales_employee_mode(payload.sending_mode)
+    employee = AISalesEmployee(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        **payload.model_dump(exclude={"sending_mode"}),
+        sending_mode=mode,
+        strict_limits={"default_mode": "Review Mode", "daily_limit": payload.daily_limit, "max_autonomous_leads_per_run": min(payload.daily_limit, 50)},
+    )
+    db.add(employee)
+    db.flush()
+    employee.strict_limits = _default_employee_limits(employee)
+    log_event(db, request, user_id, "sales_employee.created", {"employee_id": str(employee.id), "mode": employee.sending_mode.value})
+    _notify(db, user_id, NotificationKind.success, "AI Sales Employee created", f"{employee.name} is ready in {employee.sending_mode.value}.")
+    db.commit()
+    db.refresh(employee)
+    return _employee_out(db, employee)
+
+
+@router.get("/sales-employees", response_model=list[AISalesEmployeeOut])
+def list_sales_employees(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[AISalesEmployeeOut]:
+    workspace = _current_workspace(db, user_id)
+    employees = db.scalars(select(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id).order_by(AISalesEmployee.created_at.desc())).all()
+    return [_employee_out(db, employee) for employee in employees]
+
+
+@router.put("/sales-employees/{employee_id}", response_model=AISalesEmployeeOut)
+def update_sales_employee(employee_id: UUID, payload: AISalesEmployeeUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AISalesEmployeeOut:
+    workspace = _current_workspace(db, user_id)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    data = payload.model_dump()
+    data["sending_mode"] = _sales_employee_mode(payload.sending_mode)
+    for key, value in data.items():
+        setattr(employee, key, value)
+    employee.strict_limits = _default_employee_limits(employee)
+    log_event(db, request, user_id, "sales_employee.updated", {"employee_id": str(employee.id), "mode": employee.sending_mode.value})
+    db.commit()
+    db.refresh(employee)
+    return _employee_out(db, employee)
+
+
+@router.get("/sales-employees/{employee_id}/leads", response_model=list[LeadOut])
+def sales_employee_leads(employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    leads = db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.sales_employee_id == employee.id).order_by(Lead.created_at.desc()).limit(200)).all()
+    return [_lead_out(lead) for lead in leads]
+
+
+@router.post("/sales-employees/{employee_id}/leads/manual", response_model=list[LeadOut])
+def sales_employee_manual_import(employee_id: UUID, payload: SalesEmployeeLeadImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    leads = [_lead_from_employee_payload(db, workspace, user_id, employee, item, "manual") for item in payload.companies]
+    log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "manual", "count": len(leads)})
+    db.commit()
+    return [_lead_out(lead) for lead in leads]
+
+
+@router.post("/sales-employees/{employee_id}/leads/websites", response_model=list[LeadOut])
+def sales_employee_website_import(employee_id: UUID, payload: WebsiteListImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    leads = [
+        _lead_from_employee_payload(db, workspace, user_id, employee, LeadCreate(company=line.replace("https://", "").replace("http://", "").split("/")[0], website=line.strip(), status="New"), "website_list")
+        for line in payload.websites.splitlines()
+        if line.strip()
+    ]
+    log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "website_list", "count": len(leads)})
+    db.commit()
+    return [_lead_out(lead) for lead in leads]
+
+
+@router.post("/sales-employees/{employee_id}/leads/google-maps", response_model=list[LeadOut])
+def sales_employee_google_maps_import(employee_id: UUID, payload: GoogleMapsImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    leads = []
+    for raw in payload.export_text.splitlines():
+        parts = [part.strip() for part in raw.split(",") if part.strip()]
+        if not parts:
+            continue
+        website = next((part for part in parts if "." in part and " " not in part), None)
+        leads.append(_lead_from_employee_payload(db, workspace, user_id, employee, LeadCreate(company=parts[0], website=website, country=employee.target_countries[0] if employee.target_countries else None, status="New"), "google_maps"))
+    log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "google_maps", "count": len(leads)})
+    db.commit()
+    return [_lead_out(lead) for lead in leads]
+
+
+@router.post("/sales-employees/{employee_id}/leads/csv", response_model=list[LeadOut])
+async def sales_employee_csv_import(employee_id: UUID, file: UploadFile, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    content = (await file.read()).decode("utf-8-sig")
+    rows = csv.DictReader(io.StringIO(content))
+    leads = [_lead_from_employee_payload(db, workspace, user_id, employee, _lead_create_from_row(row, employee), "csv") for row in rows]
+    log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "csv", "count": len(leads)})
+    db.commit()
+    return [_lead_out(lead) for lead in leads]
+
+
+@router.post("/sales-employees/{employee_id}/leads/{lead_id}/qualify", response_model=SalesEmployeeLeadInsightOut)
+def sales_employee_qualify_lead(employee_id: UUID, lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeLeadInsight:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    employee, lead, analysis = _employee_lead_context(db, workspace, user_id, employee_id, lead_id)
+    try:
+        data = qualify_for_sales_employee(_employee_ai_payload(employee, lead, analysis))
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    insight = _upsert_employee_insight(db, user_id, workspace, employee, lead, data)
+    log_event(db, request, user_id, "sales_employee.lead_qualified", {"employee_id": str(employee.id), "lead_id": str(lead.id), "icp_score": insight.icp_score})
+    db.commit()
+    db.refresh(insight)
+    return insight
+
+
+@router.post("/sales-employees/{employee_id}/leads/{lead_id}/draft-email", response_model=EmailOut)
+def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    employee, lead, analysis = _employee_lead_context(db, workspace, user_id, employee_id, lead_id)
+    insight = db.scalar(select(SalesEmployeeLeadInsight).where(SalesEmployeeLeadInsight.sales_employee_id == employee.id, SalesEmployeeLeadInsight.lead_id == lead.id))
+    try:
+        generated = personalize_email(
+            PersonalizeRequest(
+                company=lead.company,
+                niche=lead.industry or employee.target_customer or "B2B",
+                website_summary=(analysis.summary if analysis else lead.notes) or lead.company,
+                offer=employee.offer or employee.product_service,
+                cta=(insight.best_cta if insight else employee.cta) or employee.cta,
+                tone=employee.tone,
+                language=employee.language,
+                signature=employee.signature,
+            )
+        )
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    follow_ups = generated.follow_ups[:2]
+    message = EmailMessage(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        lead_id=lead.id,
+        subject=generated.subject,
+        preview=generated.preview,
+        body=generated.full_email,
+        cta=generated.cta,
+        follow_up_1=follow_ups[0] if len(follow_ups) > 0 else "",
+        follow_up_2=follow_ups[1] if len(follow_ups) > 1 else "",
+        direction="outbound",
+        delivery_status="pending_approval" if employee.sending_mode == SalesEmployeeMode.review else "approved",
+        tags={"sales_employee_id": str(employee.id), "sales_employee_mode": employee.sending_mode.value, "requires_approval": employee.sending_mode == SalesEmployeeMode.review},
+    )
+    db.add(message)
+    lead.status = LeadStatus.qualified
+    log_event(db, request, user_id, "sales_employee.email_drafted", {"employee_id": str(employee.id), "lead_id": str(lead.id), "requires_approval": employee.sending_mode == SalesEmployeeMode.review})
+    db.commit()
+    db.refresh(message)
+    return message
+
+
+@router.post("/sales-employees/{employee_id}/emails/{email_id}/approve", response_model=EmailOut)
+def sales_employee_approve_email(employee_id: UUID, email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+    workspace = _current_workspace(db, user_id)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id, EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id)))
+    if message is None:
+        raise HTTPException(status_code=404, detail="Employee email not found")
+    message.delivery_status = "approved"
+    message.tags = {**(message.tags or {}), "approved_at": datetime.utcnow().isoformat(), "approved_by": user_id}
+    log_event(db, request, user_id, "sales_employee.email_approved", {"employee_id": str(employee.id), "email_id": str(message.id)})
+    db.commit()
+    db.refresh(message)
+    return message
+
+
+@router.post("/sales-employees/{employee_id}/run", response_model=SalesEmployeeRunOut)
+def sales_employee_run(employee_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeRunOut:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    result = SalesEmployeeRunOut(employee_id=employee.id, mode=employee.sending_mode.value)
+    leads = list(db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.sales_employee_id == employee.id, Lead.status.in_([LeadStatus.new, LeadStatus.qualified])).order_by(Lead.created_at.asc()).limit(employee.daily_limit)).all())
+    for lead in leads:
+        try:
+            if lead.status == LeadStatus.new:
+                analysis = db.scalar(select(WebsiteAnalysis).where(WebsiteAnalysis.workspace_id == workspace.id, WebsiteAnalysis.lead_id == lead.id).order_by(WebsiteAnalysis.created_at.desc()))
+                _enforce_usage(db, user_id, workspace, "ai_generations")
+                data = qualify_for_sales_employee(_employee_ai_payload(employee, lead, analysis))
+                insight = _upsert_employee_insight(db, user_id, workspace, employee, lead, data)
+                result.leads_qualified += 1 if insight.icp_score >= 55 else 0
+            draft = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == lead.id, EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id)).order_by(EmailMessage.created_at.desc()))
+            if draft is None and lead.status == LeadStatus.qualified:
+                draft = sales_employee_draft_email(employee.id, lead.id, request, user_id, db)
+                result.emails_generated += 1
+            if employee.sending_mode == SalesEmployeeMode.review:
+                continue
+            if draft and draft.delivery_status == "approved" and employee.sending_mode == SalesEmployeeMode.semi_auto:
+                _enforce_usage(db, user_id, workspace, "email_sends")
+                lead_for_email = db.get(Lead, draft.lead_id) if draft.lead_id else None
+                if lead_for_email and lead_for_email.email:
+                    provider_response = send_email(to_email=lead_for_email.email, subject=draft.subject, body=draft.body)
+                    draft.sent_at = datetime.utcnow()
+                    draft.provider_message_id = str(provider_response.get("id"))
+                    draft.delivery_status = "sent"
+                    lead_for_email.status = LeadStatus.contacted
+                    result.emails_sent += 1
+            if draft and employee.sending_mode == SalesEmployeeMode.autonomous and lead.email and result.emails_sent < employee.daily_limit:
+                _enforce_usage(db, user_id, workspace, "email_sends")
+                provider_response = send_email(to_email=lead.email, subject=draft.subject, body=draft.body)
+                draft.sent_at = datetime.utcnow()
+                draft.provider_message_id = str(provider_response.get("id"))
+                draft.delivery_status = "sent"
+                lead.status = LeadStatus.contacted
+                result.emails_sent += 1
+        except Exception as exc:
+            result.blocked.append(f"{lead.company}: {exc}")
+    log_event(db, request, user_id, "sales_employee.run", result.model_dump(mode="json"))
+    db.commit()
+    return result
 
 
 @router.get("/dashboard", response_model=DashboardMetrics)
@@ -750,11 +1173,12 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
 
 @router.post("/leads/find", response_model=list[LeadOut])
 def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
     try:
         found = find_leads(payload)
     except Exception as exc:
         raise _provider_error(exc) from exc
-    workspace = _current_workspace(db, user_id)
     saved: list[Lead] = []
     for item in found:
         exists = db.scalar(select(Lead.id).where(_workspace_stmt(Lead, workspace, user_id), Lead.email == str(item.email))) if item.email else None
@@ -936,6 +1360,7 @@ def leads_bulk(payload: BulkLeadAction, request: Request, user_id: CurrentUser, 
 @router.post("/ai/analyze", response_model=AnalysisOut)
 def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AnalysisOut:
     workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id))) if payload.lead_id else None
     company = payload.company or (lead.company if lead else "")
@@ -981,6 +1406,7 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
 @router.post("/ai/personalize", response_model=EmailVariantOut)
 def ai_personalize(payload: PersonalizeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailVariantOut:
     workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     try:
         result = personalize_email(payload)
@@ -1000,6 +1426,7 @@ def ai_personalize_stream(payload: PersonalizeRequest, user_id: CurrentUser) -> 
 @router.post("/ai/rewrite")
 def ai_rewrite(payload: RewriteEmailRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, str]:
     workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     try:
         result = rewrite_email(payload)
@@ -1013,6 +1440,7 @@ def ai_rewrite(payload: RewriteEmailRequest, request: Request, user_id: CurrentU
 @router.post("/ai/reply-assistant", response_model=ReplyAssistantOut)
 def ai_reply_assistant(payload: ReplyAssistantRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> ReplyAssistantOut:
     workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     try:
         result = suggest_reply(payload)
@@ -1026,6 +1454,7 @@ def ai_reply_assistant(payload: ReplyAssistantRequest, request: Request, user_id
 @router.post("/emails/generate", response_model=EmailOut)
 def generate_email(payload: GenerateEmailRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     campaign = db.scalar(select(Campaign).where(Campaign.id == payload.campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
     lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id)))
@@ -1094,6 +1523,7 @@ def update_email(email_id: UUID, payload: EmailUpdate, request: Request, user_id
 @router.post("/emails/{email_id}/send", response_model=EmailOut)
 def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
     _enforce_usage(db, user_id, workspace, "email_sends")
     message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
     if message is None:
@@ -1252,12 +1682,19 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
     workspace = _current_workspace(db, user_id)
     if payload.plan not in PLAN_LIMITS:
         raise HTTPException(status_code=400, detail="Unknown subscription plan")
+    settings = _settings_for_workspace(db, user_id, workspace)
+    customer_id = str((settings.billing or {}).get("stripeCustomerId") or "")
     try:
-        session = create_checkout_session(user_id, str(workspace.id), payload.plan, str(payload.success_url), str(payload.cancel_url))
+        session = create_checkout_session(user_id, str(workspace.id), payload.plan, customer_id)
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    settings = _settings_for_workspace(db, user_id, workspace)
-    settings.billing = {**(settings.billing or {}), "plan": payload.plan, "checkoutSessionId": session.get("id")}
+    settings.billing = {
+        **(settings.billing or {}),
+        "pendingPlan": payload.plan,
+        "status": (settings.billing or {}).get("status") or "inactive",
+        "checkoutSessionId": session.get("id"),
+        "stripeCustomerId": session.get("customer_id") or customer_id,
+    }
     log_event(db, request, user_id, "billing.checkout", {"plan": payload.plan})
     db.commit()
     return session
@@ -1267,13 +1704,16 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
 def billing_plans(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[BillingPlanOut]:
     workspace = _current_workspace(db, user_id)
     current = _plan_for_workspace(db, user_id, workspace)
-    return [BillingPlanOut(name=name, price=int(limits["mrr"]), limits=limits, current=name == current) for name, limits in PLAN_LIMITS.items()]
+    active = _has_active_subscription(db, workspace)
+    return [BillingPlanOut(name=name, price=int(limits["mrr"]), limits=limits, current=active and name == current, active_subscription=active) for name, limits in PLAN_LIMITS.items()]
 
 
 @router.post("/billing/portal")
 def billing_portal(payload: BillingPortalRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
+    if not _has_active_subscription(db, workspace):
+        raise HTTPException(status_code=402, detail="An active subscription is required to open the Billing Portal.")
     customer_id = str((settings.billing or {}).get("stripeCustomerId") or "")
     try:
         session = create_billing_portal_session(customer_id, str(payload.return_url))
@@ -1282,6 +1722,20 @@ def billing_portal(payload: BillingPortalRequest, request: Request, user_id: Cur
     log_event(db, request, user_id, "billing.portal", {"workspace_id": str(workspace.id)})
     db.commit()
     return session
+
+
+@router.get("/billing/diagnostics", response_model=BillingDiagnosticsOut)
+def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
+    del user_id
+    settings = get_app_settings()
+    return BillingDiagnosticsOut(
+        stripe_secret_loaded=bool(settings.stripe_secret_key),
+        webhook_secret_loaded=bool(settings.stripe_webhook_secret),
+        publishable_key_loaded=bool(settings.stripe_public_key),
+        starter_price_id_loaded=bool(settings.stripe_starter_price_id),
+        pro_price_id_loaded=bool(settings.stripe_pro_price_id),
+        agency_price_id_loaded=bool(settings.stripe_agency_price_id),
+    )
 
 
 @router.get("/billing/invoices")

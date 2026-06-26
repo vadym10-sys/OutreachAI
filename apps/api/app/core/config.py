@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,8 +30,10 @@ class Settings(BaseSettings):
     automation_batch_size: int = 25
     automation_send_limit_per_run: int = 25
     public_api_url: str = "http://localhost:8000"
+    public_app_url: str = "https://outreachaiaiai.com"
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
+    stripe_publishable_key: str = ""
     stripe_price_starter: str = ""
     stripe_price_pro: str = ""
     stripe_price_agency: str = ""
@@ -54,6 +57,22 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
+    def stripe_starter_price_id(self) -> str:
+        return os.getenv("STRIPE_STARTER_PRICE_ID") or self.stripe_price_starter
+
+    @property
+    def stripe_pro_price_id(self) -> str:
+        return os.getenv("STRIPE_PRO_PRICE_ID") or self.stripe_price_pro
+
+    @property
+    def stripe_agency_price_id(self) -> str:
+        return os.getenv("STRIPE_AGENCY_PRICE_ID") or self.stripe_price_agency
+
+    @property
+    def stripe_public_key(self) -> str:
+        return os.getenv("NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY") or self.stripe_publishable_key
+
+    @property
     def missing_optional_services(self) -> list[str]:
         missing = []
         if not self.openai_api_key:
@@ -68,6 +87,12 @@ class Settings(BaseSettings):
             missing.append("STRIPE_SECRET_KEY")
         if not self.stripe_webhook_secret:
             missing.append("STRIPE_WEBHOOK_SECRET")
+        if not self.stripe_starter_price_id:
+            missing.append("STRIPE_STARTER_PRICE_ID")
+        if not self.stripe_pro_price_id:
+            missing.append("STRIPE_PRO_PRICE_ID")
+        if not self.stripe_agency_price_id:
+            missing.append("STRIPE_AGENCY_PRICE_ID")
         return missing
 
 

@@ -6,6 +6,7 @@ import json
 import tempfile
 import os
 import time
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -16,6 +17,10 @@ if db_path.exists():
 os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
+os.environ["STRIPE_STARTER_PRICE_ID"] = "price_starter_test"
+os.environ["STRIPE_PRO_PRICE_ID"] = "price_pro_test"
+os.environ["STRIPE_AGENCY_PRICE_ID"] = "price_agency_test"
+os.environ["NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY"] = "pk_test"
 os.environ["AUTOMATION_SECRET"] = "automation_test"
 os.environ["APOLLO_API_KEY"] = "apollo_test"
 os.environ["OPENAI_API_KEY"] = "openai_test"
@@ -418,6 +423,35 @@ def test_stripe_webhook_activates_subscription() -> None:
     assert unsigned.status_code == 400
 
 
+def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> None:
+    captured = {}
+
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "") -> dict:
+        captured.update({"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "customer_id": customer_id})
+        return {"url": "https://checkout.stripe.test/session", "id": "cs_test_pending", "customer_id": customer_id or "cus_pending"}
+
+    monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
+    response = client.post("/api/billing/checkout", headers=AUTH, json={"plan": "Starter"})
+    assert response.status_code == 200
+    assert response.json()["url"].startswith("https://checkout.stripe.test")
+    assert captured["plan"] == "Starter"
+
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    db = get_sessionmaker()()
+    try:
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
+        assert settings.billing["pendingPlan"] == "Starter"
+        assert settings.billing["status"] in {"inactive", "active"}
+        assert settings.billing["checkoutSessionId"] == "cs_test_pending"
+        assert settings.billing["stripeCustomerId"] in {"cus_pending", "cus_live_test"}
+    finally:
+        db.close()
+
+    diagnostics = client.get("/api/billing/diagnostics", headers=AUTH)
+    assert diagnostics.status_code == 200
+    assert diagnostics.json()["starter_price_id_loaded"] is True
+
+
 def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.acquisition.find_leads",
@@ -517,3 +551,96 @@ def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(monkeypatch
 
     unauthorized = client.post("/api/automation/run", headers={"X-Automation-Secret": "wrong"})
     assert unauthorized.status_code == 401
+
+
+def test_ai_sales_employee_review_mode_imports_qualifies_drafts_and_approves(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.qualify_for_sales_employee",
+        lambda payload: {
+            "industry": "B2B SaaS",
+            "services": ["Revenue automation"],
+            "pain_points": ["Manual prospecting", "Slow follow-up"],
+            "icp_score": 84,
+            "purchase_probability": 47,
+            "best_sales_angle": "Position automated lead qualification as pipeline leverage.",
+            "best_cta": "Book a pipeline review",
+            "recommended_plan": "Pro",
+            "summary": "Strong ICP fit for an AI sales employee.",
+        },
+    )
+    monkeypatch.setattr(
+        "app.api.routes.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Pipeline review for Review Mode Co",
+            preview="A safe AI sales employee idea",
+            full_email="Hi Riley, I found a way to remove manual prospecting from your week.",
+            cta="Book a pipeline review",
+            follow_ups=["Worth reviewing?", "Should I send the workflow?"],
+            ab_tests=[],
+        ),
+    )
+
+    employee_response = client.post(
+        "/api/sales-employees",
+        headers=AUTH,
+        json={
+            "name": "Ava",
+            "role": "AI Sales Employee",
+            "product_service": "AI sales automation for B2B SaaS",
+            "target_customer": "SaaS founders",
+            "target_countries": ["Germany"],
+            "target_industries": ["B2B SaaS"],
+            "offer": "automate qualified sales conversations",
+            "cta": "Book a pipeline review",
+            "sending_mode": "Review Mode",
+            "daily_limit": 10,
+            "working_hours": "09:00-17:00",
+            "tone": "Consultative",
+            "language": "English",
+            "signature": "Ava at OutreachAI",
+        },
+    )
+    assert employee_response.status_code == 200
+    employee = employee_response.json()
+    assert employee["sending_mode"] == "Review Mode"
+
+    leads_response = client.post(
+        f"/api/sales-employees/{employee['id']}/leads/manual",
+        headers=AUTH,
+        json={
+            "companies": [
+                {
+                    "company": "Review Mode Co",
+                    "website": "https://review-mode.example",
+                    "industry": "B2B SaaS",
+                    "country": "Germany",
+                    "contact": "Riley",
+                    "email": "riley@review-mode.example",
+                    "status": "New",
+                }
+            ]
+        },
+    )
+    assert leads_response.status_code == 200
+    lead = leads_response.json()[0]
+    assert lead["sales_employee_id"] == employee["id"]
+
+    insight_response = client.post(f"/api/sales-employees/{employee['id']}/leads/{lead['id']}/qualify", headers=AUTH)
+    assert insight_response.status_code == 200
+    insight = insight_response.json()
+    assert insight["icp_score"] == 84
+    assert insight["recommended_plan"] == "Pro"
+
+    draft_response = client.post(f"/api/sales-employees/{employee['id']}/leads/{lead['id']}/draft-email", headers=AUTH)
+    assert draft_response.status_code == 200
+    draft = draft_response.json()
+    assert draft["delivery_status"] == "pending_approval"
+    assert draft["tags"]["requires_approval"] is True
+
+    approve_response = client.post(f"/api/sales-employees/{employee['id']}/emails/{draft['id']}/approve", headers=AUTH)
+    assert approve_response.status_code == 200
+    assert approve_response.json()["delivery_status"] == "approved"
+
+    run_response = client.post(f"/api/sales-employees/{employee['id']}/run", headers=AUTH)
+    assert run_response.status_code == 200
+    assert run_response.json()["mode"] == "Review Mode"

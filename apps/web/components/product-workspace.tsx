@@ -5,10 +5,11 @@ import { useAuth } from '@clerk/nextjs';
 import { Bell, Brain, CheckCircle2, ClipboardList, Loader2, Moon, Plus, Save, Search, Send, Sparkles, Wand2 } from 'lucide-react';
 import { clientApi, splitList } from '@/lib/client-api';
 import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
-import type { Activity, AdminSummary, BillingPlan, Campaign, CampaignAnalytics, DashboardMetrics, Email, FollowUpSequence, Lead, MeetingPrep, Notification, Profile, SalesCopilot, Settings, Usage, WebsiteAudit, Workspace } from '@/lib/types';
+import type { Activity, AdminSummary, AISalesEmployee, BillingPlan, Campaign, CampaignAnalytics, DashboardMetrics, Email, FollowUpSequence, Lead, MeetingPrep, Notification, Profile, SalesCopilot, SalesEmployeeLeadInsight, SalesEmployeeRun, Settings, Usage, WebsiteAudit, Workspace } from '@/lib/types';
 
 const pipeline = ['New', 'Qualified', 'Contacted', 'Interested', 'Meeting', 'Won', 'Lost', 'Archive'];
 const tones = ['Professional', 'Friendly', 'Direct', 'Consultative'];
+const salesModes = ['Review Mode', 'Semi-Auto Mode', 'Autonomous Mode'];
 const emptyMetrics: DashboardMetrics = { leads: 0, campaigns: 0, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: 'Starter', usage: {} };
 const devApi = async function api<T>(path: string, init: RequestInit = {}) {
   return clientApi<T>(path, 'dev', init);
@@ -277,6 +278,161 @@ export function LeadManager() {
   }
 
   return <div className="min-w-0"><h1 className="text-2xl font-bold min-[390px]:text-3xl">Lead Management</h1><p className="mt-2 text-slate-600">Discover, enrich, score, prepare, and bulk-manage production leads. Press <kbd className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">/</kbd> to search.</p>{error && <Notice message={error} kind="error" />}{notice && <Notice message={notice} />}<form onSubmit={find} className="mt-6 grid gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition md:grid-cols-4"><input required name="country" placeholder="Country" className="rounded-md border border-slate-300 px-3 py-2" /><input name="city" placeholder="City" className="rounded-md border border-slate-300 px-3 py-2" /><input name="industry" placeholder="Industry" className="rounded-md border border-slate-300 px-3 py-2" /><input name="keywords" placeholder="Keywords" className="rounded-md border border-slate-300 px-3 py-2" /><input name="employee_count" placeholder="Employee count" className="rounded-md border border-slate-300 px-3 py-2" /><input name="revenue" placeholder="Revenue" className="rounded-md border border-slate-300 px-3 py-2" /><input name="technologies" placeholder="Technologies" className="rounded-md border border-slate-300 px-3 py-2" /><input name="limit" type="number" min="1" max="25" defaultValue="10" className="rounded-md border border-slate-300 px-3 py-2" /><button disabled={finding} className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white md:col-span-4">{finding ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />} Find leads</button></form><form onSubmit={create} className="mt-6 grid gap-3 rounded-lg border border-slate-200 bg-white p-4 md:grid-cols-4"><input required name="company" placeholder="Company" className="rounded-md border border-slate-300 px-3 py-2" /><input name="website" placeholder="Website" className="rounded-md border border-slate-300 px-3 py-2" /><input name="industry" placeholder="Industry" className="rounded-md border border-slate-300 px-3 py-2" /><input name="country" placeholder="Country" className="rounded-md border border-slate-300 px-3 py-2" /><input name="city" placeholder="City" className="rounded-md border border-slate-300 px-3 py-2" /><input name="contact" placeholder="Contact" className="rounded-md border border-slate-300 px-3 py-2" /><input name="email" placeholder="Email" className="rounded-md border border-slate-300 px-3 py-2" /><select name="campaign_id" className="rounded-md border border-slate-300 px-3 py-2"><option value="">No campaign</option>{campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select><button className="focus-ring min-h-11 rounded-md bg-brand px-4 py-2 font-semibold text-white md:col-span-4">Add lead</button></form><div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-3 text-slate-400" size={18} /><input id="lead-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search leads" className="w-full rounded-md border border-slate-300 py-2 pl-10 pr-3" /></div><select value={status} onChange={(e) => setStatus(e.target.value)} className="rounded-md border border-slate-300 px-3 py-2"><option value="">All statuses</option>{pipeline.map((item) => <option key={item}>{item}</option>)}</select><button onClick={load} className="focus-ring min-h-11 rounded-md border border-slate-300 px-4 py-2 font-semibold">Apply</button></div>{selected.length > 0 && <div className="mt-4 flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-white p-3"><span className="py-2 text-sm font-semibold">{selected.length} selected</span>{pipeline.map((item) => <button key={item} onClick={() => bulkStatus(item)} className="focus-ring min-h-11 rounded-md border border-slate-300 px-3 text-sm">{item}</button>)}</div>}{loading ? <div className="mt-6"><Skeleton lines={5} /></div> : leads.length ? <div className="mt-6 space-y-3">{leads.map((lead) => { const id = lead.id || lead.company; const leadCopilot = lead.id ? copilot[lead.id] : undefined; const audit = lead.id ? audits[lead.id] : undefined; const prep = lead.id ? meetingPrep[lead.id] : undefined; const follow = lead.id ? followUps[lead.id] : undefined; return <article key={id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-soft"><div className="flex items-start gap-3"><input type="checkbox" checked={Boolean(lead.id && selected.includes(lead.id))} onChange={(e) => setSelected((ids) => e.target.checked && lead.id ? [...ids, lead.id] : ids.filter((item) => item !== lead.id))} className="mt-1 size-5" /><div className="min-w-0 flex-1"><div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><h2 className="font-bold">{lead.company}</h2><p className="break-all text-sm text-slate-500">{lead.email || lead.website || 'No contact yet'}</p></div><span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">{lead.status}</span></div><dl className="mt-3 grid gap-2 text-sm min-[430px]:grid-cols-4"><div><dt className="text-slate-500">Industry</dt><dd>{lead.industry || '-'}</dd></div><div><dt className="text-slate-500">Country</dt><dd>{lead.country || '-'}</dd></div><div><dt className="text-slate-500">Contact</dt><dd>{lead.contact || '-'}</dd></div><div><dt className="text-slate-500">Value</dt><dd>€{metricNumber(lead.revenue).toLocaleString()}</dd></div></dl><div className="mt-4 flex flex-wrap gap-2"><button onClick={() => runLeadAi<SalesCopilot>(lead, 'copilot', (key, value) => setCopilot((items) => ({ ...items, [key]: value })))} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-semibold"><Brain size={16} /> Copilot</button><button onClick={() => runLeadAi<WebsiteAudit>(lead, 'website-audit', (key, value) => setAudits((items) => ({ ...items, [key]: value })))} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-semibold"><Sparkles size={16} /> Audit</button><button onClick={() => runLeadAi<MeetingPrep>(lead, 'meeting-prep', (key, value) => setMeetingPrep((items) => ({ ...items, [key]: value })))} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-semibold"><ClipboardList size={16} /> Meeting</button><button onClick={() => runLeadAi<FollowUpSequence>(lead, 'follow-ups', (key, value) => setFollowUps((items) => ({ ...items, [key]: value })))} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-semibold"><Wand2 size={16} /> Follow-up</button>{aiLoading.startsWith(String(lead.id)) && <Loader2 className="mt-3 animate-spin text-brand" size={18} />}</div>{leadCopilot && <div className="mt-4 grid gap-3 rounded-md bg-slate-50 p-3 text-sm min-[430px]:grid-cols-3"><div><p className="text-slate-500">Reply</p><p className="text-xl font-bold">{leadCopilot.probability_to_reply}%</p></div><div><p className="text-slate-500">Buy</p><p className="text-xl font-bold">{leadCopilot.probability_to_buy}%</p></div><div><p className="text-slate-500">Revenue</p><p className="text-xl font-bold">€{leadCopilot.estimated_revenue.toLocaleString()}</p></div><p className="min-[430px]:col-span-3"><span className="font-semibold">Subject:</span> {leadCopilot.best_subject_line}</p><p className="min-[430px]:col-span-3"><span className="font-semibold">CTA:</span> {leadCopilot.best_cta}</p></div>}{audit && <div className="mt-3 rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">Website audit</p><p className="mt-1 text-slate-600">{audit.improvement_report}</p><div className="mt-2 flex flex-wrap gap-2">{audit.priority_actions.map((item) => <span key={item} className="rounded-full bg-white px-2 py-1 text-xs font-semibold">{item}</span>)}</div></div>}{prep && <div className="mt-3 rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">Meeting prep</p><p className="mt-1 text-slate-600">{prep.company_summary}</p><p className="mt-2 font-semibold">Strategy: <span className="font-normal text-slate-600">{prep.sales_strategy}</span></p></div>}{follow && <div className="mt-3 grid gap-2 rounded-md bg-slate-50 p-3 text-sm min-[430px]:grid-cols-2">{Object.entries(follow).map(([state, items]) => <div key={state}><p className="font-semibold capitalize">{state.replace('_', ' ')}</p><p className="mt-1 text-slate-600">{items[0] || 'No draft yet'}</p></div>)}</div>}{lead.notes && <p className="mt-3 line-clamp-3 rounded-md bg-slate-50 p-3 text-xs text-slate-600">{lead.notes}</p>}</div></div></article>; })}</div> : <div className="mt-6"><EmptyState title="No leads" copy="Add a lead manually or run Lead Finder to populate the pipeline." /></div>}</div>;
+}
+
+export function AISalesEmployees() {
+  const { api, ready } = useTokenApi();
+  const [employees, setEmployees] = useState<AISalesEmployee[]>([]);
+  const [employeeId, setEmployeeId] = useState('');
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [insights, setInsights] = useState<Record<string, SalesEmployeeLeadInsight>>({});
+  const [emails, setEmails] = useState<Record<string, Email>>({});
+  const [runResult, setRunResult] = useState<SalesEmployeeRun | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+
+  const loadLeads = useCallback((id: string) => {
+    if (!id) return Promise.resolve([]);
+    return api<Lead[]>(`/api/sales-employees/${id}/leads`).then((items) => { setLeads(items); return items; });
+  }, [api]);
+
+  const load = useCallback(() => {
+    if (!ready) return;
+    setLoading(true);
+    setError('');
+    api<AISalesEmployee[]>('/api/sales-employees')
+      .then((items) => {
+        setEmployees(items);
+        const next = employeeId || items[0]?.id || '';
+        setEmployeeId(next);
+        return loadLeads(next);
+      })
+      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'AI Sales Employees could not be loaded.'))
+      .finally(() => setLoading(false));
+  }, [api, ready, employeeId, loadLeads]);
+
+  useEffect(() => { void Promise.resolve().then(load); }, [load]);
+
+  async function createEmployee(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setBusy('create');
+    try {
+      const created = await api<AISalesEmployee>('/api/sales-employees', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: data.get('name'),
+          role: data.get('role') || 'AI Sales Development Representative',
+          product_service: data.get('product_service') || '',
+          target_customer: data.get('target_customer') || '',
+          target_countries: splitList(String(data.get('target_countries') || '')),
+          target_industries: splitList(String(data.get('target_industries') || '')),
+          offer: data.get('offer') || '',
+          cta: data.get('cta') || 'Book a quick call',
+          sending_mode: data.get('sending_mode') || 'Review Mode',
+          daily_limit: Number(data.get('daily_limit') || 25),
+          working_hours: data.get('working_hours') || '09:00-17:00',
+          tone: data.get('tone') || 'Professional',
+          language: data.get('language') || 'English',
+          signature: data.get('signature') || ''
+        })
+      });
+      setEmployees((items) => [created, ...items.filter((item) => item.id !== created.id)]);
+      setEmployeeId(created.id);
+      setLeads([]);
+      setNotice(`${created.name} created in ${created.sending_mode}.`);
+      form.reset();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'AI Sales Employee could not be created.');
+    } finally { setBusy(''); }
+  }
+
+  async function importManual(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!employeeId) return;
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setBusy('manual');
+    try {
+      const imported = await api<Lead[]>(`/api/sales-employees/${employeeId}/leads/manual`, { method: 'POST', body: JSON.stringify({ companies: [{ company: data.get('company'), website: data.get('website') || null, industry: data.get('industry') || null, country: data.get('country') || null, contact: data.get('contact') || null, email: data.get('email') || null, status: 'New' }] }) });
+      setLeads((items) => [...imported, ...items.filter((item) => !imported.some((lead) => lead.id === item.id))]);
+      setNotice(`Imported ${imported.length} lead.`);
+      form.reset();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Manual import failed.');
+    } finally { setBusy(''); }
+  }
+
+  async function importText(path: 'websites' | 'google-maps', field: 'websites' | 'export_text', event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!employeeId) return;
+    const data = new FormData(event.currentTarget);
+    setBusy(path);
+    try {
+      const imported = await api<Lead[]>(`/api/sales-employees/${employeeId}/leads/${path}`, { method: 'POST', body: JSON.stringify({ [field]: data.get(field) }) });
+      setLeads((items) => [...imported, ...items.filter((item) => !imported.some((lead) => lead.id === item.id))]);
+      setNotice(`Imported ${imported.length} leads.`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Import failed.');
+    } finally { setBusy(''); }
+  }
+
+  async function qualify(lead: Lead) {
+    if (!employeeId || !lead.id) return;
+    setBusy(`qualify-${lead.id}`);
+    try {
+      const insight = await api<SalesEmployeeLeadInsight>(`/api/sales-employees/${employeeId}/leads/${lead.id}/qualify`, { method: 'POST' });
+      setInsights((items) => ({ ...items, [lead.id as string]: insight }));
+      setNotice(`${lead.company} qualified: ICP ${insight.icp_score}/100.`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Qualification failed.');
+    } finally { setBusy(''); }
+  }
+
+  async function draft(lead: Lead) {
+    if (!employeeId || !lead.id) return;
+    setBusy(`draft-${lead.id}`);
+    try {
+      const email = await api<Email>(`/api/sales-employees/${employeeId}/leads/${lead.id}/draft-email`, { method: 'POST' });
+      setEmails((items) => ({ ...items, [lead.id as string]: email }));
+      setNotice(email.delivery_status === 'pending_approval' ? 'Draft created for approval.' : 'Draft created for automation.');
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Draft failed.');
+    } finally { setBusy(''); }
+  }
+
+  async function approve(lead: Lead) {
+    const email = lead.id ? emails[lead.id] : undefined;
+    if (!employeeId || !lead.id || !email) return;
+    setBusy(`approve-${lead.id}`);
+    try {
+      const approved = await api<Email>(`/api/sales-employees/${employeeId}/emails/${email.id}/approve`, { method: 'POST' });
+      setEmails((items) => ({ ...items, [lead.id as string]: approved }));
+      setNotice('Email approved.');
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Approval failed.');
+    } finally { setBusy(''); }
+  }
+
+  async function runEmployee() {
+    if (!employeeId) return;
+    setBusy('run');
+    try {
+      const result = await api<SalesEmployeeRun>(`/api/sales-employees/${employeeId}/run`, { method: 'POST' });
+      setRunResult(result);
+      await loadLeads(employeeId);
+      setNotice(`Run complete: ${result.leads_qualified} qualified, ${result.emails_generated} drafted, ${result.emails_sent} sent.`);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Employee run failed.');
+    } finally { setBusy(''); }
+  }
+
+  const selectedEmployee = employees.find((employee) => employee.id === employeeId);
+
+  return <div className="min-w-0"><div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><h1 className="text-2xl font-bold min-[390px]:text-3xl">AI Sales Employees</h1><p className="mt-2 text-slate-600">Create safe AI employees that discover leads, qualify buyers, draft emails, and sell your own product in Review, Semi-Auto, or Autonomous Mode.</p></div><button onClick={runEmployee} disabled={!employeeId || busy === 'run'} className="focus-ring inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">{busy === 'run' ? <Loader2 className="animate-spin" size={18} /> : <Brain size={18} />} Run</button></div>{error && <Notice message={error} kind="error" />}{notice && <Notice message={notice} />}{runResult && <Notice message={`Last run: ${runResult.mode}; ${runResult.emails_sent} sent; ${runResult.blocked.length} blocked.`} kind={runResult.blocked.length ? 'warning' : 'success'} />}{loading ? <div className="mt-6"><Skeleton lines={5} /></div> : <div className="mt-6 grid gap-6 xl:grid-cols-[0.9fr_1.1fr]"><section className="space-y-4"><form onSubmit={createEmployee} className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:grid-cols-2"><h2 className="font-bold sm:col-span-2">Create employee</h2><input required name="name" placeholder="Name" className="rounded-md border border-slate-300 px-3 py-2" /><input name="role" defaultValue="AI Sales Development Representative" placeholder="Role" className="rounded-md border border-slate-300 px-3 py-2" /><textarea name="product_service" placeholder="Product/service it sells" className="min-h-24 rounded-md border border-slate-300 p-3 sm:col-span-2" /><input name="target_customer" placeholder="Target customer" className="rounded-md border border-slate-300 px-3 py-2" /><input name="target_countries" placeholder="Target countries" className="rounded-md border border-slate-300 px-3 py-2" /><input name="target_industries" placeholder="Target industries" className="rounded-md border border-slate-300 px-3 py-2" /><select name="sending_mode" defaultValue="Review Mode" className="rounded-md border border-slate-300 px-3 py-2">{salesModes.map((mode) => <option key={mode}>{mode}</option>)}</select><textarea name="offer" placeholder="Offer" className="min-h-20 rounded-md border border-slate-300 p-3 sm:col-span-2" /><input name="cta" defaultValue="Book a quick call" placeholder="CTA" className="rounded-md border border-slate-300 px-3 py-2" /><input name="daily_limit" type="number" min="1" max="250" defaultValue="25" className="rounded-md border border-slate-300 px-3 py-2" /><input name="working_hours" defaultValue="09:00-17:00" className="rounded-md border border-slate-300 px-3 py-2" /><select name="tone" className="rounded-md border border-slate-300 px-3 py-2">{tones.map((tone) => <option key={tone}>{tone}</option>)}</select><input name="language" defaultValue="English" className="rounded-md border border-slate-300 px-3 py-2" /><textarea name="signature" placeholder="Signature" className="min-h-20 rounded-md border border-slate-300 p-3 sm:col-span-2" /><button disabled={busy === 'create'} className="focus-ring min-h-11 rounded-md bg-brand px-4 py-2 font-semibold text-white sm:col-span-2">Create AI Sales Employee</button></form><section className="rounded-lg border border-slate-200 bg-white p-4"><h2 className="font-bold">Employees</h2>{employees.length ? <div className="mt-4 space-y-3">{employees.map((employee) => <button key={employee.id} onClick={() => { setEmployeeId(employee.id); void loadLeads(employee.id); }} className={`w-full rounded-md border p-3 text-left ${employeeId === employee.id ? 'border-brand bg-teal-50' : 'border-slate-200'}`}><div className="flex items-start justify-between gap-3"><div><p className="font-semibold">{employee.name}</p><p className="text-sm text-slate-500">{employee.role}</p></div><span className="rounded-full bg-white px-2 py-1 text-xs font-semibold">{employee.sending_mode}</span></div><dl className="mt-3 grid grid-cols-4 gap-2 text-xs"><div><dt className="text-slate-500">Leads</dt><dd className="font-bold">{employee.leads}</dd></div><div><dt className="text-slate-500">Review</dt><dd className="font-bold">{employee.pending_approval}</dd></div><div><dt className="text-slate-500">Sent</dt><dd className="font-bold">{employee.sent}</dd></div><div><dt className="text-slate-500">Limit</dt><dd className="font-bold">{employee.daily_limit}</dd></div></dl></button>)}</div> : <EmptyState title="No employees" copy="Create one to start a safe AI sales workflow." />}</section></section><section className="space-y-6"><div className="rounded-lg border border-slate-200 bg-white p-4"><h2 className="font-bold">Lead discovery</h2><p className="mt-1 text-sm text-slate-500">{selectedEmployee ? `${selectedEmployee.name} works in ${selectedEmployee.sending_mode}. Default mode is Review Mode.` : 'Create or select an employee first.'}</p><form onSubmit={importManual} className="mt-4 grid gap-3 md:grid-cols-2"><input required name="company" placeholder="Company" className="rounded-md border border-slate-300 px-3 py-2" /><input name="website" placeholder="Website" className="rounded-md border border-slate-300 px-3 py-2" /><input name="industry" placeholder="Industry" className="rounded-md border border-slate-300 px-3 py-2" /><input name="country" placeholder="Country" className="rounded-md border border-slate-300 px-3 py-2" /><input name="contact" placeholder="Contact" className="rounded-md border border-slate-300 px-3 py-2" /><input name="email" placeholder="Email" className="rounded-md border border-slate-300 px-3 py-2" /><button disabled={!employeeId || busy === 'manual'} className="focus-ring min-h-11 rounded-md bg-brand px-4 py-2 font-semibold text-white md:col-span-2">Add company manually</button></form><form onSubmit={(event) => importText('websites', 'websites', event)} className="mt-4 space-y-3"><textarea name="websites" placeholder="Paste one website per line" className="min-h-28 w-full rounded-md border border-slate-300 p-3" /><button disabled={!employeeId} className="focus-ring min-h-11 rounded-md border border-slate-300 px-4 py-2 font-semibold">Import website list</button></form><form onSubmit={(event) => importText('google-maps', 'export_text', event)} className="mt-4 space-y-3"><textarea name="export_text" placeholder="Paste Google Maps export rows" className="min-h-28 w-full rounded-md border border-slate-300 p-3" /><button disabled={!employeeId} className="focus-ring min-h-11 rounded-md border border-slate-300 px-4 py-2 font-semibold">Import Google Maps export</button></form><p className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">CSV upload is available via <code>/api/sales-employees/{employeeId || 'employee_id'}/leads/csv</code>. Apollo, Clay, and People Data Labs are prepared as future employee-level sources.</p></div><div className="rounded-lg border border-slate-200 bg-white p-4"><h2 className="font-bold">Employee leads</h2>{leads.length ? <div className="mt-4 space-y-3">{leads.map((lead) => { const insight = lead.id ? insights[lead.id] : undefined; const email = lead.id ? emails[lead.id] : undefined; return <article key={lead.id || lead.company} className="rounded-md border border-slate-200 p-3"><div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><p className="font-semibold">{lead.company}</p><p className="break-all text-sm text-slate-500">{lead.email || lead.website || 'No contact yet'}</p></div><span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">{lead.status}</span></div><div className="mt-3 flex flex-wrap gap-2"><button onClick={() => qualify(lead)} className="focus-ring min-h-11 rounded-md border border-slate-300 px-3 text-sm font-semibold">Qualify</button><button onClick={() => draft(lead)} className="focus-ring min-h-11 rounded-md border border-slate-300 px-3 text-sm font-semibold">Draft email</button>{email?.delivery_status === 'pending_approval' && <button onClick={() => approve(lead)} className="focus-ring min-h-11 rounded-md bg-brand px-3 text-sm font-semibold text-white">Approve</button>}</div>{insight && <div className="mt-3 grid gap-2 rounded-md bg-slate-50 p-3 text-sm min-[430px]:grid-cols-3"><div><p className="text-slate-500">ICP</p><p className="text-xl font-bold">{insight.icp_score}%</p></div><div><p className="text-slate-500">Purchase</p><p className="text-xl font-bold">{insight.purchase_probability}%</p></div><div><p className="text-slate-500">Plan</p><p className="text-xl font-bold">{insight.recommended_plan}</p></div><p className="min-[430px]:col-span-3"><span className="font-semibold">Angle:</span> {insight.best_sales_angle}</p><p className="min-[430px]:col-span-3"><span className="font-semibold">CTA:</span> {insight.best_cta}</p></div>}{email && <div className="mt-3 rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{email.subject}</p><p className="mt-1 text-slate-500">Status: {email.delivery_status}</p><p className="mt-2 line-clamp-3 text-slate-600">{email.body}</p></div>}</article>; })}</div> : <EmptyState title="No employee leads" copy="Add a company, paste websites, import Google Maps rows, or upload CSV via API." />}</div></section></div>}</div>;
 }
 
 export function InboxAndActivity() {

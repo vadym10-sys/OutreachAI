@@ -1,5 +1,5 @@
-import { SettingsAndProfile } from '@/components/product-workspace';
+import { BillingWorkspace } from '@/components/billing-client';
 
 export default function BillingPage() {
-  return <SettingsAndProfile />;
+  return <BillingWorkspace />;
 }

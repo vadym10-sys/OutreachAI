@@ -8,6 +8,7 @@ from pydantic import BaseModel, EmailStr, Field, HttpUrl
 
 
 PIPELINE_STATUSES = ["New", "Qualified", "Contacted", "Interested", "Meeting", "Won", "Lost", "Archive"]
+SALES_EMPLOYEE_MODES = ["Review Mode", "Semi-Auto Mode", "Autonomous Mode"]
 
 PLAN_LIMITS = {
     "Starter": {"leads": 500, "ai_generations": 1000, "email_sends": 1000, "team_members": 2, "mrr": 49},
@@ -76,6 +77,7 @@ class LeadOut(BaseModel):
     niche: Optional[str] = None
     status: str = "New"
     campaign_id: Optional[UUID] = None
+    sales_employee_id: Optional[UUID] = None
     campaign: Optional[str] = None
     notes: Optional[str] = None
     revenue: float = 0
@@ -328,6 +330,81 @@ class EmailOut(BaseModel):
         from_attributes = True
 
 
+class AISalesEmployeeCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    role: str = Field(default="AI Sales Development Representative", max_length=160)
+    product_service: str = Field(default="", max_length=2500)
+    target_customer: str = Field(default="", max_length=240)
+    target_countries: list[str] = Field(default_factory=list)
+    target_industries: list[str] = Field(default_factory=list)
+    offer: str = Field(default="", max_length=2500)
+    cta: str = Field(default="Book a quick call", max_length=220)
+    sending_mode: str = "Review Mode"
+    daily_limit: int = Field(default=25, ge=1, le=250)
+    working_hours: str = Field(default="09:00-17:00", max_length=80)
+    tone: str = Field(default="Professional", max_length=80)
+    language: str = Field(default="English", max_length=80)
+    signature: str = Field(default="", max_length=1500)
+
+
+class AISalesEmployeeUpdate(AISalesEmployeeCreate):
+    status: str = "active"
+
+
+class AISalesEmployeeOut(AISalesEmployeeCreate):
+    id: UUID
+    status: str
+    strict_limits: dict[str, Any] = Field(default_factory=dict)
+    leads: int = 0
+    pending_approval: int = 0
+    sent: int = 0
+    replies: int = 0
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SalesEmployeeLeadImport(BaseModel):
+    companies: list[LeadCreate] = Field(default_factory=list)
+
+
+class WebsiteListImport(BaseModel):
+    websites: str
+
+
+class GoogleMapsImport(BaseModel):
+    export_text: str
+
+
+class SalesEmployeeLeadInsightOut(BaseModel):
+    id: UUID
+    lead_id: UUID
+    sales_employee_id: UUID
+    industry: str = ""
+    services: list[str] = Field(default_factory=list)
+    pain_points: list[str] = Field(default_factory=list)
+    icp_score: int = Field(ge=0, le=100)
+    purchase_probability: int = Field(ge=0, le=100)
+    best_sales_angle: str
+    best_cta: str
+    recommended_plan: str
+    summary: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SalesEmployeeRunOut(BaseModel):
+    employee_id: UUID
+    mode: str
+    leads_qualified: int = 0
+    emails_generated: int = 0
+    emails_sent: int = 0
+    blocked: list[str] = Field(default_factory=list)
+
+
 class DashboardMetrics(BaseModel):
     leads: int
     campaigns: int
@@ -423,6 +500,7 @@ class BillingPlanOut(BaseModel):
     price: int
     limits: dict[str, int]
     current: bool = False
+    active_subscription: bool = False
 
 
 class BillingPortalRequest(BaseModel):
@@ -442,6 +520,15 @@ class UsageOut(BaseModel):
     period: str
     limits: dict[str, int]
     usage: dict[str, int]
+
+
+class BillingDiagnosticsOut(BaseModel):
+    stripe_secret_loaded: bool
+    webhook_secret_loaded: bool
+    publishable_key_loaded: bool
+    starter_price_id_loaded: bool
+    pro_price_id_loaded: bool
+    agency_price_id_loaded: bool
 
 
 class AdminSummaryOut(BaseModel):
@@ -512,5 +599,5 @@ class SettingsUpdate(SettingsOut):
 
 class CheckoutRequest(BaseModel):
     plan: str
-    success_url: HttpUrl
-    cancel_url: HttpUrl
+    success_url: Optional[HttpUrl] = None
+    cancel_url: Optional[HttpUrl] = None

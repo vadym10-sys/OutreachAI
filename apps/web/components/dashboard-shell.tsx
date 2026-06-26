@@ -1,13 +1,16 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
-import { BarChart3, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, UserCircle, Users } from "lucide-react";
+import { BarChart3, Bot, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, UserCircle, Users } from "lucide-react";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { CheckoutContinuation } from "@/components/billing-client";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard/sales-employees", label: "AI Employees", icon: Bot },
   { href: "/dashboard/leads", label: "Lead Finder", icon: Search },
   { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/dashboard/crm", label: "CRM", icon: Users },
@@ -22,9 +25,11 @@ const nav = [
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const primaryMobileNav = nav.slice(0, 4);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
     <div className="min-h-screen min-w-0 overflow-x-hidden bg-slate-50">
+      <CheckoutContinuation />
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white px-4 py-5 lg:block">
         <Link href="/dashboard" className="mb-8 block text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
         <nav className="space-y-1">
@@ -43,23 +48,23 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       <div className="lg:pl-64">
         <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
           <div className="flex min-w-0 items-center gap-3">
-            <details className="relative lg:hidden">
-              <summary className="focus-ring grid size-11 cursor-pointer list-none place-items-center rounded-md border border-slate-300 bg-white text-slate-700 [&::-webkit-details-marker]:hidden" aria-label="Open navigation">
+            <div className="relative lg:hidden">
+              <button type="button" onClick={() => setMobileMenuOpen((open) => !open)} className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300 bg-white text-slate-700" aria-label="Open navigation" aria-expanded={mobileMenuOpen}>
                 <Menu size={20} aria-hidden="true" />
-              </summary>
-              <div className="absolute left-0 top-12 z-40 w-[min(82vw,19rem)] rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
+              </button>
+              {mobileMenuOpen && <div className="absolute left-0 top-12 z-40 w-[min(82vw,19rem)] rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
                 {nav.map((item) => {
                   const Icon = item.icon;
                   const active = pathname === item.href;
                   return (
-                    <Link key={item.href} href={item.href} className={`flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
+                    <Link key={item.href} href={item.href} onClick={() => setMobileMenuOpen(false)} className={`flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
                       <Icon size={18} aria-hidden="true" />
                       {item.label}
                     </Link>
                   );
                 })}
-              </div>
-            </details>
+              </div>}
+            </div>
             <span className="truncate text-sm font-semibold text-slate-600">Revenue workspace</span>
           </div>
           {hasClerkPublishableKey && !isClerkE2EBypass ? (
