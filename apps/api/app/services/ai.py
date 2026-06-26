@@ -70,7 +70,6 @@ def _json_completion(system: str, payload: dict[str, Any]) -> dict[str, Any]:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
             response_format={"type": "json_object"},
-            temperature=0.4,
         )
     except OpenAIError as exc:
         logger.exception("OpenAI request failed")
@@ -181,7 +180,6 @@ def stream_email_generation(payload: PersonalizeRequest) -> Iterator[str]:
                 {"role": "system", "content": "Stream a personalized cold email draft as plain text."},
                 {"role": "user", "content": payload.model_dump_json()},
             ],
-            temperature=0.4,
             stream=True,
         )
         for event in stream:
