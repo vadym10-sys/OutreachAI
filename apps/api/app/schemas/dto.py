@@ -7,7 +7,13 @@ from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, HttpUrl
 
 
-PIPELINE_STATUSES = ["New", "Qualified", "Email Generated", "Sent", "Opened", "Replied", "Meeting", "Won", "Lost"]
+PIPELINE_STATUSES = ["New", "Qualified", "Contacted", "Interested", "Meeting", "Won", "Lost", "Archive"]
+
+PLAN_LIMITS = {
+    "Starter": {"leads": 500, "ai_generations": 1000, "email_sends": 1000, "team_members": 2, "mrr": 49},
+    "Pro": {"leads": 2500, "ai_generations": 7500, "email_sends": 7500, "team_members": 8, "mrr": 99},
+    "Agency": {"leads": 20000, "ai_generations": 50000, "email_sends": 50000, "team_members": 30, "mrr": 299},
+}
 
 
 class LeadFinderRequest(BaseModel):
@@ -115,6 +121,8 @@ class CampaignCreate(BaseModel):
     signature: str = ""
     schedule_at: Optional[datetime] = None
     follow_up_days: int = Field(default=3, ge=1, le=30)
+    timezone: str = "UTC"
+    sequence: list["CampaignSequenceIn"] = Field(default_factory=list)
 
 
 class CampaignUpdate(CampaignCreate):
@@ -138,6 +146,8 @@ class CampaignOut(BaseModel):
     status: str
     schedule_at: Optional[datetime]
     follow_up_days: int
+    timezone: str = "UTC"
+    sequence: list["CampaignSequenceOut"] = Field(default_factory=list)
     leads: int = 0
     sent: int = 0
     replies: int = 0
@@ -237,6 +247,112 @@ class DashboardMetrics(BaseModel):
     meetings: int
     revenue: float
     mrr: float
+    arr: float = 0
+    revenue_series: list[dict[str, Any]] = Field(default_factory=list)
+    funnel: list[dict[str, Any]] = Field(default_factory=list)
+    plan: str = "Starter"
+    usage: dict[str, Any] = Field(default_factory=dict)
+
+
+class CampaignSequenceIn(BaseModel):
+    step_order: int = Field(ge=1, le=3)
+    name: str = Field(default="", max_length=120)
+    subject: str = Field(default="", max_length=300)
+    body: str = ""
+    delay_days: int = Field(default=0, ge=0, le=60)
+
+
+class CampaignSequenceOut(CampaignSequenceIn):
+    id: UUID
+
+    class Config:
+        from_attributes = True
+
+
+class WorkspaceMemberOut(BaseModel):
+    id: UUID
+    user_id: str
+    email: str
+    role: str
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class WorkspaceOut(BaseModel):
+    id: UUID
+    name: str
+    company: str
+    industry: str
+    target_country: str
+    target_customer: str
+    timezone: str
+    language: str
+    onboarding_step: int
+    onboarding_completed: bool
+    members: list[WorkspaceMemberOut] = Field(default_factory=list)
+
+
+class WorkspaceUpdate(BaseModel):
+    name: str = "Outreach workspace"
+    company: str = ""
+    industry: str = ""
+    target_country: str = ""
+    target_customer: str = ""
+    timezone: str = "UTC"
+    language: str = "English"
+
+
+class OnboardingUpdate(BaseModel):
+    company: str = ""
+    industry: str = ""
+    target_country: str = ""
+    target_customer: str = ""
+    connect_openai: bool = False
+    launch_first_campaign: bool = False
+    step: int = Field(default=1, ge=1, le=6)
+
+
+class MemberInvite(BaseModel):
+    email: EmailStr
+    role: str = "Member"
+
+
+class BillingPlanOut(BaseModel):
+    name: str
+    price: int
+    limits: dict[str, int]
+    current: bool = False
+
+
+class BillingPortalRequest(BaseModel):
+    return_url: HttpUrl
+
+
+class InvoiceOut(BaseModel):
+    id: str
+    status: str
+    amount_due: int
+    hosted_invoice_url: Optional[str] = None
+    created: Optional[datetime] = None
+
+
+class UsageOut(BaseModel):
+    plan: str
+    period: str
+    limits: dict[str, int]
+    usage: dict[str, int]
+
+
+class AdminSummaryOut(BaseModel):
+    users: int
+    workspaces: int
+    subscriptions: int
+    revenue: float
+    usage: dict[str, int]
+    system_health: dict[str, Any]
 
 
 class ActivityOut(BaseModel):

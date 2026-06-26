@@ -9,9 +9,49 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS workspaces (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  owner_user_id VARCHAR(128) NOT NULL,
+  name VARCHAR(180) NOT NULL DEFAULT 'Outreach workspace',
+  company VARCHAR(180) NOT NULL DEFAULT '',
+  industry VARCHAR(160) NOT NULL DEFAULT '',
+  target_country VARCHAR(120) NOT NULL DEFAULT '',
+  target_customer VARCHAR(240) NOT NULL DEFAULT '',
+  timezone VARCHAR(80) NOT NULL DEFAULT 'UTC',
+  language VARCHAR(80) NOT NULL DEFAULT 'English',
+  onboarding_step INTEGER NOT NULL DEFAULT 1,
+  onboarding_completed BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workspace_members (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  user_id VARCHAR(128) NOT NULL,
+  email VARCHAR(320) NOT NULL DEFAULT '',
+  role VARCHAR(32) NOT NULL DEFAULT 'Member',
+  status VARCHAR(32) NOT NULL DEFAULT 'active',
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  CONSTRAINT uq_workspace_member_user UNIQUE (workspace_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS usage_counters (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  period VARCHAR(7) NOT NULL,
+  leads INTEGER NOT NULL DEFAULT 0,
+  ai_generations INTEGER NOT NULL DEFAULT 0,
+  email_sends INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now(),
+  CONSTRAINT uq_workspace_usage_period UNIQUE (workspace_id, period)
+);
+
 CREATE TABLE IF NOT EXISTS subscriptions (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   stripe_customer_id VARCHAR(128),
   stripe_subscription_id VARCHAR(128),
   plan VARCHAR(32) NOT NULL DEFAULT 'Starter',
@@ -22,6 +62,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE TABLE IF NOT EXISTS campaigns (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   name VARCHAR(220) NOT NULL,
   industry VARCHAR(160) NOT NULL DEFAULT '',
   countries JSONB NOT NULL DEFAULT '[]',
@@ -37,13 +78,28 @@ CREATE TABLE IF NOT EXISTS campaigns (
   status VARCHAR(32) NOT NULL DEFAULT 'Draft',
   schedule_at TIMESTAMP,
   follow_up_days INTEGER NOT NULL DEFAULT 3,
+  timezone VARCHAR(80) NOT NULL DEFAULT 'UTC',
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS campaign_sequences (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  campaign_id UUID NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  step_order INTEGER NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  subject VARCHAR(300) NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  delay_days INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now(),
+  CONSTRAINT uq_campaign_sequence_step UNIQUE (campaign_id, step_order)
 );
 
 CREATE TABLE IF NOT EXISTS leads (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   campaign_id UUID REFERENCES campaigns(id) ON DELETE SET NULL,
   company VARCHAR(220) NOT NULL,
   website VARCHAR(500),
@@ -66,6 +122,7 @@ CREATE TABLE IF NOT EXISTS leads (
 CREATE TABLE IF NOT EXISTS website_analyses (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   lead_id UUID REFERENCES leads(id) ON DELETE CASCADE,
   company VARCHAR(220) NOT NULL DEFAULT '',
   website VARCHAR(500) NOT NULL DEFAULT '',
@@ -85,6 +142,7 @@ CREATE TABLE IF NOT EXISTS website_analyses (
 CREATE TABLE IF NOT EXISTS email_messages (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   campaign_id UUID REFERENCES campaigns(id) ON DELETE SET NULL,
   lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
   direction VARCHAR(16) NOT NULL,
@@ -111,6 +169,7 @@ CREATE TABLE IF NOT EXISTS email_messages (
 CREATE TABLE IF NOT EXISTS analytics_events (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   event_type VARCHAR(64) NOT NULL,
   value NUMERIC,
   metadata_json JSONB NOT NULL DEFAULT '{}',
@@ -120,6 +179,7 @@ CREATE TABLE IF NOT EXISTS analytics_events (
 CREATE TABLE IF NOT EXISTS audit_logs (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128),
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   action VARCHAR(128) NOT NULL,
   ip_address VARCHAR(64),
   metadata_json JSONB NOT NULL DEFAULT '{}',
@@ -129,6 +189,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE TABLE IF NOT EXISTS notifications (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   kind VARCHAR(32) NOT NULL DEFAULT 'info',
   title VARCHAR(180) NOT NULL,
   message TEXT NOT NULL,
@@ -139,6 +200,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE TABLE IF NOT EXISTS workspace_profiles (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) UNIQUE NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   workspace VARCHAR(180) NOT NULL DEFAULT 'Outreach workspace',
   company VARCHAR(180) NOT NULL DEFAULT '',
   avatar_url VARCHAR(500),
@@ -151,6 +213,7 @@ CREATE TABLE IF NOT EXISTS workspace_profiles (
 CREATE TABLE IF NOT EXISTS app_settings (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) UNIQUE NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
   general JSONB NOT NULL DEFAULT '{}',
   ai JSONB NOT NULL DEFAULT '{}',
   email JSONB NOT NULL DEFAULT '{}',
@@ -161,14 +224,27 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_leads_user_id ON leads(user_id);
+CREATE INDEX IF NOT EXISTS idx_workspaces_owner_user_id ON workspaces(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace_id ON workspace_members(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON workspace_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_usage_counters_workspace_id ON usage_counters(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace_id ON subscriptions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_campaigns_user_id ON campaigns(user_id);
+CREATE INDEX IF NOT EXISTS idx_campaigns_workspace_id ON campaigns(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON email_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_id ON email_messages(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_email_messages_provider_message_id ON email_messages(provider_message_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_user_event ON analytics_events(user_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_user_action ON audit_logs(user_id, action);
 
 CREATE INDEX IF NOT EXISTS idx_leads_campaign_id ON leads(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_leads_workspace_id ON leads(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_website_analyses_user_id ON website_analyses(user_id);
+CREATE INDEX IF NOT EXISTS idx_website_analyses_workspace_id ON website_analyses(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_workspace_id ON notifications(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_profiles_user_id ON workspace_profiles(user_id);
 CREATE INDEX IF NOT EXISTS idx_app_settings_user_id ON app_settings(user_id);
+CREATE INDEX IF NOT EXISTS idx_campaign_sequences_campaign_id ON campaign_sequences(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_analytics_events_workspace_id ON analytics_events(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_id ON audit_logs(workspace_id);

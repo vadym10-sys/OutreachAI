@@ -104,7 +104,7 @@ def test_campaign_lead_email_and_dashboard_flow(monkeypatch) -> None:
     assert email["body"]
     assert email["follow_up_1"]
 
-    list_response = client.get("/api/leads?search=Hill&status=Email%20Generated", headers=AUTH)
+    list_response = client.get("/api/leads?search=Hill&status=Qualified", headers=AUTH)
     assert list_response.status_code == 200
     assert list_response.json()["total"] == 1
 
@@ -161,7 +161,7 @@ def test_resend_webhook_updates_delivery_metrics() -> None:
     assert any(item["action"] == "resend.email.delivered" for item in activity)
 
     lead_page = client.get("/api/leads?search=Webhook", headers=AUTH).json()
-    assert lead_page["items"][0]["status"] == "Opened"
+    assert lead_page["items"][0]["status"] == "Contacted"
 
 
 def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
@@ -208,6 +208,60 @@ def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
         assert saved.replied_at is not None
         assert saved.reply_body == "Interested."
         lead = db.get(Lead, saved.lead_id)
-        assert lead and lead.status == LeadStatus.replied
+        assert lead and lead.status == LeadStatus.interested
     finally:
         db.close()
+
+
+def test_workspace_onboarding_usage_and_campaign_duplicate() -> None:
+    workspace_response = client.get("/api/workspace", headers=AUTH)
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    assert workspace["members"][0]["role"] == "Owner"
+
+    onboarding = client.put(
+        "/api/onboarding",
+        headers=AUTH,
+        json={
+            "company": "OutreachAI",
+            "industry": "B2B SaaS",
+            "target_country": "United States",
+            "target_customer": "real estate agencies",
+            "connect_openai": True,
+            "launch_first_campaign": True,
+            "step": 6,
+        },
+    )
+    assert onboarding.status_code == 200
+    assert onboarding.json()["onboarding_completed"] is True
+
+    campaign = client.post(
+        "/api/campaigns",
+        headers=AUTH,
+        json={
+            "name": "Commercial Sequence",
+            "industry": "Real estate",
+            "countries": ["United States"],
+            "cities": ["Miami"],
+            "offer": "book more seller appointments",
+            "cta": "Book a call",
+            "timezone": "America/New_York",
+            "sequence": [
+                {"step_order": 1, "name": "Email #1", "subject": "Seller appointment idea", "body": "Intro", "delay_days": 0},
+                {"step_order": 2, "name": "Follow-up #1", "subject": "Following up", "body": "Follow", "delay_days": 3},
+            ],
+        },
+    ).json()
+    assert campaign["sequence"][0]["name"] == "Email #1"
+
+    duplicate = client.post(f"/api/campaigns/{campaign['id']}/duplicate", headers=AUTH)
+    assert duplicate.status_code == 200
+    assert duplicate.json()["name"].endswith("copy")
+
+    usage = client.get("/api/billing/usage", headers=AUTH)
+    assert usage.status_code == 200
+    assert usage.json()["plan"] == "Starter"
+
+    admin = client.get("/api/admin/summary", headers=AUTH)
+    assert admin.status_code == 200
+    assert "system_health" in admin.json()

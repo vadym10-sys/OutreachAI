@@ -104,7 +104,7 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         message.delivery_status = "opened"
         lead = db.get(Lead, message.lead_id) if message.lead_id else None
         if lead:
-            lead.status = LeadStatus.opened
+            lead.status = LeadStatus.contacted
     elif event_type == "email.bounced":
         message.bounced_at = message.bounced_at or now
         message.delivery_status = "bounced"
@@ -117,7 +117,7 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         message.delivery_status = "replied"
         lead = db.get(Lead, message.lead_id) if message.lead_id else None
         if lead:
-            lead.status = LeadStatus.replied
+            lead.status = LeadStatus.interested
         try:
             assistant = suggest_reply(ReplyAssistantRequest(company=lead.company if lead else "", reply_body=reply_body, campaign_offer=""))
             message.reply_assistant = assistant.model_dump()
@@ -125,6 +125,6 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
             message.reply_assistant = {}
     else:
         return {"received": True, "matched": True, "type": event_type, "ignored": True}
-    db.add(AuditLog(user_id=message.user_id, action=f"resend.{event_type}", ip_address=request.client.host if request.client else None, metadata_json={"email_id": str(message.id), "provider_message_id": message.provider_message_id}))
+    db.add(AuditLog(user_id=message.user_id, workspace_id=message.workspace_id, action=f"resend.{event_type}", ip_address=request.client.host if request.client else None, metadata_json={"email_id": str(message.id), "provider_message_id": message.provider_message_id}))
     db.commit()
     return {"received": True, "matched": True, "type": event_type}

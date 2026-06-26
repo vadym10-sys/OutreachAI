@@ -12,6 +12,20 @@ export type DashboardMetrics = {
   meetings: number;
   revenue: number;
   mrr: number;
+  arr: number;
+  revenue_series: Array<Record<string, number | string>>;
+  funnel: Array<{ status: string; count: number }>;
+  plan: string;
+  usage: Record<string, unknown>;
+};
+
+export type CampaignSequence = {
+  id?: string;
+  step_order: number;
+  name: string;
+  subject: string;
+  body: string;
+  delay_days: number;
 };
 
 export type Campaign = {
@@ -30,6 +44,8 @@ export type Campaign = {
   signature: string;
   status: string;
   follow_up_days: number;
+  timezone: string;
+  sequence: CampaignSequence[];
   leads: number;
   sent: number;
   replies: number;
@@ -71,3 +87,22 @@ export type Activity = { id: string; action: string; metadata_json: Record<strin
 export type Notification = { id: string; kind: string; title: string; message: string; created_at: string };
 export type Profile = { workspace: string; company: string; avatar_url?: string | null; timezone: string; language: string };
 export type Settings = Record<'general' | 'ai' | 'email' | 'billing' | 'security' | 'api', Record<string, unknown>>;
+
+export type WorkspaceMember = { id: string; user_id: string; email: string; role: string; status: string; created_at: string };
+export type Workspace = {
+  id: string;
+  name: string;
+  company: string;
+  industry: string;
+  target_country: string;
+  target_customer: string;
+  timezone: string;
+  language: string;
+  onboarding_step: number;
+  onboarding_completed: boolean;
+  members: WorkspaceMember[];
+};
+
+export type BillingPlan = { name: string; price: number; limits: Record<string, number>; current: boolean };
+export type Usage = { plan: string; period: string; limits: Record<string, number>; usage: Record<string, number> };
+export type AdminSummary = { users: number; workspaces: number; subscriptions: number; revenue: number; usage: Record<string, number>; system_health: Record<string, string> };

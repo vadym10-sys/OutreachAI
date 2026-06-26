@@ -14,6 +14,8 @@ from app.core.database import Base
 class LeadStatus(str, enum.Enum):
     new = "New"
     qualified = "Qualified"
+    contacted = "Contacted"
+    interested = "Interested"
     email_generated = "Email Generated"
     sent = "Sent"
     opened = "Opened"
@@ -21,6 +23,7 @@ class LeadStatus(str, enum.Enum):
     meeting = "Meeting"
     won = "Won"
     lost = "Lost"
+    archive = "Archive"
 
 
 class CampaignStatus(str, enum.Enum):
@@ -36,6 +39,60 @@ class NotificationKind(str, enum.Enum):
     error = "error"
     warning = "warning"
     info = "info"
+
+
+class WorkspaceRole(str, enum.Enum):
+    owner = "Owner"
+    admin = "Admin"
+    manager = "Manager"
+    member = "Member"
+
+
+class Workspace(Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_user_id: Mapped[str] = mapped_column(String(128), index=True)
+    name: Mapped[str] = mapped_column(String(180), default="Outreach workspace")
+    company: Mapped[str] = mapped_column(String(180), default="")
+    industry: Mapped[str] = mapped_column(String(160), default="")
+    target_country: Mapped[str] = mapped_column(String(120), default="")
+    target_customer: Mapped[str] = mapped_column(String(240), default="")
+    timezone: Mapped[str] = mapped_column(String(80), default="UTC")
+    language: Mapped[str] = mapped_column(String(80), default="English")
+    onboarding_step: Mapped[int] = mapped_column(Integer, default=1)
+    onboarding_completed: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+    __table_args__ = (UniqueConstraint("workspace_id", "user_id", name="uq_workspace_member_user"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    email: Mapped[str] = mapped_column(String(320), default="")
+    role: Mapped[WorkspaceRole] = mapped_column(Enum(WorkspaceRole), default=WorkspaceRole.member)
+    status: Mapped[str] = mapped_column(String(32), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+
+
+class UsageCounter(Base):
+    __tablename__ = "usage_counters"
+    __table_args__ = (UniqueConstraint("workspace_id", "period", name="uq_workspace_usage_period"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    period: Mapped[str] = mapped_column(String(7), index=True)
+    leads: Mapped[int] = mapped_column(Integer, default=0)
+    ai_generations: Mapped[int] = mapped_column(Integer, default=0)
+    email_sends: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
 
 
 class User(Base):
@@ -54,6 +111,7 @@ class Subscription(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     plan: Mapped[str] = mapped_column(String(32), default="Starter")
@@ -67,6 +125,7 @@ class Campaign(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(220))
     industry: Mapped[str] = mapped_column(String(160), default="")
     countries: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -82,8 +141,25 @@ class Campaign(Base):
     status: Mapped[CampaignStatus] = mapped_column(Enum(CampaignStatus), default=CampaignStatus.draft)
     schedule_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     follow_up_days: Mapped[int] = mapped_column(Integer, default=3)
+    timezone: Mapped[str] = mapped_column(String(80), default="UTC")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CampaignSequence(Base):
+    __tablename__ = "campaign_sequences"
+    __table_args__ = (UniqueConstraint("campaign_id", "step_order", name="uq_campaign_sequence_step"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
+    step_order: Mapped[int] = mapped_column(Integer)
+    name: Mapped[str] = mapped_column(String(120))
+    subject: Mapped[str] = mapped_column(String(300), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    delay_days: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    campaign: Mapped[Campaign] = relationship()
 
 
 class Lead(Base):
@@ -92,6 +168,7 @@ class Lead(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaigns.id", ondelete="SET NULL"), index=True)
     company: Mapped[str] = mapped_column(String(220))
     website: Mapped[Optional[str]] = mapped_column(String(500))
@@ -116,6 +193,7 @@ class WebsiteAnalysis(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
     company: Mapped[str] = mapped_column(String(220), default="")
     website: Mapped[str] = mapped_column(String(500), default="")
@@ -137,6 +215,7 @@ class EmailMessage(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaigns.id", ondelete="SET NULL"))
     lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"))
     direction: Mapped[str] = mapped_column(String(16), default="outbound")
@@ -165,6 +244,7 @@ class AnalyticsEvent(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     value: Mapped[Optional[float]] = mapped_column(Numeric)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -176,6 +256,7 @@ class AuditLog(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     action: Mapped[str] = mapped_column(String(128), index=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(64))
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -187,6 +268,7 @@ class Notification(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     kind: Mapped[NotificationKind] = mapped_column(Enum(NotificationKind), default=NotificationKind.info)
     title: Mapped[str] = mapped_column(String(180))
     message: Mapped[str] = mapped_column(Text)
@@ -199,6 +281,7 @@ class WorkspaceProfile(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     workspace: Mapped[str] = mapped_column(String(180), default="Outreach workspace")
     company: Mapped[str] = mapped_column(String(180), default="")
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500))
@@ -213,6 +296,7 @@ class AppSettings(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     general: Mapped[dict] = mapped_column(JSON, default=dict)
     ai: Mapped[dict] = mapped_column(JSON, default=dict)
     email: Mapped[dict] = mapped_column(JSON, default=dict)
