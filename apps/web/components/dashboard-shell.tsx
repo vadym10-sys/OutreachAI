@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
-import { BarChart3, CreditCard, Inbox, LayoutDashboard, Megaphone, Search, Shield, Users } from "lucide-react";
+import { BarChart3, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Shield, Users } from "lucide-react";
 import { hasClerkPublishableKey } from "@/lib/env";
 
 const nav = [
@@ -17,15 +18,19 @@ const nav = [
 ];
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const primaryMobileNav = nav.slice(0, 4);
+
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen min-w-0 overflow-x-hidden bg-slate-50">
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white px-4 py-5 lg:block">
         <Link href="/dashboard" className="mb-8 block text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
         <nav className="space-y-1">
           {nav.map((item) => {
             const Icon = item.icon;
+            const active = pathname === item.href;
             return (
-              <Link key={item.href} href={item.href} className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">
+              <Link key={item.href} href={item.href} className={`flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
                 <Icon size={18} aria-hidden="true" />
                 {item.label}
               </Link>
@@ -34,8 +39,27 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         </nav>
       </aside>
       <div className="lg:pl-64">
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-5 backdrop-blur">
-          <span className="text-sm font-semibold text-slate-600">Revenue workspace</span>
+        <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <details className="relative lg:hidden">
+              <summary className="focus-ring grid size-11 cursor-pointer list-none place-items-center rounded-md border border-slate-300 bg-white text-slate-700 [&::-webkit-details-marker]:hidden" aria-label="Open navigation">
+                <Menu size={20} aria-hidden="true" />
+              </summary>
+              <div className="absolute left-0 top-12 z-40 w-[min(82vw,19rem)] rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
+                {nav.map((item) => {
+                  const Icon = item.icon;
+                  const active = pathname === item.href;
+                  return (
+                    <Link key={item.href} href={item.href} className={`flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
+                      <Icon size={18} aria-hidden="true" />
+                      {item.label}
+                    </Link>
+                  );
+                })}
+              </div>
+            </details>
+            <span className="truncate text-sm font-semibold text-slate-600">Revenue workspace</span>
+          </div>
           {hasClerkPublishableKey ? (
             <UserButton />
           ) : (
@@ -44,8 +68,20 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </div>
           )}
         </header>
-        <main className="p-5 lg:p-8">{children}</main>
+        <main className="min-w-0 px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">{children}</main>
       </div>
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-6px_20px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+        {primaryMobileNav.map((item) => {
+          const Icon = item.icon;
+          const active = pathname === item.href;
+          return (
+            <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1 text-[11px] font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-600"}`}>
+              <Icon size={18} aria-hidden="true" />
+              <span className="max-w-full truncate">{item.label === "Lead Finder" ? "Leads" : item.label}</span>
+            </Link>
+          );
+        })}
+      </nav>
     </div>
   );
 }

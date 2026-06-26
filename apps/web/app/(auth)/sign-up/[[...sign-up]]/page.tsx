@@ -14,9 +14,11 @@ function MissingClerkConfig() {
 
 export default function Page() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-50 px-5">
+    <main className="flex min-h-screen items-center justify-center overflow-x-hidden bg-slate-50 px-4 py-6 min-[360px]:px-5">
       {hasClerkPublishableKey ? (
-        <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" fallbackRedirectUrl="/dashboard" />
+        <div className="w-full max-w-[min(100%,28rem)] overflow-x-auto">
+          <SignUp routing="path" path="/sign-up" signInUrl="/sign-in" fallbackRedirectUrl="/dashboard" />
+        </div>
       ) : (
         <MissingClerkConfig />
       )}

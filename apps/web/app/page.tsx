@@ -26,34 +26,36 @@ export default function Home() {
   };
 
   return (
-    <main className="bg-slate-50 text-ink">
+    <main className="min-w-0 overflow-x-hidden bg-slate-50 text-ink">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }} />
       <section className="border-b border-slate-200 bg-white">
-        <nav className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5">
-          <span className="text-xl font-bold">OutreachAI</span>
+        <nav className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-4 min-[360px]:px-5 min-[360px]:py-5">
+          <span className="min-w-0 text-lg font-bold min-[360px]:text-xl">OutreachAI</span>
           <div className="hidden items-center gap-6 text-sm font-medium text-slate-600 md:flex">
-            <a href="#features">Features</a>
-            <a href="#pricing">Pricing</a>
-            <a href="#faq">FAQ</a>
+            <a className="inline-flex min-h-11 min-w-8 items-center" href="#features">Features</a>
+            <a className="inline-flex min-h-11 min-w-8 items-center" href="#pricing">Pricing</a>
+            <a className="inline-flex min-h-11 min-w-8 items-center" href="#faq">FAQ</a>
           </div>
-          <SecondaryLink href="/sign-in">Login</SecondaryLink>
+          <div className="w-auto shrink-0">
+            <SecondaryLink href="/sign-in">Login</SecondaryLink>
+          </div>
         </nav>
-        <div className="mx-auto grid max-w-7xl gap-10 px-5 pb-16 pt-10 lg:grid-cols-[1.05fr_0.95fr] lg:pb-20 lg:pt-16">
-          <div>
-            <p className="mb-4 inline-flex rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-sm font-semibold text-brand">AI outbound system for B2B revenue teams</p>
-            <h1 className="max-w-4xl text-5xl font-bold tracking-normal text-ink md:text-7xl">OutreachAI</h1>
-            <p className="mt-6 max-w-2xl text-xl leading-8 text-slate-600">Find qualified companies, analyze their websites, generate personal outreach, run campaigns, and manage replies from one production-ready CRM.</p>
-            <div className="mt-8 flex flex-wrap gap-3">
+        <div className="mx-auto grid max-w-7xl gap-8 px-4 pb-12 pt-8 min-[360px]:px-5 sm:gap-10 sm:pb-16 sm:pt-10 lg:grid-cols-[1.05fr_0.95fr] lg:pb-20 lg:pt-16">
+          <div className="min-w-0">
+            <p className="mb-4 inline-flex max-w-full rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold text-brand min-[360px]:text-sm">AI outbound system for B2B revenue teams</p>
+            <h1 className="max-w-4xl text-4xl font-bold tracking-normal text-ink min-[360px]:text-5xl md:text-7xl">OutreachAI</h1>
+            <p className="mt-5 max-w-2xl text-base leading-7 text-slate-600 min-[390px]:text-lg sm:mt-6 sm:text-xl sm:leading-8">Find qualified companies, analyze their websites, generate personal outreach, run campaigns, and manage replies from one production-ready CRM.</p>
+            <div className="mt-8 flex flex-col gap-3 min-[360px]:flex-row min-[360px]:flex-wrap">
               <PrimaryLink href="/sign-up">Start 14-day trial</PrimaryLink>
               <SecondaryLink href="/dashboard">View dashboard</SecondaryLink>
             </div>
           </div>
-          <div className="rounded-lg border border-slate-200 bg-slate-900 p-5 text-white shadow-soft">
-            <div className="grid grid-cols-2 gap-3">
+          <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-900 p-4 text-white shadow-soft min-[360px]:p-5">
+            <div className="grid gap-3 min-[340px]:grid-cols-2">
               {["Leads found", "Emails sent", "Open rate", "Replies"].map((label, index) => (
-                <div key={label} className="rounded-md bg-white/10 p-4">
+                <div key={label} className="min-w-0 rounded-md bg-white/10 p-4">
                   <p className="text-sm text-slate-300">{label}</p>
-                  <p className="mt-3 text-3xl font-bold">{["12,480", "48,210", "64%", "2,136"][index]}</p>
+                  <p className="mt-3 text-2xl font-bold min-[360px]:text-3xl">{["12,480", "48,210", "64%", "2,136"][index]}</p>
                 </div>
               ))}
             </div>
@@ -65,24 +67,24 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-7xl px-5 py-16">
+      <section className="mx-auto max-w-7xl px-4 py-12 min-[360px]:px-5 sm:py-16">
         <div className="grid gap-8 md:grid-cols-3">
           {["Manual prospecting is slow", "Generic emails get ignored", "Replies are scattered"].map((title) => (
-            <div key={title}>
-              <h2 className="text-2xl font-bold">{title}</h2>
+            <div key={title} className="min-w-0">
+              <h2 className="text-xl font-bold min-[360px]:text-2xl">{title}</h2>
               <p className="mt-3 text-slate-600">Teams lose hours switching between scraping tools, spreadsheets, AI prompts, inboxes, and CRMs.</p>
             </div>
           ))}
         </div>
       </section>
 
-      <section className="bg-white py-16">
-        <div className="mx-auto max-w-7xl px-5">
-          <h2 className="text-4xl font-bold">A complete outbound operating system</h2>
+      <section className="bg-white py-12 sm:py-16">
+        <div className="mx-auto max-w-7xl px-4 min-[360px]:px-5">
+          <h2 className="text-3xl font-bold min-[390px]:text-4xl">A complete outbound operating system</h2>
           <p className="mt-4 max-w-2xl text-slate-600">OutreachAI combines data, AI, email operations, analytics, billing, and administration into a single SaaS workflow.</p>
           <div id="features" className="mt-10 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {features.map(({ title, copy, Icon }) => (
-              <div key={title} className="rounded-lg border border-slate-200 p-5">
+              <div key={title} className="min-w-0 rounded-lg border border-slate-200 p-5">
                 <Icon className="text-brand" size={24} aria-hidden="true" />
                 <h3 className="mt-4 text-lg font-bold">{title}</h3>
                 <p className="mt-2 text-sm leading-6 text-slate-600">{copy}</p>
@@ -92,24 +94,24 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-7xl px-5 py-16">
-        <h2 className="text-4xl font-bold">Trusted by outbound teams</h2>
+      <section className="mx-auto max-w-7xl px-4 py-12 min-[360px]:px-5 sm:py-16">
+        <h2 className="text-3xl font-bold min-[390px]:text-4xl">Trusted by outbound teams</h2>
         <div className="mt-8 grid gap-4 md:grid-cols-3">
           {["We booked 31 qualified real estate calls in month one.", "The website analyzer writes better first lines than our SDRs.", "Agency reporting finally matches what clients ask for."].map((quote) => (
-            <blockquote key={quote} className="rounded-lg border border-slate-200 bg-white p-5 text-slate-700">{quote}</blockquote>
+            <blockquote key={quote} className="min-w-0 rounded-lg border border-slate-200 bg-white p-5 text-slate-700">{quote}</blockquote>
           ))}
         </div>
       </section>
 
-      <section id="pricing" className="bg-white py-16">
-        <div className="mx-auto max-w-7xl px-5">
-          <h2 className="text-4xl font-bold">Pricing</h2>
+      <section id="pricing" className="bg-white py-12 sm:py-16">
+        <div className="mx-auto max-w-7xl px-4 min-[360px]:px-5">
+          <h2 className="text-3xl font-bold min-[390px]:text-4xl">Pricing</h2>
           <p className="mt-3 text-slate-600">All plans include a 14-day free trial.</p>
           <div className="mt-8 grid gap-4 lg:grid-cols-3">
             {pricing.map(({ name, price, desc, items }) => (
-              <div key={name} className="rounded-lg border border-slate-200 p-6">
+              <div key={name} className="min-w-0 rounded-lg border border-slate-200 p-5 min-[360px]:p-6">
                 <h3 className="text-xl font-bold">{name}</h3>
-                <p className="mt-3 text-4xl font-bold">{price}<span className="text-base font-medium text-slate-500">/mo</span></p>
+                <p className="mt-3 text-3xl font-bold min-[360px]:text-4xl">{price}<span className="text-base font-medium text-slate-500">/mo</span></p>
                 <p className="mt-2 text-slate-600">{desc}</p>
                 <ul className="mt-5 space-y-3 text-sm text-slate-700">
                   {items.map((item) => (
@@ -123,8 +125,8 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="faq" className="mx-auto max-w-4xl px-5 py-16">
-        <h2 className="text-4xl font-bold">FAQ</h2>
+      <section id="faq" className="mx-auto max-w-4xl px-4 py-12 min-[360px]:px-5 sm:py-16">
+        <h2 className="text-3xl font-bold min-[390px]:text-4xl">FAQ</h2>
         {["Can I cancel anytime?", "Does it support Google login?", "Can agencies manage clients?", "Is billing handled by Stripe?"].map((q) => (
           <details key={q} className="mt-4 rounded-lg border border-slate-200 bg-white p-5">
             <summary className="cursor-pointer font-semibold">{q}</summary>
@@ -133,17 +135,17 @@ export default function Home() {
         ))}
       </section>
 
-      <section className="bg-ink px-5 py-16 text-white">
+      <section className="bg-ink px-4 py-12 text-white min-[360px]:px-5 sm:py-16">
         <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-6 md:flex-row md:items-center">
-          <div>
-            <h2 className="text-4xl font-bold">Turn prospecting into pipeline.</h2>
+          <div className="min-w-0">
+            <h2 className="text-3xl font-bold min-[390px]:text-4xl">Turn prospecting into pipeline.</h2>
             <p className="mt-3 text-slate-300">Launch outbound campaigns with AI research, personalization, inbox tracking, and CRM control.</p>
           </div>
           <PrimaryLink href="/sign-up">Start free trial</PrimaryLink>
         </div>
       </section>
-      <footer className="bg-white px-5 py-8 text-sm text-slate-500">
-        <div className="mx-auto flex max-w-7xl justify-between">
+      <footer className="bg-white px-4 py-8 text-sm text-slate-500 min-[360px]:px-5">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 min-[360px]:flex-row min-[360px]:justify-between">
           <span>OutreachAI</span>
           <span>Privacy | Terms | Security</span>
         </div>
