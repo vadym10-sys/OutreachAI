@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models.entities import EmailMessage, Lead, LeadStatus
+from app.models.entities import AuditLog, EmailMessage, Lead, LeadStatus
 from app.schemas.dto import ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 
@@ -125,5 +125,6 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
             message.reply_assistant = {}
     else:
         return {"received": True, "matched": True, "type": event_type, "ignored": True}
+    db.add(AuditLog(user_id=message.user_id, action=f"resend.{event_type}", ip_address=request.client.host if request.client else None, metadata_json={"email_id": str(message.id), "provider_message_id": message.provider_message_id}))
     db.commit()
     return {"received": True, "matched": True, "type": event_type}

@@ -157,6 +157,8 @@ def test_resend_webhook_updates_delivery_metrics() -> None:
     assert metrics["delivered"] >= 1
     assert metrics["opened"] >= 1
     assert metrics["open_rate"] > 0
+    activity = client.get("/api/activity", headers=AUTH).json()
+    assert any(item["action"] == "resend.email.delivered" for item in activity)
 
     lead_page = client.get("/api/leads?search=Webhook", headers=AUTH).json()
     assert lead_page["items"][0]["status"] == "Opened"
