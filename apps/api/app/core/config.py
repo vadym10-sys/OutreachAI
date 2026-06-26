@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     resend_from_email: str = ""
     resend_reply_to: str = ""
     resend_webhook_secret: str = ""
+    apollo_api_key: str = ""
+    clay_api_key: str = ""
+    clay_workspace_id: str = ""
+    crm_sync_webhook_url: str = ""
+    automation_secret: str = ""
+    automation_batch_size: int = 25
+    automation_send_limit_per_run: int = 25
     public_api_url: str = "http://localhost:8000"
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -53,6 +60,10 @@ class Settings(BaseSettings):
             missing.append("OPENAI_API_KEY")
         if not self.resend_api_key:
             missing.append("RESEND_API_KEY")
+        if not self.apollo_api_key:
+            missing.append("APOLLO_API_KEY")
+        if not self.clay_api_key:
+            missing.append("CLAY_API_KEY")
         if not self.stripe_secret_key:
             missing.append("STRIPE_SECRET_KEY")
         if not self.stripe_webhook_secret:

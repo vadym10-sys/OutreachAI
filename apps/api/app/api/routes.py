@@ -4,12 +4,13 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.config import get_settings as get_app_settings
 from app.core.security import CurrentUser
 from app.models.entities import (
     AppSettings,
@@ -36,6 +37,7 @@ from app.schemas.dto import (
     AdminSummaryOut,
     AnalysisOut,
     AnalyzeRequest,
+    AutomationRunOut,
     BulkLeadAction,
     BillingPlanOut,
     BillingPortalRequest,
@@ -51,6 +53,7 @@ from app.schemas.dto import (
     EmailVariantOut,
     FollowUpSequenceOut,
     GenerateEmailRequest,
+    IntegrationStatusOut,
     LeadCreate,
     LeadFinderRequest,
     LeadOut,
@@ -76,6 +79,7 @@ from app.schemas.dto import (
     WorkspaceOut,
     WorkspaceUpdate,
 )
+from app.services.acquisition import run_daily_acquisition
 from app.services.ai import (
     ProviderConfigurationError,
     ProviderRequestError,
@@ -473,6 +477,35 @@ def _default_settings() -> dict:
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@router.get("/integrations/status", response_model=IntegrationStatusOut)
+def integrations_status(user_id: CurrentUser) -> IntegrationStatusOut:
+    del user_id
+    settings = get_app_settings()
+    return IntegrationStatusOut(
+        apollo=bool(settings.apollo_api_key),
+        clay=bool(settings.clay_api_key),
+        openai=bool(settings.openai_api_key),
+        resend=bool(settings.resend_api_key and settings.resend_from_email),
+        crm_sync=bool(settings.crm_sync_webhook_url),
+        automation_secret=bool(settings.automation_secret),
+    )
+
+
+@router.post("/automation/run", response_model=AutomationRunOut)
+def automation_run(
+    db: Session = Depends(get_db),
+    x_automation_secret: Optional[str] = Header(default=None),
+    workspace_id: Optional[UUID] = Query(default=None),
+) -> AutomationRunOut:
+    settings = get_app_settings()
+    if not settings.automation_secret:
+        raise HTTPException(status_code=503, detail="AUTOMATION_SECRET is required before scheduled acquisition can run.")
+    if x_automation_secret != settings.automation_secret:
+        raise HTTPException(status_code=401, detail="Invalid automation secret")
+    result = run_daily_acquisition(db, workspace_id=str(workspace_id) if workspace_id else None)
+    return AutomationRunOut.model_validate(result.as_dict())
 
 
 @router.get("/dashboard", response_model=DashboardMetrics)

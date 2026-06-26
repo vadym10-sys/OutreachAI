@@ -130,6 +130,41 @@ class CampaignAnalyticsOut(BaseModel):
     suggested_improvements: list[str] = Field(default_factory=list)
 
 
+class WorkspaceAutomationOut(BaseModel):
+    workspace_id: str
+    campaign_id: Optional[str] = None
+    leads_imported: int = 0
+    leads_qualified: int = 0
+    emails_generated: int = 0
+    emails_sent: int = 0
+    follow_ups_sent: int = 0
+    meetings_detected: int = 0
+    crm_synced: int = 0
+    blockers: list[str] = Field(default_factory=list)
+
+
+class AutomationRunOut(BaseModel):
+    workspaces_processed: int = 0
+    leads_imported: int = 0
+    leads_qualified: int = 0
+    emails_generated: int = 0
+    emails_sent: int = 0
+    follow_ups_sent: int = 0
+    meetings_detected: int = 0
+    crm_synced: int = 0
+    blockers: list[str] = Field(default_factory=list)
+    workspaces: list[WorkspaceAutomationOut] = Field(default_factory=list)
+
+
+class IntegrationStatusOut(BaseModel):
+    apollo: bool
+    clay: bool
+    openai: bool
+    resend: bool
+    crm_sync: bool
+    automation_secret: bool
+
+
 class PaginatedLeads(BaseModel):
     items: list[LeadOut]
     total: int

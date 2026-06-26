@@ -16,6 +16,11 @@ if db_path.exists():
 os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
+os.environ["AUTOMATION_SECRET"] = "automation_test"
+os.environ["APOLLO_API_KEY"] = "apollo_test"
+os.environ["OPENAI_API_KEY"] = "openai_test"
+os.environ["RESEND_API_KEY"] = "resend_test"
+os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
 from app.models.entities import AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
@@ -411,3 +416,104 @@ def test_stripe_webhook_activates_subscription() -> None:
 
     unsigned = client.post("/webhooks/stripe", json=payload)
     assert unsigned.status_code == 400
+
+
+def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.acquisition.find_leads",
+        lambda payload: [
+            LeadOut(
+                company="Autonomous Revenue Co",
+                website="https://autonomous-revenue.example",
+                industry=payload.industry,
+                country=payload.country,
+                city="Berlin",
+                contact="Ava Buyer",
+                email="ava.autonomous@example.com",
+                notes="source: Apollo",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.acquisition.sales_copilot",
+        lambda payload: SalesCopilotOut(
+            probability_to_reply=81,
+            probability_to_buy=43,
+            best_first_contact="Founder email",
+            best_subject_line="Pipeline idea",
+            best_cta="Book a meeting",
+            estimated_revenue=18000,
+            reasoning=["High fit"],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.acquisition.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Pipeline idea for Autonomous Revenue Co",
+            preview="A short idea",
+            full_email="Hi Ava, I found a specific growth opportunity.",
+            cta="Book a meeting",
+            follow_ups=["Worth a quick look?", "Should I send details?"],
+            ab_tests=[],
+        ),
+    )
+    monkeypatch.setattr("app.services.acquisition.collect_website", lambda url: type("Snapshot", (), {"url": url, "title": "Autonomous Revenue", "meta_description": "Revenue team", "text": "Book a demo Contact us", "technologies": ["Next.js"]})())
+    monkeypatch.setattr(
+        "app.services.acquisition.analyze_company_website",
+        lambda **kwargs: type(
+            "Analysis",
+            (),
+            {
+                "company": kwargs["company"],
+                "website": kwargs["website"],
+                "description": "Revenue operations",
+                "industry": "B2B SaaS",
+                "location": "Germany",
+                "niche": "B2B SaaS",
+                "products_services": ["Revenue ops"],
+                "services": ["Revenue ops"],
+                "technologies": ["Next.js"],
+                "strengths": ["Clear offer"],
+                "weaknesses": ["Weak proof"],
+                "icp_score": 82,
+                "summary": "Strong ICP fit.",
+            },
+        )(),
+    )
+    monkeypatch.setattr("app.services.acquisition.send_email", lambda **kwargs: {"id": "auto-email-1"})
+
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    client.put(
+        "/api/workspace",
+        headers=AUTH,
+        json={
+            "name": "Autonomous Workspace",
+            "company": "OutreachAI",
+            "industry": "B2B SaaS",
+            "target_country": "Germany",
+            "target_customer": "SaaS founders",
+            "timezone": "Europe/Berlin",
+            "language": "English",
+        },
+    )
+    response = client.post(
+        f"/api/automation/run?workspace_id={workspace['id']}",
+        headers={"X-Automation-Secret": "automation_test"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["workspaces_processed"] == 1
+    assert data["leads_imported"] == 1
+    assert data["leads_qualified"] == 1
+    assert data["emails_generated"] == 1
+    assert data["emails_sent"] == 1
+
+    lead_page = client.get("/api/leads?search=Autonomous", headers=AUTH).json()
+    assert lead_page["items"][0]["status"] == "Contacted"
+    dashboard = client.get("/api/dashboard", headers=AUTH).json()
+    assert dashboard["emails_sent"] >= 1
+    activity = client.get("/api/activity", headers=AUTH).json()
+    assert any(item["action"] == "automation.email_sent" for item in activity)
+
+    unauthorized = client.post("/api/automation/run", headers={"X-Automation-Secret": "wrong"})
+    assert unauthorized.status_code == 401
