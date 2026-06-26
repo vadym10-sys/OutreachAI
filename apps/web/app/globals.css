@@ -49,6 +49,13 @@ canvas {
   max-width: 100%;
 }
 
+.cl-footerActionLink,
+a[aria-label="Clerk logo"] {
+  display: inline-flex !important;
+  min-height: 44px;
+  align-items: center;
+}
+
 .focus-ring {
   @apply focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2;
 }
