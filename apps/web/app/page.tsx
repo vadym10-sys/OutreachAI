@@ -11,9 +11,9 @@ const features = [
 ];
 
 const pricing = [
-  { name: "Starter", price: "$49", desc: "For solo operators", items: ["1,000 leads/month", "2 inboxes", "Basic AI personalization"] },
-  { name: "Pro", price: "$99", desc: "For growing teams", items: ["5,000 leads/month", "10 inboxes", "A/B testing", "CRM automation"] },
-  { name: "Agency", price: "$299", desc: "For client delivery", items: ["25,000 leads/month", "Unlimited campaigns", "Priority support", "Admin controls"] }
+  { name: "Starter", price: "€49", desc: "For solo operators", items: ["500 leads/month", "2 team members", "1,000 AI generations", "1,000 email sends"] },
+  { name: "Pro", price: "€149", desc: "For growing teams", items: ["2,500 leads/month", "8 team members", "7,500 AI generations", "7,500 email sends"] },
+  { name: "Agency", price: "€499", desc: "For client delivery", items: ["20,000 leads/month", "30 team members", "50,000 AI generations", "50,000 email sends"] }
 ];
 
 export default function Home() {
@@ -22,7 +22,7 @@ export default function Home() {
     "@type": "SoftwareApplication",
     name: "OutreachAI",
     applicationCategory: "BusinessApplication",
-    offers: pricing.map(({ name, price }) => ({ "@type": "Offer", name, price: price.replace("$", ""), priceCurrency: "USD" }))
+    offers: pricing.map(({ name, price }) => ({ "@type": "Offer", name, price: price.replace("€", ""), priceCurrency: "EUR" }))
   };
 
   return (

@@ -81,7 +81,7 @@ from app.services.ai import (
     suggest_reply,
 )
 from app.services.audit import log_event
-from app.services.billing import create_billing_portal_session, create_checkout_session, list_invoices
+from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.lead_finder import LeadSourceConfigurationError, find_leads
 from app.services.website import WebsiteFetchError, collect_website
@@ -872,7 +872,7 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
     if payload.plan not in PLAN_LIMITS:
         raise HTTPException(status_code=400, detail="Unknown subscription plan")
     try:
-        session = create_checkout_session(user_id, payload.plan, str(payload.success_url), str(payload.cancel_url))
+        session = create_checkout_session(user_id, str(workspace.id), payload.plan, str(payload.success_url), str(payload.cancel_url))
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     settings = _settings_for_workspace(db, user_id, workspace)
@@ -922,6 +922,17 @@ def billing_usage(user_id: CurrentUser, db: Session = Depends(get_db)) -> UsageO
         limits=PLAN_LIMITS[plan],
         usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
     )
+
+
+@router.post("/billing/catalog")
+def billing_catalog(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+    try:
+        catalog = ensure_subscription_catalog()
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    log_event(db, request, user_id, "billing.catalog_synced", {"plans": [item["plan"] for item in catalog]})
+    db.commit()
+    return {"items": catalog}
 
 
 @router.get("/admin/summary", response_model=AdminSummaryOut)

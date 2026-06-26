@@ -11,8 +11,8 @@ PIPELINE_STATUSES = ["New", "Qualified", "Contacted", "Interested", "Meeting", "
 
 PLAN_LIMITS = {
     "Starter": {"leads": 500, "ai_generations": 1000, "email_sends": 1000, "team_members": 2, "mrr": 49},
-    "Pro": {"leads": 2500, "ai_generations": 7500, "email_sends": 7500, "team_members": 8, "mrr": 99},
-    "Agency": {"leads": 20000, "ai_generations": 50000, "email_sends": 50000, "team_members": 30, "mrr": 299},
+    "Pro": {"leads": 2500, "ai_generations": 7500, "email_sends": 7500, "team_members": 8, "mrr": 149},
+    "Agency": {"leads": 20000, "ai_generations": 50000, "email_sends": 50000, "team_members": 30, "mrr": 499},
 }
 
 

@@ -9,14 +9,16 @@ import time
 from datetime import datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from typing import Optional
+from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models.entities import AuditLog, EmailMessage, Lead, LeadStatus
+from app.models.entities import AppSettings, AuditLog, EmailMessage, Lead, LeadStatus, Subscription, User, Workspace
 from app.schemas.dto import ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
+from app.services.billing import plan_from_price_id
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -51,17 +53,131 @@ def _verify_resend_signature(payload: bytes, request: Request, secret: str) -> N
     raise HTTPException(status_code=400, detail="Invalid Resend webhook signature")
 
 
+def _timestamp(value: int | None) -> datetime | None:
+    return datetime.utcfromtimestamp(value) if value else None
+
+
+def _metadata_value(metadata: object, key: str) -> str:
+    if isinstance(metadata, dict):
+        return str(metadata.get(key) or "")
+    return str(getattr(metadata, key, "") or "")
+
+
+def _subscription_price_id(subscription: object) -> str:
+    try:
+        return str(subscription["items"]["data"][0]["price"]["id"])
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+def _user_for_clerk(db: Session, clerk_user_id: str) -> User:
+    user = db.scalar(select(User).where(User.clerk_user_id == clerk_user_id))
+    if user is None:
+        user = User(clerk_user_id=clerk_user_id, email=f"{clerk_user_id}@outreachai.local")
+        db.add(user)
+        db.flush()
+    return user
+
+
+def _workspace_uuid(workspace_id: str) -> UUID | None:
+    try:
+        return UUID(workspace_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _settings_for_workspace(db: Session, workspace_id: str) -> AppSettings | None:
+    parsed = _workspace_uuid(workspace_id)
+    if parsed is None:
+        return None
+    return db.scalar(select(AppSettings).where(AppSettings.workspace_id == parsed))
+
+
+def _sync_subscription(
+    db: Session,
+    *,
+    user_id: str,
+    workspace_id: str,
+    customer_id: str,
+    subscription_id: str,
+    plan: str,
+    status: str,
+    current_period_end: datetime | None,
+) -> None:
+    parsed_workspace_id = _workspace_uuid(workspace_id)
+    if parsed_workspace_id is None or db.get(Workspace, parsed_workspace_id) is None:
+        return
+    user = _user_for_clerk(db, user_id or f"stripe_customer_{customer_id}")
+    subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id))
+    if subscription is None:
+        subscription = Subscription(user_id=user.id, workspace_id=parsed_workspace_id)
+        db.add(subscription)
+    subscription.user_id = user.id
+    subscription.workspace_id = parsed_workspace_id
+    subscription.stripe_customer_id = customer_id
+    subscription.stripe_subscription_id = subscription_id
+    subscription.plan = plan
+    subscription.status = status
+    subscription.current_period_end = current_period_end
+
+    settings = _settings_for_workspace(db, workspace_id)
+    if settings:
+        settings.billing = {
+            **(settings.billing or {}),
+            "plan": plan,
+            "status": status,
+            "stripeCustomerId": customer_id,
+            "stripeSubscriptionId": subscription_id,
+            "currentPeriodEnd": current_period_end.isoformat() if current_period_end else None,
+        }
+
+
 @router.post("/stripe")
-async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Header(default=None)) -> dict:
+async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Header(default=None), db: Session = Depends(get_db)) -> dict:
     settings = get_settings()
     payload = await request.body()
-    if settings.stripe_webhook_secret and stripe_signature:
-        try:
-            event = stripe.Webhook.construct_event(payload, stripe_signature, settings.stripe_webhook_secret)
-        except (ValueError, stripe.SignatureVerificationError) as exc:
-            raise HTTPException(status_code=400, detail="Invalid Stripe signature") from exc
-    else:
-        event = {"type": "dev.event"}
+    if not settings.stripe_webhook_secret:
+        raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET is required")
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe signature")
+    try:
+        event = stripe.Webhook.construct_event(payload, stripe_signature, settings.stripe_webhook_secret)
+    except (ValueError, stripe.SignatureVerificationError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid Stripe signature") from exc
+
+    event_type = event["type"]
+    data = event["data"]["object"]
+    if event_type == "checkout.session.completed":
+        subscription_id = str(data.get("subscription") or "")
+        customer_id = str(data.get("customer") or "")
+        plan = _metadata_value(data.get("metadata"), "plan") or "Starter"
+        workspace_id = _metadata_value(data.get("metadata"), "workspace_id")
+        user_id = _metadata_value(data.get("metadata"), "user_id")
+        subscription = stripe.Subscription.retrieve(subscription_id) if subscription_id and settings.stripe_secret_key else None
+        status = str(subscription.get("status") if subscription else "active")
+        current_period_end = _timestamp(subscription.get("current_period_end") if subscription else None)
+        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, current_period_end=current_period_end)
+    elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
+        subscription_id = str(data.get("id") or "")
+        customer_id = str(data.get("customer") or "")
+        workspace_id = _metadata_value(data.get("metadata"), "workspace_id")
+        user_id = _metadata_value(data.get("metadata"), "user_id")
+        price_id = _subscription_price_id(data)
+        plan = _metadata_value(data.get("metadata"), "plan") or plan_from_price_id(price_id) or "Starter"
+        status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
+        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, current_period_end=_timestamp(data.get("current_period_end")))
+    elif event_type == "invoice.payment_succeeded":
+        subscription_id = str(data.get("subscription") or "")
+        subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
+        if subscription:
+            subscription.status = "active"
+    elif event_type == "invoice.payment_failed":
+        subscription_id = str(data.get("subscription") or "")
+        subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
+        if subscription:
+            subscription.status = "past_due"
+    db.add(AuditLog(user_id=None, action=f"stripe.{event_type}", metadata_json={"event_id": event.get("id")}))
+    db.commit()
     return {"received": True, "type": event["type"]}
 
 

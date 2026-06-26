@@ -1,7 +1,11 @@
 from pathlib import Path
 from datetime import datetime
+import hashlib
+import hmac
+import json
 import tempfile
 import os
+import time
 
 from fastapi.testclient import TestClient
 
@@ -11,9 +15,10 @@ if db_path.exists():
 
 os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
+os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
 
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
-from app.models.entities import Campaign, EmailMessage, Lead, LeadStatus  # noqa: E402
+from app.models.entities import AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
 from app.schemas.dto import EmailVariantOut  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -21,6 +26,14 @@ Base.metadata.create_all(bind=get_engine())
 
 client = TestClient(app)
 AUTH = {"Authorization": "Bearer dev"}
+
+
+def stripe_signature(payload: dict) -> tuple[str, str]:
+    raw = json.dumps(payload, separators=(",", ":"))
+    timestamp = str(int(time.time()))
+    signed = f"{timestamp}.{raw}".encode()
+    digest = hmac.new(os.environ["STRIPE_WEBHOOK_SECRET"].encode(), signed, hashlib.sha256).hexdigest()
+    return raw, f"t={timestamp},v1={digest}"
 
 
 def test_health() -> None:
@@ -265,3 +278,37 @@ def test_workspace_onboarding_usage_and_campaign_duplicate() -> None:
     admin = client.get("/api/admin/summary", headers=AUTH)
     assert admin.status_code == 200
     assert "system_health" in admin.json()
+
+
+def test_stripe_webhook_activates_subscription() -> None:
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    payload = {
+        "id": "evt_test_checkout",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_live_test",
+                "customer": "cus_live_test",
+                "subscription": "sub_live_test",
+                "metadata": {"user_id": "dev_user", "workspace_id": workspace["id"], "plan": "Pro"},
+            }
+        },
+    }
+    raw, signature = stripe_signature(payload)
+    response = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert response.status_code == 200
+    assert response.json()["type"] == "checkout.session.completed"
+
+    db = get_sessionmaker()()
+    try:
+        subscription = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_live_test").one()
+        assert subscription.plan == "Pro"
+        assert subscription.status == "active"
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == subscription.workspace_id).one()
+        assert settings.billing["plan"] == "Pro"
+        assert settings.billing["stripeCustomerId"] == "cus_live_test"
+    finally:
+        db.close()
+
+    unsigned = client.post("/webhooks/stripe", json=payload)
+    assert unsigned.status_code == 400
