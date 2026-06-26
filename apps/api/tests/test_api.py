@@ -1,5 +1,6 @@
 from pathlib import Path
 import tempfile
+import os
 
 from fastapi.testclient import TestClient
 
@@ -7,13 +8,12 @@ db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
 if db_path.exists():
     db_path.unlink()
 
-import os
-
 os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 
-from app.core.database import Base, get_engine
-from app.main import app
+from app.core.database import Base, get_engine  # noqa: E402
+from app.schemas.dto import EmailVariantOut  # noqa: E402
+from app.main import app  # noqa: E402
 
 Base.metadata.create_all(bind=get_engine())
 
@@ -27,17 +27,29 @@ def test_health() -> None:
     assert response.json()["status"] == "ok"
 
 
-def test_find_leads_dev_token() -> None:
+def test_find_leads_requires_production_provider() -> None:
     response = client.post(
         "/api/leads/find",
         headers=AUTH,
         json={"niche": "Real estate", "country": "United States", "city": "Austin"}
     )
-    assert response.status_code == 200
-    assert len(response.json()) >= 3
+    assert response.status_code == 503
+    assert "production prospect data provider" in response.json()["detail"]
 
 
-def test_campaign_lead_email_and_dashboard_flow() -> None:
+def test_campaign_lead_email_and_dashboard_flow(monkeypatch) -> None:
+    def generated_email(_payload):
+        return EmailVariantOut(
+            subject="Quick idea for Hill Country Build Co",
+            preview="A short growth idea",
+            full_email="Hi Jane, I found a clear outbound opportunity.",
+            cta="Book a growth audit",
+            follow_ups=["Following up with one idea.", "Worth a quick look?"],
+            ab_tests=[],
+        )
+
+    monkeypatch.setattr("app.api.routes.personalize_email", generated_email)
+
     campaign_response = client.post(
         "/api/campaigns",
         headers=AUTH,
@@ -88,6 +100,7 @@ def test_campaign_lead_email_and_dashboard_flow() -> None:
     email = email_response.json()
     assert email["subject"]
     assert email["body"]
+    assert email["follow_up_1"]
 
     list_response = client.get("/api/leads?search=Hill&status=Email%20Generated", headers=AUTH)
     assert list_response.status_code == 200

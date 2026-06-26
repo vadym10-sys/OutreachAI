@@ -23,9 +23,16 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
 export type DashboardMetrics = {
   leads: number;
+  campaigns: number;
   emails_sent: number;
-  open_rate: number;
+  delivered: number;
+  opened: number;
   replies: number;
-  conversions: number;
-  roi: number;
+  bounces: number;
+  open_rate: number;
+  reply_rate: number;
+  conversion_rate: number;
+  meetings: number;
+  revenue: number;
+  mrr: number;
 };

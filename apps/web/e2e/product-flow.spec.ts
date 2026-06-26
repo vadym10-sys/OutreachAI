@@ -48,7 +48,7 @@ test.beforeEach(async ({ page }) => {
     let body: unknown = {};
 
     if (url.pathname === "/api/dashboard") {
-      body = { leads: 1, campaigns: 1, emails_sent: 0, open_rate: 0, reply_rate: 0, meetings: 0, revenue: 0, mrr: 0 };
+      body = { leads: 1, campaigns: 1, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, conversion_rate: 0, meetings: 0, revenue: 0, mrr: 0 };
     } else if (url.pathname === "/api/activity") {
       body = [{ id: "33333333-3333-3333-3333-333333333333", action: "campaign.created", metadata_json: {}, created_at: new Date().toISOString() }];
     } else if (url.pathname === "/api/notifications") {
@@ -64,9 +64,9 @@ test.beforeEach(async ({ page }) => {
     } else if (url.pathname === "/api/leads/bulk") {
       body = { updated: 1 };
     } else if (url.pathname === "/api/emails/generate") {
-      body = { id: "55555555-5555-5555-5555-555555555555", campaign_id: campaign.id, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A short growth idea", body: "Hi Jane, I found a clear outbound opportunity.", cta: "Book a growth audit", created_at: new Date().toISOString() };
+      body = { id: "55555555-5555-5555-5555-555555555555", campaign_id: campaign.id, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A short growth idea", body: "Hi Jane, I found a clear outbound opportunity.", cta: "Book a growth audit", follow_up_1: "Following up with one idea.", follow_up_2: "Worth a quick look?", delivery_status: "draft", created_at: new Date().toISOString() };
     } else if (url.pathname.startsWith("/api/emails/")) {
-      body = { id: "55555555-5555-5555-5555-555555555555", campaign_id: campaign.id, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A short growth idea", body: "Hi Jane, I found a clear outbound opportunity.", cta: "Book a growth audit", created_at: new Date().toISOString() };
+      body = { id: "55555555-5555-5555-5555-555555555555", campaign_id: campaign.id, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A short growth idea", body: "Hi Jane, I found a clear outbound opportunity.", cta: "Book a growth audit", follow_up_1: "Following up with one idea.", follow_up_2: "Worth a quick look?", delivery_status: url.pathname.endsWith("/send") ? "sent" : "draft", created_at: new Date().toISOString() };
     } else if (url.pathname === "/api/profile" && method === "GET") {
       body = { workspace: "Revenue workspace", company: "OutreachAI", avatar_url: null, timezone: "UTC", language: "English" };
     } else if (url.pathname === "/api/profile" && method === "PUT") {

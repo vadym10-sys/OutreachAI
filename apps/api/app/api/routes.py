@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from app.models.entities import (
     LeadStatus,
     Notification,
     NotificationKind,
+    WebsiteAnalysis,
     WorkspaceProfile,
 )
 from app.schemas.dto import (
@@ -45,13 +47,26 @@ from app.schemas.dto import (
     PersonalizeRequest,
     ProfileOut,
     ProfileUpdate,
+    ReplyAssistantOut,
+    ReplyAssistantRequest,
+    RewriteEmailRequest,
     SettingsOut,
     SettingsUpdate,
 )
-from app.services.ai import analyze_website, personalize_email
+from app.services.ai import (
+    ProviderConfigurationError,
+    ProviderRequestError,
+    analyze_company_website,
+    personalize_email,
+    rewrite_email,
+    stream_email_generation,
+    suggest_reply,
+)
 from app.services.audit import log_event
 from app.services.billing import create_checkout_session
-from app.services.lead_finder import find_leads
+from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
+from app.services.lead_finder import LeadSourceConfigurationError, find_leads
+from app.services.website import WebsiteFetchError, collect_website
 
 router = APIRouter()
 
@@ -94,10 +109,18 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
     db.add(Notification(user_id=user_id, kind=kind, title=title, message=message))
 
 
+def _provider_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError)):
+        return HTTPException(status_code=503, detail=str(exc))
+    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError)):
+        return HTTPException(status_code=502, detail=str(exc))
+    return HTTPException(status_code=500, detail="Provider request failed.")
+
+
 def _default_settings() -> dict:
     return {
         "general": {"workspaceMode": "team", "dateFormat": "YYYY-MM-DD"},
-        "ai": {"model": "gpt-4o-mini", "temperature": 0.7, "personalization": "high"},
+        "ai": {"model": "gpt-5.5", "temperature": 0.4, "personalization": "high"},
         "email": {"provider": "Resend", "dailyLimit": 250, "tracking": True},
         "billing": {"plan": "Starter", "renewal": "monthly"},
         "security": {"mfaRequired": False, "sessionTimeout": "30d"},
@@ -116,16 +139,24 @@ def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardM
     campaigns = db.scalar(select(func.count()).select_from(Campaign).where(Campaign.user_id == user_id)) or 0
     outbound = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.user_id == user_id, EmailMessage.direction == "outbound")) or 0
     sent = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.user_id == user_id, EmailMessage.sent_at.is_not(None))) or 0
+    delivered = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.user_id == user_id, EmailMessage.delivered_at.is_not(None))) or 0
     opened = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.user_id == user_id, EmailMessage.opened_at.is_not(None))) or 0
-    replied = db.scalar(select(func.count()).select_from(Lead).where(Lead.user_id == user_id, Lead.status == LeadStatus.replied)) or 0
+    bounced = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.user_id == user_id, EmailMessage.bounced_at.is_not(None))) or 0
+    replied = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.user_id == user_id, EmailMessage.replied_at.is_not(None))) or 0
     meetings = db.scalar(select(func.count()).select_from(Lead).where(Lead.user_id == user_id, Lead.status == LeadStatus.meeting)) or 0
+    won = db.scalar(select(func.count()).select_from(Lead).where(Lead.user_id == user_id, Lead.status == LeadStatus.won)) or 0
     revenue = float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(Lead.user_id == user_id, Lead.status == LeadStatus.won)) or 0)
     return DashboardMetrics(
         leads=leads,
         campaigns=campaigns,
         emails_sent=sent or outbound,
-        open_rate=0 if outbound == 0 else round(opened / outbound * 100, 1),
-        reply_rate=0 if outbound == 0 else round(replied / outbound * 100, 1),
+        delivered=delivered,
+        opened=opened,
+        replies=replied,
+        bounces=bounced,
+        open_rate=0 if sent == 0 else round(opened / sent * 100, 1),
+        reply_rate=0 if sent == 0 else round(replied / sent * 100, 1),
+        conversion_rate=0 if leads == 0 else round(won / leads * 100, 1),
         meetings=meetings,
         revenue=revenue,
         mrr=round(revenue / 12, 2) if revenue else 0,
@@ -194,7 +225,10 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
 
 @router.post("/leads/find", response_model=list[LeadOut])
 def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
-    found = find_leads(payload)
+    try:
+        found = find_leads(payload)
+    except Exception as exc:
+        raise _provider_error(exc) from exc
     saved: list[Lead] = []
     for item in found:
         exists = db.scalar(select(Lead.id).where(Lead.user_id == user_id, Lead.email == str(item.email))) if item.email else None
@@ -272,16 +306,81 @@ def leads_bulk(payload: BulkLeadAction, request: Request, user_id: CurrentUser, 
 
 @router.post("/ai/analyze", response_model=AnalysisOut)
 def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AnalysisOut:
-    result = analyze_website(payload.company, str(payload.website), payload.niche)
-    log_event(db, request, user_id, "website.analyzed", {"company": payload.company, "website": str(payload.website)})
+    lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, Lead.user_id == user_id)) if payload.lead_id else None
+    company = payload.company or (lead.company if lead else "")
+    try:
+        snapshot = collect_website(str(payload.website))
+        result = analyze_company_website(
+            company=company,
+            website=snapshot.url,
+            niche=payload.niche or (lead.industry if lead else None),
+            page_title=snapshot.title,
+            meta_description=snapshot.meta_description,
+            page_text=snapshot.text,
+            technologies=snapshot.technologies,
+        )
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    analysis = WebsiteAnalysis(
+        user_id=user_id,
+        lead_id=lead.id if lead else None,
+        company=result.company,
+        website=result.website,
+        description=result.description,
+        industry=result.industry,
+        location=result.location,
+        niche=result.niche,
+        products_services=result.products_services,
+        services=result.services,
+        technologies=result.technologies,
+        strengths=result.strengths,
+        weaknesses=result.weaknesses,
+        summary=result.summary,
+    )
+    db.add(analysis)
+    if lead:
+        lead.industry = lead.industry or result.industry
+        lead.niche = lead.niche or result.niche
+    log_event(db, request, user_id, "website.analyzed", {"company": result.company, "website": result.website})
     db.commit()
     return result
 
 
 @router.post("/ai/personalize", response_model=EmailVariantOut)
 def ai_personalize(payload: PersonalizeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailVariantOut:
-    result = personalize_email(payload)
+    try:
+        result = personalize_email(payload)
+    except Exception as exc:
+        raise _provider_error(exc) from exc
     log_event(db, request, user_id, "email.generated", {"company": payload.company})
+    db.commit()
+    return result
+
+
+@router.post("/ai/personalize/stream")
+def ai_personalize_stream(payload: PersonalizeRequest, user_id: CurrentUser) -> StreamingResponse:
+    del user_id
+    return StreamingResponse(stream_email_generation(payload), media_type="text/plain")
+
+
+@router.post("/ai/rewrite")
+def ai_rewrite(payload: RewriteEmailRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, str]:
+    try:
+        result = rewrite_email(payload)
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    log_event(db, request, user_id, "email.rewritten", {"tone": payload.tone})
+    db.commit()
+    return result
+
+
+@router.post("/ai/reply-assistant", response_model=ReplyAssistantOut)
+def ai_reply_assistant(payload: ReplyAssistantRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> ReplyAssistantOut:
+    try:
+        result = suggest_reply(payload)
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    log_event(db, request, user_id, "reply.assistant_generated", {"company": payload.company, "score": result.qualification_score})
     db.commit()
     return result
 
@@ -292,9 +391,42 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
     lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, Lead.user_id == user_id))
     if campaign is None or lead is None:
         raise HTTPException(status_code=404, detail="Campaign or lead not found")
-    ai_payload = PersonalizeRequest(company=lead.company, niche=lead.industry or campaign.industry or "B2B", website_summary=f"{lead.website or lead.company} in {lead.country or 'target market'}", offer=campaign.offer or "a measurable outbound growth system")
-    generated = personalize_email(ai_payload)
-    message = EmailMessage(user_id=user_id, campaign_id=campaign.id, lead_id=lead.id, subject=generated.subject, preview=generated.preview, body=generated.full_email, cta=generated.cta, direction="outbound")
+    analysis = db.scalar(
+        select(WebsiteAnalysis)
+        .where(WebsiteAnalysis.user_id == user_id, WebsiteAnalysis.lead_id == lead.id)
+        .order_by(WebsiteAnalysis.created_at.desc())
+    )
+    website_summary = analysis.summary if analysis else " ".join(
+        part for part in [lead.website, lead.industry, lead.country, lead.city] if part
+    )
+    ai_payload = PersonalizeRequest(
+        company=lead.company,
+        niche=lead.industry or campaign.industry or "B2B",
+        website_summary=website_summary or lead.company,
+        offer=campaign.offer or "a measurable outbound growth system",
+        cta=campaign.cta,
+        tone=campaign.email_tone,
+        language=campaign.language,
+        signature=campaign.signature,
+    )
+    try:
+        generated = personalize_email(ai_payload)
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    follow_ups = generated.follow_ups[:2]
+    message = EmailMessage(
+        user_id=user_id,
+        campaign_id=campaign.id,
+        lead_id=lead.id,
+        subject=generated.subject,
+        preview=generated.preview,
+        body=generated.full_email,
+        cta=generated.cta,
+        follow_up_1=follow_ups[0] if len(follow_ups) > 0 else "",
+        follow_up_2=follow_ups[1] if len(follow_ups) > 1 else "",
+        direction="outbound",
+        delivery_status="draft",
+    )
     lead.status = LeadStatus.email_generated
     db.add(message)
     log_event(db, request, user_id, "email.generated", {"campaign_id": str(campaign.id), "lead_id": str(lead.id)})
@@ -322,12 +454,24 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.user_id == user_id))
     if message is None:
         raise HTTPException(status_code=404, detail="Email not found")
-    message.sent_at = datetime.utcnow()
     lead = db.get(Lead, message.lead_id) if message.lead_id else None
-    if lead:
-        lead.status = LeadStatus.sent
-    log_event(db, request, user_id, "email.sent", {"email_id": str(message.id)})
-    _notify(db, user_id, NotificationKind.info, "Email marked sent", message.subject)
+    if lead is None or not lead.email:
+        raise HTTPException(status_code=400, detail="Lead email is required before sending.")
+    try:
+        provider_response = send_email(to_email=lead.email, subject=message.subject, body=message.body)
+    except Exception as exc:
+        message.delivery_status = "failed"
+        db.add(message)
+        log_event(db, request, user_id, "email.send_failed", {"email_id": str(message.id), "reason": str(exc)})
+        _notify(db, user_id, NotificationKind.error, "Email send failed", str(exc))
+        db.commit()
+        raise _provider_error(exc) from exc
+    message.sent_at = datetime.utcnow()
+    message.provider_message_id = str(provider_response.get("id"))
+    message.delivery_status = "sent"
+    lead.status = LeadStatus.sent
+    log_event(db, request, user_id, "email.sent", {"email_id": str(message.id), "provider_message_id": message.provider_message_id})
+    _notify(db, user_id, NotificationKind.info, "Email sent", message.subject)
     db.commit()
     db.refresh(message)
     return message

@@ -13,8 +13,14 @@ class Settings(BaseSettings):
     clerk_jwt_issuer: str = "https://example.clerk.accounts.dev"
     jwt_audience: str = "outreachai-api"
     openai_api_key: str = ""
+    openai_model: str = "gpt-5.5"
+    openai_timeout_seconds: float = 40
+    openai_max_retries: int = 2
+    ai_rate_limit_per_minute: int = 30
     resend_api_key: str = ""
-    resend_from_email: str = "OutreachAI <hello@example.com>"
+    resend_from_email: str = ""
+    resend_reply_to: str = ""
+    public_api_url: str = "http://localhost:8000"
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_starter: str = ""

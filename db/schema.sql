@@ -65,11 +65,19 @@ CREATE TABLE IF NOT EXISTS leads (
 
 CREATE TABLE IF NOT EXISTS website_analyses (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  user_id VARCHAR(128) NOT NULL,
+  lead_id UUID REFERENCES leads(id) ON DELETE CASCADE,
+  company VARCHAR(220) NOT NULL DEFAULT '',
+  website VARCHAR(500) NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  industry VARCHAR(160),
+  location VARCHAR(160),
   niche VARCHAR(120),
-  services JSONB NOT NULL DEFAULT '{}',
-  strengths JSONB NOT NULL DEFAULT '{}',
-  weaknesses JSONB NOT NULL DEFAULT '{}',
+  products_services JSONB NOT NULL DEFAULT '[]',
+  services JSONB NOT NULL DEFAULT '[]',
+  technologies JSONB NOT NULL DEFAULT '[]',
+  strengths JSONB NOT NULL DEFAULT '[]',
+  weaknesses JSONB NOT NULL DEFAULT '[]',
   summary TEXT NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
@@ -84,10 +92,19 @@ CREATE TABLE IF NOT EXISTS email_messages (
   preview VARCHAR(500) NOT NULL DEFAULT '',
   body TEXT NOT NULL,
   cta VARCHAR(220) NOT NULL DEFAULT '',
+  follow_up_1 TEXT NOT NULL DEFAULT '',
+  follow_up_2 TEXT NOT NULL DEFAULT '',
   tags JSONB NOT NULL DEFAULT '{}',
+  provider_message_id VARCHAR(160),
+  delivery_status VARCHAR(40) NOT NULL DEFAULT 'draft',
   sent_at TIMESTAMP,
+  delivered_at TIMESTAMP,
   opened_at TIMESTAMP,
   clicked_at TIMESTAMP,
+  bounced_at TIMESTAMP,
+  replied_at TIMESTAMP,
+  reply_body TEXT,
+  reply_assistant JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
@@ -146,10 +163,12 @@ CREATE TABLE IF NOT EXISTS app_settings (
 CREATE INDEX IF NOT EXISTS idx_leads_user_id ON leads(user_id);
 CREATE INDEX IF NOT EXISTS idx_campaigns_user_id ON campaigns(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON email_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_email_messages_provider_message_id ON email_messages(provider_message_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_user_event ON analytics_events(user_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_user_action ON audit_logs(user_id, action);
 
 CREATE INDEX IF NOT EXISTS idx_leads_campaign_id ON leads(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_website_analyses_user_id ON website_analyses(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_profiles_user_id ON workspace_profiles(user_id);
 CREATE INDEX IF NOT EXISTS idx_app_settings_user_id ON app_settings(user_id);

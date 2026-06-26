@@ -2,8 +2,13 @@ export type DashboardMetrics = {
   leads: number;
   campaigns: number;
   emails_sent: number;
+  delivered: number;
+  opened: number;
+  replies: number;
+  bounces: number;
   open_rate: number;
   reply_rate: number;
+  conversion_rate: number;
   meetings: number;
   revenue: number;
   mrr: number;
@@ -52,6 +57,14 @@ export type Email = {
   preview: string;
   body: string;
   cta: string;
+  follow_up_1: string;
+  follow_up_2: string;
+  delivery_status: string;
+  sent_at?: string | null;
+  delivered_at?: string | null;
+  opened_at?: string | null;
+  bounced_at?: string | null;
+  replied_at?: string | null;
 };
 
 export type Activity = { id: string; action: string; metadata_json: Record<string, unknown>; created_at: string };
