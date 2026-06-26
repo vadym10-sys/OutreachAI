@@ -1,5 +1,5 @@
 import { SettingsAndProfile } from '@/components/product-workspace';
 
-export default function BillingPage() {
+export default function SettingsPage() {
   return <SettingsAndProfile />;
 }

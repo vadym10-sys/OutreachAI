@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
-import { BarChart3, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Shield, Users } from "lucide-react";
-import { hasClerkPublishableKey } from "@/lib/env";
+import { BarChart3, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, UserCircle, Users } from "lucide-react";
+import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -14,6 +14,8 @@ const nav = [
   { href: "/dashboard/inbox", label: "Inbox", icon: Inbox },
   { href: "/dashboard/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/dashboard/billing", label: "Billing", icon: CreditCard },
+  { href: "/dashboard/profile", label: "Profile", icon: UserCircle },
+  { href: "/dashboard/settings", label: "Settings", icon: Settings },
   { href: "/admin", label: "Admin", icon: Shield }
 ];
 
@@ -60,7 +62,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </details>
             <span className="truncate text-sm font-semibold text-slate-600">Revenue workspace</span>
           </div>
-          {hasClerkPublishableKey ? (
+          {hasClerkPublishableKey && !isClerkE2EBypass ? (
             <UserButton />
           ) : (
             <div className="grid size-8 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600" aria-label="User profile">

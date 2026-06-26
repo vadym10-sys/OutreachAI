@@ -1,9 +1,24 @@
+from pathlib import Path
+import tempfile
+
 from fastapi.testclient import TestClient
 
+db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
+if db_path.exists():
+    db_path.unlink()
+
+import os
+
+os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
+os.environ["AUTO_CREATE_TABLES"] = "true"
+
+from app.core.database import Base, get_engine
 from app.main import app
 
+Base.metadata.create_all(bind=get_engine())
 
 client = TestClient(app)
+AUTH = {"Authorization": "Bearer dev"}
 
 
 def test_health() -> None:
@@ -15,8 +30,71 @@ def test_health() -> None:
 def test_find_leads_dev_token() -> None:
     response = client.post(
         "/api/leads/find",
-        headers={"Authorization": "Bearer dev"},
+        headers=AUTH,
         json={"niche": "Real estate", "country": "United States", "city": "Austin"}
     )
     assert response.status_code == 200
     assert len(response.json()) >= 3
+
+
+def test_campaign_lead_email_and_dashboard_flow() -> None:
+    campaign_response = client.post(
+        "/api/campaigns",
+        headers=AUTH,
+        json={
+            "name": "Austin Builders Outreach",
+            "industry": "Construction",
+            "countries": ["United States"],
+            "cities": ["Austin"],
+            "company_size": "11-50",
+            "keywords": ["commercial renovation"],
+            "website_filters": ["has contact page"],
+            "language": "English",
+            "offer": "book qualified renovation leads",
+            "cta": "Book a 15 minute growth audit",
+            "email_tone": "consultative",
+            "signature": "Vadym, OutreachAI",
+        },
+    )
+    assert campaign_response.status_code == 200
+    campaign = campaign_response.json()
+    assert campaign["industry"] == "Construction"
+
+    lead_response = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={
+            "company": "Hill Country Build Co",
+            "website": "https://example.com",
+            "industry": "Construction",
+            "country": "United States",
+            "city": "Austin",
+            "contact": "Jane Doe",
+            "email": "jane@example.com",
+            "status": "Qualified",
+            "campaign_id": campaign["id"],
+        },
+    )
+    assert lead_response.status_code == 200
+    lead = lead_response.json()
+    assert lead["status"] == "Qualified"
+
+    email_response = client.post(
+        "/api/emails/generate",
+        headers=AUTH,
+        json={"campaign_id": campaign["id"], "lead_id": lead["id"]},
+    )
+    assert email_response.status_code == 200
+    email = email_response.json()
+    assert email["subject"]
+    assert email["body"]
+
+    list_response = client.get("/api/leads?search=Hill&status=Email%20Generated", headers=AUTH)
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 1
+
+    dashboard_response = client.get("/api/dashboard", headers=AUTH)
+    assert dashboard_response.status_code == 200
+    metrics = dashboard_response.json()
+    assert metrics["leads"] >= 1
+    assert metrics["campaigns"] >= 1

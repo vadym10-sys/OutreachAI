@@ -5,11 +5,12 @@ export default defineConfig({
   webServer: {
     command: "npm run dev",
     url: "http://127.0.0.1:3000",
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     env: {
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_replace_me",
       CLERK_SECRET_KEY: "sk_test_replace_me",
       CLERK_E2E_BYPASS: "true",
+      NEXT_PUBLIC_CLERK_E2E_BYPASS: "true",
       NEXT_PUBLIC_API_URL: "http://127.0.0.1:8000"
     }
   },

@@ -20,6 +20,7 @@ logging.basicConfig(
     force=True
 )
 logger = logging.getLogger("outreachai.api")
+settings = get_settings()
 
 app = FastAPI(
     title="OutreachAI API",
@@ -30,7 +31,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://outreachai.example"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -49,7 +50,6 @@ app.include_router(webhook_router)
 @app.on_event("startup")
 def startup() -> None:
     try:
-        settings = get_settings()
         logger.info("Starting OutreachAI API app_env=%s", settings.app_env)
         logger.info(
             "Startup diagnostics: registered routes=%s",

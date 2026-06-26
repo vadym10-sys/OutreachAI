@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     stripe_price_agency: str = ""
     encryption_key: str = "replace-with-32-byte-url-safe-key"
     auto_create_tables: bool = False
+    cors_origins: str = "http://localhost:3000,https://outreachaiaiai.com,https://outreachaiweb-production.up.railway.app"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -33,6 +34,10 @@ class Settings(BaseSettings):
         if value.startswith("postgres://"):
             return value.replace("postgres://", "postgresql+psycopg://", 1)
         return value
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
     def missing_optional_services(self) -> list[str]:
