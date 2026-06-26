@@ -30,6 +30,20 @@
 1. Verify a sending domain.
 2. Add SPF, DKIM, and DMARC DNS records.
 3. Set `RESEND_FROM_EMAIL` to a verified sender.
+4. Configure the Resend webhook endpoint:
+   `https://outreachai-api-production.up.railway.app/webhooks/resend`
+5. Subscribe to:
+   `email.delivered`, `email.opened`, `email.bounced`, `email.complained`, and `email.received`.
+6. Copy the Resend webhook signing secret into `RESEND_WEBHOOK_SECRET`.
+
+Required Railway variables for the API service:
+
+```env
+RESEND_API_KEY=...
+RESEND_FROM_EMAIL=...
+RESEND_REPLY_TO=...
+RESEND_WEBHOOK_SECRET=...
+```
 
 ## Clerk
 
