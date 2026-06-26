@@ -19,7 +19,7 @@ os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
 
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
 from app.models.entities import AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
-from app.schemas.dto import EmailVariantOut, LeadOut  # noqa: E402
+from app.schemas.dto import CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.main import app  # noqa: E402
 
 Base.metadata.create_all(bind=get_engine())
@@ -151,6 +151,71 @@ def test_campaign_lead_email_and_dashboard_flow(monkeypatch) -> None:
     metrics = dashboard_response.json()
     assert metrics["leads"] >= 1
     assert metrics["campaigns"] >= 1
+
+
+def test_ai_sales_copilot_endpoints(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.sales_copilot",
+        lambda payload: SalesCopilotOut(
+            probability_to_reply=72,
+            probability_to_buy=31,
+            best_first_contact="Personalized email",
+            best_subject_line="Idea for your website conversion",
+            best_cta="Book a 15 minute call",
+            estimated_revenue=12000,
+            reasoning=["Strong fit", "Visible conversion gaps"],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.website_audit",
+        lambda payload: WebsiteAuditOut(
+            missing_cta=True,
+            missing_contact_form=True,
+            poor_seo=False,
+            weak_trust_signals=True,
+            missing_reviews=True,
+            slow_website=False,
+            outdated_design=False,
+            improvement_report="Add a primary CTA, contact form, and proof points.",
+            priority_actions=["Add CTA", "Add contact form"],
+        ),
+    )
+    monkeypatch.setattr("app.api.routes.collect_website", lambda url: type("Snapshot", (), {"text": "Contact us for services", "technologies": ["Next.js"]})())
+    monkeypatch.setattr(
+        "app.api.routes.meeting_preparation",
+        lambda payload: MeetingPrepOut(company_summary="Commercial builder", decision_maker_profile="Owner-led team", likely_objections=["Timing"], suggested_questions=["What is your lead target?"], sales_strategy="Lead with booked meetings."),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.adaptive_follow_ups",
+        lambda payload: FollowUpSequenceOut(no_open=["Bump"], opened=["Saw you had a look"], clicked=["Worth discussing?"], replied=["Thanks for the reply"]),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.campaign_analytics",
+        lambda payload: CampaignAnalyticsOut(campaign_id=payload["campaign_id"], campaign_success=68, predicted_reply_rate=12.5, predicted_conversion_rate=3.2, suggested_improvements=["Tighten ICP"]),
+    )
+
+    campaign = client.post("/api/campaigns", headers=AUTH, json={"name": "Copilot Campaign", "industry": "Construction"}).json()
+    lead = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Copilot Build Co", "website": "https://example.com", "industry": "Construction", "email": "copilot@example.com", "campaign_id": campaign["id"]},
+    ).json()
+
+    copilot = client.post(f"/api/leads/{lead['id']}/copilot", headers=AUTH)
+    assert copilot.status_code == 200
+    assert copilot.json()["probability_to_reply"] == 72
+    audit = client.post(f"/api/leads/{lead['id']}/website-audit", headers=AUTH)
+    assert audit.status_code == 200
+    assert audit.json()["missing_cta"] is True
+    meeting = client.post(f"/api/leads/{lead['id']}/meeting-prep", headers=AUTH)
+    assert meeting.status_code == 200
+    assert meeting.json()["sales_strategy"]
+    followups = client.post(f"/api/leads/{lead['id']}/follow-ups", headers=AUTH)
+    assert followups.status_code == 200
+    assert followups.json()["opened"]
+    analytics = client.post(f"/api/campaigns/{campaign['id']}/ai-analytics", headers=AUTH)
+    assert analytics.status_code == 200
+    assert analytics.json()["campaign_success"] == 68
 
 
 def test_resend_webhook_updates_delivery_metrics() -> None:

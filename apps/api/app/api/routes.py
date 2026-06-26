@@ -40,6 +40,7 @@ from app.schemas.dto import (
     BillingPlanOut,
     BillingPortalRequest,
     CampaignCreate,
+    CampaignAnalyticsOut,
     CampaignOut,
     CampaignSequenceIn,
     CampaignUpdate,
@@ -48,11 +49,13 @@ from app.schemas.dto import (
     EmailOut,
     EmailUpdate,
     EmailVariantOut,
+    FollowUpSequenceOut,
     GenerateEmailRequest,
     LeadCreate,
     LeadFinderRequest,
     LeadOut,
     LeadUpdate,
+    MeetingPrepOut,
     MemberInvite,
     NotificationOut,
     OnboardingUpdate,
@@ -64,9 +67,11 @@ from app.schemas.dto import (
     ReplyAssistantOut,
     ReplyAssistantRequest,
     RewriteEmailRequest,
+    SalesCopilotOut,
     SettingsOut,
     SettingsUpdate,
     UsageOut,
+    WebsiteAuditOut,
     WorkspaceMemberOut,
     WorkspaceOut,
     WorkspaceUpdate,
@@ -75,10 +80,15 @@ from app.services.ai import (
     ProviderConfigurationError,
     ProviderRequestError,
     analyze_company_website,
+    adaptive_follow_ups,
+    campaign_analytics,
+    meeting_preparation,
     personalize_email,
     rewrite_email,
+    sales_copilot,
     stream_email_generation,
     suggest_reply,
+    website_audit,
 )
 from app.services.audit import log_event
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices
@@ -322,6 +332,90 @@ def _analysis_summary_with_score(analysis: AnalysisOut, score: int) -> str:
     return f"ICP score: {score}/100. {analysis.summary}".strip()
 
 
+def _website_audit_markers(page_text: str, technologies: list[str], load_ms: int = 0) -> dict:
+    lower = page_text.lower()
+    missing_cta = not any(term in lower for term in ["book", "schedule", "contact us", "get started", "request", "quote"])
+    missing_contact_form = not any(term in lower for term in ["<form", "contact form", "send message", "submit"])
+    poor_seo = len(page_text) < 900
+    weak_trust_signals = not any(term in lower for term in ["case study", "testimonial", "certified", "award", "trusted", "clients"])
+    missing_reviews = not any(term in lower for term in ["review", "reviews", "stars", "testimonial"])
+    slow_website = load_ms > 2500
+    outdated_design = not any(tech in technologies for tech in ["React", "Next.js", "Webflow", "Shopify"]) and len(technologies) <= 2
+    issues = {
+        "missing_cta": missing_cta,
+        "missing_contact_form": missing_contact_form,
+        "poor_seo": poor_seo,
+        "weak_trust_signals": weak_trust_signals,
+        "missing_reviews": missing_reviews,
+        "slow_website": slow_website,
+        "outdated_design": outdated_design,
+    }
+    actions = [key.replace("_", " ") for key, value in issues.items() if value]
+    return {**issues, "priority_actions": actions[:5]}
+
+
+def _lead_context(db: Session, workspace: Workspace, user_id: str, lead_id: UUID) -> tuple[Lead, WebsiteAnalysis | None, Campaign | None, list[EmailMessage]]:
+    lead = db.scalar(select(Lead).where(Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)))
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    analysis = db.scalar(
+        select(WebsiteAnalysis)
+        .where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == lead.id)
+        .order_by(WebsiteAnalysis.created_at.desc())
+    )
+    campaign = db.get(Campaign, lead.campaign_id) if lead.campaign_id else None
+    messages = list(
+        db.scalars(
+            select(EmailMessage)
+            .where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == lead.id)
+            .order_by(EmailMessage.created_at.desc())
+            .limit(20)
+        ).all()
+    )
+    return lead, analysis, campaign, messages
+
+
+def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Campaign | None, messages: list[EmailMessage]) -> dict:
+    return {
+        "lead": {
+            "company": lead.company,
+            "website": lead.website,
+            "industry": lead.industry,
+            "country": lead.country,
+            "city": lead.city,
+            "contact": lead.contact,
+            "status": lead.status.value if lead.status else "",
+            "notes": lead.notes,
+            "revenue": float(lead.revenue or 0),
+        },
+        "website_analysis": {
+            "summary": analysis.summary if analysis else "",
+            "services": analysis.services if analysis else [],
+            "technologies": analysis.technologies if analysis else [],
+            "strengths": analysis.strengths if analysis else [],
+            "weaknesses": analysis.weaknesses if analysis else [],
+        },
+        "campaign": {
+            "name": campaign.name if campaign else "",
+            "industry": campaign.industry if campaign else "",
+            "offer": campaign.offer if campaign else "",
+            "cta": campaign.cta if campaign else "",
+            "tone": campaign.email_tone if campaign else "",
+        },
+        "email_history": [
+            {
+                "direction": message.direction,
+                "subject": message.subject,
+                "status": message.delivery_status,
+                "opened": bool(message.opened_at),
+                "clicked": bool(message.clicked_at),
+                "replied": bool(message.replied_at),
+            }
+            for message in messages
+        ],
+    }
+
+
 def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, lead: Lead) -> None:
     if not lead.website:
         return
@@ -360,7 +454,9 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
     db.add(analysis)
     lead.industry = lead.industry or result.industry
     lead.niche = lead.niche or result.niche
-    lead.notes = "\n".join(part for part in [lead.notes or "", f"ICP score: {score}/100", result.summary] if part)
+    audit = _website_audit_markers(snapshot.text, snapshot.technologies)
+    audit_notes = ", ".join(audit["priority_actions"]) or "No critical website audit issues detected"
+    lead.notes = "\n".join(part for part in [lead.notes or "", f"ICP score: {score}/100", f"Website audit: {audit_notes}", result.summary] if part)
 
 
 def _default_settings() -> dict:
@@ -479,6 +575,41 @@ def update_campaign(campaign_id: UUID, payload: CampaignUpdate, request: Request
     db.commit()
     db.refresh(campaign)
     return _campaign_out(db, campaign)
+
+
+@router.post("/campaigns/{campaign_id}/ai-analytics", response_model=CampaignAnalyticsOut)
+def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignAnalyticsOut:
+    workspace = _current_workspace(db, user_id)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    leads = db.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id)) or 0
+    emails = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.campaign_id == campaign.id, EmailMessage.sent_at.is_not(None))) or 0
+    opened = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.campaign_id == campaign.id, EmailMessage.opened_at.is_not(None))) or 0
+    replies = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.campaign_id == campaign.id, EmailMessage.replied_at.is_not(None))) or 0
+    meetings = db.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id, Lead.status == LeadStatus.meeting)) or 0
+    try:
+        result = campaign_analytics(
+            {
+                "campaign_id": campaign.id,
+                "campaign": _campaign_out(db, campaign).model_dump(mode="json"),
+                "metrics": {
+                    "leads": leads,
+                    "emails_sent": emails,
+                    "opened": opened,
+                    "replies": replies,
+                    "meetings": meetings,
+                    "open_rate": 0 if emails == 0 else round(opened / emails * 100, 1),
+                    "reply_rate": 0 if emails == 0 else round(replies / emails * 100, 1),
+                },
+            }
+        )
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    log_event(db, request, user_id, "campaign.analytics_generated", {"campaign_id": str(campaign.id), "success": result.campaign_success})
+    db.commit()
+    return result
 
 
 @router.post("/campaigns/{campaign_id}/{action}", response_model=CampaignOut)
@@ -664,6 +795,89 @@ def update_lead(lead_id: UUID, payload: LeadUpdate, request: Request, user_id: C
     db.commit()
     db.refresh(lead)
     return _lead_out(lead)
+
+
+@router.post("/leads/{lead_id}/copilot", response_model=SalesCopilotOut)
+def lead_copilot(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesCopilotOut:
+    workspace = _current_workspace(db, user_id)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
+    try:
+        result = sales_copilot(_lead_ai_payload(lead, analysis, campaign, messages))
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    if not lead.revenue:
+        lead.revenue = result.estimated_revenue
+    lead.notes = "\n".join(part for part in [lead.notes or "", f"Sales copilot: {result.probability_to_reply}% reply, {result.probability_to_buy}% buy. {result.best_cta}"] if part)
+    log_event(db, request, user_id, "copilot.generated", {"lead_id": str(lead.id), "reply": result.probability_to_reply, "buy": result.probability_to_buy})
+    db.commit()
+    return result
+
+
+@router.post("/leads/{lead_id}/website-audit", response_model=WebsiteAuditOut)
+def lead_website_audit(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> WebsiteAuditOut:
+    workspace = _current_workspace(db, user_id)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
+    if not lead.website:
+        raise HTTPException(status_code=400, detail="Lead website is required for a website audit")
+    try:
+        snapshot = collect_website(lead.website)
+        heuristic = _website_audit_markers(snapshot.text, snapshot.technologies)
+        result = website_audit({**_lead_ai_payload(lead, analysis, campaign, messages), "website_text": snapshot.text[:10000], "detected_issues": heuristic})
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    db.add(
+        WebsiteAnalysis(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            company=lead.company,
+            website=lead.website or "",
+            description="AI website audit",
+            industry=lead.industry,
+            location=" ".join(part for part in [lead.city, lead.country] if part),
+            niche=lead.niche,
+            products_services=[],
+            services=[],
+            technologies=[],
+            strengths=[],
+            weaknesses=result.priority_actions,
+            summary=result.improvement_report,
+        )
+    )
+    lead.notes = "\n".join(part for part in [lead.notes or "", f"Website audit: {', '.join(result.priority_actions) or result.improvement_report}"] if part)
+    log_event(db, request, user_id, "website.audit_generated", {"lead_id": str(lead.id), "issues": result.priority_actions})
+    db.commit()
+    return result
+
+
+@router.post("/leads/{lead_id}/meeting-prep", response_model=MeetingPrepOut)
+def lead_meeting_prep(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> MeetingPrepOut:
+    workspace = _current_workspace(db, user_id)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
+    try:
+        result = meeting_preparation(_lead_ai_payload(lead, analysis, campaign, messages))
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    log_event(db, request, user_id, "meeting.prep_generated", {"lead_id": str(lead.id)})
+    db.commit()
+    return result
+
+
+@router.post("/leads/{lead_id}/follow-ups", response_model=FollowUpSequenceOut)
+def lead_follow_ups(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> FollowUpSequenceOut:
+    workspace = _current_workspace(db, user_id)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
+    try:
+        result = adaptive_follow_ups(_lead_ai_payload(lead, analysis, campaign, messages))
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    log_event(db, request, user_id, "followups.generated", {"lead_id": str(lead.id)})
+    db.commit()
+    return result
 
 
 @router.post("/leads/bulk")

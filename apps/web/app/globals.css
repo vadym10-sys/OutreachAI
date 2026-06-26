@@ -8,6 +8,12 @@
   color: #111827;
 }
 
+:root.dark {
+  color-scheme: dark;
+  background: #0f172a;
+  color: #e5eefb;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -15,6 +21,7 @@
 html {
   min-width: 0;
   overflow-x: hidden;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -22,6 +29,7 @@ body {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   min-width: 0;
   overflow-x: hidden;
+  transition: background-color 180ms ease, color 180ms ease;
 }
 
 a {
@@ -34,6 +42,16 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+button,
+a,
+input,
+select,
+textarea,
+.rounded-lg,
+.rounded-md {
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
 button,
@@ -58,4 +76,44 @@ a[aria-label="Clerk logo"] {
 
 .focus-ring {
   @apply focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2;
+}
+
+:root.dark body,
+:root.dark main,
+:root.dark .bg-slate-50 {
+  background: #0f172a;
+  color: #e5eefb;
+}
+
+:root.dark .bg-white,
+:root.dark .bg-slate-100 {
+  background: #111827;
+}
+
+:root.dark .border-slate-200,
+:root.dark .border-slate-300 {
+  border-color: #334155;
+}
+
+:root.dark .text-slate-500,
+:root.dark .text-slate-600,
+:root.dark .text-slate-700 {
+  color: #cbd5e1;
+}
+
+:root.dark input,
+:root.dark select,
+:root.dark textarea {
+  background: #0b1220;
+  color: #e5eefb;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }

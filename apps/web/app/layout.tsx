@@ -24,7 +24,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   if (isClerkE2EBypass || !hasClerkPublishableKey) {
     return (
-      <html lang="en">
+      <html lang="en" data-scroll-behavior="smooth">
         <body>{children}</body>
       </html>
     );
@@ -32,7 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <ClerkProvider publishableKey={clerkPublishableKey}>
-      <html lang="en">
+      <html lang="en" data-scroll-behavior="smooth">
         <body>{children}</body>
       </html>
     </ClerkProvider>

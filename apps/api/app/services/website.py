@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from html import unescape
 from urllib.parse import urlparse
 
@@ -21,6 +22,7 @@ class WebsiteSnapshot:
     technologies: list[str]
 
 
+@lru_cache(maxsize=256)
 def collect_website(url: str) -> WebsiteSnapshot:
     headers = {
         "User-Agent": "OutreachAI/1.0 website analyzer (+https://outreachaiaiai.com)",

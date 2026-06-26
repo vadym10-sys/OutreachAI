@@ -13,11 +13,16 @@ from openai import OpenAI, OpenAIError
 from app.core.config import get_settings
 from app.schemas.dto import (
     AnalysisOut,
+    CampaignAnalyticsOut,
     EmailVariantOut,
+    FollowUpSequenceOut,
+    MeetingPrepOut,
     PersonalizeRequest,
     ReplyAssistantOut,
     ReplyAssistantRequest,
     RewriteEmailRequest,
+    SalesCopilotOut,
+    WebsiteAuditOut,
 )
 
 logger = logging.getLogger("outreachai.ai")
@@ -173,6 +178,93 @@ def suggest_reply(payload: ReplyAssistantRequest) -> ReplyAssistantOut:
     )
 
 
+def sales_copilot(payload: dict[str, Any]) -> SalesCopilotOut:
+    system = (
+        "You are OutreachAI's AI sales copilot. Return only JSON with keys "
+        "probability_to_reply, probability_to_buy, best_first_contact, best_subject_line, "
+        "best_cta, estimated_revenue, reasoning. Probabilities are integers 0-100. "
+        "Base recommendations only on provided lead, website analysis, and campaign context."
+    )
+    data = _json_completion(system, payload)
+    return SalesCopilotOut(
+        probability_to_reply=_bounded_int(data.get("probability_to_reply"), 0, 100),
+        probability_to_buy=_bounded_int(data.get("probability_to_buy"), 0, 100),
+        best_first_contact=str(data.get("best_first_contact") or "Personalized email"),
+        best_subject_line=str(data.get("best_subject_line") or "Quick idea for your team"),
+        best_cta=str(data.get("best_cta") or "Book a quick call"),
+        estimated_revenue=max(0, float(data.get("estimated_revenue") or 0)),
+        reasoning=_list(data.get("reasoning")),
+    )
+
+
+def website_audit(payload: dict[str, Any]) -> WebsiteAuditOut:
+    system = (
+        "You are OutreachAI's website conversion auditor. Return only JSON with keys "
+        "missing_cta, missing_contact_form, poor_seo, weak_trust_signals, missing_reviews, "
+        "slow_website, outdated_design, improvement_report, priority_actions. "
+        "Use booleans for detected issues and write a concise actionable report."
+    )
+    data = _json_completion(system, payload)
+    return WebsiteAuditOut(
+        missing_cta=bool(data.get("missing_cta")),
+        missing_contact_form=bool(data.get("missing_contact_form")),
+        poor_seo=bool(data.get("poor_seo")),
+        weak_trust_signals=bool(data.get("weak_trust_signals")),
+        missing_reviews=bool(data.get("missing_reviews")),
+        slow_website=bool(data.get("slow_website")),
+        outdated_design=bool(data.get("outdated_design")),
+        improvement_report=str(data.get("improvement_report") or ""),
+        priority_actions=_list(data.get("priority_actions")),
+    )
+
+
+def meeting_preparation(payload: dict[str, Any]) -> MeetingPrepOut:
+    system = (
+        "You prepare B2B sales meetings. Return only JSON with keys company_summary, "
+        "decision_maker_profile, likely_objections, suggested_questions, sales_strategy. "
+        "Be specific and practical."
+    )
+    data = _json_completion(system, payload)
+    return MeetingPrepOut(
+        company_summary=str(data.get("company_summary") or ""),
+        decision_maker_profile=str(data.get("decision_maker_profile") or ""),
+        likely_objections=_list(data.get("likely_objections")),
+        suggested_questions=_list(data.get("suggested_questions")),
+        sales_strategy=str(data.get("sales_strategy") or ""),
+    )
+
+
+def adaptive_follow_ups(payload: dict[str, Any]) -> FollowUpSequenceOut:
+    system = (
+        "You generate adaptive outbound follow-up sequences. Return only JSON with keys "
+        "no_open, opened, clicked, replied. Each key must contain concise email bodies "
+        "for that behavior state."
+    )
+    data = _json_completion(system, payload)
+    return FollowUpSequenceOut(
+        no_open=_list(data.get("no_open"))[:3],
+        opened=_list(data.get("opened"))[:3],
+        clicked=_list(data.get("clicked"))[:3],
+        replied=_list(data.get("replied"))[:3],
+    )
+
+
+def campaign_analytics(payload: dict[str, Any]) -> CampaignAnalyticsOut:
+    system = (
+        "You are OutreachAI's campaign analytics copilot. Return only JSON with keys "
+        "campaign_success, predicted_reply_rate, predicted_conversion_rate, suggested_improvements. "
+        "Use percentages for rates and specific tactical recommendations."
+    )
+    data = _json_completion(system, payload)
+    return CampaignAnalyticsOut(
+        campaign_id=payload.get("campaign_id"),
+        campaign_success=_bounded_int(data.get("campaign_success"), 0, 100),
+        predicted_reply_rate=max(0, float(data.get("predicted_reply_rate") or 0)),
+        predicted_conversion_rate=max(0, float(data.get("predicted_conversion_rate") or 0)),
+        suggested_improvements=_list(data.get("suggested_improvements")),
+    )
+
+
 def stream_email_generation(payload: PersonalizeRequest) -> Iterator[str]:
     _enforce_rate_limit()
     settings = get_settings()
@@ -201,3 +293,11 @@ def _list(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _bounded_int(value: Any, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = minimum
+    return max(minimum, min(maximum, parsed))

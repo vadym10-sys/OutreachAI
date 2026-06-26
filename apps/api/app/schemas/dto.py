@@ -85,6 +85,51 @@ class LeadOut(BaseModel):
         from_attributes = True
 
 
+class SalesCopilotOut(BaseModel):
+    probability_to_reply: int = Field(ge=0, le=100)
+    probability_to_buy: int = Field(ge=0, le=100)
+    best_first_contact: str
+    best_subject_line: str
+    best_cta: str
+    estimated_revenue: float
+    reasoning: list[str] = Field(default_factory=list)
+
+
+class WebsiteAuditOut(BaseModel):
+    missing_cta: bool = False
+    missing_contact_form: bool = False
+    poor_seo: bool = False
+    weak_trust_signals: bool = False
+    missing_reviews: bool = False
+    slow_website: bool = False
+    outdated_design: bool = False
+    improvement_report: str
+    priority_actions: list[str] = Field(default_factory=list)
+
+
+class MeetingPrepOut(BaseModel):
+    company_summary: str
+    decision_maker_profile: str
+    likely_objections: list[str] = Field(default_factory=list)
+    suggested_questions: list[str] = Field(default_factory=list)
+    sales_strategy: str
+
+
+class FollowUpSequenceOut(BaseModel):
+    no_open: list[str] = Field(default_factory=list)
+    opened: list[str] = Field(default_factory=list)
+    clicked: list[str] = Field(default_factory=list)
+    replied: list[str] = Field(default_factory=list)
+
+
+class CampaignAnalyticsOut(BaseModel):
+    campaign_id: Optional[UUID] = None
+    campaign_success: int = Field(ge=0, le=100)
+    predicted_reply_rate: float
+    predicted_conversion_rate: float
+    suggested_improvements: list[str] = Field(default_factory=list)
+
+
 class PaginatedLeads(BaseModel):
     items: list[LeadOut]
     total: int

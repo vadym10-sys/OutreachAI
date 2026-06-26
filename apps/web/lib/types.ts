@@ -72,6 +72,51 @@ export type Lead = {
   revenue?: number;
 };
 
+export type SalesCopilot = {
+  probability_to_reply: number;
+  probability_to_buy: number;
+  best_first_contact: string;
+  best_subject_line: string;
+  best_cta: string;
+  estimated_revenue: number;
+  reasoning: string[];
+};
+
+export type WebsiteAudit = {
+  missing_cta: boolean;
+  missing_contact_form: boolean;
+  poor_seo: boolean;
+  weak_trust_signals: boolean;
+  missing_reviews: boolean;
+  slow_website: boolean;
+  outdated_design: boolean;
+  improvement_report: string;
+  priority_actions: string[];
+};
+
+export type MeetingPrep = {
+  company_summary: string;
+  decision_maker_profile: string;
+  likely_objections: string[];
+  suggested_questions: string[];
+  sales_strategy: string;
+};
+
+export type FollowUpSequence = {
+  no_open: string[];
+  opened: string[];
+  clicked: string[];
+  replied: string[];
+};
+
+export type CampaignAnalytics = {
+  campaign_id?: string | null;
+  campaign_success: number;
+  predicted_reply_rate: number;
+  predicted_conversion_rate: number;
+  suggested_improvements: string[];
+};
+
 export type Email = {
   id: string;
   campaign_id?: string | null;
