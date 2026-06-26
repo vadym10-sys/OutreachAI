@@ -145,6 +145,7 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
     except (ValueError, stripe.SignatureVerificationError) as exc:
         raise HTTPException(status_code=400, detail="Invalid Stripe signature") from exc
 
+    stripe.api_key = settings.stripe_secret_key
     event_type = event["type"]
     data = event["data"]["object"]
     if event_type == "checkout.session.completed":
@@ -153,7 +154,10 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         plan = _metadata_value(data.get("metadata"), "plan") or "Starter"
         workspace_id = _metadata_value(data.get("metadata"), "workspace_id")
         user_id = _metadata_value(data.get("metadata"), "user_id")
-        subscription = stripe.Subscription.retrieve(subscription_id) if subscription_id and settings.stripe_secret_key else None
+        try:
+            subscription = stripe.Subscription.retrieve(subscription_id) if subscription_id and settings.stripe_secret_key else None
+        except stripe.StripeError:
+            subscription = None
         status = str(subscription.get("status") if subscription else "active")
         current_period_end = _timestamp(subscription.get("current_period_end") if subscription else None)
         _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, current_period_end=current_period_end)
