@@ -1,5 +1,14 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'leadstatus') THEN
+    ALTER TYPE leadstatus ADD VALUE IF NOT EXISTS 'contacted';
+    ALTER TYPE leadstatus ADD VALUE IF NOT EXISTS 'interested';
+    ALTER TYPE leadstatus ADD VALUE IF NOT EXISTS 'archive';
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS workspaces (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   owner_user_id VARCHAR(128) NOT NULL,
@@ -64,9 +73,18 @@ CREATE TABLE IF NOT EXISTS campaign_sequences (
   CONSTRAINT uq_campaign_sequence_step UNIQUE (campaign_id, step_order)
 );
 
-UPDATE leads SET status = 'Qualified' WHERE status = 'Email Generated';
-UPDATE leads SET status = 'Contacted' WHERE status IN ('Sent', 'Opened');
-UPDATE leads SET status = 'Interested' WHERE status = 'Replied';
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'leadstatus') THEN
+    UPDATE leads SET status = 'qualified' WHERE status::text = 'email_generated';
+    UPDATE leads SET status = 'contacted' WHERE status::text IN ('sent', 'opened');
+    UPDATE leads SET status = 'interested' WHERE status::text = 'replied';
+  ELSE
+    UPDATE leads SET status = 'Qualified' WHERE status = 'Email Generated';
+    UPDATE leads SET status = 'Contacted' WHERE status IN ('Sent', 'Opened');
+    UPDATE leads SET status = 'Interested' WHERE status = 'Replied';
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_workspaces_owner_user_id ON workspaces(owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace_id ON workspace_members(workspace_id);
