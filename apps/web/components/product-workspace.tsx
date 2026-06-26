@@ -14,6 +14,10 @@ const devApi = async function api<T>(path: string, init: RequestInit = {}) {
   return clientApi<T>(path, 'dev', init);
 };
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function useTokenApi() {
   if (!hasClerkPublishableKey || isClerkE2EBypass) {
     return { api: devApi, ready: true };
@@ -28,7 +32,11 @@ function useClerkTokenApi() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const api = useCallback(async function api<T>(path: string, init: RequestInit = {}) {
     if (!isLoaded || !isSignedIn) throw new Error('Authentication is not ready');
-    const token = await getToken();
+    let token = await getToken();
+    for (let attempt = 0; !token && attempt < 20; attempt += 1) {
+      await delay(100);
+      token = await getToken();
+    }
     if (!token) throw new Error('Authentication token is not available');
     return clientApi<T>(path, token, init);
   }, [getToken, isLoaded, isSignedIn]);
