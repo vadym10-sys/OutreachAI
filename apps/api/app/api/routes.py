@@ -83,7 +83,7 @@ from app.services.ai import (
 from app.services.audit import log_event
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
-from app.services.lead_finder import LeadSourceConfigurationError, find_leads
+from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError, find_leads
 from app.services.website import WebsiteFetchError, collect_website
 
 router = APIRouter()
@@ -211,7 +211,34 @@ def _sequence_defaults(campaign: Campaign) -> list[CampaignSequenceIn]:
         CampaignSequenceIn(step_order=1, name="Email #1", subject="", body=campaign.offer, delay_days=0),
         CampaignSequenceIn(step_order=2, name="Follow-up #1", subject="", body="", delay_days=campaign.follow_up_days),
         CampaignSequenceIn(step_order=3, name="Follow-up #2", subject="", body="", delay_days=campaign.follow_up_days * 2),
+        CampaignSequenceIn(step_order=4, name="Follow-up #3", subject="", body="", delay_days=campaign.follow_up_days * 3),
     ]
+
+
+def _automation_marker(key: str, value: object) -> str:
+    return f"automation:{key}={value}"
+
+
+def _automation_value(campaign: Campaign, key: str, default: str) -> str:
+    prefix = f"automation:{key}="
+    for item in campaign.website_filters or []:
+        if isinstance(item, str) and item.startswith(prefix):
+            return item.removeprefix(prefix)
+    return default
+
+
+def _clean_website_filters(filters: list[str]) -> list[str]:
+    return [item for item in filters if not str(item).startswith("automation:")]
+
+
+def _campaign_payload(data: dict, *, include_defaults: bool = False) -> dict:
+    has_automation = include_defaults or "working_hours" in data or "daily_send_limit" in data or "website_filters" in data
+    working_hours = data.pop("working_hours", "09:00-17:00")
+    daily_send_limit = data.pop("daily_send_limit", 50)
+    if has_automation:
+        filters = _clean_website_filters(list(data.get("website_filters") or []))
+        data["website_filters"] = [*filters, _automation_marker("working_hours", working_hours), _automation_marker("daily_send_limit", daily_send_limit)]
+    return data
 
 
 def _replace_sequence(db: Session, campaign: Campaign, sequence: list[CampaignSequenceIn]) -> None:
@@ -227,7 +254,17 @@ def _campaign_out(db: Session, campaign: Campaign) -> CampaignOut:
     sent = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.campaign_id == campaign.id, EmailMessage.sent_at.is_not(None))) or 0
     replies = db.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id, Lead.status.in_([LeadStatus.interested, LeadStatus.replied]))) or 0
     sequence = list(db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all())
-    return CampaignOut.model_validate(campaign, from_attributes=True).model_copy(update={"leads": lead_count, "sent": sent, "replies": replies, "sequence": sequence})
+    return CampaignOut.model_validate(campaign, from_attributes=True).model_copy(
+        update={
+            "leads": lead_count,
+            "sent": sent,
+            "replies": replies,
+            "sequence": sequence,
+            "website_filters": _clean_website_filters(campaign.website_filters or []),
+            "working_hours": _automation_value(campaign, "working_hours", "09:00-17:00"),
+            "daily_send_limit": int(_automation_value(campaign, "daily_send_limit", "50")),
+        }
+    )
 
 
 def _lead_out(lead: Lead) -> LeadOut:
@@ -246,6 +283,8 @@ def _lead_out(lead: Lead) -> LeadOut:
         status=_display_status(lead.status),
         campaign_id=lead.campaign_id,
         campaign=lead.campaign.name if lead.campaign else None,
+        notes=lead.notes,
+        revenue=float(lead.revenue or 0),
         created_at=lead.created_at,
     )
 
@@ -257,9 +296,71 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
 def _provider_error(exc: Exception) -> HTTPException:
     if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError)):
         return HTTPException(status_code=503, detail=str(exc))
-    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError)):
+    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError)):
         return HTTPException(status_code=502, detail=str(exc))
     return HTTPException(status_code=500, detail="Provider request failed.")
+
+
+def _icp_score(analysis: AnalysisOut, lead: Lead) -> int:
+    score = 40
+    if lead.website:
+        score += 10
+    if lead.email:
+        score += 10
+    if analysis.services:
+        score += 10
+    if analysis.technologies:
+        score += 10
+    if analysis.weaknesses:
+        score += 15
+    if analysis.industry and lead.industry and analysis.industry.lower() in lead.industry.lower():
+        score += 5
+    return max(0, min(100, score))
+
+
+def _analysis_summary_with_score(analysis: AnalysisOut, score: int) -> str:
+    return f"ICP score: {score}/100. {analysis.summary}".strip()
+
+
+def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, lead: Lead) -> None:
+    if not lead.website:
+        return
+    try:
+        snapshot = collect_website(lead.website)
+        result = analyze_company_website(
+            company=lead.company,
+            website=snapshot.url,
+            niche=lead.industry or lead.niche,
+            page_title=snapshot.title,
+            meta_description=snapshot.meta_description,
+            page_text=snapshot.text,
+            technologies=snapshot.technologies,
+        )
+    except Exception as exc:
+        lead.notes = "\n".join(part for part in [lead.notes or "", f"Website analysis pending: {exc}"] if part)
+        return
+    score = _icp_score(result, lead)
+    analysis = WebsiteAnalysis(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        lead_id=lead.id,
+        company=result.company or lead.company,
+        website=result.website or lead.website,
+        description=result.description,
+        industry=result.industry,
+        location=result.location,
+        niche=result.niche,
+        products_services=result.products_services,
+        services=result.services,
+        technologies=result.technologies,
+        strengths=result.strengths,
+        weaknesses=result.weaknesses,
+        summary=_analysis_summary_with_score(result, score),
+    )
+    db.add(analysis)
+    lead.industry = lead.industry or result.industry
+    lead.niche = lead.niche or result.niche
+    lead.notes = "\n".join(part for part in [lead.notes or "", f"ICP score: {score}/100", result.summary] if part)
 
 
 def _default_settings() -> dict:
@@ -290,16 +391,28 @@ def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardM
     sent = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.sent_at.is_not(None))) or 0
     delivered = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.delivered_at.is_not(None))) or 0
     opened = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.opened_at.is_not(None))) or 0
+    clicked = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.clicked_at.is_not(None))) or 0
     bounced = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.bounced_at.is_not(None))) or 0
     replied = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.replied_at.is_not(None))) or 0
     meetings = db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == LeadStatus.meeting)) or 0
     won = db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == LeadStatus.won)) or 0
     revenue = float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(lead_scope, Lead.status == LeadStatus.won)) or 0)
+    revenue_forecast = float(
+        db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(lead_scope, Lead.status.in_([LeadStatus.interested, LeadStatus.meeting, LeadStatus.won]))) or 0
+    )
     plan = _plan_for_workspace(db, user_id, workspace)
     usage = _usage_for_workspace(db, workspace)
     funnel = [
         {"status": status.value, "count": db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == status)) or 0}
         for status in [LeadStatus.new, LeadStatus.qualified, LeadStatus.contacted, LeadStatus.interested, LeadStatus.meeting, LeadStatus.won]
+    ]
+    pipeline = [
+        {
+            "status": status.value,
+            "count": db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == status)) or 0,
+            "revenue": float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(lead_scope, Lead.status == status)) or 0),
+        }
+        for status in [LeadStatus.new, LeadStatus.qualified, LeadStatus.contacted, LeadStatus.interested, LeadStatus.meeting, LeadStatus.won, LeadStatus.lost]
     ]
     mrr = float(PLAN_LIMITS[plan]["mrr"])
     return DashboardMetrics(
@@ -312,13 +425,16 @@ def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardM
         bounces=bounced,
         open_rate=0 if sent == 0 else round(opened / sent * 100, 1),
         reply_rate=0 if sent == 0 else round(replied / sent * 100, 1),
+        ctr=0 if sent == 0 else round(clicked / sent * 100, 1),
         conversion_rate=0 if leads == 0 else round(won / leads * 100, 1),
         meetings=meetings,
         revenue=revenue,
+        revenue_forecast=revenue_forecast,
         mrr=mrr,
         arr=mrr * 12,
         revenue_series=[{"period": _month_period(), "revenue": revenue, "mrr": mrr}],
         funnel=funnel,
+        pipeline=pipeline,
         plan=plan,
         usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends, "limits": PLAN_LIMITS[plan]},
     )
@@ -327,7 +443,7 @@ def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardM
 @router.post("/campaigns", response_model=CampaignOut)
 def create_campaign(payload: CampaignCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
-    data = payload.model_dump(exclude={"sequence"})
+    data = _campaign_payload(payload.model_dump(exclude={"sequence"}), include_defaults=True)
     campaign = Campaign(user_id=user_id, workspace_id=workspace.id, **data, status=CampaignStatus.scheduled if payload.schedule_at else CampaignStatus.draft)
     db.add(campaign)
     db.flush()
@@ -352,7 +468,7 @@ def update_campaign(campaign_id: UUID, payload: CampaignUpdate, request: Request
     campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    data = payload.model_dump(exclude_unset=True, exclude={"sequence"})
+    data = _campaign_payload(payload.model_dump(exclude_unset=True, exclude={"sequence"}))
     for key, value in data.items():
         if key == "status" and value:
             value = CampaignStatus(value)
@@ -459,6 +575,8 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
     _enforce_usage(db, user_id, workspace, "leads")
     lead = Lead(user_id=user_id, workspace_id=workspace.id, **payload.model_dump(exclude={"status"}), status=_status(payload.status), niche=payload.industry)
     db.add(lead)
+    db.flush()
+    _analyze_lead_if_possible(db, user_id, workspace, lead)
     log_event(db, request, user_id, "lead.imported", {"company": lead.company})
     _notify(db, user_id, NotificationKind.success, "Lead imported", f"{lead.company} was added to your pipeline.")
     db.commit()
@@ -479,8 +597,24 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
         if exists:
             continue
         _enforce_usage(db, user_id, workspace, "leads")
-        lead = Lead(user_id=user_id, workspace_id=workspace.id, company=item.company, website=item.website, email=str(item.email) if item.email else None, phone=item.phone, linkedin=item.linkedin, industry=item.niche, niche=item.niche, country=item.country, city=item.city)
+        lead = Lead(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            company=item.company,
+            website=item.website,
+            email=str(item.email) if item.email else None,
+            phone=item.phone,
+            linkedin=item.linkedin,
+            industry=item.industry or item.niche,
+            niche=item.niche,
+            country=item.country,
+            city=item.city,
+            notes=item.notes,
+            revenue=item.revenue,
+        )
         db.add(lead)
+        db.flush()
+        _analyze_lead_if_possible(db, user_id, workspace, lead)
         saved.append(lead)
     log_event(db, request, user_id, "lead.imported", {"count": len(saved), **payload.model_dump()})
     _notify(db, user_id, NotificationKind.success, "Leads imported", f"{len(saved)} leads were added to your workspace.")
@@ -586,7 +720,7 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
         technologies=result.technologies,
         strengths=result.strengths,
         weaknesses=result.weaknesses,
-        summary=result.summary,
+        summary=_analysis_summary_with_score(result, result.icp_score),
     )
     db.add(analysis)
     if lead:
@@ -740,11 +874,11 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     return message
 
 
-@router.get("/inbox")
-def inbox(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[dict]:
+@router.get("/inbox", response_model=list[EmailOut])
+def inbox(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[EmailMessage]:
     workspace = _current_workspace(db, user_id)
     messages = db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.direction == "inbound").order_by(EmailMessage.created_at.desc())).all()
-    return [{"id": str(message.id), "subject": message.subject, "body": message.body, "tags": message.tags, "created_at": message.created_at.isoformat()} for message in messages]
+    return list(messages)
 
 
 @router.get("/workspace", response_model=WorkspaceOut)

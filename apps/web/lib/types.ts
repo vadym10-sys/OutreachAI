@@ -8,13 +8,16 @@ export type DashboardMetrics = {
   bounces: number;
   open_rate: number;
   reply_rate: number;
+  ctr: number;
   conversion_rate: number;
   meetings: number;
   revenue: number;
+  revenue_forecast: number;
   mrr: number;
   arr: number;
   revenue_series: Array<Record<string, number | string>>;
   funnel: Array<{ status: string; count: number }>;
+  pipeline: Array<{ status: string; count: number; revenue: number }>;
   plan: string;
   usage: Record<string, unknown>;
 };
@@ -45,6 +48,8 @@ export type Campaign = {
   status: string;
   follow_up_days: number;
   timezone: string;
+  working_hours: string;
+  daily_send_limit: number;
   sequence: CampaignSequence[];
   leads: number;
   sent: number;
@@ -63,6 +68,8 @@ export type Lead = {
   status: string;
   campaign_id?: string | null;
   campaign?: string | null;
+  notes?: string | null;
+  revenue?: number;
 };
 
 export type Email = {
@@ -75,12 +82,15 @@ export type Email = {
   cta: string;
   follow_up_1: string;
   follow_up_2: string;
+  follow_up_3?: string;
   delivery_status: string;
   sent_at?: string | null;
   delivered_at?: string | null;
   opened_at?: string | null;
   bounced_at?: string | null;
   replied_at?: string | null;
+  tags?: Record<string, unknown>;
+  reply_assistant?: Record<string, unknown>;
 };
 
 export type Activity = { id: string; action: string; metadata_json: Record<string, unknown>; created_at: string };

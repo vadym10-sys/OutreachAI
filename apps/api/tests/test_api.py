@@ -19,7 +19,7 @@ os.environ["STRIPE_WEBHOOK_SECRET"] = "whsec_test"
 
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
 from app.models.entities import AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
-from app.schemas.dto import EmailVariantOut  # noqa: E402
+from app.schemas.dto import EmailVariantOut, LeadOut  # noqa: E402
 from app.main import app  # noqa: E402
 
 Base.metadata.create_all(bind=get_engine())
@@ -42,14 +42,39 @@ def test_health() -> None:
     assert response.json()["status"] == "ok"
 
 
-def test_find_leads_requires_production_provider() -> None:
+def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.find_leads",
+        lambda payload: [
+            LeadOut(
+                company="Austin Commercial Build",
+                website="https://example.com",
+                industry=payload.industry or payload.niche,
+                country=payload.country,
+                city=payload.city,
+                email="hello@example.com",
+                notes="source: deterministic provider test",
+            )
+        ],
+    )
     response = client.post(
         "/api/leads/find",
         headers=AUTH,
-        json={"niche": "Real estate", "country": "United States", "city": "Austin"}
+        json={
+            "industry": "Construction",
+            "country": "United States",
+            "city": "Austin",
+            "employee_count": "11-50",
+            "revenue": "1M-10M",
+            "technologies": ["WordPress"],
+            "keywords": ["commercial renovation"],
+            "limit": 5,
+        },
     )
-    assert response.status_code == 503
-    assert "production prospect data provider" in response.json()["detail"]
+    assert response.status_code == 200
+    lead = response.json()[0]
+    assert lead["company"] == "Austin Commercial Build"
+    assert lead["status"] == "New"
 
 
 def test_campaign_lead_email_and_dashboard_flow(monkeypatch) -> None:
@@ -221,7 +246,10 @@ def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
         assert saved.replied_at is not None
         assert saved.reply_body == "Interested."
         lead = db.get(Lead, saved.lead_id)
-        assert lead and lead.status == LeadStatus.interested
+        assert lead and lead.status == LeadStatus.meeting
+        inbound = db.query(EmailMessage).filter(EmailMessage.provider_message_id == "reply:resend-msg-2").one()
+        assert inbound.direction == "inbound"
+        assert inbound.tags["category"] == "Meeting"
     finally:
         db.close()
 
@@ -259,13 +287,19 @@ def test_workspace_onboarding_usage_and_campaign_duplicate() -> None:
             "offer": "book more seller appointments",
             "cta": "Book a call",
             "timezone": "America/New_York",
+            "working_hours": "08:00-16:00",
+            "daily_send_limit": 75,
             "sequence": [
                 {"step_order": 1, "name": "Email #1", "subject": "Seller appointment idea", "body": "Intro", "delay_days": 0},
                 {"step_order": 2, "name": "Follow-up #1", "subject": "Following up", "body": "Follow", "delay_days": 3},
+                {"step_order": 3, "name": "Follow-up #2", "subject": "Second follow up", "body": "Follow 2", "delay_days": 7},
+                {"step_order": 4, "name": "Follow-up #3", "subject": "Final follow up", "body": "Follow 3", "delay_days": 12},
             ],
         },
     ).json()
     assert campaign["sequence"][0]["name"] == "Email #1"
+    assert campaign["working_hours"] == "08:00-16:00"
+    assert campaign["daily_send_limit"] == 75
 
     duplicate = client.post(f"/api/campaigns/{campaign['id']}/duplicate", headers=AUTH)
     assert duplicate.status_code == 200

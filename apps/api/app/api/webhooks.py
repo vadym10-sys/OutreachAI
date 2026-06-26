@@ -193,6 +193,17 @@ def _event_reply_body(data: dict) -> str:
     return str(data.get("text") or data.get("html") or data.get("reply") or data.get("message") or "")
 
 
+def _reply_category(reply_body: str, assistant: dict) -> str:
+    text = " ".join([reply_body, str(assistant.get("next_step") or ""), str(assistant.get("suggested_response") or "")]).lower()
+    if any(term in text for term in ["meeting", "calendar", "book", "call", "demo"]):
+        return "Meeting"
+    if any(term in text for term in ["not interested", "unsubscribe", "remove me", "stop"]):
+        return "Not interested"
+    if any(term in text for term in ["interested", "tell me more", "send", "pricing"]):
+        return "Interested"
+    return "Needs review"
+
+
 @router.post("/resend")
 async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
     settings = get_settings()
@@ -243,6 +254,34 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
             message.reply_assistant = assistant.model_dump()
         except (ProviderConfigurationError, ProviderRequestError):
             message.reply_assistant = {}
+        category = _reply_category(reply_body, message.reply_assistant or {})
+        if category == "Meeting" and lead:
+            lead.status = LeadStatus.meeting
+        if category == "Not interested" and lead:
+            lead.status = LeadStatus.archive
+        inbound_exists = db.scalar(
+            select(EmailMessage.id).where(
+                EmailMessage.provider_message_id == f"reply:{message_id}",
+                EmailMessage.direction == "inbound",
+            )
+        )
+        if inbound_exists is None:
+            db.add(
+                EmailMessage(
+                    user_id=message.user_id,
+                    workspace_id=message.workspace_id,
+                    campaign_id=message.campaign_id,
+                    lead_id=message.lead_id,
+                    direction="inbound",
+                    subject=f"Re: {message.subject}",
+                    preview=reply_body[:240],
+                    body=reply_body,
+                    provider_message_id=f"reply:{message_id}",
+                    delivery_status="received",
+                    reply_assistant=message.reply_assistant or {},
+                    tags={"category": category, "auto_archive": category == "Not interested"},
+                )
+            )
     else:
         return {"received": True, "matched": True, "type": event_type, "ignored": True}
     db.add(AuditLog(user_id=message.user_id, workspace_id=message.workspace_id, action=f"resend.{event_type}", ip_address=request.client.host if request.client else None, metadata_json={"email_id": str(message.id), "provider_message_id": message.provider_message_id}))

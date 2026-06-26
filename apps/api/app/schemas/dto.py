@@ -17,9 +17,15 @@ PLAN_LIMITS = {
 
 
 class LeadFinderRequest(BaseModel):
-    niche: str = Field(min_length=2, max_length=120)
+    niche: str = Field(default="", max_length=120)
+    industry: str = Field(default="", max_length=120)
     country: str = Field(min_length=2, max_length=120)
-    city: str = Field(min_length=1, max_length=120)
+    city: str = Field(default="", max_length=120)
+    employee_count: Optional[str] = None
+    revenue: Optional[str] = None
+    technologies: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    limit: int = Field(default=10, ge=1, le=25)
 
 
 class LeadCreate(BaseModel):
@@ -71,6 +77,8 @@ class LeadOut(BaseModel):
     status: str = "New"
     campaign_id: Optional[UUID] = None
     campaign: Optional[str] = None
+    notes: Optional[str] = None
+    revenue: float = 0
     created_at: Optional[datetime] = None
 
     class Config:
@@ -103,6 +111,7 @@ class AnalysisOut(BaseModel):
     technologies: List[str] = Field(default_factory=list)
     strengths: List[str]
     weaknesses: List[str]
+    icp_score: int = Field(default=0, ge=0, le=100)
     summary: str
 
 
@@ -122,6 +131,8 @@ class CampaignCreate(BaseModel):
     schedule_at: Optional[datetime] = None
     follow_up_days: int = Field(default=3, ge=1, le=30)
     timezone: str = "UTC"
+    working_hours: str = "09:00-17:00"
+    daily_send_limit: int = Field(default=50, ge=1, le=500)
     sequence: list["CampaignSequenceIn"] = Field(default_factory=list)
 
 
@@ -147,6 +158,8 @@ class CampaignOut(BaseModel):
     schedule_at: Optional[datetime]
     follow_up_days: int
     timezone: str = "UTC"
+    working_hours: str = "09:00-17:00"
+    daily_send_limit: int = 50
     sequence: list["CampaignSequenceOut"] = Field(default_factory=list)
     leads: int = 0
     sent: int = 0
@@ -220,6 +233,7 @@ class EmailOut(BaseModel):
     cta: str
     follow_up_1: str = ""
     follow_up_2: str = ""
+    follow_up_3: str = ""
     delivery_status: str = "draft"
     sent_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
@@ -227,6 +241,7 @@ class EmailOut(BaseModel):
     bounced_at: Optional[datetime] = None
     replied_at: Optional[datetime] = None
     reply_assistant: dict[str, Any] = Field(default_factory=dict)
+    tags: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
     class Config:
@@ -243,19 +258,22 @@ class DashboardMetrics(BaseModel):
     bounces: int = 0
     open_rate: float
     reply_rate: float
+    ctr: float = 0
     conversion_rate: float = 0
     meetings: int
     revenue: float
+    revenue_forecast: float = 0
     mrr: float
     arr: float = 0
     revenue_series: list[dict[str, Any]] = Field(default_factory=list)
     funnel: list[dict[str, Any]] = Field(default_factory=list)
+    pipeline: list[dict[str, Any]] = Field(default_factory=list)
     plan: str = "Starter"
     usage: dict[str, Any] = Field(default_factory=dict)
 
 
 class CampaignSequenceIn(BaseModel):
-    step_order: int = Field(ge=1, le=3)
+    step_order: int = Field(ge=1, le=4)
     name: str = Field(default="", max_length=120)
     subject: str = Field(default="", max_length=300)
     body: str = ""

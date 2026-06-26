@@ -98,8 +98,9 @@ def analyze_company_website(
     system = (
         "You are OutreachAI's production website analyst. Return only JSON with keys "
         "company, website, description, industry, location, niche, products_services, "
-        "services, technologies, strengths, weaknesses, summary. Do not invent contact "
-        "details. Mark unknown fields as empty strings or empty arrays."
+        "services, technologies, strengths, weaknesses, icp_score, summary. icp_score "
+        "must be an integer from 0 to 100. Do not invent contact details. Mark unknown "
+        "fields as empty strings or empty arrays."
     )
     data = _json_completion(
         system,
@@ -125,6 +126,7 @@ def analyze_company_website(
         technologies=sorted(set([*_list(data.get("technologies")), *technologies])),
         strengths=_list(data.get("strengths")),
         weaknesses=_list(data.get("weaknesses")),
+        icp_score=max(0, min(100, int(data.get("icp_score") or 0))),
         summary=str(data.get("summary") or ""),
     )
 
@@ -133,7 +135,9 @@ def personalize_email(payload: PersonalizeRequest) -> EmailVariantOut:
     system = (
         "You are OutreachAI's production outbound copywriter. Return only JSON with keys "
         "subject, preview, full_email, cta, cold_email, follow_ups, ab_tests. Write concise, "
-        "personalized B2B email copy in the requested language and tone. Do not use unverified metrics."
+        "personalized B2B email copy in the requested language and tone. Every email must use "
+        "specific details from the provided company, website summary, industry, location, services, "
+        "and pain points when present. Avoid generic first lines. Do not use unverified metrics."
     )
     data = _json_completion(system, payload.model_dump())
     subject = str(data.get("subject") or "")
@@ -145,7 +149,7 @@ def personalize_email(payload: PersonalizeRequest) -> EmailVariantOut:
         full_email=body,
         cta=cta,
         cold_email=str(data.get("cold_email") or f"Subject: {subject}\n\n{body}"),
-        follow_ups=_list(data.get("follow_ups"))[:2],
+        follow_ups=_list(data.get("follow_ups"))[:3],
         ab_tests=_list(data.get("ab_tests")),
     )
 
