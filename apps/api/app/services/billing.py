@@ -5,9 +5,27 @@ import stripe
 from app.core.config import get_settings
 
 PLAN_CATALOG = {
-    "Starter": {"amount": 4900, "currency": "eur", "lookup_key": "outreachai_starter_monthly"},
-    "Pro": {"amount": 14900, "currency": "eur", "lookup_key": "outreachai_pro_monthly"},
-    "Agency": {"amount": 49900, "currency": "eur", "lookup_key": "outreachai_agency_monthly"},
+    "Starter": {
+        "amount": 4900,
+        "currency": "eur",
+        "lookup_key": "outreachai_starter_monthly",
+        "name": "OutreachAI Starter",
+        "description": "OutreachAI Starter monthly subscription with a 14-day free trial.",
+    },
+    "Pro": {
+        "amount": 14900,
+        "currency": "eur",
+        "lookup_key": "outreachai_pro_monthly",
+        "name": "OutreachAI Pro",
+        "description": "OutreachAI Pro monthly subscription with a 14-day free trial.",
+    },
+    "Agency": {
+        "amount": 49900,
+        "currency": "eur",
+        "lookup_key": "outreachai_agency_monthly",
+        "name": "OutreachAI Agency",
+        "description": "OutreachAI Agency monthly subscription with a 14-day free trial.",
+    },
 }
 
 
@@ -55,6 +73,7 @@ def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer
         customer_id = customer.id
     session = stripe.checkout.Session.create(
         mode="subscription",
+        submit_type="pay",
         customer=customer_id,
         line_items=[{"price": price_for_plan(plan), "quantity": 1}],
         success_url=f"{settings.public_app_url.rstrip('/')}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
@@ -62,7 +81,11 @@ def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer
         allow_promotion_codes=True,
         client_reference_id=user_id,
         subscription_data={"trial_period_days": 14, "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": plan}},
-        metadata={"user_id": user_id, "workspace_id": workspace_id, "plan": plan}
+        metadata={"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "product": f"OutreachAI {plan}"},
+        custom_text={
+            "submit": {"message": "Start your OutreachAI subscription. Your plan renews monthly after the 14-day free trial unless canceled."},
+            "after_submit": {"message": "Your OutreachAI workspace will activate after Stripe confirms your subscription."},
+        },
     )
     return {"url": session.url, "id": session.id, "customer_id": customer_id}
 
@@ -104,8 +127,10 @@ def ensure_subscription_catalog() -> list[dict]:
 
     created: list[dict] = []
     for plan, spec in PLAN_CATALOG.items():
-        products = stripe.Product.search(query=f"name:'OutreachAI {plan}' AND active:'true'", limit=1)
-        product = products.data[0] if products.data else stripe.Product.create(name=f"OutreachAI {plan}", metadata={"plan": plan})
+        products = stripe.Product.search(query=f"name:'{spec['name']}' AND active:'true'", limit=1)
+        product = products.data[0] if products.data else stripe.Product.create(name=spec["name"], description=spec["description"], metadata={"plan": plan, "brand": "OutreachAI"})
+        if getattr(product, "name", "") != spec["name"] or getattr(product, "description", "") != spec["description"] or getattr(product, "metadata", {}).get("brand") != "OutreachAI":
+            product = stripe.Product.modify(product.id, name=spec["name"], description=spec["description"], metadata={"plan": plan, "brand": "OutreachAI"})
         prices = stripe.Price.list(lookup_keys=[spec["lookup_key"]], active=True, limit=10)
         price = next((item for item in prices.data if int(getattr(item, "unit_amount", 0) or 0) == spec["amount"] and str(getattr(item, "currency", "")).lower() == spec["currency"] and getattr(item, "recurring", None) and item.recurring.get("interval") == "month"), None)
         if price is None:
