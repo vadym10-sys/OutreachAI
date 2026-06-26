@@ -1,5 +1,9 @@
-const DEFAULT_APP_URL = "https://outreachai.example";
-const DEFAULT_API_URL = "http://localhost:8000";
+const PRODUCTION_APP_URL = "https://outreachaiaiai.com";
+const PRODUCTION_API_URL = "https://outreachai-api-production.up.railway.app";
+const LOCAL_API_URL = "http://localhost:8000";
+
+const DEFAULT_APP_URL = process.env.NODE_ENV === "production" ? PRODUCTION_APP_URL : "https://outreachai.example";
+const DEFAULT_API_URL = process.env.NODE_ENV === "production" ? PRODUCTION_API_URL : LOCAL_API_URL;
 
 function normalizeUrl(value: string | undefined, fallback: string) {
   if (!value) {
