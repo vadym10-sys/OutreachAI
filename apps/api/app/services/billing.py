@@ -73,7 +73,6 @@ def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer
         customer_id = customer.id
     session = stripe.checkout.Session.create(
         mode="subscription",
-        submit_type="pay",
         customer=customer_id,
         line_items=[{"price": price_for_plan(plan), "quantity": 1}],
         success_url=f"{settings.public_app_url.rstrip('/')}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
