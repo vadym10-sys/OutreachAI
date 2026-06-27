@@ -834,6 +834,22 @@ class AdminSummaryOut(BaseModel):
     system_health: dict[str, Any]
 
 
+class OwnerFeatureFlagsOut(BaseModel):
+    ai_ceo_voice: bool = False
+    experimental_features: bool = False
+    admin_nav: bool = False
+    analytics_nav: bool = False
+    ai_marketplace: bool = False
+
+
+class OwnerFeatureFlagsUpdate(BaseModel):
+    ai_ceo_voice: Optional[bool] = None
+    experimental_features: Optional[bool] = None
+    admin_nav: Optional[bool] = None
+    analytics_nav: Optional[bool] = None
+    ai_marketplace: Optional[bool] = None
+
+
 class ActivityOut(BaseModel):
     id: UUID
     action: str
@@ -842,6 +858,19 @@ class ActivityOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class OwnerConsoleOut(BaseModel):
+    executive_overview: dict[str, Any]
+    revenue: dict[str, float]
+    customers: dict[str, int]
+    subscriptions: dict[str, int]
+    ai_usage: dict[str, int]
+    product_analytics: dict[str, Any]
+    error_monitoring: dict[str, Any]
+    system_health: dict[str, str]
+    feature_flags: OwnerFeatureFlagsOut
+    audit_logs: list[ActivityOut]
 
 
 class NotificationOut(BaseModel):

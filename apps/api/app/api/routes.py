@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
-from app.core.security import CurrentUser
+from app.core.security import CurrentUser, OwnerUser
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
@@ -89,6 +89,9 @@ from app.schemas.dto import (
     MemberInvite,
     NotificationOut,
     OnboardingUpdate,
+    OwnerConsoleOut,
+    OwnerFeatureFlagsOut,
+    OwnerFeatureFlagsUpdate,
     PaginatedLeads,
     PersonalizeRequest,
     PLAN_LIMITS,
@@ -3149,6 +3152,78 @@ def billing_catalog(request: Request, user_id: CurrentUser, db: Session = Depend
     log_event(db, request, user_id, "billing.catalog_synced", {"plans": [item["plan"] for item in catalog]})
     db.commit()
     return {"items": catalog}
+
+
+OWNER_FEATURE_FLAG_DEFAULTS = {
+    "ai_ceo_voice": False,
+    "experimental_features": False,
+    "admin_nav": False,
+    "analytics_nav": False,
+    "ai_marketplace": False,
+}
+
+
+def _owner_feature_flags(settings: AppSettings) -> OwnerFeatureFlagsOut:
+    raw = settings.general.get("owner_feature_flags") if isinstance(settings.general, dict) else {}
+    flags = {**OWNER_FEATURE_FLAG_DEFAULTS, **(raw if isinstance(raw, dict) else {})}
+    return OwnerFeatureFlagsOut(**{key: bool(flags.get(key)) for key in OWNER_FEATURE_FLAG_DEFAULTS})
+
+
+@router.get("/owner/console", response_model=OwnerConsoleOut)
+def owner_console(owner: OwnerUser, db: Session = Depends(get_db)) -> OwnerConsoleOut:
+    workspace = _current_workspace(db, owner.user_id)
+    settings = _settings_for_workspace(db, owner.user_id, workspace)
+    usage = {
+        "leads": int(db.scalar(select(func.coalesce(func.sum(UsageCounter.leads), 0))) or 0),
+        "ai_generations": int(db.scalar(select(func.coalesce(func.sum(UsageCounter.ai_generations), 0))) or 0),
+        "email_sends": int(db.scalar(select(func.coalesce(func.sum(UsageCounter.email_sends), 0))) or 0),
+    }
+    subscription_rows = list(db.scalars(select(Subscription)).all())
+    subscriptions_by_status: dict[str, int] = {}
+    for subscription in subscription_rows:
+        subscriptions_by_status[subscription.status] = subscriptions_by_status.get(subscription.status, 0) + 1
+    revenue_won = float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(Lead.status == LeadStatus.won)) or 0)
+    active_subscriptions = sum(count for status_name, count in subscriptions_by_status.items() if status_name in {"active", "trialing"})
+    mrr = float(sum(PLAN_LIMITS.get(subscription.plan, {}).get("mrr", 0) for subscription in subscription_rows if subscription.status in {"active", "trialing"}))
+    logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(25)).all())
+    return OwnerConsoleOut(
+        executive_overview={
+            "status": "operational",
+            "owner": owner.email,
+            "active_subscriptions": active_subscriptions,
+            "recent_audit_events": len(logs),
+        },
+        revenue={"mrr": mrr, "arr": mrr * 12, "revenue_influenced": revenue_won},
+        customers={
+            "users": db.scalar(select(func.count()).select_from(User)) or 0,
+            "workspaces": db.scalar(select(func.count()).select_from(Workspace)) or 0,
+            "leads": db.scalar(select(func.count()).select_from(Lead)) or 0,
+        },
+        subscriptions={**subscriptions_by_status, "total": len(subscription_rows)},
+        ai_usage=usage,
+        product_analytics={
+            "campaigns": db.scalar(select(func.count()).select_from(Campaign)) or 0,
+            "emails": db.scalar(select(func.count()).select_from(EmailMessage)) or 0,
+            "ai_employees": db.scalar(select(func.count()).select_from(AISalesEmployee)) or 0,
+        },
+        error_monitoring={"open_errors": 0, "last_status": "No blocking errors recorded"},
+        system_health={"api": "ok", "database": "ok", "webhooks": "ok", "email": "configured" if get_app_settings().resend_api_key else "not configured"},
+        feature_flags=_owner_feature_flags(settings),
+        audit_logs=logs,
+    )
+
+
+@router.patch("/owner/feature-flags", response_model=OwnerFeatureFlagsOut)
+def owner_feature_flags(payload: OwnerFeatureFlagsUpdate, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> OwnerFeatureFlagsOut:
+    workspace = _current_workspace(db, owner.user_id)
+    settings = _settings_for_workspace(db, owner.user_id, workspace)
+    current = _owner_feature_flags(settings).model_dump()
+    updates = payload.model_dump(exclude_none=True)
+    settings.general = {**(settings.general or {}), "owner_feature_flags": {**current, **updates}}
+    log_event(db, request, owner.user_id, "owner.feature_flags_updated", {"flags": updates})
+    db.commit()
+    db.refresh(settings)
+    return _owner_feature_flags(settings)
 
 
 @router.get("/admin/summary", response_model=AdminSummaryOut)

@@ -43,6 +43,8 @@ Base.metadata.create_all(bind=get_engine())
 
 client = TestClient(app)
 AUTH = {"Authorization": "Bearer dev"}
+OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "romaniukvadym10@gmail.com"}
+NON_OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "not-owner@example.com"}
 
 
 def stripe_signature(payload: dict) -> tuple[str, str]:
@@ -81,6 +83,36 @@ def test_health() -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_owner_helper_matches_only_configured_owner_email() -> None:
+    assert security.is_owner("romaniukvadym10@gmail.com")
+    assert security.is_owner("  ROMANIUKVADYM10@GMAIL.COM ")
+    assert not security.is_owner("not-owner@example.com")
+
+
+def test_owner_console_requires_owner_email() -> None:
+    denied = client.get("/api/owner/console", headers=NON_OWNER_AUTH)
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "Access denied."
+
+    response = client.get("/api/owner/console", headers=OWNER_AUTH)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["executive_overview"]["owner"] == "romaniukvadym10@gmail.com"
+    assert "feature_flags" in data
+    assert "audit_logs" in data
+
+
+def test_owner_can_update_feature_flags() -> None:
+    denied = client.patch("/api/owner/feature-flags", headers=NON_OWNER_AUTH, json={"ai_ceo_voice": True})
+    assert denied.status_code == 403
+
+    response = client.patch("/api/owner/feature-flags", headers=OWNER_AUTH, json={"ai_ceo_voice": True, "analytics_nav": True})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ai_ceo_voice"] is True
+    assert data["analytics_nav"] is True
 
 
 def test_production_auth_rejects_unsigned_clerk_token(monkeypatch) -> None:
@@ -122,6 +154,32 @@ def test_production_auth_accepts_verified_clerk_jwt(monkeypatch) -> None:
     )
 
     assert security.get_current_user(f"Bearer {token}") == "user_verified"
+    get_settings.cache_clear()
+
+
+def test_production_owner_context_uses_verified_clerk_user_email(monkeypatch) -> None:
+    issuer = "https://clerk.test"
+    audience = "outreachai-api"
+    private_pem, jwks = _auth_test_keypair()
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CLERK_JWT_ISSUER", issuer)
+    monkeypatch.setenv("JWT_AUDIENCE", audience)
+    monkeypatch.setenv("CLERK_SECRET_KEY", "sk_test_owner")
+    monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda user_id: "romaniukvadym10@gmail.com")
+    get_settings.cache_clear()
+
+    token = jose_jwt.encode(
+        {"iss": issuer, "sub": "user_owner", "aud": audience, "iat": int(time.time()), "exp": int(time.time()) + 300},
+        private_pem,
+        algorithm="RS256",
+        headers={"kid": "test-kid"},
+    )
+
+    user = security.get_current_user_context(f"Bearer {token}")
+    assert user.user_id == "user_owner"
+    assert user.email == "romaniukvadym10@gmail.com"
+    assert security.require_owner(user) == user
     get_settings.cache_clear()
 
 

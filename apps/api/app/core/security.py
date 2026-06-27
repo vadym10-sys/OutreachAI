@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated, Optional
 
@@ -10,6 +11,14 @@ import httpx
 from jose import JWTError, jwt
 
 from app.core.config import get_settings
+
+OWNER_EMAIL = "romaniukvadym10@gmail.com"
+
+
+@dataclass(frozen=True)
+class AuthenticatedUser:
+    user_id: str
+    email: str = ""
 
 
 class SlidingWindowRateLimiter:
@@ -114,3 +123,85 @@ def get_current_user(authorization: Annotated[Optional[str], Header()] = None) -
 
 
 CurrentUser = Annotated[str, Depends(get_current_user)]
+
+
+def _email_from_claims(claims: dict) -> str:
+    for key in ("email", "primary_email_address", "email_address"):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    email_addresses = claims.get("email_addresses")
+    if isinstance(email_addresses, list):
+        for item in email_addresses:
+            if isinstance(item, dict):
+                value = item.get("email_address") or item.get("email")
+                if isinstance(value, str) and value.strip():
+                    return value.strip().lower()
+    return ""
+
+
+@lru_cache(maxsize=256)
+def _fetch_clerk_user_email(user_id: str) -> str:
+    settings = get_settings()
+    if not settings.clerk_secret_key or settings.clerk_secret_key == "dev":
+        return ""
+
+    response = httpx.get(
+        f"https://api.clerk.com/v1/users/{user_id}",
+        headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
+        timeout=5,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    primary_id = payload.get("primary_email_address_id")
+    email_addresses = payload.get("email_addresses")
+    if isinstance(email_addresses, list):
+        primary = next((item for item in email_addresses if isinstance(item, dict) and item.get("id") == primary_id), None)
+        ordered = [primary] if primary else []
+        ordered.extend(item for item in email_addresses if item is not primary)
+        for item in ordered:
+            if isinstance(item, dict):
+                value = item.get("email_address") or item.get("email")
+                if isinstance(value, str) and value.strip():
+                    return value.strip().lower()
+    return ""
+
+
+def get_current_user_context(
+    authorization: Annotated[Optional[str], Header()] = None,
+    x_test_user_email: Annotated[Optional[str], Header(alias="X-Test-User-Email")] = None,
+) -> AuthenticatedUser:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+
+    token = authorization.removeprefix("Bearer ").strip()
+    settings = get_settings()
+
+    if settings.app_env == "development" and token == "dev":
+        return AuthenticatedUser(user_id="dev_user", email=(x_test_user_email or "").strip().lower())
+
+    claims = _verify_clerk_token(token)
+    user_id = str(claims["sub"])
+    email = _email_from_claims(claims)
+    if not email:
+        try:
+            email = _fetch_clerk_user_email(user_id)
+        except (httpx.HTTPError, ValueError) as exc:
+            raise _unauthorized("Unable to verify owner email") from exc
+    return AuthenticatedUser(user_id=user_id, email=email)
+
+
+CurrentUserContext = Annotated[AuthenticatedUser, Depends(get_current_user_context)]
+
+
+def is_owner(email: str) -> bool:
+    return email.strip().lower() == OWNER_EMAIL
+
+
+def require_owner(user: CurrentUserContext) -> AuthenticatedUser:
+    if not is_owner(user.email):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+    return user
+
+
+OwnerUser = Annotated[AuthenticatedUser, Depends(require_owner)]

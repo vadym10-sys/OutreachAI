@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserButton } from "@clerk/nextjs";
-import { BarChart3, Bot, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, Users } from "lucide-react";
-import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { UserButton, useUser } from "@clerk/nextjs";
+import { BarChart3, Bot, CreditCard, Crown, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, Users } from "lucide-react";
+import { e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { AICEOVoiceBriefing } from "@/components/ai-ceo-voice-briefing";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -21,6 +21,7 @@ const nav = [
   { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3, featureFlag: "NEXT_PUBLIC_SHOW_ANALYTICS_NAV" },
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
+  { href: "/dashboard/owner", labelKey: "nav.owner", icon: Crown, ownerOnly: true },
   { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
 ];
 
@@ -29,10 +30,43 @@ const featureFlags = {
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };
 
+function currentE2EUserEmail() {
+  try {
+    if (typeof window === "undefined") return e2eUserEmail;
+    return window.localStorage.getItem("outreachai.e2eUserEmail") || e2eUserEmail;
+  } catch (error) {
+    console.error("Owner test email lookup failed", error);
+    return e2eUserEmail;
+  }
+}
+
+function useOwnerAccess() {
+  const [testEmail, setTestEmail] = useState(e2eUserEmail);
+
+  useEffect(() => {
+    if (isClerkE2EBypass || !hasClerkPublishableKey) {
+      const timer = window.setTimeout(() => setTestEmail(currentE2EUserEmail()), 0);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, []);
+
+  if (!hasClerkPublishableKey || isClerkE2EBypass) {
+    return testEmail.trim().toLowerCase() === ownerEmail;
+  }
+
+  // The no-Clerk branch is required for local/E2E builds where ClerkProvider is intentionally not mounted.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const { user } = useUser();
+  const currentEmail = user?.primaryEmailAddress?.emailAddress || user?.emailAddresses?.[0]?.emailAddress || "";
+  return currentEmail.trim().toLowerCase() === ownerEmail;
+}
+
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
-  const visibleNav = nav.filter((item) => !item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]);
+  const isOwner = useOwnerAccess();
+  const visibleNav = nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner));
   const primaryMobileNav = visibleNav.slice(0, 4);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 

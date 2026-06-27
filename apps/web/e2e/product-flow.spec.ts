@@ -107,6 +107,32 @@ test.beforeEach(async ({ page }) => {
       body = { status: "queued" };
     } else if (url.pathname === "/api/settings") {
       body = { general: {}, ai: {}, email: {}, billing: {}, security: {}, api: {} };
+    } else if (url.pathname === "/api/owner/console") {
+      const email = route.request().headers()["x-test-user-email"] || "";
+      if (email.toLowerCase() !== "romaniukvadym10@gmail.com") {
+        await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ detail: "Access denied." }) });
+        return;
+      }
+      body = {
+        executive_overview: { status: "operational", owner: "romaniukvadym10@gmail.com", active_subscriptions: 1, recent_audit_events: 1 },
+        revenue: { mrr: 149, arr: 1788, revenue_influenced: 497 },
+        customers: { users: 3, workspaces: 2, leads: 11 },
+        subscriptions: { active: 1, total: 1 },
+        ai_usage: { leads: 44, ai_generations: 22, email_sends: 7 },
+        product_analytics: { campaigns: 2, emails: 7, ai_employees: 1 },
+        error_monitoring: { open_errors: 0, last_status: "No blocking errors recorded" },
+        system_health: { api: "ok", database: "ok", webhooks: "ok", email: "configured" },
+        feature_flags: { ai_ceo_voice: false, experimental_features: false, admin_nav: false, analytics_nav: false, ai_marketplace: false },
+        audit_logs: [{ id: "77777777-7777-7777-7777-777777777777", action: "owner.console_viewed", metadata_json: {}, created_at: new Date().toISOString() }]
+      };
+    } else if (url.pathname === "/api/owner/feature-flags") {
+      const email = route.request().headers()["x-test-user-email"] || "";
+      if (email.toLowerCase() !== "romaniukvadym10@gmail.com") {
+        await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ detail: "Access denied." }) });
+        return;
+      }
+      const updates = route.request().postDataJSON() as Record<string, boolean>;
+      body = { ai_ceo_voice: false, experimental_features: false, admin_nav: false, analytics_nav: false, ai_marketplace: false, ...updates };
     } else if (url.pathname === "/api/team-router") {
       body = teamRouterDashboard;
     } else if (url.pathname === "/api/team-router/route") {
@@ -213,4 +239,27 @@ test("AI CEO written report is available without exposing broken voice playback"
   await expect(page.getByText("Good morning. This is your AI CEO report.")).toBeVisible();
   await expect(page.getByText("Voice generation is temporarily unavailable. Your executive report is ready below.")).toHaveCount(0);
   await expect(page.getByText("Load failed")).toHaveCount(0);
+});
+
+test("Owner Console is hidden from non-owner users and direct access returns 403", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/dashboard");
+  await expect(page.getByRole("link", { name: /Owner Console/ })).toHaveCount(0);
+
+  await page.goto("/dashboard/owner");
+  await expect(page.getByRole("heading", { name: "Access denied." })).toBeVisible();
+});
+
+test("Owner can open Owner Console and toggle feature flags", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("outreachai.e2eUserEmail", "romaniukvadym10@gmail.com");
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/dashboard");
+  await page.getByRole("link", { name: /Owner Console/ }).click();
+  await expect(page.getByRole("heading", { name: "Owner Console" })).toBeVisible();
+  await expect(page.getByText("Revenue / MRR / ARR")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Feature Flags" })).toBeVisible();
+  await page.getByRole("button", { name: /AI CEO Voice/ }).click();
+  await expect(page.getByText("Enabled").first()).toBeVisible();
 });
