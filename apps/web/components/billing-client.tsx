@@ -27,6 +27,33 @@ function isPlan(value: string | null): value is PlanName {
   return Boolean(value && planNames.includes(value as PlanName));
 }
 
+function safePendingPlan(action: "get" | "set" | "remove", value?: PlanName) {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return null;
+    if (action === "set" && value) {
+      window.localStorage.setItem(pendingPlanKey, value);
+      return value;
+    }
+    if (action === "remove") {
+      window.localStorage.removeItem(pendingPlanKey);
+      return null;
+    }
+    return window.localStorage.getItem(pendingPlanKey);
+  } catch (error) {
+    console.error("Billing localStorage access failed", error);
+    return null;
+  }
+}
+
+function safeRedirect(url: string) {
+  try {
+    window.location.assign(url);
+  } catch (error) {
+    console.error("Redirect failed", error);
+    window.location.href = url;
+  }
+}
+
 async function apiWithToken<T>(path: string, token: string | null, init: RequestInit = {}) {
   return clientApi<T>(path, token || (isClerkE2EBypass ? 'dev' : null), init);
 }
@@ -67,9 +94,9 @@ export function PricingCheckoutButton({ plan, children = 'Subscribe' }: { plan: 
   const [loading, setLoading] = useState(false);
 
   async function startCheckout() {
-    window.localStorage.setItem(pendingPlanKey, plan);
+    safePendingPlan("set", plan);
     if (!hasClerkPublishableKey || !isLoaded || !isSignedIn) {
-      window.location.assign(`/sign-up?plan=${encodeURIComponent(plan)}`);
+      safeRedirect(`/sign-up?plan=${encodeURIComponent(plan)}`);
       return;
     }
     setLoading(true);
@@ -79,8 +106,10 @@ export function PricingCheckoutButton({ plan, children = 'Subscribe' }: { plan: 
         method: 'POST',
         body: JSON.stringify({ plan })
       });
-      window.localStorage.removeItem(pendingPlanKey);
-      window.location.assign(session.url);
+      safePendingPlan("remove");
+      safeRedirect(session.url);
+    } catch (nextError) {
+      console.error("Checkout start failed", nextError);
     } finally {
       setLoading(false);
     }
@@ -95,17 +124,21 @@ export function CheckoutContinuation() {
 
   useEffect(() => {
     if (!isLoaded || !isSignedIn || running) return;
-    const plan = window.localStorage.getItem(pendingPlanKey);
+    const plan = safePendingPlan("get");
     if (!isPlan(plan)) return;
-    window.queueMicrotask(() => {
+    const schedule = typeof window.queueMicrotask === "function" ? window.queueMicrotask : (callback: () => void) => window.setTimeout(callback, 0);
+    schedule(() => {
       setRunning(true);
       void getToken()
         .then((token) => apiWithToken<{ url: string }>('/api/billing/checkout', token, { method: 'POST', body: JSON.stringify({ plan }) }))
         .then((session) => {
-          window.localStorage.removeItem(pendingPlanKey);
-          window.location.assign(session.url);
+          safePendingPlan("remove");
+          safeRedirect(session.url);
         })
-        .catch(() => setRunning(false));
+        .catch((error) => {
+          console.error("Checkout continuation failed", error);
+          setRunning(false);
+        });
     });
   }, [getToken, isLoaded, isSignedIn, running]);
 
@@ -150,7 +183,7 @@ export function BillingWorkspace() {
       const session = current
         ? await apiWithToken<{ url: string }>('/api/billing/portal', authToken, { method: 'POST', body: JSON.stringify({ return_url: `${appUrl}/dashboard/billing` }) })
         : await apiWithToken<{ url: string }>('/api/billing/checkout', authToken, { method: 'POST', body: JSON.stringify({ plan }) });
-      window.location.assign(session.url);
+      safeRedirect(session.url);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Stripe session could not be created.');
     } finally {

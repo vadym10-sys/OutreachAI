@@ -1,5 +1,5 @@
-import { ClerkProvider } from "@clerk/nextjs";
 import type { Metadata } from "next";
+import { AppProviders } from "@/components/app-providers";
 import { appUrl, clerkPublishableKey, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import "./globals.css";
 
@@ -22,19 +22,13 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  if (isClerkE2EBypass || !hasClerkPublishableKey) {
-    return (
-      <html lang="en" data-scroll-behavior="smooth">
-        <body>{children}</body>
-      </html>
-    );
-  }
-
   return (
-    <ClerkProvider publishableKey={clerkPublishableKey}>
-      <html lang="en" data-scroll-behavior="smooth">
-        <body>{children}</body>
-      </html>
-    </ClerkProvider>
+    <html lang="en" data-scroll-behavior="smooth">
+      <body>
+        <AppProviders clerkPublishableKey={clerkPublishableKey} clerkEnabled={!isClerkE2EBypass && hasClerkPublishableKey}>
+          {children}
+        </AppProviders>
+      </body>
+    </html>
   );
 }
