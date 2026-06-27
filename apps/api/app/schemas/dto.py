@@ -658,7 +658,7 @@ class GrowthEngineOut(BaseModel):
 
 class AICEOBriefingRequest(BaseModel):
     length: str = Field(default="1 min", pattern="^(30 sec|1 min|3 min|10 min)$")
-    language: str = Field(default="English", pattern="^(English|Russian|Ukrainian|Polish)$")
+    language: str = Field(default="English", pattern="^(English|Russian|Spanish|American English|French|Italian|Polish|Ukrainian)$")
 
 
 class AICEOBriefingOut(BaseModel):
@@ -676,7 +676,7 @@ class AICEOBriefingOut(BaseModel):
 
 class AICEOQuestionIn(BaseModel):
     question: str = Field(min_length=3, max_length=500)
-    language: str = Field(default="English", pattern="^(English|Russian|Ukrainian|Polish)$")
+    language: str = Field(default="English", pattern="^(English|Russian|Spanish|American English|French|Italian|Polish|Ukrainian)$")
 
 
 class AICEOAnswerOut(BaseModel):

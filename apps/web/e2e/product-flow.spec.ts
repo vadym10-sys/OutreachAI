@@ -145,6 +145,14 @@ for (const width of [320, 390, 480]) {
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
     await expect(page.getByRole("main").getByText("Leads", { exact: true }).first()).toBeVisible();
+    const languageSelect = page.locator('select[aria-label]').first();
+    await languageSelect.selectOption("es");
+    await expect(page.getByRole("heading", { name: "Panel" })).toBeVisible();
+    await page.reload();
+    await expect(page.locator('select').first()).toHaveValue("es");
+    await expect(page.getByRole("heading", { name: "Panel" })).toBeVisible();
+    await page.locator('select').first().selectOption("en");
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Listen AI Report" })).toBeVisible();
     await page.getByRole("button", { name: "Listen AI Report" }).click();
     await expect(page.getByText("Executive voice briefing")).toBeVisible();

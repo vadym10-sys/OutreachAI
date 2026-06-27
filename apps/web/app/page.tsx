@@ -1,6 +1,7 @@
 import { CheckCircle2, Globe2, Mail, Search, ShieldCheck, TrendingUp, Users } from "lucide-react";
 import { SecondaryLink } from "@/components/button";
 import { PricingCheckoutButton } from "@/components/billing-client";
+import { LanguageSwitcher } from "@/components/language-switcher";
 
 const features = [
   { title: "Lead Finder", copy: "Find companies by niche, country, and city with verified enrichment fields.", Icon: Search },
@@ -57,7 +58,8 @@ export default function Home() {
             <a className="inline-flex min-h-11 min-w-8 items-center" href="#pricing">Pricing</a>
             <a className="inline-flex min-h-11 min-w-8 items-center" href="#faq">FAQ</a>
           </div>
-          <div className="w-auto shrink-0">
+          <div className="flex w-auto shrink-0 items-center gap-2">
+            <LanguageSwitcher compact />
             <SecondaryLink href="/sign-in">Login</SecondaryLink>
           </div>
         </nav>

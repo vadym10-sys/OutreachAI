@@ -3,6 +3,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { ClerkFailed, ClerkProvider } from "@clerk/nextjs";
 import Link from "next/link";
+import { I18nProvider } from "@/lib/i18n/provider";
 
 function StabilityFallback({ title = "Something went wrong. Please refresh or sign in again." }: { title?: string }) {
   return (
@@ -62,7 +63,7 @@ export function AppProviders({
   clerkEnabled: boolean;
 }) {
   if (!clerkEnabled || !clerkPublishableKey) {
-    return <ClientErrorBoundary>{children}</ClientErrorBoundary>;
+    return <ClientErrorBoundary><I18nProvider>{children}</I18nProvider></ClientErrorBoundary>;
   }
 
   return (
@@ -71,7 +72,7 @@ export function AppProviders({
         <ClerkFailed>
           <StabilityFallback title="Authentication could not load. Please refresh or sign in again." />
         </ClerkFailed>
-        {children}
+        <I18nProvider>{children}</I18nProvider>
       </ClientErrorBoundary>
     </ClerkProvider>
   );

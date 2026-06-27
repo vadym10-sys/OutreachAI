@@ -1995,6 +1995,36 @@ def _ai_ceo_labels(language: str) -> dict[str, str]:
             "safety": "Я не запускаю кампании, не отправляю письма, не утверждаю действия и не удаляю данные. Все внешние действия требуют вашего подтверждения.",
             "closing": "Моя рекомендация: сначала проверьте возможность с самым высоким уровнем уверенности.",
         },
+        "Spanish": {
+            "opening": "Buenos dias. Este es el informe de tu AI CEO.",
+            "health": "Salud del negocio",
+            "employees": "Informe de empleados de IA",
+            "priorities": "Las tres prioridades principales de hoy",
+            "risks": "Principales riesgos",
+            "opportunities": "Principales oportunidades",
+            "safety": "No lanzo campanas, no envio emails, no apruebo acciones ni elimino datos. Toda accion externa requiere tu aprobacion.",
+            "closing": "Mi recomendacion es revisar primero la oportunidad con mayor confianza.",
+        },
+        "French": {
+            "opening": "Bonjour. Voici le rapport de votre AI CEO.",
+            "health": "Sante de l'entreprise",
+            "employees": "Rapport des employes IA",
+            "priorities": "Les trois priorites du jour",
+            "risks": "Principaux risques",
+            "opportunities": "Principales opportunites",
+            "safety": "Je ne lance pas de campagnes, je n'envoie pas d'emails, je n'approuve pas d'actions et je ne supprime pas de donnees. Toute action externe exige votre approbation.",
+            "closing": "Ma recommandation est d'examiner d'abord l'opportunite avec la confiance la plus elevee.",
+        },
+        "Italian": {
+            "opening": "Buongiorno. Questo e il report del tuo AI CEO.",
+            "health": "Salute del business",
+            "employees": "Report dei dipendenti IA",
+            "priorities": "Le tre priorita principali di oggi",
+            "risks": "Rischi principali",
+            "opportunities": "Opportunita principali",
+            "safety": "Non avvio campagne, non invio email, non approvo azioni e non elimino dati. Ogni azione esterna richiede la tua approvazione.",
+            "closing": "La mia raccomandazione e di rivedere prima l'opportunita con la fiducia piu alta.",
+        },
         "Ukrainian": {
             "opening": "Доброго ранку. Це звіт вашого AI CEO.",
             "health": "Стан бізнесу",
@@ -2016,6 +2046,7 @@ def _ai_ceo_labels(language: str) -> dict[str, str]:
             "closing": "Moja rekomendacja: najpierw sprawdź szansę o najwyższej pewności.",
         },
     }
+    labels["American English"] = labels["English"]
     return labels.get(language, labels["English"])
 
 
