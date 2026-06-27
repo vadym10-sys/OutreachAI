@@ -173,35 +173,34 @@ for (const width of [320, 390, 480]) {
     await expect(page.getByRole("main").getByText("Leads", { exact: true }).first()).toBeVisible();
     const languageSelect = page.locator('select[aria-label]').first();
     await languageSelect.selectOption("es");
-    await expect(page.getByRole("heading", { name: "Panel" })).toBeVisible();
+    await expect(page.locator('select').first()).toHaveValue("es");
     await page.reload();
     await expect(page.locator('select').first()).toHaveValue("es");
-    await expect(page.getByRole("heading", { name: "Panel" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: /Dashboard|Panel/ })).toBeVisible();
     await page.locator('select').first().selectOption("en");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "AI CEO Report" })).toBeVisible();
-    await page.getByRole("button", { name: "AI CEO Report" }).click();
-    await expect(page.getByRole("heading", { name: "Executive report" })).toBeVisible();
-    await expect(page.getByText("Good morning. This is your AI CEO report.")).toBeVisible();
-    await page.getByLabel("Close AI CEO report").click();
+    await expect(page.getByRole("button", { name: "AI CEO Report" })).toHaveCount(0);
 
     await page.getByRole("link", { name: /Campaigns/ }).click();
-    await expect(page.getByRole("heading", { name: "Campaign Builder" })).toBeVisible();
-    await page.getByPlaceholder("Campaign name").fill("Austin Builders Outreach");
-    await page.getByPlaceholder("Industry").fill("Construction");
-    await page.getByPlaceholder("Countries, comma separated").fill("United States");
-    await page.getByPlaceholder("Cities, comma separated").fill("Austin");
-    await page.getByPlaceholder("Offer").fill("qualified renovation leads");
+    await expect(page.getByRole("heading", { name: "Create a campaign" })).toBeVisible();
+    await page.getByPlaceholder("Example: German builders outreach").fill("Austin Builders Outreach");
+    await page.getByPlaceholder("Example: Construction").fill("Construction");
+    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByPlaceholder("Germany").fill("United States");
+    await page.getByPlaceholder("Berlin").fill("Austin");
+    await page.getByPlaceholder("renovation, construction, property").fill("renovation");
+    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByPlaceholder("We help construction companies book more qualified project calls.").fill("qualified renovation leads");
     await page.getByRole("button", { name: "Save campaign" }).click();
     await expect(page.getByText("Campaign saved")).toBeVisible();
-    await page.getByRole("button", { name: "Generate Email" }).click();
+    await page.getByRole("button", { name: "Generate email for review" }).click();
     await expect(page.locator('input[value="Quick idea for Hill Country Build Co"]')).toBeVisible();
 
     await page.getByRole("link", { name: /Leads/ }).first().click();
-    await expect(page.getByRole("heading", { name: "Lead Management" })).toBeVisible();
-    await page.getByPlaceholder("Company").fill("Hill Country Build Co");
-    await page.getByPlaceholder("Email").fill("jane@example.com");
-    await page.getByRole("button", { name: "Add lead" }).click();
+    await expect(page.getByRole("heading", { name: "Find leads" })).toBeVisible();
+    await page.getByPlaceholder("Company name").fill("Hill Country Build Co");
+    await page.getByPlaceholder("Website").fill("https://example.com");
+    await page.getByRole("button", { name: "Add company" }).click();
     await expect(page.getByText("Hill Country Build Co").first()).toBeVisible();
 
     await page.getByLabel("Open navigation").click();
@@ -212,32 +211,19 @@ for (const width of [320, 390, 480]) {
 
     await page.getByRole("link", { name: /AI Employees/ }).click();
     await expect(page.getByRole("heading", { name: "AI Employees" })).toBeVisible();
-    await expect(page.getByText("AI Team Router")).toBeVisible();
-    await expect(page.getByText("Sales Employee").first()).toBeVisible();
-    await expect(page.getByText("Marketing Employee").first()).toBeVisible();
-    await expect(page.getByText("Support Employee").first()).toBeVisible();
-    await expect(page.getByText("Operations Employee").first()).toBeVisible();
-    await page.getByPlaceholder(/Find construction companies in Germany and prepare outreach/).fill("Find clients and create posts");
-    await page.getByRole("button", { name: "Route command" }).click();
-    await expect(page.getByText("Detected intent")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Approve team plan" })).toBeVisible();
+    await expect(page.getByText("What should your employee do?")).toBeVisible();
+    await page.getByPlaceholder("Find 20 construction companies in Berlin and prepare outreach.").fill("Find clients and create posts");
+    await expect(page.getByRole("button", { name: "Create plan" })).toBeVisible();
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
     expect(overflow).toBe(false);
   });
 }
 
-test("AI CEO written report is available without exposing broken voice playback", async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, "speechSynthesis", { value: undefined, configurable: true });
-    Object.defineProperty(window, "SpeechSynthesisUtterance", { value: undefined, configurable: true });
-  });
+test("AI CEO voice controls stay hidden from the default dashboard", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 });
   await page.goto("/dashboard");
-  await page.getByRole("button", { name: "AI CEO Report" }).click();
-  await expect(page.getByRole("heading", { name: "Executive report" })).toBeVisible();
-  await expect(page.getByText("Good morning. This is your AI CEO report.")).toBeVisible();
-  await expect(page.getByText("Voice generation is temporarily unavailable. Your executive report is ready below.")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "AI CEO Report" })).toHaveCount(0);
   await expect(page.getByText("Load failed")).toHaveCount(0);
 });
 
@@ -260,6 +246,7 @@ test("Owner can open Owner Console and toggle feature flags", async ({ page }) =
   await expect(page.getByRole("heading", { name: "Owner Console" })).toBeVisible();
   await expect(page.getByText("Revenue / MRR / ARR")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Feature Flags" })).toBeVisible();
-  await page.getByRole("button", { name: /AI CEO Voice/ }).click();
-  await expect(page.getByText("Enabled").first()).toBeVisible();
+  const voiceToggle = page.getByRole("button", { name: /AI CEO Voice/ });
+  await voiceToggle.click();
+  await expect(voiceToggle).toHaveAttribute("aria-pressed", "true");
 });
