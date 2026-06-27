@@ -206,8 +206,8 @@ for (const width of [320, 390, 480]) {
     await page.getByLabel("Open navigation").click();
     await page.getByRole("link", { name: /Settings/ }).click();
     await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Save profile" }).click();
-    await expect(page.getByText("Profile saved.")).toBeVisible();
+    await page.getByRole("button", { name: "Save workspace" }).first().click();
+    await expect(page.getByText("Workspace saved.")).toBeVisible();
 
     await page.getByRole("link", { name: /AI Employees/ }).click();
     await expect(page.getByRole("heading", { name: "AI Employees" })).toBeVisible();

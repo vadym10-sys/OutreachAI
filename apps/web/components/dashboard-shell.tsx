@@ -15,8 +15,8 @@ const nav = [
   { href: "/dashboard/sales-employees", labelKey: "nav.aiEmployees", icon: Bot },
   { href: "/dashboard/leads", labelKey: "nav.leads", icon: Search },
   { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
-  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Users },
-  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
+  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Users, featureFlag: "NEXT_PUBLIC_SHOW_CRM_NAV" },
+  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, featureFlag: "NEXT_PUBLIC_SHOW_INBOX_NAV" },
   { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3, featureFlag: "NEXT_PUBLIC_SHOW_ANALYTICS_NAV" },
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
@@ -25,6 +25,8 @@ const nav = [
 ];
 
 const featureFlags = {
+  NEXT_PUBLIC_SHOW_CRM_NAV: process.env.NEXT_PUBLIC_SHOW_CRM_NAV === "true",
+  NEXT_PUBLIC_SHOW_INBOX_NAV: process.env.NEXT_PUBLIC_SHOW_INBOX_NAV === "true",
   NEXT_PUBLIC_SHOW_ANALYTICS_NAV: process.env.NEXT_PUBLIC_SHOW_ANALYTICS_NAV === "true",
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };

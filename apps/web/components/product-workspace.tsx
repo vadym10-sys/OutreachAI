@@ -59,6 +59,43 @@ function EmptyState({ title, copy }: { title: string; copy: string }) {
   return <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center"><p className="font-semibold text-ink">{title}</p><p className="mt-2 text-sm text-slate-500">{copy}</p></div>;
 }
 
+function CustomerJourney({ currentStep }: { currentStep: number }) {
+  const steps = [
+    ['Register', 'Your account is ready.'],
+    ['Connect website', 'Add your company so AI understands what you sell.'],
+    ['AI analyzes company', 'OutreachAI prepares the context for better targeting.'],
+    ['Find leads', 'Choose one market and one customer type.'],
+    ['Generate outreach', 'AI writes the first email for review.'],
+    ['Review', 'Check the lead and message before anything is sent.'],
+    ['Approve', 'You decide what goes live.'],
+    ['Campaign running', 'OutreachAI tracks replies and meetings.'],
+    ['Results', 'Use real metrics to improve the next campaign.']
+  ];
+
+  return <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      <div>
+        <p className="text-sm font-semibold text-brand">First success path</p>
+        <h2 className="mt-1 text-xl font-bold text-ink">From signup to first approved campaign</h2>
+      </div>
+      <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">Approval-first</span>
+    </div>
+    <ol className="mt-5 grid gap-3 md:grid-cols-3">
+      {steps.map(([title, copy], index) => {
+        const done = index + 1 < currentStep;
+        const active = index + 1 === currentStep;
+        return <li key={title} className={`rounded-md border p-3 text-sm ${active ? 'border-brand bg-teal-50' : done ? 'border-teal-100 bg-white' : 'border-slate-200 bg-slate-50'}`}>
+          <div className="flex items-center gap-2">
+            <span className={`grid size-7 place-items-center rounded-full text-xs font-bold ${done ? 'bg-brand text-white' : active ? 'bg-ink text-white' : 'bg-white text-slate-500'}`}>{done ? '✓' : index + 1}</span>
+            <p className="font-semibold text-ink">{title}</p>
+          </div>
+          <p className="mt-2 text-slate-600">{copy}</p>
+        </li>;
+      })}
+    </ol>
+  </section>;
+}
+
 function Notice({ message, kind = 'success' }: { message: string; kind?: 'success' | 'error' | 'warning' }) {
   const color = kind === 'error' ? 'border-red-200 bg-red-50 text-red-700' : kind === 'warning' ? 'border-orange-200 bg-orange-50 text-orange-700' : 'border-teal-200 bg-teal-50 text-brand';
   return <div className={`mt-4 rounded-md border px-4 py-3 text-sm ${color}`}>{message}</div>;
@@ -159,6 +196,7 @@ export function DashboardHome() {
         <h2 className="mt-2 text-xl font-bold text-ink">{nextStep}</h2>
         <p className="mt-2 text-sm text-slate-700">Nothing is sent automatically. You review AI work before any email or campaign goes live.</p>
       </section>}
+      <CustomerJourney currentStep={metrics.leads > 0 ? 5 : 4} />
       {error && <Notice message="Your workspace is ready. Live metrics will appear after your first lead or campaign." kind="warning" />}
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {[
@@ -839,6 +877,39 @@ export function InboxAndActivity() {
       .catch((nextError) => setError(friendlyErrorMessage(nextError, 'Inbox data could not be loaded. Please refresh and try again.')))
       .finally(() => setLoading(false));
   }, [api, ready]);
+  if (simpleExperience) {
+    return <div className="min-w-0 space-y-6">
+      <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="text-sm font-semibold text-brand">Replies</p>
+        <h1 className="mt-2 text-2xl font-bold min-[390px]:text-3xl">Customer replies</h1>
+        <p className="mt-2 max-w-2xl text-slate-600">When prospects answer your campaigns, their messages and recommended next steps appear here.</p>
+        <Link href="/dashboard/campaigns" className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">Create a campaign</Link>
+      </header>
+      {error && <Notice message="Replies are temporarily unavailable. Your campaigns and leads are still safe." kind="warning" />}
+      {loading ? <Skeleton lines={4} /> : <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-xl font-bold text-ink">Replies to review</h2>
+        <p className="mt-1 text-sm text-slate-600">OutreachAI will classify replies and suggest a next action after your first campaign is live.</p>
+        {inbox.length ? <div className="mt-5 space-y-3">{inbox.map((item) => <article key={item.id} className="rounded-md border border-slate-200 p-4">
+          <div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between">
+            <p className="font-semibold text-ink">{item.subject}</p>
+            <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">{String(item.tags?.category || item.delivery_status)}</span>
+          </div>
+          <p className="mt-2 text-sm text-slate-600">{item.preview || item.body}</p>
+          {Boolean(item.reply_assistant?.next_step) && <p className="mt-3 rounded-md bg-slate-50 p-3 text-sm font-semibold text-ink">Next step: {String(item.reply_assistant?.next_step)}</p>}
+        </article>)}</div> : <div className="mt-5 space-y-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5">
+          <div>
+            <h3 className="font-bold text-ink">No replies yet</h3>
+            <p className="mt-2 text-sm text-slate-600">Replies arrive after a campaign sends approved emails. Start with one small campaign, review the AI email, then approve it.</p>
+          </div>
+          <Link href="/dashboard/campaigns" className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white min-[430px]:w-auto">Prepare campaign</Link>
+        </div>}
+      </section>}
+      <details className="rounded-lg border border-slate-200 bg-white p-5">
+        <summary className="cursor-pointer font-semibold text-ink">Activity log</summary>
+        {activity.length ? <div className="mt-4 space-y-3">{activity.slice(0, 10).map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item.action.replaceAll('.', ' ')}</p><p className="text-slate-500">{new Date(item.created_at).toLocaleString()}</p></div>)}</div> : <p className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">Activity will appear after leads, emails, replies, or billing changes happen.</p>}
+      </details>
+    </div>;
+  }
   return <div className="min-w-0"><h1 className="text-2xl font-bold min-[390px]:text-3xl">Unified Inbox</h1><p className="mt-2 text-slate-600">Replies, AI categories, notifications, tags, and activity events in one operational view.</p>{error && <Notice message={error} kind="error" />}{loading ? <div className="mt-6"><Skeleton lines={4} /></div> : <div className="mt-6 grid gap-6 lg:grid-cols-2"><section className="rounded-lg border border-slate-200 bg-white p-5 lg:col-span-2"><h2 className="font-bold">Replies</h2>{inbox.length ? <div className="mt-4 space-y-3">{inbox.map((item) => <article key={item.id} className="rounded-md bg-slate-50 p-3"><div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><p className="font-semibold">{item.subject}</p><span className="w-fit rounded-full bg-white px-2 py-1 text-xs font-semibold">{String(item.tags?.category || item.delivery_status)}</span></div><p className="mt-2 text-sm text-slate-600">{item.preview || item.body}</p>{Boolean(item.reply_assistant?.next_step) && <p className="mt-2 text-xs font-semibold text-brand">Next step: {String(item.reply_assistant?.next_step)}</p>}</article>)}</div> : <EmptyState title="No replies yet" copy="Inbound replies will be categorized and routed here automatically." />}</section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Notifications</h2>{notifications.length ? <div className="mt-4 space-y-3">{notifications.map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3"><p className="font-semibold">{item.title}</p><p className="text-sm text-slate-500">{item.message}</p></div>)}</div> : <EmptyState title="No notifications" copy="Success, error, warning, and background job updates will appear here." />}</section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Activity</h2>{activity.length ? <div className="mt-4 space-y-3">{activity.map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3"><p className="font-semibold">{item.action.replaceAll('.', ' ')}</p><p className="text-sm text-slate-500">{new Date(item.created_at).toLocaleString()}</p></div>)}</div> : <EmptyState title="No activity" copy="Every campaign, lead, email, and reply action will be logged here." />}</section></div>}</div>;
 }
 
@@ -857,9 +928,68 @@ export function SettingsAndProfile() {
       .then(([p, s, w, nextPlans, nextUsage]) => { setProfile(p); setSettings(s); setWorkspace(w); setPlans(Array.isArray(nextPlans) ? nextPlans : []); setUsage(nextUsage?.usage ? nextUsage : null); })
       .catch((nextError) => setNotice(friendlyErrorMessage(nextError, 'Settings could not be loaded. Please refresh and try again.')));
   }, [api, ready]);
-  async function saveProfile(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); const saved = await api<Profile>('/api/profile', { method: 'PUT', body: JSON.stringify({ workspace: data.get('workspace'), company: data.get('company'), avatar_url: data.get('avatar_url') || null, timezone: data.get('timezone'), language: aiLanguage }) }); setProfile(saved); setNotice('Profile saved.'); }
+  async function saveProfile(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); const saved = await api<Profile>('/api/profile', { method: 'PUT', body: JSON.stringify({ workspace: data.get('workspace'), company: data.get('company'), avatar_url: data.get('avatar_url') || null, timezone: data.get('timezone'), language: aiLanguage }) }); setProfile(saved); setNotice('Workspace saved.'); }
   async function saveSettings() { if (!settings) return; await api<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); setNotice('Settings saved.'); }
   const members = workspace?.members || [];
+  if (simpleExperience) {
+    return <div className="min-w-0 space-y-6">
+      <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="text-sm font-semibold text-brand">Workspace setup</p>
+        <h1 className="mt-2 text-2xl font-bold min-[390px]:text-3xl">Settings</h1>
+        <p className="mt-2 max-w-2xl text-slate-600">Tell OutreachAI what company you represent so AI can write and target more accurately.</p>
+        <button form="workspace-profile" className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">Save workspace</button>
+      </header>
+      {notice && <Notice message={notice} kind={notice.includes('could not') ? 'warning' : 'success'} />}
+      {!settings ? <Skeleton lines={5} /> : <div className="grid gap-6 xl:grid-cols-[1fr_0.8fr]">
+        <form id="workspace-profile" onSubmit={saveProfile} className="space-y-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div>
+            <h2 className="text-xl font-bold text-ink">Company profile</h2>
+            <p className="mt-1 text-sm text-slate-600">Keep this simple. You can improve it later after your first campaign.</p>
+          </div>
+          <label className="block"><span className="text-sm font-semibold text-slate-700">Workspace name</span><input name="workspace" value={profile.workspace} onChange={(e) => setProfile({ ...profile, workspace: e.target.value })} placeholder="OutreachAI workspace" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>
+          <label className="block"><span className="text-sm font-semibold text-slate-700">Company name</span><input name="company" value={profile.company} onChange={(e) => setProfile({ ...profile, company: e.target.value })} placeholder="Your company" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>
+          <label className="block"><span className="text-sm font-semibold text-slate-700">Timezone</span><input name="timezone" value={profile.timezone} onChange={(e) => setProfile({ ...profile, timezone: e.target.value })} placeholder="Europe/Warsaw" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>
+          <input type="hidden" name="avatar_url" value={profile.avatar_url || ''} />
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm font-semibold text-slate-700">Language</p>
+            <p className="mt-1 text-sm text-slate-600">The selected language is used for the interface and AI employee replies.</p>
+            <div className="mt-3"><LanguageSwitcher /></div>
+          </div>
+          <button className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 font-semibold text-white"><CheckCircle2 size={18} /> Save workspace</button>
+        </form>
+        <aside className="space-y-6">
+          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-xl font-bold text-ink">Next step</h2>
+            <p className="mt-2 text-sm text-slate-600">After saving your company, find one focused list of leads and create one campaign for review.</p>
+            <Link href="/dashboard/leads" className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white">Find leads</Link>
+          </section>
+          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-xl font-bold text-ink">Plan and usage</h2>
+            {usage ? <div className="mt-4 grid gap-3 text-sm">
+              <p className="rounded-md bg-slate-50 p-3">Leads used: <span className="font-semibold">{usage.usage.leads}/{usage.limits.leads}</span></p>
+              <p className="rounded-md bg-slate-50 p-3">AI emails used: <span className="font-semibold">{usage.usage.ai_generations}/{usage.limits.ai_generations}</span></p>
+              <p className="rounded-md bg-slate-50 p-3">Email sends used: <span className="font-semibold">{usage.usage.email_sends}/{usage.limits.email_sends}</span></p>
+            </div> : <p className="mt-2 rounded-md bg-slate-50 p-3 text-sm text-slate-600">Usage appears after your first lead or campaign.</p>}
+            <Link href="/dashboard/billing" className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-ink">Open billing</Link>
+          </section>
+          <details className="rounded-lg border border-slate-200 bg-white p-5">
+            <summary className="cursor-pointer font-semibold text-ink">Advanced settings</summary>
+            <div className="mt-4 space-y-4">
+              <section className="rounded-md bg-slate-50 p-4">
+                <h3 className="font-semibold">Team</h3>
+                {members.length ? <div className="mt-3 space-y-2">{members.map((member) => <div key={member.id} className="flex items-center justify-between gap-3 rounded-md bg-white p-3 text-sm"><span className="break-all">{member.email || member.user_id}</span><span className="rounded-full bg-slate-100 px-2 py-1 font-semibold">{member.role}</span></div>)}</div> : <p className="mt-2 text-sm text-slate-600">Team members appear here after they accept an invitation.</p>}
+              </section>
+              <section className="rounded-md bg-red-50 p-4">
+                <h3 className="font-semibold text-red-800">Account deletion</h3>
+                <p className="mt-1 text-sm text-red-700">Use this only when you want the workspace owner to review account removal.</p>
+                <button type="button" onClick={() => api('/api/profile', { method: 'DELETE' }).then(() => setNotice('Account deletion request queued.'))} className="focus-ring mt-3 min-h-11 w-full rounded-md border border-red-200 bg-white px-4 py-2 font-semibold text-red-700">Request deletion</button>
+              </section>
+            </div>
+          </details>
+        </aside>
+      </div>}
+    </div>;
+  }
   return <div className="min-w-0">
     <h1 className="text-2xl font-bold min-[390px]:text-3xl">Settings</h1>
     <p className="mt-2 text-slate-600">Manage your profile, workspace, billing, language, and security preferences.</p>
