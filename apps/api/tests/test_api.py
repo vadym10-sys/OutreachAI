@@ -917,3 +917,75 @@ def test_ai_sales_employee_voice_task_plans_requires_approval_and_executes(monke
     memory = client.get(f"/api/sales-employees/{employee['id']}/memory", headers=AUTH)
     assert memory.status_code == 200
     assert "Germany" in memory.json()["countries"]
+
+
+def test_ai_team_router_splits_multi_employee_task_and_requires_approval(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.route_ai_team_task",
+        lambda payload: {
+            "detected_intent": "lead_discovery_and_marketing_content",
+            "primary_employee": "Sales",
+            "assigned_employees": ["Sales", "Marketing"],
+            "priority": "High",
+            "risk_level": "Medium",
+            "estimated_execution_time": "6 minutes",
+            "subtasks": [
+                {
+                    "id": "1",
+                    "employee": "Sales",
+                    "title": "Find qualified clients",
+                    "objective": "Find construction companies in Germany and prepare outreach.",
+                    "required_tools": ["Lead Finder", "Website Analyzer"],
+                    "expected_result": "Prospects ready for review.",
+                    "risk_level": "Medium",
+                    "required_approval": True,
+                    "status": "waiting_approval",
+                    "result": "",
+                },
+                {
+                    "id": "2",
+                    "employee": "Marketing",
+                    "title": "Create posts",
+                    "objective": "Create LinkedIn posts for the same SaaS offer.",
+                    "required_tools": ["Content Planner"],
+                    "expected_result": "LinkedIn post angles ready for review.",
+                    "risk_level": "Low",
+                    "required_approval": True,
+                    "status": "waiting_approval",
+                    "result": "",
+                },
+            ],
+            "safety_notes": ["No external action without approval."],
+        },
+    )
+
+    response = client.post(
+        "/api/team-router/route",
+        headers=AUTH,
+        json={"command": "Find clients and create marketing posts", "transcript_source": "text"},
+    )
+    assert response.status_code == 200
+    plan = response.json()
+    assert plan["required_approval"] is True
+    assert plan["assigned_employees"] == ["Sales", "Marketing"]
+    assert len(plan["subtasks"]) == 2
+
+    blocked = client.post("/api/team-router/execute", headers=AUTH, json={"plan_id": plan["id"], "action": "approve"})
+    assert blocked.status_code == 409
+
+    approved = client.post("/api/team-router/approve", headers=AUTH, json={"plan_id": plan["id"], "action": "approve"})
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+
+    executed = client.post("/api/team-router/execute", headers=AUTH, json={"plan_id": plan["id"], "action": "approve"})
+    assert executed.status_code == 200
+    executed_plan = executed.json()
+    assert executed_plan["status"] == "finished"
+    assert all(subtask["result"] for subtask in executed_plan["subtasks"])
+
+    dashboard = client.get("/api/team-router", headers=AUTH)
+    assert dashboard.status_code == 200
+    employees = {item["employee"]: item for item in dashboard.json()["employees"]}
+    assert {"Sales", "Marketing", "Support", "Operations"}.issubset(employees)
+    assert employees["Sales"]["completed_tasks"] >= 1
+    assert employees["Marketing"]["completed_tasks"] >= 1

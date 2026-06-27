@@ -41,6 +41,24 @@ const lead = {
   created_at: new Date().toISOString()
 };
 
+const teamRouterDashboard = {
+  employees: ["Sales", "Marketing", "Support", "Operations"].map((employee) => ({
+    employee,
+    role: `${employee} Employee handles reviewed AI work.`,
+    active_tasks: employee === "Sales" ? 1 : 0,
+    completed_tasks: employee === "Marketing" ? 1 : 0,
+    last_activity: employee === "Support" ? "Summarize customer replies" : "No activity yet",
+    performance: employee === "Marketing" ? 100 : 0,
+    status: employee === "Sales" ? "working" : "ready",
+    tasks: [],
+    activity: [],
+    results: [],
+    memory: { tools: [] }
+  })),
+  current_plan: null,
+  history: []
+};
+
 test.beforeEach(async ({ page }) => {
   await page.route("http://127.0.0.1:8000/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -75,6 +93,32 @@ test.beforeEach(async ({ page }) => {
       body = { status: "queued" };
     } else if (url.pathname === "/api/settings") {
       body = { general: {}, ai: {}, email: {}, billing: {}, security: {}, api: {} };
+    } else if (url.pathname === "/api/team-router") {
+      body = teamRouterDashboard;
+    } else if (url.pathname === "/api/team-router/route") {
+      body = {
+        id: "team-plan-1",
+        command: "Find clients and create posts",
+        detected_intent: "lead_discovery_and_marketing_content",
+        assigned_employees: ["Sales", "Marketing"],
+        primary_employee: "Sales",
+        priority: "High",
+        risk_level: "Medium",
+        estimated_execution_time: "6 minutes",
+        required_approval: true,
+        subtasks: [
+          { id: "1", employee: "Sales", title: "Find clients", objective: "Find qualified clients", required_tools: ["Lead Finder"], expected_result: "Prospects ready for review", risk_level: "Medium", required_approval: true, status: "waiting_approval", result: "" },
+          { id: "2", employee: "Marketing", title: "Create posts", objective: "Create marketing posts", required_tools: ["Content Planner"], expected_result: "Posts ready for review", risk_level: "Low", required_approval: true, status: "waiting_approval", result: "" }
+        ],
+        safety_notes: ["No external action without approval."],
+        status: "waiting_approval",
+        progress: ["Command classified", "Subtasks assigned", "Waiting for approval"],
+        created_at: new Date().toISOString(),
+        approved_at: null,
+        finished_at: null
+      };
+    } else if (url.pathname === "/api/sales-employees") {
+      body = [];
     }
 
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
@@ -112,6 +156,18 @@ for (const width of [320, 390, 480]) {
     await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Save profile" }).click();
     await expect(page.getByText("Profile saved.")).toBeVisible();
+
+    await page.getByRole("link", { name: /AI Employees/ }).click();
+    await expect(page.getByRole("heading", { name: "AI Employees" })).toBeVisible();
+    await expect(page.getByText("AI Team Router")).toBeVisible();
+    await expect(page.getByText("Sales Employee").first()).toBeVisible();
+    await expect(page.getByText("Marketing Employee").first()).toBeVisible();
+    await expect(page.getByText("Support Employee").first()).toBeVisible();
+    await expect(page.getByText("Operations Employee").first()).toBeVisible();
+    await page.getByPlaceholder(/Find construction companies in Germany and prepare outreach/).fill("Find clients and create posts");
+    await page.getByRole("button", { name: "Route command" }).click();
+    await expect(page.getByText("Detected intent")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve team plan" })).toBeVisible();
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
     expect(overflow).toBe(false);

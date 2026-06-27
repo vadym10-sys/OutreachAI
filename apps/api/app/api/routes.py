@@ -93,6 +93,12 @@ from app.schemas.dto import (
     SalesEmployeeTaskRequest,
     SettingsOut,
     SettingsUpdate,
+    TeamEmployeeDashboardOut,
+    TeamRouterDashboardOut,
+    TeamRouterDecision,
+    TeamRouterPlanOut,
+    TeamRouterRequest,
+    TeamRouterSubtaskOut,
     UsageOut,
     WebsiteAuditOut,
     WebsiteListImport,
@@ -111,6 +117,7 @@ from app.services.ai import (
     personalize_email,
     qualify_for_sales_employee,
     plan_sales_employee_task,
+    route_ai_team_task,
     rewrite_email,
     sales_copilot,
     stream_email_generation,
@@ -818,6 +825,240 @@ def _upsert_employee_insight(db: Session, user_id: str, workspace: Workspace, em
     lead.status = LeadStatus.qualified if insight.icp_score >= 55 else LeadStatus.archive
     lead.notes = "\n".join(part for part in [lead.notes or "", f"AI Sales Employee qualification: ICP {insight.icp_score}/100, purchase {insight.purchase_probability}/100. {insight.best_sales_angle}"] if part)
     return insight
+
+
+TEAM_EMPLOYEES = {
+    "Sales": {
+        "role": "Finds prospects, qualifies leads, prepares outreach, and manages campaign-ready sales work.",
+        "tools": ["Lead Finder", "Website Analyzer", "AI Email Generator", "CRM"],
+    },
+    "Marketing": {
+        "role": "Creates campaign angles, LinkedIn posts, content ideas, and market messaging.",
+        "tools": ["Content Planner", "Campaign Analytics", "Brand Voice Memory"],
+    },
+    "Support": {
+        "role": "Summarizes replies, categorizes customer intent, and prepares response recommendations.",
+        "tools": ["Inbox", "Reply Assistant", "Customer Timeline"],
+    },
+    "Operations": {
+        "role": "Checks performance, monitors workflows, prepares reports, and coordinates safe execution.",
+        "tools": ["Analytics", "Activity Timeline", "Workspace Settings"],
+    },
+}
+
+
+def _team_router_state(settings: AppSettings) -> dict:
+    ai_settings = settings.ai if isinstance(settings.ai, dict) else {}
+    state = ai_settings.get("team_router") if isinstance(ai_settings.get("team_router"), dict) else {}
+    return {
+        "current_plan": state.get("current_plan") if isinstance(state.get("current_plan"), dict) else None,
+        "history": list(state.get("history") or []) if isinstance(state.get("history"), list) else [],
+        "memory": state.get("memory") if isinstance(state.get("memory"), dict) else {},
+    }
+
+
+def _save_team_router_state(settings: AppSettings, state: dict) -> None:
+    ai_settings = dict(settings.ai or {})
+    ai_settings["team_router"] = {
+        "current_plan": state.get("current_plan"),
+        "history": list(state.get("history") or [])[-50:],
+        "memory": state.get("memory") or {},
+    }
+    settings.ai = ai_settings
+
+
+def _team_plan_out(plan: dict | None) -> TeamRouterPlanOut | None:
+    return TeamRouterPlanOut.model_validate(plan) if isinstance(plan, dict) else None
+
+
+def _team_dashboard(settings: AppSettings) -> TeamRouterDashboardOut:
+    state = _team_router_state(settings)
+    history = [plan for plan in state["history"] if isinstance(plan, dict)]
+    current = state["current_plan"] if isinstance(state["current_plan"], dict) else None
+    all_plans = [*history, *([current] if current else [])]
+    memory = state["memory"] if isinstance(state["memory"], dict) else {}
+    employees: list[TeamEmployeeDashboardOut] = []
+    for employee, config in TEAM_EMPLOYEES.items():
+        employee_plans = [plan for plan in all_plans if employee in list(plan.get("assigned_employees") or [])]
+        active = [plan for plan in employee_plans if plan.get("status") in {"waiting_approval", "approved", "running"}]
+        completed = [plan for plan in employee_plans if plan.get("status") == "finished"]
+        last = employee_plans[-1] if employee_plans else None
+        subtasks = []
+        results = []
+        for plan in employee_plans[-8:]:
+            for subtask in plan.get("subtasks") or []:
+                if isinstance(subtask, dict) and subtask.get("employee") == employee:
+                    subtasks.append(subtask)
+                    if subtask.get("result"):
+                        results.append(str(subtask.get("result")))
+        denominator = max(len(employee_plans), 1)
+        performance = round(len(completed) / denominator * 100, 1) if employee_plans else 0
+        employees.append(
+            TeamEmployeeDashboardOut(
+                employee=employee,
+                role=str(config["role"]),
+                active_tasks=len(active),
+                completed_tasks=len(completed),
+                last_activity=str(last.get("detected_intent") if last else "No activity yet"),
+                performance=performance,
+                status="working" if active else "ready",
+                tasks=subtasks[-6:],
+                activity=[str(plan.get("detected_intent") or plan.get("command") or "") for plan in employee_plans[-5:]],
+                results=results[-5:],
+                memory=memory.get(employee, {"tools": config["tools"], "preferences": []}) if isinstance(memory, dict) else {"tools": config["tools"], "preferences": []},
+            )
+        )
+    return TeamRouterDashboardOut(
+        employees=employees,
+        current_plan=_team_plan_out(current),
+        history=[TeamRouterPlanOut.model_validate(plan) for plan in history[-10:] if isinstance(plan, dict)],
+    )
+
+
+def _team_plan_results(plan: dict) -> dict:
+    results = {
+        "Sales": "Prepared prospecting and outreach work for review. No emails were sent and no campaign was launched.",
+        "Marketing": "Prepared marketing content ideas and positioning notes for review.",
+        "Support": "Prepared reply summary and response recommendations for review.",
+        "Operations": "Prepared performance or workflow summary for review.",
+    }
+    for subtask in plan.get("subtasks") or []:
+        if isinstance(subtask, dict):
+            employee = str(subtask.get("employee") or "Operations")
+            subtask["status"] = "finished"
+            subtask["result"] = results.get(employee, "Prepared reviewed result.")
+    return plan
+
+
+@router.get("/team-router", response_model=TeamRouterDashboardOut)
+def team_router_dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterDashboardOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    return _team_dashboard(settings)
+
+
+@router.post("/team-router/route", response_model=TeamRouterPlanOut)
+def team_router_route(payload: TeamRouterRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterPlanOut:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    settings = _settings_for_workspace(db, user_id, workspace)
+    try:
+        routed = route_ai_team_task(
+            {
+                "command": payload.command,
+                "transcript_source": payload.transcript_source,
+                "workspace": {
+                    "name": workspace.name,
+                    "company": workspace.company,
+                    "industry": workspace.industry,
+                    "target_country": workspace.target_country,
+                    "target_customer": workspace.target_customer,
+                    "language": workspace.language,
+                },
+                "employees": list(TEAM_EMPLOYEES.keys()),
+                "safety_rules": [
+                    "No emails sent without approval.",
+                    "No campaigns launched without approval.",
+                    "No CRM changes without approval.",
+                    "No deletion without approval.",
+                ],
+            }
+        )
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    now = datetime.utcnow()
+    plan = {
+        "id": str(uuid4()),
+        "command": payload.command,
+        "detected_intent": routed["detected_intent"],
+        "assigned_employees": routed["assigned_employees"],
+        "primary_employee": routed["primary_employee"],
+        "priority": routed["priority"],
+        "risk_level": routed["risk_level"],
+        "estimated_execution_time": routed["estimated_execution_time"],
+        "required_approval": True,
+        "subtasks": routed["subtasks"],
+        "safety_notes": [
+            *routed["safety_notes"],
+            "External actions stay blocked until the user approves the plan.",
+        ],
+        "status": "waiting_approval",
+        "progress": ["Command classified", "Subtasks assigned", "Waiting for approval"],
+        "created_at": now.isoformat(),
+        "approved_at": None,
+        "finished_at": None,
+    }
+    state = _team_router_state(settings)
+    history = [plan_item for plan_item in state["history"] if isinstance(plan_item, dict) and plan_item.get("id") != plan["id"]]
+    history.append(plan)
+    state["current_plan"] = plan
+    state["history"] = history
+    memory = state["memory"] if isinstance(state["memory"], dict) else {}
+    for employee in routed["assigned_employees"]:
+        employee_memory = memory.get(employee, {}) if isinstance(memory.get(employee), dict) else {}
+        preferences = list(employee_memory.get("preferences") or [])
+        if routed["detected_intent"] not in preferences:
+            preferences.append(routed["detected_intent"])
+        memory[employee] = {**employee_memory, "tools": TEAM_EMPLOYEES[employee]["tools"], "preferences": preferences[-10:]}
+    state["memory"] = memory
+    _save_team_router_state(settings, state)
+    log_event(db, request, user_id, "team_router.plan_created", {"plan_id": plan["id"], "employees": routed["assigned_employees"], "risk": routed["risk_level"]})
+    _notify(db, user_id, NotificationKind.success, "AI Team Router prepared a plan", f"{routed['primary_employee']} is leading the work. Approval is required.")
+    db.commit()
+    return TeamRouterPlanOut.model_validate(plan)
+
+
+@router.post("/team-router/approve", response_model=TeamRouterPlanOut)
+def team_router_approve(payload: TeamRouterDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterPlanOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    state = _team_router_state(settings)
+    plan = state["current_plan"]
+    if not isinstance(plan, dict) or plan.get("id") != payload.plan_id:
+        raise HTTPException(status_code=404, detail="Current team router plan not found")
+    if payload.edits:
+        plan["safety_notes"] = [*list(plan.get("safety_notes") or []), f"User edit: {payload.edits}"]
+    plan["status"] = "approved" if payload.action == "approve" else "cancelled"
+    plan["approved_at"] = datetime.utcnow().isoformat() if payload.action == "approve" else None
+    plan["progress"] = [*list(plan.get("progress") or []), "Approved by user" if payload.action == "approve" else "Cancelled by user"]
+    for subtask in plan.get("subtasks") or []:
+        if isinstance(subtask, dict):
+            subtask["status"] = "approved" if payload.action == "approve" else "cancelled"
+    history = [plan_item for plan_item in state["history"] if isinstance(plan_item, dict) and plan_item.get("id") != payload.plan_id]
+    history.append(plan)
+    state["current_plan"] = plan
+    state["history"] = history
+    _save_team_router_state(settings, state)
+    log_event(db, request, user_id, f"team_router.plan_{payload.action}d", {"plan_id": payload.plan_id})
+    db.commit()
+    return TeamRouterPlanOut.model_validate(plan)
+
+
+@router.post("/team-router/execute", response_model=TeamRouterPlanOut)
+def team_router_execute(payload: TeamRouterDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterPlanOut:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    state = _team_router_state(settings)
+    plan = state["current_plan"]
+    if not isinstance(plan, dict) or plan.get("id") != payload.plan_id:
+        raise HTTPException(status_code=404, detail="Current team router plan not found")
+    if plan.get("status") != "approved":
+        raise HTTPException(status_code=409, detail="Approve the team plan before execution")
+    plan["status"] = "finished"
+    plan["progress"] = [*list(plan.get("progress") or []), "Coordinating employees", "Preparing internal results", "Finished"]
+    plan["finished_at"] = datetime.utcnow().isoformat()
+    plan = _team_plan_results(plan)
+    history = [plan_item for plan_item in state["history"] if isinstance(plan_item, dict) and plan_item.get("id") != payload.plan_id]
+    history.append(plan)
+    state["current_plan"] = plan
+    state["history"] = history
+    _save_team_router_state(settings, state)
+    log_event(db, request, user_id, "team_router.plan_executed", {"plan_id": payload.plan_id, "employees": plan.get("assigned_employees", [])})
+    _notify(db, user_id, NotificationKind.success, "AI Team Router finished", "Internal results are ready for review. No external action was taken automatically.")
+    db.commit()
+    return TeamRouterPlanOut.model_validate(plan)
 
 
 @router.post("/sales-employees", response_model=AISalesEmployeeOut)

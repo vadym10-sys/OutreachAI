@@ -163,6 +163,58 @@ export type SalesEmployeePerformance = {
   time_saved_hours: number;
 };
 
+export type TeamRouterSubtask = {
+  id: string;
+  employee: string;
+  title: string;
+  objective: string;
+  required_tools: string[];
+  expected_result: string;
+  risk_level: string;
+  required_approval: boolean;
+  status: string;
+  result: string;
+};
+
+export type TeamRouterPlan = {
+  id: string;
+  command: string;
+  detected_intent: string;
+  assigned_employees: string[];
+  primary_employee: string;
+  priority: string;
+  risk_level: string;
+  estimated_execution_time: string;
+  required_approval: boolean;
+  subtasks: TeamRouterSubtask[];
+  safety_notes: string[];
+  status: string;
+  progress: string[];
+  created_at: string;
+  approved_at?: string | null;
+  finished_at?: string | null;
+};
+
+export type TeamEmployeeDashboard = {
+  employee: string;
+  role: string;
+  active_tasks: number;
+  completed_tasks: number;
+  last_activity: string;
+  performance: number;
+  status: string;
+  tasks: TeamRouterSubtask[];
+  activity: string[];
+  results: string[];
+  memory: Record<string, unknown>;
+};
+
+export type TeamRouterDashboard = {
+  employees: TeamEmployeeDashboard[];
+  current_plan?: TeamRouterPlan | null;
+  history: TeamRouterPlan[];
+};
+
 export type SalesCopilot = {
   probability_to_reply: number;
   probability_to_buy: number;

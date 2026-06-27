@@ -510,6 +510,69 @@ class SalesEmployeePerformanceOut(BaseModel):
     time_saved_hours: float = 0
 
 
+class TeamRouterRequest(BaseModel):
+    command: str = Field(min_length=3, max_length=2000)
+    transcript_source: str = Field(default="text", max_length=40)
+
+
+class TeamRouterSubtaskOut(BaseModel):
+    id: str
+    employee: str
+    title: str
+    objective: str
+    required_tools: list[str] = Field(default_factory=list)
+    expected_result: str = ""
+    risk_level: str = "Low"
+    required_approval: bool = True
+    status: str = "waiting_approval"
+    result: str = ""
+
+
+class TeamRouterPlanOut(BaseModel):
+    id: str
+    command: str
+    detected_intent: str
+    assigned_employees: list[str] = Field(default_factory=list)
+    primary_employee: str
+    priority: str = "Medium"
+    risk_level: str = "Medium"
+    estimated_execution_time: str = "5-10 minutes"
+    required_approval: bool = True
+    subtasks: list[TeamRouterSubtaskOut] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+    status: str = "waiting_approval"
+    progress: list[str] = Field(default_factory=list)
+    created_at: datetime
+    approved_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class TeamRouterDecision(BaseModel):
+    plan_id: str
+    action: str = Field(pattern="^(approve|cancel)$")
+    edits: Optional[str] = Field(default=None, max_length=2000)
+
+
+class TeamEmployeeDashboardOut(BaseModel):
+    employee: str
+    role: str
+    active_tasks: int = 0
+    completed_tasks: int = 0
+    last_activity: str = "No activity yet"
+    performance: float = 0
+    status: str = "ready"
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    activity: list[str] = Field(default_factory=list)
+    results: list[str] = Field(default_factory=list)
+    memory: dict[str, Any] = Field(default_factory=dict)
+
+
+class TeamRouterDashboardOut(BaseModel):
+    employees: list[TeamEmployeeDashboardOut] = Field(default_factory=list)
+    current_plan: Optional[TeamRouterPlanOut] = None
+    history: list[TeamRouterPlanOut] = Field(default_factory=list)
+
+
 class DashboardMetrics(BaseModel):
     leads: int
     campaigns: int

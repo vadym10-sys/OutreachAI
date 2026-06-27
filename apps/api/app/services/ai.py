@@ -313,6 +313,39 @@ def plan_sales_employee_task(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def route_ai_team_task(payload: dict[str, Any]) -> dict[str, Any]:
+    system = (
+        "You are OutreachAI's AI Team Router. Classify one user command and route it to "
+        "one or more AI employees from this exact set: Sales, Marketing, Support, Operations. "
+        "Return only JSON with keys detected_intent, primary_employee, assigned_employees, "
+        "priority, risk_level, estimated_execution_time, subtasks, safety_notes. Each subtask "
+        "must contain employee, title, objective, required_tools, expected_result, risk_level, "
+        "required_approval. Split multi-domain work into separate subtasks. Never allow email "
+        "sending, campaign launch, CRM modification, or deletion without approval."
+    )
+    data = _json_completion(system, payload)
+    employees = _employee_list(data.get("assigned_employees"))
+    subtasks = _router_subtasks(data.get("subtasks"), payload.get("command", ""))
+    if not employees:
+        employees = sorted({subtask["employee"] for subtask in subtasks})
+    primary = _employee_name(data.get("primary_employee")) or (employees[0] if employees else "Sales")
+    if primary not in employees:
+        employees.insert(0, primary)
+    return {
+        "detected_intent": str(data.get("detected_intent") or _intent_from_subtasks(subtasks)),
+        "primary_employee": primary,
+        "assigned_employees": employees,
+        "priority": str(data.get("priority") or "Medium"),
+        "risk_level": _risk_level(data.get("risk_level"), subtasks),
+        "estimated_execution_time": str(data.get("estimated_execution_time") or "5-10 minutes"),
+        "subtasks": subtasks,
+        "safety_notes": _list(data.get("safety_notes")) or [
+            "Approval is required before external actions.",
+            "No emails, campaigns, CRM changes, or deletion will happen without approval.",
+        ],
+    }
+
+
 def stream_email_generation(payload: PersonalizeRequest) -> Iterator[str]:
     _enforce_rate_limit()
     settings = get_settings()
@@ -349,3 +382,122 @@ def _bounded_int(value: Any, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         parsed = minimum
     return max(minimum, min(maximum, parsed))
+
+
+def _employee_name(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    aliases = {
+        "sales": "Sales",
+        "sales employee": "Sales",
+        "marketing": "Marketing",
+        "marketing employee": "Marketing",
+        "support": "Support",
+        "support employee": "Support",
+        "operations": "Operations",
+        "operations employee": "Operations",
+        "ops": "Operations",
+    }
+    return aliases.get(normalized, "")
+
+
+def _employee_list(value: Any) -> list[str]:
+    items = value if isinstance(value, list) else [value]
+    employees: list[str] = []
+    for item in items:
+        employee = _employee_name(item)
+        if employee and employee not in employees:
+            employees.append(employee)
+    return employees
+
+
+def _router_subtasks(value: Any, command: str) -> list[dict[str, Any]]:
+    raw_items = value if isinstance(value, list) else []
+    subtasks: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            continue
+        employee = _employee_name(item.get("employee"))
+        if not employee:
+            continue
+        risk = str(item.get("risk_level") or "Low").title()
+        subtasks.append(
+            {
+                "id": str(index + 1),
+                "employee": employee,
+                "title": str(item.get("title") or f"{employee} task"),
+                "objective": str(item.get("objective") or command),
+                "required_tools": _list(item.get("required_tools")),
+                "expected_result": str(item.get("expected_result") or "Prepared work for review."),
+                "risk_level": risk if risk in {"Low", "Medium", "High"} else "Medium",
+                "required_approval": True,
+                "status": "waiting_approval",
+                "result": "",
+            }
+        )
+    if subtasks:
+        return subtasks
+    return _heuristic_router_subtasks(command)
+
+
+def _heuristic_router_subtasks(command: str) -> list[dict[str, Any]]:
+    lowered = command.lower()
+    mapping = [
+        ("Sales", ["lead", "client", "company", "outreach", "email", "campaign", "prospect", "construction"]),
+        ("Marketing", ["linkedin", "post", "content", "brand", "marketing", "social"]),
+        ("Support", ["reply", "customer", "ticket", "summarize", "support", "complaint"]),
+        ("Operations", ["performance", "report", "metric", "dashboard", "check", "sync", "operations"]),
+    ]
+    subtasks = []
+    for employee, keywords in mapping:
+        if any(keyword in lowered for keyword in keywords):
+            tools = {
+                "Sales": ["Lead Finder", "Website Analyzer", "AI Email Generator"],
+                "Marketing": ["Content Planner", "Campaign Analytics"],
+                "Support": ["Inbox", "Reply Assistant"],
+                "Operations": ["Analytics", "Activity Timeline"],
+            }[employee]
+            subtasks.append(
+                {
+                    "id": str(len(subtasks) + 1),
+                    "employee": employee,
+                    "title": f"{employee} workstream",
+                    "objective": command,
+                    "required_tools": tools,
+                    "expected_result": f"{employee} prepares reviewed results for the command.",
+                    "risk_level": "Medium" if employee == "Sales" else "Low",
+                    "required_approval": True,
+                    "status": "waiting_approval",
+                    "result": "",
+                }
+            )
+    return subtasks or [
+        {
+            "id": "1",
+            "employee": "Operations",
+            "title": "Triage request",
+            "objective": command,
+            "required_tools": ["Workspace Context", "Activity Timeline"],
+            "expected_result": "A safe internal plan and recommended owner.",
+            "risk_level": "Low",
+            "required_approval": True,
+            "status": "waiting_approval",
+            "result": "",
+        }
+    ]
+
+
+def _intent_from_subtasks(subtasks: list[dict[str, Any]]) -> str:
+    employees = ", ".join(sorted({str(item.get("employee")) for item in subtasks if item.get("employee")}))
+    return f"Route work to {employees or 'Operations'}"
+
+
+def _risk_level(value: Any, subtasks: list[dict[str, Any]]) -> str:
+    requested = str(value or "").title()
+    if requested in {"Low", "Medium", "High"}:
+        return requested
+    levels = [str(item.get("risk_level") or "Low") for item in subtasks]
+    if "High" in levels:
+        return "High"
+    if "Medium" in levels:
+        return "Medium"
+    return "Low"
