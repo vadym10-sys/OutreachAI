@@ -123,6 +123,46 @@ export type SalesEmployeeRun = {
   blocked: string[];
 };
 
+export type SalesEmployeeTaskPlan = {
+  id: string;
+  employee_id: string;
+  command: string;
+  goal: string;
+  intent: string;
+  priority: string;
+  required_tools: string[];
+  estimated_execution_time: string;
+  expected_result: string;
+  steps: string[];
+  requires_approval: boolean;
+  external_actions: string[];
+  safety_notes: string[];
+  memory_updates: string[];
+  status: string;
+  progress: string[];
+  created_at: string;
+  approved_at?: string | null;
+  finished_at?: string | null;
+};
+
+export type SalesEmployeeMemory = {
+  previous_tasks: Record<string, unknown>[];
+  campaigns: string[];
+  industries: string[];
+  countries: string[];
+  preferred_tone: string;
+  customer_preferences: string[];
+};
+
+export type SalesEmployeePerformance = {
+  tasks_completed: number;
+  success_rate: number;
+  reply_rate: number;
+  meeting_rate: number;
+  revenue_influence: number;
+  time_saved_hours: number;
+};
+
 export type SalesCopilot = {
   probability_to_reply: number;
   probability_to_buy: number;

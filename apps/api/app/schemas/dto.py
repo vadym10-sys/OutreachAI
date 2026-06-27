@@ -459,6 +459,57 @@ class SalesEmployeeRunOut(BaseModel):
     blocked: list[str] = Field(default_factory=list)
 
 
+class SalesEmployeeTaskRequest(BaseModel):
+    command: str = Field(min_length=3, max_length=2000)
+    transcript_source: str = Field(default="text", max_length=40)
+
+
+class SalesEmployeeTaskPlanOut(BaseModel):
+    id: str
+    employee_id: UUID
+    command: str
+    goal: str
+    intent: str
+    priority: str
+    required_tools: list[str] = Field(default_factory=list)
+    estimated_execution_time: str
+    expected_result: str
+    steps: list[str] = Field(default_factory=list)
+    requires_approval: bool = True
+    external_actions: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+    memory_updates: list[str] = Field(default_factory=list)
+    status: str = "waiting_approval"
+    progress: list[str] = Field(default_factory=list)
+    created_at: datetime
+    approved_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
+class SalesEmployeeTaskDecision(BaseModel):
+    plan_id: str
+    action: str = Field(pattern="^(approve|cancel)$")
+    edits: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SalesEmployeeMemoryOut(BaseModel):
+    previous_tasks: list[dict[str, Any]] = Field(default_factory=list)
+    campaigns: list[str] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
+    countries: list[str] = Field(default_factory=list)
+    preferred_tone: str = "Professional"
+    customer_preferences: list[str] = Field(default_factory=list)
+
+
+class SalesEmployeePerformanceOut(BaseModel):
+    tasks_completed: int = 0
+    success_rate: float = 0
+    reply_rate: float = 0
+    meeting_rate: float = 0
+    revenue_influence: float = 0
+    time_saved_hours: float = 0
+
+
 class DashboardMetrics(BaseModel):
     leads: int
     campaigns: int

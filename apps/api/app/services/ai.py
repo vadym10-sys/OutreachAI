@@ -287,6 +287,32 @@ def qualify_for_sales_employee(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def plan_sales_employee_task(payload: dict[str, Any]) -> dict[str, Any]:
+    system = (
+        "You are OutreachAI's autonomous AI Sales Employee planner. Return only JSON with keys "
+        "goal, intent, priority, required_tools, estimated_execution_time, expected_result, steps, "
+        "requires_approval, external_actions, safety_notes, memory_updates. The plan must feel like "
+        "work assigned to a sales employee. Never plan to send emails, launch campaigns, modify CRM, "
+        "or delete data without explicit approval. Use Review Mode as the default safety posture."
+    )
+    data = _json_completion(system, payload)
+    external_actions = _list(data.get("external_actions"))
+    requires_approval = bool(data.get("requires_approval", True)) or bool(external_actions)
+    return {
+        "goal": str(data.get("goal") or payload.get("command") or ""),
+        "intent": str(data.get("intent") or "sales_research"),
+        "priority": str(data.get("priority") or "Medium"),
+        "required_tools": _list(data.get("required_tools")) or ["Lead Finder", "Website Analyzer", "AI Email Generator"],
+        "estimated_execution_time": str(data.get("estimated_execution_time") or "5-10 minutes"),
+        "expected_result": str(data.get("expected_result") or "A reviewed sales work plan with clear next steps."),
+        "steps": _list(data.get("steps")) or ["Understand the goal", "Prepare safe execution steps", "Wait for approval"],
+        "requires_approval": requires_approval,
+        "external_actions": external_actions,
+        "safety_notes": _list(data.get("safety_notes")) or ["No email will be sent without approval.", "No campaign will launch without approval."],
+        "memory_updates": _list(data.get("memory_updates")),
+    }
+
+
 def stream_email_generation(payload: PersonalizeRequest) -> Iterator[str]:
     _enforce_rate_limit()
     settings = get_settings()

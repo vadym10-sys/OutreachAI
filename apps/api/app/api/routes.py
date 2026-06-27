@@ -3,8 +3,9 @@ from __future__ import annotations
 import csv
 import io
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -84,7 +85,12 @@ from app.schemas.dto import (
     SalesCopilotOut,
     SalesEmployeeLeadImport,
     SalesEmployeeLeadInsightOut,
+    SalesEmployeeMemoryOut,
+    SalesEmployeePerformanceOut,
     SalesEmployeeRunOut,
+    SalesEmployeeTaskDecision,
+    SalesEmployeeTaskPlanOut,
+    SalesEmployeeTaskRequest,
     SettingsOut,
     SettingsUpdate,
     UsageOut,
@@ -104,6 +110,7 @@ from app.services.ai import (
     meeting_preparation,
     personalize_email,
     qualify_for_sales_employee,
+    plan_sales_employee_task,
     rewrite_email,
     sales_copilot,
     stream_email_generation,
@@ -600,7 +607,92 @@ def _default_employee_limits(employee: AISalesEmployee) -> dict:
         "max_autonomous_leads_per_run": min(employee.daily_limit, 50),
         "requires_review_by_default": employee.sending_mode == SalesEmployeeMode.review,
         "allow_autonomous_send": employee.sending_mode == SalesEmployeeMode.autonomous,
+        "memory": _employee_memory(employee),
+        "current_task": (employee.strict_limits or {}).get("current_task") if employee.strict_limits else None,
+        "task_history": (employee.strict_limits or {}).get("task_history", []) if employee.strict_limits else [],
     }
+
+
+def _employee_memory(employee: AISalesEmployee) -> dict:
+    saved = (employee.strict_limits or {}).get("memory") if employee.strict_limits else {}
+    if not isinstance(saved, dict):
+        saved = {}
+    return {
+        "previous_tasks": list(saved.get("previous_tasks") or []),
+        "campaigns": list(saved.get("campaigns") or []),
+        "industries": list(saved.get("industries") or employee.target_industries or []),
+        "countries": list(saved.get("countries") or employee.target_countries or []),
+        "preferred_tone": str(saved.get("preferred_tone") or employee.tone or "Professional"),
+        "customer_preferences": list(saved.get("customer_preferences") or [item for item in [employee.target_customer, employee.offer] if item]),
+    }
+
+
+def _with_employee_state(employee: AISalesEmployee, **updates: Any) -> dict:
+    state = dict(employee.strict_limits or {})
+    state.setdefault("daily_limit", employee.daily_limit)
+    state.setdefault("max_autonomous_leads_per_run", min(employee.daily_limit, 50))
+    state.setdefault("requires_review_by_default", employee.sending_mode == SalesEmployeeMode.review)
+    state.setdefault("allow_autonomous_send", employee.sending_mode == SalesEmployeeMode.autonomous)
+    for key, value in updates.items():
+        state[key] = value
+    return state
+
+
+def _task_history(employee: AISalesEmployee) -> list[dict]:
+    history = (employee.strict_limits or {}).get("task_history", [])
+    return list(history) if isinstance(history, list) else []
+
+
+def _current_plan(employee: AISalesEmployee) -> dict | None:
+    plan = (employee.strict_limits or {}).get("current_task") if employee.strict_limits else None
+    return plan if isinstance(plan, dict) else None
+
+
+def _parse_requested_count(command: str, default: int = 25) -> int:
+    digits = "".join(char if char.isdigit() else " " for char in command).split()
+    if not digits:
+        return default
+    return max(1, min(500, int(digits[0])))
+
+
+def _extract_country(employee: AISalesEmployee, command: str) -> str:
+    lowered = command.lower()
+    known = {
+        "germany": "Germany",
+        "poland": "Poland",
+        "warsaw": "Poland",
+        "united states": "United States",
+        "usa": "United States",
+        "uk": "United Kingdom",
+        "france": "France",
+        "spain": "Spain",
+    }
+    for needle, country in known.items():
+        if needle in lowered:
+            return country
+    return employee.target_countries[0] if employee.target_countries else ""
+
+
+def _extract_city(command: str) -> str:
+    lowered = command.lower()
+    known = {"warsaw": "Warsaw", "berlin": "Berlin", "munich": "Munich", "london": "London", "paris": "Paris"}
+    for needle, city in known.items():
+        if needle in lowered:
+            return city
+    return ""
+
+
+def _extract_industry(employee: AISalesEmployee, command: str) -> str:
+    lowered = command.lower()
+    known = ["construction", "real estate", "saas", "marketing", "consulting", "manufacturing", "healthcare", "finance"]
+    for industry in known:
+        if industry in lowered:
+            return industry.title()
+    return employee.target_industries[0] if employee.target_industries else employee.target_customer or "B2B"
+
+
+def _plan_out(plan: dict) -> SalesEmployeeTaskPlanOut:
+    return SalesEmployeeTaskPlanOut.model_validate(plan)
 
 
 def _lead_from_employee_payload(db: Session, workspace: Workspace, user_id: str, employee: AISalesEmployee, payload: LeadCreate, source: str) -> Lead:
@@ -757,6 +849,187 @@ def list_sales_employees(user_id: CurrentUser, db: Session = Depends(get_db)) ->
     workspace = _current_workspace(db, user_id)
     employees = db.scalars(select(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id).order_by(AISalesEmployee.created_at.desc())).all()
     return [_employee_out(db, employee) for employee in employees]
+
+
+@router.get("/sales-employees/{employee_id}/memory", response_model=SalesEmployeeMemoryOut)
+def sales_employee_memory(employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeMemoryOut:
+    workspace = _current_workspace(db, user_id)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    memory = _employee_memory(employee)
+    memory["previous_tasks"] = _task_history(employee)[-10:]
+    return SalesEmployeeMemoryOut.model_validate(memory)
+
+
+@router.get("/sales-employees/{employee_id}/performance", response_model=SalesEmployeePerformanceOut)
+def sales_employee_performance(employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeePerformanceOut:
+    workspace = _current_workspace(db, user_id)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    history = _task_history(employee)
+    completed = len([task for task in history if task.get("status") == "finished"])
+    failed = len([task for task in history if task.get("status") in {"cancelled", "blocked"}])
+    sent = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.sent_at.is_not(None))) or 0
+    replies = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.replied_at.is_not(None))) or 0
+    meetings = db.scalar(select(func.count()).select_from(Lead).where(Lead.sales_employee_id == employee.id, Lead.status == LeadStatus.meeting)) or 0
+    won_revenue = db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(Lead.sales_employee_id == employee.id, Lead.status == LeadStatus.won)) or 0
+    total_tasks = completed + failed
+    return SalesEmployeePerformanceOut(
+        tasks_completed=completed,
+        success_rate=round(completed / total_tasks * 100, 1) if total_tasks else 0,
+        reply_rate=round(replies / sent * 100, 1) if sent else 0,
+        meeting_rate=round(meetings / max(completed, 1) * 100, 1) if completed else 0,
+        revenue_influence=float(won_revenue or 0),
+        time_saved_hours=round(completed * 0.75, 1),
+    )
+
+
+@router.post("/sales-employees/{employee_id}/plan", response_model=SalesEmployeeTaskPlanOut)
+def sales_employee_plan(employee_id: UUID, payload: SalesEmployeeTaskRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskPlanOut:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    memory = _employee_memory(employee)
+    try:
+        planned = plan_sales_employee_task(
+            {
+                "command": payload.command,
+                "transcript_source": payload.transcript_source,
+                "employee": {
+                    "name": employee.name,
+                    "role": employee.role,
+                    "product_service": employee.product_service,
+                    "target_customer": employee.target_customer,
+                    "target_countries": employee.target_countries,
+                    "target_industries": employee.target_industries,
+                    "sending_mode": employee.sending_mode.value,
+                    "daily_limit": employee.daily_limit,
+                    "working_hours": employee.working_hours,
+                    "tone": employee.tone,
+                    "language": employee.language,
+                    "offer": employee.offer,
+                    "cta": employee.cta,
+                },
+                "memory": memory,
+                "safety_rules": [
+                    "Never send emails without approval.",
+                    "Never launch campaigns without approval.",
+                    "Never delete data automatically.",
+                    "Default to Review Mode.",
+                ],
+            }
+        )
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    now = datetime.utcnow()
+    plan = {
+        "id": str(uuid4()),
+        "employee_id": str(employee.id),
+        "command": payload.command,
+        "goal": planned["goal"],
+        "intent": planned["intent"],
+        "priority": planned["priority"],
+        "required_tools": planned["required_tools"],
+        "estimated_execution_time": planned["estimated_execution_time"],
+        "expected_result": planned["expected_result"],
+        "steps": planned["steps"],
+        "requires_approval": True,
+        "external_actions": planned["external_actions"] or ["modify_crm_after_approval"],
+        "safety_notes": planned["safety_notes"],
+        "memory_updates": planned["memory_updates"],
+        "status": "waiting_approval",
+        "progress": ["Plan created", "Waiting for approval"],
+        "created_at": now.isoformat(),
+        "approved_at": None,
+        "finished_at": None,
+    }
+    history = _task_history(employee)
+    history.append(plan)
+    memory["previous_tasks"] = history[-10:]
+    for value in planned["memory_updates"]:
+        if value and value not in memory["customer_preferences"]:
+            memory["customer_preferences"].append(value)
+    employee.strict_limits = _with_employee_state(employee, current_task=plan, task_history=history[-25:], memory=memory)
+    log_event(db, request, user_id, "sales_employee.plan_created", {"employee_id": str(employee.id), "plan_id": plan["id"], "intent": plan["intent"]})
+    db.commit()
+    return _plan_out(plan)
+
+
+@router.post("/sales-employees/{employee_id}/approve-plan", response_model=SalesEmployeeTaskPlanOut)
+def sales_employee_approve_plan(employee_id: UUID, payload: SalesEmployeeTaskDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskPlanOut:
+    workspace = _current_workspace(db, user_id)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    plan = _current_plan(employee)
+    if not plan or plan.get("id") != payload.plan_id:
+        raise HTTPException(status_code=404, detail="Current plan not found")
+    now = datetime.utcnow()
+    if payload.edits:
+        plan["steps"] = [*list(plan.get("steps") or []), f"User edit: {payload.edits}"]
+    plan["status"] = "approved" if payload.action == "approve" else "cancelled"
+    plan["approved_at"] = now.isoformat() if payload.action == "approve" else None
+    plan["progress"] = [*list(plan.get("progress") or []), "Approved by user" if payload.action == "approve" else "Cancelled by user"]
+    history = [task for task in _task_history(employee) if task.get("id") != payload.plan_id]
+    history.append(plan)
+    employee.strict_limits = _with_employee_state(employee, current_task=plan, task_history=history[-25:])
+    log_event(db, request, user_id, f"sales_employee.plan_{payload.action}d", {"employee_id": str(employee.id), "plan_id": payload.plan_id})
+    db.commit()
+    return _plan_out(plan)
+
+
+@router.post("/sales-employees/{employee_id}/execute-plan", response_model=SalesEmployeeTaskPlanOut)
+def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskPlanOut:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    plan = _current_plan(employee)
+    if not plan or plan.get("id") != payload.plan_id:
+        raise HTTPException(status_code=404, detail="Current plan not found")
+    if plan.get("status") != "approved":
+        raise HTTPException(status_code=409, detail="Approve the plan before execution")
+    command = str(plan.get("command") or "")
+    progress = [*list(plan.get("progress") or []), "Searching...", "Analysing...", "Generating..."]
+    if any(word in command.lower() for word in ["find", "search", "companies", "leads"]):
+        count = min(_parse_requested_count(command, default=10), employee.daily_limit, 25)
+        industry = _extract_industry(employee, command)
+        country = _extract_country(employee, command)
+        city = _extract_city(command)
+        for index in range(count):
+            _lead_from_employee_payload(
+                db,
+                workspace,
+                user_id,
+                employee,
+                LeadCreate(
+                    company=f"{industry} Prospect {index + 1}",
+                    industry=industry,
+                    country=country or None,
+                    city=city or None,
+                    status="New",
+                    notes=f"Created from approved AI Sales Employee task: {command}",
+                ),
+                "ai_employee_plan",
+            )
+        progress.append(f"Imported {count} leads for review")
+    if any(word in command.lower() for word in ["email", "follow-up", "follow up", "campaign"]):
+        progress.append("Prepared email/campaign work for manual review; no email was sent")
+    progress.append("Finished")
+    now = datetime.utcnow()
+    plan["status"] = "finished"
+    plan["progress"] = progress
+    plan["finished_at"] = now.isoformat()
+    history = [task for task in _task_history(employee) if task.get("id") != payload.plan_id]
+    history.append(plan)
+    memory = _employee_memory(employee)
+    memory["previous_tasks"] = history[-10:]
+    country = _extract_country(employee, command)
+    industry = _extract_industry(employee, command)
+    if country and country not in memory["countries"]:
+        memory["countries"].append(country)
+    if industry and industry not in memory["industries"]:
+        memory["industries"].append(industry)
+    employee.strict_limits = _with_employee_state(employee, current_task=plan, task_history=history[-25:], memory=memory)
+    log_event(db, request, user_id, "sales_employee.plan_executed", {"employee_id": str(employee.id), "plan_id": payload.plan_id, "status": "finished"})
+    db.commit()
+    return _plan_out(plan)
 
 
 @router.put("/sales-employees/{employee_id}", response_model=AISalesEmployeeOut)

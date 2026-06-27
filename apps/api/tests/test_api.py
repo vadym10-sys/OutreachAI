@@ -824,3 +824,96 @@ def test_ai_sales_employee_review_mode_imports_qualifies_drafts_and_approves(mon
     run_response = client.post(f"/api/sales-employees/{employee['id']}/run", headers=AUTH)
     assert run_response.status_code == 200
     assert run_response.json()["mode"] == "Review Mode"
+
+
+def test_ai_sales_employee_voice_task_plans_requires_approval_and_executes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.plan_sales_employee_task",
+        lambda payload: {
+            "goal": "Find 5 German construction companies.",
+            "intent": "lead_discovery",
+            "priority": "High",
+            "required_tools": ["Lead Finder", "Website Analyzer", "AI Email Generator"],
+            "estimated_execution_time": "3 minutes",
+            "expected_result": "Five qualified leads ready for review.",
+            "steps": ["Search companies", "Filter ICP", "Analyze websites", "Wait for approval"],
+            "requires_approval": True,
+            "external_actions": ["modify_crm_after_approval"],
+            "safety_notes": ["No email will be sent without approval."],
+            "memory_updates": ["construction", "Germany"],
+        },
+    )
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    db = get_sessionmaker()()
+    try:
+        db.query(AISalesEmployee).filter(AISalesEmployee.workspace_id == UUID(workspace["id"])).delete()
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
+        settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+        db.commit()
+    finally:
+        db.close()
+
+    employee_response = client.post(
+        "/api/sales-employees",
+        headers=AUTH,
+        json={
+            "name": "Mila",
+            "role": "AI Sales Employee",
+            "product_service": "AI outbound for construction suppliers",
+            "target_customer": "Construction companies",
+            "target_countries": ["Germany"],
+            "target_industries": ["Construction"],
+            "offer": "book qualified calls",
+            "cta": "Book a pipeline review",
+            "sending_mode": "Review Mode",
+            "daily_limit": 10,
+            "working_hours": "09:00-17:00",
+            "tone": "Professional",
+            "language": "English",
+            "signature": "Mila",
+        },
+    )
+    assert employee_response.status_code == 200
+    employee = employee_response.json()
+
+    plan_response = client.post(
+        f"/api/sales-employees/{employee['id']}/plan",
+        headers=AUTH,
+        json={"command": "Find 5 construction companies in Germany.", "transcript_source": "voice"},
+    )
+    assert plan_response.status_code == 200
+    plan = plan_response.json()
+    assert plan["requires_approval"] is True
+    assert plan["status"] == "waiting_approval"
+    assert "Lead Finder" in plan["required_tools"]
+
+    blocked = client.post(
+        f"/api/sales-employees/{employee['id']}/execute-plan",
+        headers=AUTH,
+        json={"plan_id": plan["id"], "action": "approve"},
+    )
+    assert blocked.status_code == 409
+
+    approved = client.post(
+        f"/api/sales-employees/{employee['id']}/approve-plan",
+        headers=AUTH,
+        json={"plan_id": plan["id"], "action": "approve"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+
+    executed = client.post(
+        f"/api/sales-employees/{employee['id']}/execute-plan",
+        headers=AUTH,
+        json={"plan_id": plan["id"], "action": "approve"},
+    )
+    assert executed.status_code == 200
+    assert executed.json()["status"] == "finished"
+    assert "Finished" in executed.json()["progress"]
+
+    leads = client.get(f"/api/sales-employees/{employee['id']}/leads", headers=AUTH)
+    assert leads.status_code == 200
+    assert len(leads.json()) == 5
+    memory = client.get(f"/api/sales-employees/{employee['id']}/memory", headers=AUTH)
+    assert memory.status_code == 200
+    assert "Germany" in memory.json()["countries"]
