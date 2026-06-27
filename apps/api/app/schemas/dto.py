@@ -597,6 +597,43 @@ class DashboardMetrics(BaseModel):
     usage: dict[str, Any] = Field(default_factory=dict)
 
 
+class GrowthGoalIn(BaseModel):
+    goal: str = Field(min_length=3, max_length=240)
+
+
+class GrowthGoalOut(BaseModel):
+    goal: str = ""
+    target_meetings: int = 0
+    meetings_booked: int = 0
+    progress_percent: float = 0
+    execution_plan: list[str] = Field(default_factory=list)
+    next_action: str = ""
+
+
+class GrowthBriefingOut(BaseModel):
+    date: str
+    new_leads_found: int = 0
+    best_opportunities: list[dict[str, Any]] = Field(default_factory=list)
+    campaign_performance: dict[str, Any] = Field(default_factory=dict)
+    reply_rate_change: float = 0
+    meetings_booked: int = 0
+    recommended_actions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class GrowthEngineOut(BaseModel):
+    briefing: GrowthBriefingOut
+    opportunity_feed: list[dict[str, Any]] = Field(default_factory=list)
+    smart_recommendations: list[dict[str, Any]] = Field(default_factory=list)
+    website_monitoring: list[dict[str, Any]] = Field(default_factory=list)
+    campaign_optimizations: list[dict[str, Any]] = Field(default_factory=list)
+    reply_assistant: list[dict[str, Any]] = Field(default_factory=list)
+    revenue_dashboard: dict[str, Any] = Field(default_factory=dict)
+    goal: GrowthGoalOut = Field(default_factory=GrowthGoalOut)
+    proactive_mode: list[dict[str, Any]] = Field(default_factory=list)
+    notifications: list[dict[str, Any]] = Field(default_factory=list)
+    performance: dict[str, Any] = Field(default_factory=dict)
+
+
 class CampaignSequenceIn(BaseModel):
     step_order: int = Field(ge=1, le=4)
     name: str = Field(default="", max_length=120)

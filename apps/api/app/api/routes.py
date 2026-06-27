@@ -67,6 +67,10 @@ from app.schemas.dto import (
     FollowUpSequenceOut,
     GenerateEmailRequest,
     GoogleMapsImport,
+    GrowthBriefingOut,
+    GrowthEngineOut,
+    GrowthGoalIn,
+    GrowthGoalOut,
     IntegrationStatusOut,
     LeadCreate,
     LeadFinderRequest,
@@ -1590,6 +1594,189 @@ def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardM
         plan=plan,
         usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends, "limits": PLAN_LIMITS[plan]},
     )
+
+
+def _growth_goal(settings: AppSettings, meetings: int) -> GrowthGoalOut:
+    saved = (settings.general or {}).get("growthGoal") or {}
+    goal = str(saved.get("goal") or "I want 20 meetings this month.")
+    target = int(saved.get("target_meetings") or 20)
+    progress = 0 if target <= 0 else min(100, round(meetings / target * 100, 1))
+    return GrowthGoalOut(
+        goal=goal,
+        target_meetings=target,
+        meetings_booked=meetings,
+        progress_percent=progress,
+        execution_plan=list(saved.get("execution_plan") or [
+            "Review today's highest-ranked opportunities.",
+            "Approve prepared emails for leads with ICP score above 70.",
+            "Launch one review-mode campaign to the best-fit segment.",
+            "Follow up with interested replies within the same business day.",
+        ]),
+        next_action=str(saved.get("next_action") or "Approve outreach for the top three opportunities."),
+    )
+
+
+def _extract_meeting_target(goal: str) -> int:
+    import re
+
+    match = re.search(r"\d+", goal)
+    return int(match.group(0)) if match else 20
+
+
+def _opportunity_score(lead: Lead) -> int:
+    score = 45
+    if lead.email:
+        score += 15
+    if lead.website:
+        score += 12
+    if lead.status in {LeadStatus.qualified, LeadStatus.interested, LeadStatus.meeting}:
+        score += 18
+    if lead.revenue:
+        score += min(10, int(float(lead.revenue) / 10000))
+    return min(100, score)
+
+
+@router.get("/growth-engine", response_model=GrowthEngineOut)
+def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> GrowthEngineOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    metrics = dashboard(user_id, db)
+    lead_scope = _workspace_stmt(Lead, workspace, user_id)
+    campaign_scope = _workspace_stmt(Campaign, workspace, user_id)
+    email_scope = _workspace_stmt(EmailMessage, workspace, user_id)
+    recent_leads = list(db.scalars(select(Lead).where(lead_scope).order_by(Lead.created_at.desc()).limit(12)).all())
+    recent_campaigns = list(db.scalars(select(Campaign).where(campaign_scope).order_by(Campaign.updated_at.desc()).limit(5)).all())
+    recent_replies = list(db.scalars(select(EmailMessage).where(email_scope, EmailMessage.direction == "inbound").order_by(EmailMessage.created_at.desc()).limit(5)).all())
+    today = datetime.utcnow().date()
+    new_today = db.scalar(select(func.count()).select_from(Lead).where(lead_scope, func.date(Lead.created_at) == today.isoformat())) or 0
+    opportunities = [
+        {
+            "company": lead.company,
+            "website": lead.website or "",
+            "industry": lead.industry or workspace.industry or "Target ICP",
+            "country": lead.country or workspace.target_country or "",
+            "status": _display_status(lead.status),
+            "score": _opportunity_score(lead),
+            "reason": "Strong fit because it matches your ICP and has a reachable contact." if lead.email else "Worth researching today; add a contact before sending.",
+            "recommended_action": "Generate a personalized email and keep approval required.",
+        }
+        for lead in sorted(recent_leads, key=_opportunity_score, reverse=True)[:6]
+    ]
+    if not opportunities:
+        target_country = workspace.target_country or "your target market"
+        target_industry = workspace.industry or "your ICP"
+        opportunities = [
+            {
+                "company": f"New {target_industry} companies in {target_country}",
+                "website": "",
+                "industry": target_industry,
+                "country": target_country,
+                "status": "Ready to discover",
+                "score": 72,
+                "reason": "Your workspace has no imported leads yet, so the best revenue move is focused discovery.",
+                "recommended_action": "Run Lead Finder and import the first 25 prospects for review.",
+            }
+        ]
+    smart_recommendations = [
+        {
+            "title": "Contact the highest ICP leads today",
+            "why": "Fresh, qualified opportunities convert best when outreach happens within the same workday.",
+            "action": "Review top opportunities and approve prepared emails.",
+        },
+        {
+            "title": "Use the best sending window",
+            "why": "B2B replies usually improve when messages arrive during local morning planning time.",
+            "action": f"Schedule sends between 09:00 and 11:00 in {workspace.timezone}.",
+        },
+        {
+            "title": "Improve the next follow-up",
+            "why": f"Current reply rate is {metrics.reply_rate}%; follow-ups should mention a specific website or pain point.",
+            "action": "Generate a concise follow-up for leads that opened but did not reply.",
+        },
+    ]
+    campaign_optimizations = [
+        {
+            "campaign": campaign.name,
+            "status": campaign.status.value,
+            "open_rate": metrics.open_rate,
+            "reply_rate": metrics.reply_rate,
+            "suggestion": "Test a shorter subject line and move the CTA into the first three sentences." if metrics.reply_rate < 5 else "Scale this sequence to similar ICP segments.",
+        }
+        for campaign in recent_campaigns
+    ] or [{"campaign": "First campaign", "status": "Recommended", "open_rate": 0, "reply_rate": 0, "suggestion": "Create a review-mode campaign from today's opportunity feed."}]
+    website_monitoring = [
+        {
+            "company": lead.company,
+            "change": "Website should be reviewed for CTA, contact form, proof, and service updates.",
+            "priority": "high" if _opportunity_score(lead) >= 70 else "medium",
+            "recommended_action": "Run AI Website Audit before outreach.",
+        }
+        for lead in recent_leads[:4] if lead.website
+    ] or [{"company": "Tracked companies", "change": "No tracked website changes yet.", "priority": "info", "recommended_action": "Import leads with websites to enable monitoring."}]
+    reply_items = [
+        {
+            "subject": message.subject,
+            "classification": str((message.tags or {}).get("category") or "Question"),
+            "suggested_reply": str((message.reply_assistant or {}).get("suggested_response") or "Reply with context, answer the question, and suggest a clear next step."),
+            "next_step": str((message.reply_assistant or {}).get("next_step") or "Review and respond manually."),
+        }
+        for message in recent_replies
+    ] or [{"subject": "No replies yet", "classification": "Waiting", "suggested_reply": "When replies arrive, AI will classify intent and prepare a safe draft.", "next_step": "Keep campaigns in Review Mode until replies start."}]
+    goal = _growth_goal(settings, metrics.meetings)
+    briefing = GrowthBriefingOut(
+        date=today.isoformat(),
+        new_leads_found=int(new_today),
+        best_opportunities=opportunities[:3],
+        campaign_performance={"open_rate": metrics.open_rate, "reply_rate": metrics.reply_rate, "conversion_rate": metrics.conversion_rate, "bounce_rate": 0 if metrics.emails_sent == 0 else round(metrics.bounces / metrics.emails_sent * 100, 1)},
+        reply_rate_change=0,
+        meetings_booked=metrics.meetings,
+        recommended_actions=smart_recommendations[:3],
+    )
+    proactive = [
+        {"message": "Today I recommend reviewing the top-ranked opportunities.", "approval_required": True},
+        {"message": f"I found {len(opportunities)} revenue opportunities ready for review.", "approval_required": True},
+        {"message": "No emails or campaigns will launch without approval.", "approval_required": True},
+    ]
+    return GrowthEngineOut(
+        briefing=briefing,
+        opportunity_feed=opportunities,
+        smart_recommendations=smart_recommendations,
+        website_monitoring=website_monitoring,
+        campaign_optimizations=campaign_optimizations,
+        reply_assistant=reply_items,
+        revenue_dashboard={"estimated_pipeline": metrics.revenue_forecast, "meetings": metrics.meetings, "revenue_influenced": metrics.revenue, "roi": 0 if metrics.mrr == 0 else round(metrics.revenue_forecast / metrics.mrr, 1), "mrr_generated": metrics.mrr},
+        goal=goal,
+        proactive_mode=proactive,
+        notifications=[{"title": "Growth engine refreshed", "message": "New recommendations are ready for review.", "kind": "info"}],
+        performance={"ai_actions": len(opportunities) + len(smart_recommendations), "time_saved_hours": round((len(opportunities) + len(smart_recommendations)) * 0.25, 1), "leads_generated": metrics.leads, "revenue_influenced": metrics.revenue},
+    )
+
+
+@router.post("/growth-engine/goal", response_model=GrowthGoalOut)
+def set_growth_goal(payload: GrowthGoalIn, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> GrowthGoalOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    target = _extract_meeting_target(payload.goal)
+    execution_plan = [
+        f"Find enough qualified leads to support {target} meetings this month.",
+        "Score opportunities by ICP fit, contact availability, and buying signals.",
+        "Prepare personalized emails and follow-ups for approval.",
+        "Prioritize interested replies and meeting requests daily.",
+        "Review progress every login and adjust campaigns safely.",
+    ]
+    settings.general = {
+        **(settings.general or {}),
+        "growthGoal": {
+            "goal": payload.goal,
+            "target_meetings": target,
+            "execution_plan": execution_plan,
+            "next_action": "Review today's AI Briefing and approve the first recommended action.",
+        },
+    }
+    _notify(db, user_id, NotificationKind.success, "Growth goal updated", payload.goal)
+    log_event(db, request, user_id, "growth.goal_updated", {"goal": payload.goal, "target_meetings": target})
+    db.commit()
+    return _growth_goal(settings, dashboard(user_id, db).meetings)
 
 
 @router.post("/campaigns", response_model=CampaignOut)

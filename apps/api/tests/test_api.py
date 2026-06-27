@@ -693,6 +693,25 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
     assert status.json()["stripe_subscription_id"] == "sub_sync_live"
 
 
+def test_growth_engine_returns_briefing_and_persists_goal() -> None:
+    briefing = client.get("/api/growth-engine", headers=AUTH)
+    assert briefing.status_code == 200
+    data = briefing.json()
+    assert data["briefing"]["date"]
+    assert data["opportunity_feed"]
+    assert data["smart_recommendations"]
+    assert data["proactive_mode"][0]["approval_required"] is True
+    assert data["goal"]["target_meetings"] >= 1
+
+    goal = client.post("/api/growth-engine/goal", headers=AUTH, json={"goal": "I want 12 meetings this month."})
+    assert goal.status_code == 200
+    assert goal.json()["target_meetings"] == 12
+
+    refreshed = client.get("/api/growth-engine", headers=AUTH)
+    assert refreshed.status_code == 200
+    assert refreshed.json()["goal"]["goal"] == "I want 12 meetings this month."
+
+
 def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.acquisition.find_leads",

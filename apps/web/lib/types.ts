@@ -283,6 +283,35 @@ export type Email = {
 
 export type Activity = { id: string; action: string; metadata_json: Record<string, unknown>; created_at: string };
 export type Notification = { id: string; kind: string; title: string; message: string; created_at: string };
+export type GrowthGoal = {
+  goal: string;
+  target_meetings: number;
+  meetings_booked: number;
+  progress_percent: number;
+  execution_plan: string[];
+  next_action: string;
+};
+export type GrowthEngine = {
+  briefing: {
+    date: string;
+    new_leads_found: number;
+    best_opportunities: Array<Record<string, unknown>>;
+    campaign_performance: Record<string, unknown>;
+    reply_rate_change: number;
+    meetings_booked: number;
+    recommended_actions: Array<Record<string, unknown>>;
+  };
+  opportunity_feed: Array<Record<string, unknown>>;
+  smart_recommendations: Array<Record<string, unknown>>;
+  website_monitoring: Array<Record<string, unknown>>;
+  campaign_optimizations: Array<Record<string, unknown>>;
+  reply_assistant: Array<Record<string, unknown>>;
+  revenue_dashboard: Record<string, unknown>;
+  goal: GrowthGoal;
+  proactive_mode: Array<Record<string, unknown>>;
+  notifications: Array<Record<string, unknown>>;
+  performance: Record<string, unknown>;
+};
 export type Profile = { workspace: string; company: string; avatar_url?: string | null; timezone: string; language: string };
 export type Settings = Record<'general' | 'ai' | 'email' | 'billing' | 'security' | 'api', Record<string, unknown>>;
 
