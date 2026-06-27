@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { locales, translate } from "../../lib/i18n/translations";
+import { locales, translate, translateVisibleText } from "../../lib/i18n/translations";
 
 describe("pricing plans", () => {
   it("contains the required subscription tiers", () => {
@@ -18,5 +18,10 @@ describe("i18n", () => {
 
   it("returns the key safely when no English translation exists", () => {
     expect(translate("missing.translation.key", "ru")).toBe("missing.translation.key");
+  });
+
+  it("translates visible UI phrases without crashing on dynamic text", () => {
+    expect(translateVisibleText("Continue with Google", "fr")).toBe("Continuer avec Google");
+    expect(translateVisibleText("New leads found: 12", "pl")).toBe("Nowe leady znalezione: 12");
   });
 });
