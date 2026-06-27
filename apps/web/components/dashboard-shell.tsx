@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
-import { BarChart3, Bot, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, UserCircle, Users } from "lucide-react";
+import { BarChart3, Bot, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, Users } from "lucide-react";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { AICEOVoiceBriefing } from "@/components/ai-ceo-voice-briefing";
@@ -20,7 +20,6 @@ const nav = [
   { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
   { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3, featureFlag: "NEXT_PUBLIC_SHOW_ANALYTICS_NAV" },
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
-  { href: "/dashboard/profile", labelKey: "nav.profile", icon: UserCircle },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
   { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
 ];

@@ -1,5 +1,5 @@
-import { SettingsAndProfile } from '@/components/product-workspace';
+import { redirect } from 'next/navigation';
 
 export default function ProfilePage() {
-  return <SettingsAndProfile />;
+  redirect('/dashboard/settings');
 }

@@ -7,7 +7,7 @@ const features = [
   { title: "Lead Finder", copy: "Find companies by niche, country, and city with verified enrichment fields.", Icon: Search },
   { title: "AI Website Analyzer", copy: "Detect services, strengths, weak points, and outreach angles from prospect websites.", Icon: Globe2 },
   { title: "Personalization Engine", copy: "Generate cold emails, follow-ups, and A/B variants using company context.", Icon: Mail },
-  { title: "Campaign Manager", copy: "Launch, pause, schedule, and automate follow-ups across outbound sequences.", Icon: TrendingUp },
+  { title: "Campaign Manager", copy: "Prepare, approve, schedule, and monitor outbound sequences with clear safety controls.", Icon: TrendingUp },
   { title: "CRM", copy: "Track every lead from New to Closed with notes, filters, and search.", Icon: Users },
   { title: "Security", copy: "Rate limiting, audit logs, JWT auth, encrypted secrets, and production guardrails.", Icon: ShieldCheck }
 ];
@@ -32,7 +32,7 @@ const pricing = [
     price: "€499",
     desc: "Best for agencies, SaaS companies and larger teams.",
     cta: "Start Agency Trial",
-    items: ["Everything in Pro", "10 AI Sales Employees", "50,000 leads/month", "100,000 AI emails/month", "Autonomous Mode", "Voice AI Sales Employee", "AI Team Routing", "AI Lead Qualification", "AI Reply Automation", "AI Meeting Booking", "AI Sales Forecasting", "Unlimited Campaigns", "Unlimited Workspaces", "Team Members", "White Label Ready", "API Access", "Webhooks", "Priority Support", "Early Access to New AI Features", "14-day free trial"]
+    items: ["Everything in Pro", "10 AI Sales Employees", "50,000 leads/month", "100,000 AI emails/month", "Approval-gated automation", "AI Lead Qualification", "AI Reply Automation", "AI Meeting Booking", "AI Sales Forecasting", "Unlimited Campaigns", "Unlimited Workspaces", "Team Members", "API Access", "Webhooks", "Priority Support", "14-day free trial"]
   }
 ] as const;
 
@@ -74,17 +74,18 @@ export default function Home() {
             </div>
           </div>
           <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-900 p-4 text-white shadow-soft min-[360px]:p-5">
-            <div className="grid gap-3 min-[340px]:grid-cols-2">
-              {["Leads found", "Emails sent", "Open rate", "Replies"].map((label, index) => (
-                <div key={label} className="min-w-0 rounded-md bg-white/10 p-4">
-                  <p className="text-sm text-slate-300">{label}</p>
-                  <p className="mt-3 text-2xl font-bold min-[360px]:text-3xl">{["12,480", "48,210", "64%", "2,136"][index]}</p>
+            <p className="text-sm font-semibold text-teal-200">First campaign workflow</p>
+            <div className="mt-4 space-y-3">
+              {["Describe your offer and ideal customer", "Import or discover qualified companies", "Review AI research and prepared emails", "Approve every external action before sending"].map((label, index) => (
+                <div key={label} className="flex gap-3 rounded-md bg-white/10 p-4">
+                  <span className="grid size-7 shrink-0 place-items-center rounded-full bg-white text-sm font-bold text-ink">{index + 1}</span>
+                  <p className="text-sm leading-6 text-slate-100">{label}</p>
                 </div>
               ))}
             </div>
             <div className="mt-4 rounded-md bg-white p-4 text-ink">
-              <p className="text-sm font-semibold text-brand">AI recommendation</p>
-              <p className="mt-2 text-sm text-slate-600">Construction firms in Austin with outdated project pages convert 2.4x better with a website audit angle.</p>
+              <p className="text-sm font-semibold text-brand">Safety-first automation</p>
+              <p className="mt-2 text-sm text-slate-600">OutreachAI prepares the work. You approve campaigns, CRM changes, and email sends before anything leaves the workspace.</p>
             </div>
           </div>
         </div>
@@ -118,10 +119,17 @@ export default function Home() {
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-12 min-[360px]:px-5 sm:py-16">
-        <h2 className="text-3xl font-bold min-[390px]:text-4xl">Trusted by outbound teams</h2>
+        <h2 className="text-3xl font-bold min-[390px]:text-4xl">Built for review-first outbound</h2>
         <div className="mt-8 grid gap-4 md:grid-cols-3">
-          {["We booked 31 qualified real estate calls in month one.", "The website analyzer writes better first lines than our SDRs.", "Agency reporting finally matches what clients ask for."].map((quote) => (
-            <blockquote key={quote} className="min-w-0 rounded-lg border border-slate-200 bg-white p-5 text-slate-700">{quote}</blockquote>
+          {[
+            ["No mystery sends", "Prepared emails stay inside OutreachAI until a user approves them."],
+            ["No spreadsheet chaos", "Leads, research, campaigns, replies, and billing live in one workspace."],
+            ["No empty dashboard", "New accounts see guided next steps instead of blank metrics."]
+          ].map(([title, copy]) => (
+            <article key={title} className="min-w-0 rounded-lg border border-slate-200 bg-white p-5">
+              <h3 className="font-bold">{title}</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{copy}</p>
+            </article>
           ))}
         </div>
       </section>
