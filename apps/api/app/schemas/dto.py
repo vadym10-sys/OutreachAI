@@ -716,6 +716,26 @@ class BillingDiagnosticsOut(BaseModel):
     webhook_receives_signed_events: bool = False
 
 
+class BillingSyncRequest(BaseModel):
+    customer_email: Optional[EmailStr] = None
+    stripe_customer_id: Optional[str] = Field(default=None, max_length=128)
+
+
+class BillingSyncOut(BaseModel):
+    synced: bool
+    plan: str = "Starter"
+    status: str = "inactive"
+    stripe_customer_id: str = ""
+    stripe_subscription_id: str = ""
+    trial_end: Optional[datetime] = None
+    current_period_end: Optional[datetime] = None
+    workspace_id: Optional[UUID] = None
+    price_id_loaded: bool = False
+    subscription_found: bool = False
+    customer_found: bool = False
+    message: str = ""
+
+
 class AdminSummaryOut(BaseModel):
     users: int
     workspaces: int

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import stripe
 
 from app.core.config import get_settings
@@ -170,3 +172,62 @@ def plan_from_price_id(price_id: str) -> str | None:
         if lookup_key == spec["lookup_key"]:
             return plan
     return None
+
+
+def timestamp_to_datetime(value: int | None) -> datetime | None:
+    return datetime.utcfromtimestamp(value) if value else None
+
+
+def _stripe_get(obj: object, key: str, default: object = None) -> object:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    getter = getattr(obj, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    return getattr(obj, key, default)
+
+
+def subscription_price_id(subscription: object) -> str:
+    try:
+        return str(subscription["items"]["data"][0]["price"]["id"])
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
+def subscription_payload(subscription: object) -> dict:
+    price_id = subscription_price_id(subscription)
+    metadata = _stripe_get(subscription, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return {
+        "subscription_id": str(_stripe_get(subscription, "id", "") or ""),
+        "customer_id": str(_stripe_get(subscription, "customer", "") or ""),
+        "price_id": price_id,
+        "plan": str(metadata.get("plan") or plan_from_price_id(price_id) or "Starter"),
+        "status": str(_stripe_get(subscription, "status", "") or "active"),
+        "trial_end": timestamp_to_datetime(_stripe_get(subscription, "trial_end")),
+        "current_period_end": timestamp_to_datetime(_stripe_get(subscription, "current_period_end")),
+        "workspace_id": str(metadata.get("workspace_id") or ""),
+        "user_id": str(metadata.get("user_id") or ""),
+    }
+
+
+def latest_subscription_for_customer(*, customer_id: str = "", customer_email: str = "") -> tuple[object | None, object | None]:
+    settings = get_settings()
+    stripe.api_key = settings.stripe_secret_key
+    if not settings.stripe_secret_key:
+        raise ValueError("STRIPE_SECRET_KEY is required to sync billing")
+    customer = None
+    if customer_id:
+        customer = stripe.Customer.retrieve(customer_id)
+    elif customer_email:
+        customers = stripe.Customer.list(email=customer_email, limit=1)
+        customer = customers.data[0] if customers.data else None
+    if not customer:
+        return None, None
+    subscriptions = stripe.Subscription.list(customer=customer.id, status="all", limit=10)
+    ranked = sorted(
+        subscriptions.data,
+        key=lambda item: (0 if item.status in {"active", "trialing"} else 1, -(int(getattr(item, "created", 0) or 0))),
+    )
+    return customer, ranked[0] if ranked else None

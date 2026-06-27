@@ -52,6 +52,8 @@ from app.schemas.dto import (
     BillingDiagnosticsOut,
     BillingPortalRequest,
     BillingStatusOut,
+    BillingSyncOut,
+    BillingSyncRequest,
     CampaignCreate,
     CampaignAnalyticsOut,
     CampaignOut,
@@ -125,7 +127,7 @@ from app.services.ai import (
     website_audit,
 )
 from app.services.audit import log_event
-from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices, price_for_plan
+from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError, find_leads
 from app.services.website import WebsiteFetchError, collect_website
@@ -239,6 +241,59 @@ def _has_active_subscription(db: Session, workspace: Workspace) -> bool:
 
 def _latest_subscription(db: Session, workspace: Workspace) -> Subscription | None:
     return db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
+
+
+def _user_for_subscription(db: Session, user_id: str) -> User:
+    user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+    if user is None:
+        user = User(clerk_user_id=user_id, email=f"{user_id}@outreachai.local")
+        db.add(user)
+        db.flush()
+    return user
+
+
+def _sync_workspace_subscription(
+    db: Session,
+    *,
+    user_id: str,
+    workspace: Workspace,
+    settings: AppSettings,
+    stripe_customer_id: str,
+    stripe_subscription_id: str,
+    stripe_price_id: str,
+    plan: str,
+    status: str,
+    trial_end: datetime | None,
+    current_period_end: datetime | None,
+) -> Subscription:
+    user = _user_for_subscription(db, user_id)
+    subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == stripe_subscription_id))
+    if subscription is None:
+        subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id, Subscription.stripe_customer_id == stripe_customer_id))
+    if subscription is None:
+        subscription = Subscription(user_id=user.id, workspace_id=workspace.id)
+        db.add(subscription)
+    subscription.user_id = user.id
+    subscription.workspace_id = workspace.id
+    subscription.stripe_customer_id = stripe_customer_id
+    subscription.stripe_subscription_id = stripe_subscription_id
+    subscription.plan = plan
+    subscription.status = status
+    subscription.trial_end = trial_end
+    subscription.current_period_end = current_period_end
+    subscription.plan_limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])
+    settings.billing = {
+        **(settings.billing or {}),
+        "plan": plan,
+        "status": status,
+        "stripeCustomerId": stripe_customer_id,
+        "stripeSubscriptionId": stripe_subscription_id,
+        "stripePriceId": stripe_price_id,
+        "trialEnd": trial_end.isoformat() if trial_end else None,
+        "currentPeriodEnd": current_period_end.isoformat() if current_period_end else None,
+        "planLimits": PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"]),
+    }
+    return subscription
 
 
 def _upgrade_message(plan: str, feature: str) -> str:
@@ -2296,6 +2351,57 @@ def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
         agency_price_id_loaded=bool(settings.stripe_agency_price_id),
         checkout_session_creation_works=checkout_works,
         webhook_receives_signed_events=bool(settings.stripe_webhook_secret),
+    )
+
+
+@router.post("/billing/sync-latest-subscription", response_model=BillingSyncOut)
+def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> BillingSyncOut:
+    workspace = _current_workspace(db, user_id)
+    settings_row = _settings_for_workspace(db, user_id, workspace)
+    customer_id = (payload.stripe_customer_id or str((settings_row.billing or {}).get("stripeCustomerId") or "")).strip()
+    customer_email = str(payload.customer_email or "").strip()
+    if not customer_id and not customer_email:
+        raise HTTPException(status_code=400, detail="Provide customer_email or stripe_customer_id")
+    try:
+        customer, subscription = latest_subscription_for_customer(customer_id=customer_id, customer_email=customer_email)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Stripe subscription lookup failed") from exc
+    if not customer:
+        return BillingSyncOut(synced=False, customer_found=False, subscription_found=False, message="Stripe customer not found")
+    if not subscription:
+        return BillingSyncOut(synced=False, customer_found=True, subscription_found=False, stripe_customer_id=str(customer.id), message="No Stripe subscription found for customer")
+    sub = subscription_payload(subscription)
+    plan = str(sub["plan"]) if str(sub["plan"]) in PLAN_LIMITS else "Starter"
+    synced = _sync_workspace_subscription(
+        db,
+        user_id=user_id,
+        workspace=workspace,
+        settings=settings_row,
+        stripe_customer_id=str(sub["customer_id"] or customer.id),
+        stripe_subscription_id=str(sub["subscription_id"]),
+        stripe_price_id=str(sub["price_id"]),
+        plan=plan,
+        status=str(sub["status"]),
+        trial_end=sub["trial_end"],
+        current_period_end=sub["current_period_end"],
+    )
+    log_event(db, request, user_id, "billing.subscription_synced", {"workspace_id": str(workspace.id), "plan": plan, "status": synced.status})
+    db.commit()
+    return BillingSyncOut(
+        synced=True,
+        plan=plan,
+        status=synced.status,
+        stripe_customer_id=synced.stripe_customer_id or "",
+        stripe_subscription_id=synced.stripe_subscription_id or "",
+        trial_end=synced.trial_end,
+        current_period_end=synced.current_period_end,
+        workspace_id=workspace.id,
+        price_id_loaded=bool(sub["price_id"]),
+        subscription_found=True,
+        customer_found=True,
+        message="Latest Stripe subscription synced to this workspace",
     )
 
 

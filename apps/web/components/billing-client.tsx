@@ -168,7 +168,7 @@ export function BillingWorkspace() {
         ]);
         setPlans(nextPlans);
         setStatus(nextStatus);
-        setDiagnostics({ ...nextDiagnostics, publishable_key_loaded: Boolean(stripePublishableKey) });
+        setDiagnostics(nextDiagnostics);
       })
       .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Billing could not be loaded.'))
       .finally(() => setLoading(false));
@@ -194,7 +194,8 @@ export function BillingWorkspace() {
   const diagnosticsRows = diagnostics ? [
     ['Stripe secret loaded', diagnostics.stripe_secret_loaded],
     ['Webhook secret loaded', diagnostics.webhook_secret_loaded],
-    ['Publishable key loaded', diagnostics.publishable_key_loaded],
+    ['Backend publishable key loaded', diagnostics.publishable_key_loaded],
+    ['Frontend publishable key loaded', Boolean(stripePublishableKey)],
     ['Starter price ID loaded', diagnostics.starter_price_id_loaded],
     ['Pro price ID loaded', diagnostics.pro_price_id_loaded],
     ['Agency price ID loaded', diagnostics.agency_price_id_loaded],

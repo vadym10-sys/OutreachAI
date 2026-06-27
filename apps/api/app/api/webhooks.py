@@ -18,7 +18,7 @@ from app.core.database import get_db
 from app.models.entities import AppSettings, AuditLog, EmailMessage, Lead, LeadStatus, Subscription, User, Workspace
 from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
-from app.services.billing import plan_from_price_id
+from app.services.billing import plan_from_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -53,21 +53,10 @@ def _verify_resend_signature(payload: bytes, request: Request, secret: str) -> N
     raise HTTPException(status_code=400, detail="Invalid Resend webhook signature")
 
 
-def _timestamp(value: int | None) -> datetime | None:
-    return datetime.utcfromtimestamp(value) if value else None
-
-
 def _metadata_value(metadata: object, key: str) -> str:
     if isinstance(metadata, dict):
         return str(metadata.get(key) or "")
     return str(getattr(metadata, key, "") or "")
-
-
-def _subscription_price_id(subscription: object) -> str:
-    try:
-        return str(subscription["items"]["data"][0]["price"]["id"])
-    except (KeyError, IndexError, TypeError):
-        return ""
 
 
 def _user_for_clerk(db: Session, clerk_user_id: str) -> User:
@@ -104,6 +93,7 @@ def _sync_subscription(
     status: str,
     trial_end: datetime | None,
     current_period_end: datetime | None,
+    price_id: str = "",
 ) -> None:
     parsed_workspace_id = _workspace_uuid(workspace_id)
     if parsed_workspace_id is None or db.get(Workspace, parsed_workspace_id) is None:
@@ -133,6 +123,7 @@ def _sync_subscription(
             "stripeSubscriptionId": subscription_id,
             "trialEnd": trial_end.isoformat() if trial_end else None,
             "currentPeriodEnd": current_period_end.isoformat() if current_period_end else None,
+            "stripePriceId": price_id,
             "planLimits": PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"]),
         }
 
@@ -163,19 +154,22 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
             subscription = stripe.Subscription.retrieve(subscription_id) if subscription_id and settings.stripe_secret_key else None
         except stripe.StripeError:
             subscription = None
-        status = str(subscription.get("status") if subscription else "active")
-        trial_end = _timestamp(subscription.get("trial_end") if subscription else None)
-        current_period_end = _timestamp(subscription.get("current_period_end") if subscription else None)
-        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=trial_end, current_period_end=current_period_end)
+        payload = subscription_payload(subscription) if subscription else {}
+        status = str(payload.get("status") or "active")
+        trial_end = payload.get("trial_end") if subscription else None
+        current_period_end = payload.get("current_period_end") if subscription else None
+        price_id = str(payload.get("price_id") or "")
+        resolved_plan = str(payload.get("plan") or plan)
+        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=resolved_plan, status=status, trial_end=trial_end, current_period_end=current_period_end, price_id=price_id)
     elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
         subscription_id = str(data.get("id") or "")
         customer_id = str(data.get("customer") or "")
         workspace_id = _metadata_value(data.get("metadata"), "workspace_id")
         user_id = _metadata_value(data.get("metadata"), "user_id")
-        price_id = _subscription_price_id(data)
+        price_id = subscription_price_id(data)
         plan = _metadata_value(data.get("metadata"), "plan") or plan_from_price_id(price_id) or "Starter"
         status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
-        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=_timestamp(data.get("trial_end")), current_period_end=_timestamp(data.get("current_period_end")))
+        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=timestamp_to_datetime(data.get("trial_end")), current_period_end=timestamp_to_datetime(data.get("current_period_end")), price_id=price_id)
     elif event_type == "invoice.payment_succeeded":
         subscription_id = str(data.get("subscription") or "")
         subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None

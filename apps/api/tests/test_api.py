@@ -623,6 +623,75 @@ def test_starter_plan_blocks_sales_employee_limits_and_semi_auto_mode() -> None:
     assert "Semi-Automatic Campaigns" in semi_auto.json()["detail"]
 
 
+def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) -> None:
+    future = int(time.time()) + 14 * 24 * 60 * 60
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    stripe_subscription = {
+        "id": "sub_sync_live",
+        "customer": "cus_sync_live",
+        "status": "trialing",
+        "trial_end": future,
+        "current_period_end": future,
+        "metadata": {"user_id": "dev_user", "workspace_id": workspace["id"], "plan": "Pro"},
+        "items": {"data": [{"price": {"id": "price_pro_test"}}]},
+        "created": future - 60,
+    }
+    customer = type("StripeCustomer", (), {"id": "cus_sync_live"})()
+    calls = []
+
+    def fake_latest_subscription(customer_id: str = "", customer_email: str = "") -> tuple[object, dict]:
+        calls.append({"customer_id": customer_id, "customer_email": customer_email})
+        return customer, stripe_subscription
+
+    monkeypatch.setattr("app.api.routes.latest_subscription_for_customer", fake_latest_subscription)
+
+    response = client.post("/api/billing/sync-latest-subscription", headers=AUTH, json={"customer_email": "buyer@example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["synced"] is True
+    assert data["plan"] == "Pro"
+    assert data["status"] == "trialing"
+    assert data["stripe_customer_id"] == "cus_sync_live"
+    assert data["stripe_subscription_id"] == "sub_sync_live"
+    assert data["price_id_loaded"] is True
+    assert calls[-1]["customer_email"] == "buyer@example.com"
+
+    db = get_sessionmaker()()
+    try:
+        subscription = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_sync_live").one()
+        assert subscription.workspace_id == UUID(workspace["id"])
+        assert subscription.plan == "Pro"
+        assert subscription.status == "trialing"
+        assert subscription.plan_limits["leads"] == 5000
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
+        assert settings.billing["plan"] == "Pro"
+        assert settings.billing["status"] == "trialing"
+        assert settings.billing["stripeCustomerId"] == "cus_sync_live"
+        assert settings.billing["stripeSubscriptionId"] == "sub_sync_live"
+        assert settings.billing["stripePriceId"] == "price_pro_test"
+        before_count = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_sync_live").count()
+    finally:
+        db.close()
+
+    second = client.post("/api/billing/sync-latest-subscription", headers=AUTH, json={"stripe_customer_id": "cus_sync_live"})
+    assert second.status_code == 200
+    assert calls[-1]["customer_id"] == "cus_sync_live"
+
+    db = get_sessionmaker()()
+    try:
+        after_count = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_sync_live").count()
+        assert after_count == before_count
+    finally:
+        db.close()
+
+    status = client.get("/api/billing/status", headers=AUTH)
+    assert status.status_code == 200
+    assert status.json()["plan"] == "Pro"
+    assert status.json()["limits"]["leads"] == 5000
+    assert status.json()["stripe_customer_id"] == "cus_sync_live"
+    assert status.json()["stripe_subscription_id"] == "sub_sync_live"
+
+
 def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.acquisition.find_leads",
