@@ -1,4 +1,5 @@
 import { SignIn } from "@clerk/nextjs";
+import Link from "next/link";
 import { hasClerkPublishableKey } from "@/lib/env";
 
 function MissingClerkConfig() {
@@ -18,6 +19,11 @@ export default function Page() {
       {hasClerkPublishableKey ? (
         <div className="w-full max-w-[min(100%,28rem)] overflow-x-auto">
           <SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" fallbackRedirectUrl="/dashboard" />
+          <div className="mt-4 rounded-lg border border-slate-200 bg-white px-4 py-3 text-center text-sm shadow-soft">
+            <Link href="/forgot-password" className="font-semibold text-brand">
+              Forgot password?
+            </Link>
+          </div>
         </div>
       ) : (
         <MissingClerkConfig />

@@ -1,0 +1,144 @@
+'use client';
+
+import { FormEvent, useState } from 'react';
+import { useSignIn } from '@clerk/nextjs/legacy';
+import Link from 'next/link';
+import { CheckCircle2, Loader2, Mail, ShieldCheck } from 'lucide-react';
+
+type Step = 'request' | 'reset' | 'success';
+export function PasswordResetClient() {
+  const { isLoaded, signIn, setActive } = useSignIn();
+  const [step, setStep] = useState<Step>('request');
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  async function requestReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!isLoaded || !signIn) return;
+    setBusy(true);
+    setError('');
+    try {
+      await signIn.create({ strategy: 'reset_password_email_code', identifier: email });
+    } catch {
+      // Keep the response identical so the UI never confirms whether an account exists.
+    } finally {
+      setMessage('If this email exists, we sent password reset instructions.');
+      setStep('reset');
+      setBusy(false);
+    }
+  }
+
+  async function completeReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!isLoaded || !signIn) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await signIn.attemptFirstFactor({
+        strategy: 'reset_password_email_code',
+        code,
+        password,
+      });
+      if (result.status === 'complete') {
+        await setActive({ session: result.createdSessionId });
+        setStep('success');
+        setMessage('Password updated successfully. You can continue to your dashboard.');
+        return;
+      }
+      setError('Password reset needs one more verification step. Open the latest Clerk email and try again.');
+    } catch {
+      setError('The reset code or new password could not be accepted. Request a new email if the code expired.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="w-full max-w-[min(100%,28rem)] rounded-lg border border-slate-200 bg-white p-5 shadow-soft min-[360px]:p-6">
+      <div className="mb-6">
+        <p className="inline-flex rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">Secure account recovery</p>
+        <h1 className="mt-4 text-2xl font-bold text-ink">Reset your password</h1>
+        <p className="mt-2 text-sm leading-6 text-slate-600">Use the email connected to your OutreachAI account. Clerk handles the reset securely.</p>
+      </div>
+
+      {message && <div className="mb-4 rounded-md border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-brand">{message}</div>}
+      {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+
+      {step === 'request' && (
+        <form onSubmit={requestReset} className="space-y-4">
+          <label className="block">
+            <span className="text-sm font-semibold text-slate-700">Email</span>
+            <input
+              type="email"
+              required
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-teal-100"
+              placeholder="you@company.com"
+            />
+          </label>
+          <button disabled={!isLoaded || busy} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">
+            {busy ? <Loader2 className="animate-spin" size={18} /> : <Mail size={18} />}
+            Send reset instructions
+          </button>
+        </form>
+      )}
+
+      {step === 'reset' && (
+        <form onSubmit={completeReset} className="space-y-4">
+          <label className="block">
+            <span className="text-sm font-semibold text-slate-700">Reset code</span>
+            <input
+              required
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-teal-100"
+              placeholder="Enter the code from Clerk"
+            />
+          </label>
+          <label className="block">
+            <span className="text-sm font-semibold text-slate-700">New password</span>
+            <input
+              type="password"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-teal-100"
+              placeholder="Create a new password"
+            />
+          </label>
+          <button disabled={!isLoaded || busy} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 font-semibold text-white disabled:opacity-60">
+            {busy ? <Loader2 className="animate-spin" size={18} /> : <ShieldCheck size={18} />}
+            Update password
+          </button>
+          <button type="button" onClick={() => setStep('request')} className="focus-ring min-h-11 w-full rounded-md border border-slate-300 px-4 py-2 font-semibold text-ink">
+            Request a new email
+          </button>
+        </form>
+      )}
+
+      {step === 'success' && (
+        <div className="rounded-md border border-teal-200 bg-teal-50 p-4 text-center">
+          <CheckCircle2 className="mx-auto text-brand" size={28} />
+          <p className="mt-3 font-semibold text-ink">Password reset complete</p>
+          <Link href="/dashboard" className="focus-ring mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md bg-ink px-4 py-2 font-semibold text-white">
+            Continue to dashboard
+          </Link>
+        </div>
+      )}
+
+      <div className="mt-6 text-center text-sm text-slate-600">
+        Remembered your password? <Link href="/sign-in" className="font-semibold text-brand">Back to sign in</Link>
+      </div>
+    </div>
+  );
+}
