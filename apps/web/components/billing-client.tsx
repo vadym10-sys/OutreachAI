@@ -205,7 +205,7 @@ export function BillingWorkspace() {
   const diagnosticsRows = diagnostics ? [
     ['Stripe secret loaded', diagnostics.stripe_secret_loaded],
     ['Webhook secret loaded', diagnostics.webhook_secret_loaded],
-    ['Backend publishable key loaded', diagnostics.publishable_key_loaded],
+    ['Backend publishable key configured (optional)', diagnostics.publishable_key_loaded],
     ['Frontend publishable key loaded', Boolean(runtimeDiagnostics?.stripe_publishable_key_loaded)],
     ['Frontend publishable key is live', Boolean(runtimeDiagnostics?.stripe_publishable_key_live)],
     ['Starter price ID loaded', diagnostics.starter_price_id_loaded],
