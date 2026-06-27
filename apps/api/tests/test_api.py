@@ -913,6 +913,26 @@ def test_ai_employee_task_results_persist_csv_and_block_external_send(monkeypatc
         db.close()
 
 
+def test_ai_ceo_voice_briefing_persists_history_and_stays_read_only() -> None:
+    briefing = client.post("/api/ai-ceo/briefings", headers=AUTH, json={"length": "30 sec", "language": "English"})
+    assert briefing.status_code == 200
+    data = briefing.json()
+    assert data["transcript"]
+    assert data["title"].startswith("AI CEO")
+    assert data["summary_json"]["safety"] == "report_only"
+    assert len(data["summary_json"]["top_priorities"]) == 3
+    assert "will not launch campaigns" in data["transcript"]
+
+    history = client.get("/api/ai-ceo/briefings", headers=AUTH)
+    assert history.status_code == 200
+    assert any(item["id"] == data["id"] for item in history.json())
+
+    answer = client.post("/api/ai-ceo/question", headers=AUTH, json={"question": "How much revenue did we create?", "language": "English"})
+    assert answer.status_code == 200
+    assert "Revenue" in answer.json()["answer"]
+    assert "cannot launch campaigns" in answer.json()["safety_notice"]
+
+
 def test_ai_sales_employee_review_mode_imports_qualifies_drafts_and_approves(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.api.routes.qualify_for_sales_employee",

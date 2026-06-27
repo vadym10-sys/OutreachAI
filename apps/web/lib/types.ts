@@ -345,6 +345,23 @@ export type GrowthEngine = {
   notifications: Array<Record<string, unknown>>;
   performance: Record<string, unknown>;
 };
+
+export type AICEOBriefing = {
+  id: string;
+  title: string;
+  length: '30 sec' | '1 min' | '3 min' | '10 min';
+  language: 'English' | 'Russian' | 'Ukrainian' | 'Polish';
+  transcript: string;
+  summary_json: Record<string, unknown>;
+  created_at: string;
+};
+
+export type AICEOAnswer = {
+  answer: string;
+  related_metrics: Record<string, unknown>;
+  safety_notice: string;
+};
+
 export type Profile = { workspace: string; company: string; avatar_url?: string | null; timezone: string; language: string };
 export type Settings = Record<'general' | 'ai' | 'email' | 'billing' | 'security' | 'api', Record<string, unknown>>;
 

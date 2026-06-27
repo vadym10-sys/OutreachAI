@@ -266,6 +266,21 @@ class SalesEmployeeTaskResult(Base):
     employee: Mapped[AISalesEmployee] = relationship()
 
 
+class AICEOBriefing(Base):
+    __tablename__ = "ai_ceo_briefings"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    length: Mapped[str] = mapped_column(String(20), default="1 min")
+    language: Mapped[str] = mapped_column(String(40), default="English")
+    title: Mapped[str] = mapped_column(String(180), default="AI CEO Daily Report")
+    transcript: Mapped[str] = mapped_column(Text, default="")
+    summary_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+
+
 class WebsiteAnalysis(Base):
     __tablename__ = "website_analyses"
 

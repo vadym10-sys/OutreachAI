@@ -7,6 +7,7 @@ import { UserButton } from "@clerk/nextjs";
 import { BarChart3, Bot, CreditCard, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, UserCircle, Users } from "lucide-react";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
+import { AICEOVoiceBriefing } from "@/components/ai-ceo-voice-briefing";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -77,6 +78,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         </header>
         <main className="min-w-0 px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">{children}</main>
       </div>
+      <AICEOVoiceBriefing />
       <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-6px_20px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
         {primaryMobileNav.map((item) => {
           const Icon = item.icon;

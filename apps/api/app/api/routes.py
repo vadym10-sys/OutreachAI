@@ -18,6 +18,7 @@ from app.core.config import get_settings as get_app_settings
 from app.core.security import CurrentUser
 from app.models.entities import (
     AISalesEmployee,
+    AICEOBriefing,
     AppSettings,
     AuditLog,
     Campaign,
@@ -42,6 +43,10 @@ from app.models.entities import (
 )
 from app.schemas.dto import (
     ActivityOut,
+    AICEOAnswerOut,
+    AICEOBriefingOut,
+    AICEOBriefingRequest,
+    AICEOQuestionIn,
     AISalesEmployeeCreate,
     AISalesEmployeeOut,
     AISalesEmployeeUpdate,
@@ -1966,6 +1971,218 @@ def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> Growth
         notifications=[{"title": "Growth engine refreshed", "message": "New recommendations are ready for review.", "kind": "info"}],
         performance={"ai_actions": len(opportunities) + len(smart_recommendations), "time_saved_hours": round((len(opportunities) + len(smart_recommendations)) * 0.25, 1), "leads_generated": metrics.leads, "revenue_influenced": metrics.revenue},
     )
+
+
+def _ai_ceo_labels(language: str) -> dict[str, str]:
+    labels = {
+        "English": {
+            "opening": "Good morning. This is your AI CEO report.",
+            "health": "Business health",
+            "employees": "AI employee report",
+            "priorities": "Top three priorities today",
+            "risks": "Top risks",
+            "opportunities": "Top opportunities",
+            "safety": "I will not launch campaigns, send emails, approve actions, or delete data. Every external action still requires your approval.",
+            "closing": "My recommendation is to review the highest-confidence opportunity first.",
+        },
+        "Russian": {
+            "opening": "Доброе утро. Это отчет вашего AI CEO.",
+            "health": "Состояние бизнеса",
+            "employees": "Отчет AI сотрудников",
+            "priorities": "Три главных приоритета на сегодня",
+            "risks": "Главные риски",
+            "opportunities": "Главные возможности",
+            "safety": "Я не запускаю кампании, не отправляю письма, не утверждаю действия и не удаляю данные. Все внешние действия требуют вашего подтверждения.",
+            "closing": "Моя рекомендация: сначала проверьте возможность с самым высоким уровнем уверенности.",
+        },
+        "Ukrainian": {
+            "opening": "Доброго ранку. Це звіт вашого AI CEO.",
+            "health": "Стан бізнесу",
+            "employees": "Звіт AI співробітників",
+            "priorities": "Три головні пріоритети на сьогодні",
+            "risks": "Головні ризики",
+            "opportunities": "Головні можливості",
+            "safety": "Я не запускаю кампанії, не надсилаю листи, не затверджую дії і не видаляю дані. Усі зовнішні дії потребують вашого підтвердження.",
+            "closing": "Моя рекомендація: спочатку перегляньте можливість з найвищою впевненістю.",
+        },
+        "Polish": {
+            "opening": "Dzień dobry. To raport Twojego AI CEO.",
+            "health": "Kondycja biznesu",
+            "employees": "Raport pracowników AI",
+            "priorities": "Trzy najważniejsze priorytety na dziś",
+            "risks": "Najważniejsze ryzyka",
+            "opportunities": "Najważniejsze szanse",
+            "safety": "Nie uruchamiam kampanii, nie wysyłam emaili, nie zatwierdzam działań i nie usuwam danych. Każde działanie zewnętrzne nadal wymaga Twojej zgody.",
+            "closing": "Moja rekomendacja: najpierw sprawdź szansę o najwyższej pewności.",
+        },
+    }
+    return labels.get(language, labels["English"])
+
+
+def _latest_employee_report(db: Session, workspace: Workspace, user_id: str) -> list[dict[str, Any]]:
+    employees = list(db.scalars(select(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id).order_by(AISalesEmployee.created_at.desc()).limit(8)).all())
+    report: list[dict[str, Any]] = []
+    for employee in employees:
+        tasks = _task_history(employee)
+        completed = [task for task in tasks if task.get("status") == "finished"]
+        pending = [task for task in tasks if task.get("status") in {"waiting_approval", "approved"}]
+        last = completed[-1] if completed else (tasks[-1] if tasks else {})
+        report.append(
+            {
+                "name": employee.name,
+                "role": employee.role,
+                "mode": employee.sending_mode.value,
+                "completed_tasks": len(completed),
+                "pending_tasks": len(pending),
+                "problems": "No blocker detected" if tasks else "No assigned work yet",
+                "recommendation": str((last.get("result_preview") or {}).get("next_recommended_action") or "Assign a focused revenue task and keep approval required."),
+            }
+        )
+    if not report:
+        report.append({"name": "Sales Employee", "role": "AI Sales Employee", "mode": "Review Mode", "completed_tasks": 0, "pending_tasks": 0, "problems": "No AI employee has been hired yet", "recommendation": "Create the first AI Sales Employee and assign a discovery task."})
+    return report
+
+
+def _ai_ceo_summary(db: Session, user_id: str, workspace: Workspace, length: str, language: str) -> dict[str, Any]:
+    metrics = dashboard(user_id, db)
+    growth = growth_engine(user_id, db)
+    lead_scope = _workspace_stmt(Lead, workspace, user_id)
+    email_scope = _workspace_stmt(EmailMessage, workspace, user_id)
+    task_scope = _workspace_stmt(SalesEmployeeTaskResult, workspace, user_id)
+    yesterday = datetime.utcnow().date()
+    tasks_completed = db.scalar(select(func.count()).select_from(SalesEmployeeTaskResult).where(task_scope)) or 0
+    new_leads = db.scalar(select(func.count()).select_from(Lead).where(lead_scope, func.date(Lead.created_at) == yesterday.isoformat())) or 0
+    replies = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.replied_at.is_not(None))) or 0
+    employee_report = _latest_employee_report(db, workspace, user_id)
+    priorities = [
+        str(item.get("action") or item.get("title") or "Review today's best opportunity")
+        for item in growth.smart_recommendations[:3]
+    ]
+    while len(priorities) < 3:
+        priorities.append("Keep all external actions in approval mode.")
+    risks = [
+        "Reply rate needs attention" if metrics.reply_rate < 5 else "Reply rate is healthy; scale carefully.",
+        "Pipeline is thin" if metrics.revenue_forecast <= 0 else "Protect pipeline quality while scaling.",
+        "No campaign should launch without approval.",
+    ]
+    opportunities = [
+        str(item.get("company") or item.get("recommended_action") or "New opportunity")
+        for item in growth.opportunity_feed[:3]
+    ] or ["Run Lead Finder to create the next opportunity set."]
+    health = {
+        "revenue": metrics.revenue,
+        "mrr": metrics.mrr,
+        "arr": metrics.arr,
+        "pipeline": metrics.revenue_forecast,
+        "meetings": metrics.meetings,
+        "conversions": metrics.conversion_rate,
+        "reply_rate": metrics.reply_rate,
+        "open_rate": metrics.open_rate,
+        "growth": growth.performance,
+    }
+    return {
+        "workspace": workspace.name,
+        "length": length,
+        "language": language,
+        "business_health": health,
+        "daily_report": {
+            "ai_team_hours_estimate": round(max(1, tasks_completed) * 0.5, 1),
+            "new_leads_found": int(new_leads or growth.briefing.new_leads_found),
+            "emails_prepared": metrics.usage.get("ai_generations", 0),
+            "replies": replies,
+            "meetings": metrics.meetings,
+            "estimated_monthly_revenue_delta": metrics.revenue_forecast,
+        },
+        "employee_report": employee_report,
+        "top_priorities": priorities[:3],
+        "top_risks": risks,
+        "top_opportunities": opportunities[:3],
+        "recommended_action": priorities[0],
+        "confidence": 91 if metrics.leads or metrics.campaigns else 74,
+        "safety": "report_only",
+    }
+
+
+def _ai_ceo_transcript(summary: dict[str, Any]) -> str:
+    labels = _ai_ceo_labels(str(summary["language"]))
+    health = summary["business_health"]
+    daily = summary["daily_report"]
+    employee_lines = [
+        f"{employee['name']}: {employee['completed_tasks']} completed tasks, {employee['pending_tasks']} pending tasks. Problem: {employee['problems']}. Recommendation: {employee['recommendation']}."
+        for employee in summary["employee_report"]
+    ]
+    lines = [
+        labels["opening"],
+        f"Yesterday your AI team worked for about {daily['ai_team_hours_estimate']} hours.",
+        f"New leads found: {daily['new_leads_found']}. Replies: {daily['replies']}. Meetings booked: {daily['meetings']}. Estimated pipeline is €{health['pipeline']:,.0f}.",
+        f"{labels['health']}: revenue €{health['revenue']:,.0f}, MRR €{health['mrr']:,.0f}, ARR €{health['arr']:,.0f}, open rate {health['open_rate']}%, reply rate {health['reply_rate']}%, conversion {health['conversions']}%.",
+        f"{labels['employees']}: " + " ".join(employee_lines),
+        f"{labels['priorities']}: 1. {summary['top_priorities'][0]} 2. {summary['top_priorities'][1]} 3. {summary['top_priorities'][2]}",
+        f"{labels['risks']}: 1. {summary['top_risks'][0]} 2. {summary['top_risks'][1]} 3. {summary['top_risks'][2]}",
+        f"{labels['opportunities']}: 1. {summary['top_opportunities'][0]} 2. {summary['top_opportunities'][1]} 3. {summary['top_opportunities'][2]}",
+        f"Today's recommendation: {summary['recommended_action']}. Confidence: {summary['confidence']}%.",
+        labels["safety"],
+        labels["closing"],
+    ]
+    if summary["length"] == "30 sec":
+        return " ".join(lines[:5] + lines[8:10])
+    if summary["length"] == "1 min":
+        return " ".join(lines[:10])
+    if summary["length"] == "3 min":
+        return " ".join(lines + ["I would review opportunities first, then approve only the prepared work that matches your ICP and daily sending limits."])
+    return " ".join(lines + [
+        "For a deeper executive review, inspect the pipeline by status, compare reply quality with campaign intent, and approve only the highest confidence next action.",
+        "The AI CEO is intentionally advisory. It coordinates context across employees, but operational approval remains with the user.",
+    ])
+
+
+@router.post("/ai-ceo/briefings", response_model=AICEOBriefingOut)
+def create_ai_ceo_briefing(payload: AICEOBriefingRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AICEOBriefingOut:
+    workspace = _current_workspace(db, user_id)
+    language = payload.language or workspace.language or "English"
+    summary = _ai_ceo_summary(db, user_id, workspace, payload.length, language)
+    transcript = _ai_ceo_transcript(summary)
+    briefing = AICEOBriefing(
+        workspace_id=workspace.id,
+        user_id=user_id,
+        length=payload.length,
+        language=language,
+        title=f"AI CEO {payload.length} report",
+        transcript=transcript,
+        summary_json=summary,
+    )
+    db.add(briefing)
+    log_event(db, request, user_id, "ai_ceo.briefing_created", {"length": payload.length, "language": language, "report_only": True})
+    db.commit()
+    db.refresh(briefing)
+    return AICEOBriefingOut.model_validate(briefing)
+
+
+@router.get("/ai-ceo/briefings", response_model=list[AICEOBriefingOut])
+def list_ai_ceo_briefings(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[AICEOBriefing]:
+    workspace = _current_workspace(db, user_id)
+    return list(db.scalars(select(AICEOBriefing).where(AICEOBriefing.workspace_id == workspace.id, AICEOBriefing.user_id == user_id).order_by(AICEOBriefing.created_at.desc()).limit(30)).all())
+
+
+@router.post("/ai-ceo/question", response_model=AICEOAnswerOut)
+def answer_ai_ceo_question(payload: AICEOQuestionIn, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AICEOAnswerOut:
+    workspace = _current_workspace(db, user_id)
+    summary = _ai_ceo_summary(db, user_id, workspace, "30 sec", payload.language)
+    question = payload.question.lower()
+    health = summary["business_health"]
+    if "why" in question or "choose" in question:
+        answer = f"Sales AI prioritizes companies with stronger ICP fit, available websites or contacts, and clearer buying signals. The top current opportunity is {summary['top_opportunities'][0]}."
+    elif "reply" in question:
+        answer = f"Current reply rate is {health['reply_rate']}%. The next best move is: {summary['top_priorities'][0]}"
+    elif "revenue" in question:
+        answer = f"Revenue is €{health['revenue']:,.0f}, estimated pipeline is €{health['pipeline']:,.0f}, MRR is €{health['mrr']:,.0f}, and ARR is €{health['arr']:,.0f}."
+    elif "next" in question or "should" in question:
+        answer = f"Do this next: {summary['recommended_action']}. Confidence is {summary['confidence']}%."
+    else:
+        answer = f"I reviewed the business state. The top priority is {summary['top_priorities'][0]}. The top risk is {summary['top_risks'][0]}."
+    log_event(db, request, user_id, "ai_ceo.question_answered", {"question": payload.question[:120], "report_only": True})
+    db.commit()
+    return AICEOAnswerOut(answer=answer, related_metrics=health)
 
 
 @router.post("/growth-engine/goal", response_model=GrowthGoalOut)

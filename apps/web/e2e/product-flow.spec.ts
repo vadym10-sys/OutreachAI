@@ -71,6 +71,20 @@ test.beforeEach(async ({ page }) => {
       body = [{ id: "33333333-3333-3333-3333-333333333333", action: "campaign.created", metadata_json: {}, created_at: new Date().toISOString() }];
     } else if (url.pathname === "/api/notifications") {
       body = [{ id: "44444444-4444-4444-4444-444444444444", kind: "success", title: "Campaign created", message: "Ready", read_at: null, created_at: new Date().toISOString() }];
+    } else if (url.pathname === "/api/ai-ceo/briefings" && method === "GET") {
+      body = [];
+    } else if (url.pathname === "/api/ai-ceo/briefings" && method === "POST") {
+      body = {
+        id: "66666666-6666-6666-6666-666666666666",
+        title: "AI CEO 1 min report",
+        length: "1 min",
+        language: "English",
+        transcript: "Good morning. This is your AI CEO report. Revenue is stable. Top priority today is approving reviewed outreach. I will not launch campaigns or send emails.",
+        summary_json: { safety: "report_only", top_priorities: ["Approve reviewed outreach", "Review replies", "Check pipeline"] },
+        created_at: new Date().toISOString()
+      };
+    } else if (url.pathname === "/api/ai-ceo/question") {
+      body = { answer: "Revenue is stable and the next best action is approving reviewed outreach.", related_metrics: {}, safety_notice: "AI CEO only reports and recommends." };
     } else if (url.pathname === "/api/campaigns" && method === "GET") {
       body = [campaign];
     } else if (url.pathname === "/api/campaigns" && method === "POST") {
@@ -131,6 +145,11 @@ for (const width of [320, 390, 480]) {
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
     await expect(page.getByRole("main").getByText("Leads", { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Listen AI Report" })).toBeVisible();
+    await page.getByRole("button", { name: "Listen AI Report" }).click();
+    await expect(page.getByText("Executive voice briefing")).toBeVisible();
+    await expect(page.getByText("Good morning. This is your AI CEO report.")).toBeVisible();
+    await page.getByLabel("Close AI CEO report").click();
 
     await page.getByRole("link", { name: /Campaigns/ }).click();
     await expect(page.getByRole("heading", { name: "Campaign Builder" })).toBeVisible();

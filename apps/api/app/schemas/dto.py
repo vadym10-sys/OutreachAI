@@ -656,6 +656,35 @@ class GrowthEngineOut(BaseModel):
     performance: dict[str, Any] = Field(default_factory=dict)
 
 
+class AICEOBriefingRequest(BaseModel):
+    length: str = Field(default="1 min", pattern="^(30 sec|1 min|3 min|10 min)$")
+    language: str = Field(default="English", pattern="^(English|Russian|Ukrainian|Polish)$")
+
+
+class AICEOBriefingOut(BaseModel):
+    id: UUID
+    title: str
+    length: str
+    language: str
+    transcript: str
+    summary_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AICEOQuestionIn(BaseModel):
+    question: str = Field(min_length=3, max_length=500)
+    language: str = Field(default="English", pattern="^(English|Russian|Ukrainian|Polish)$")
+
+
+class AICEOAnswerOut(BaseModel):
+    answer: str
+    related_metrics: dict[str, Any] = Field(default_factory=dict)
+    safety_notice: str = "AI CEO only reports and recommends. It cannot launch campaigns, send emails, approve actions, or delete data."
+
+
 class CampaignSequenceIn(BaseModel):
     step_order: int = Field(ge=1, le=4)
     name: str = Field(default="", max_length=120)
