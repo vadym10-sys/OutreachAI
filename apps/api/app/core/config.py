@@ -70,7 +70,7 @@ class Settings(BaseSettings):
 
     @property
     def stripe_public_key(self) -> str:
-        return os.getenv("NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY") or self.stripe_publishable_key
+        return self.stripe_publishable_key
 
     @property
     def missing_optional_services(self) -> list[str]:

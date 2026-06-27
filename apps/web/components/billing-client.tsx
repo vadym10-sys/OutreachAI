@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { CalendarDays, CheckCircle2, CreditCard, Loader2, TrendingUp } from 'lucide-react';
 import { clientApi } from '@/lib/client-api';
-import { appUrl, hasClerkPublishableKey, isClerkE2EBypass, stripePublishableKey } from '@/lib/env';
+import { appUrl, hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
 import type { BillingPlan, BillingStatus } from '@/lib/types';
 
 const pendingPlanKey = 'outreachai.pendingPlan';
@@ -21,6 +21,11 @@ type Diagnostics = {
   agency_price_id_loaded: boolean;
   checkout_session_creation_works: boolean;
   webhook_receives_signed_events: boolean;
+};
+
+type RuntimeDiagnostics = {
+  stripe_publishable_key_loaded: boolean;
+  stripe_publishable_key_live: boolean;
 };
 
 function isPlan(value: string | null): value is PlanName {
@@ -150,6 +155,7 @@ export function BillingWorkspace() {
   const [plans, setPlans] = useState<BillingPlan[]>([]);
   const [status, setStatus] = useState<BillingStatus | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [runtimeDiagnostics, setRuntimeDiagnostics] = useState<RuntimeDiagnostics | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -161,14 +167,19 @@ export function BillingWorkspace() {
     void Promise.resolve()
       .then(async () => {
         const authToken = await token();
-        const [nextPlans, nextDiagnostics, nextStatus] = await Promise.all([
+        const [nextPlans, nextDiagnostics, nextStatus, nextRuntimeDiagnostics] = await Promise.all([
           apiWithToken<BillingPlan[]>('/api/billing/plans', authToken),
           apiWithToken<Diagnostics>('/api/billing/diagnostics', authToken),
-          apiWithToken<BillingStatus>('/api/billing/status', authToken)
+          apiWithToken<BillingStatus>('/api/billing/status', authToken),
+          fetch('/api/runtime-diagnostics', { cache: 'no-store' }).then((response) => {
+            if (!response.ok) throw new Error('Runtime diagnostics could not be loaded.');
+            return response.json() as Promise<RuntimeDiagnostics>;
+          })
         ]);
         setPlans(nextPlans);
         setStatus(nextStatus);
         setDiagnostics(nextDiagnostics);
+        setRuntimeDiagnostics(nextRuntimeDiagnostics);
       })
       .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Billing could not be loaded.'))
       .finally(() => setLoading(false));
@@ -195,7 +206,8 @@ export function BillingWorkspace() {
     ['Stripe secret loaded', diagnostics.stripe_secret_loaded],
     ['Webhook secret loaded', diagnostics.webhook_secret_loaded],
     ['Backend publishable key loaded', diagnostics.publishable_key_loaded],
-    ['Frontend publishable key loaded', Boolean(stripePublishableKey)],
+    ['Frontend publishable key loaded', Boolean(runtimeDiagnostics?.stripe_publishable_key_loaded)],
+    ['Frontend publishable key is live', Boolean(runtimeDiagnostics?.stripe_publishable_key_live)],
     ['Starter price ID loaded', diagnostics.starter_price_id_loaded],
     ['Pro price ID loaded', diagnostics.pro_price_id_loaded],
     ['Agency price ID loaded', diagnostics.agency_price_id_loaded],
