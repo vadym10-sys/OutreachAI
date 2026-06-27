@@ -2351,6 +2351,7 @@ def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
         agency_price_id_loaded=bool(settings.stripe_agency_price_id),
         checkout_session_creation_works=checkout_works,
         webhook_receives_signed_events=bool(settings.stripe_webhook_secret),
+        subscription_sync_healthy=checkout_works and bool(settings.stripe_webhook_secret),
     )
 
 

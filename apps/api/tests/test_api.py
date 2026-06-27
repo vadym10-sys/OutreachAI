@@ -584,6 +584,7 @@ def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> N
     assert diagnostics.status_code == 200
     assert diagnostics.json()["starter_price_id_loaded"] is True
     assert "checkout_session_creation_works" in diagnostics.json()
+    assert "subscription_sync_healthy" in diagnostics.json()
 
 
 def test_starter_plan_blocks_sales_employee_limits_and_semi_auto_mode() -> None:

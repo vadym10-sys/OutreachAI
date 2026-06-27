@@ -714,6 +714,7 @@ class BillingDiagnosticsOut(BaseModel):
     agency_price_id_loaded: bool
     checkout_session_creation_works: bool = False
     webhook_receives_signed_events: bool = False
+    subscription_sync_healthy: bool = False
 
 
 class BillingSyncRequest(BaseModel):
