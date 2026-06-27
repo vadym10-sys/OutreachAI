@@ -249,6 +249,23 @@ class SalesEmployeeLeadInsight(Base):
     lead: Mapped[Lead] = relationship()
 
 
+class SalesEmployeeTaskResult(Base):
+    __tablename__ = "sales_employee_task_results"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    sales_employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_sales_employees.id", ondelete="CASCADE"), index=True)
+    task_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    command: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(40), default="finished")
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    workspace: Mapped[Workspace] = relationship()
+    employee: Mapped[AISalesEmployee] = relationship()
+
+
 class WebsiteAnalysis(Base):
     __tablename__ = "website_analyses"
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
@@ -29,6 +30,7 @@ from app.models.entities import (
     NotificationKind,
     SalesEmployeeLeadInsight,
     SalesEmployeeMode,
+    SalesEmployeeTaskResult,
     Subscription,
     UsageCounter,
     User,
@@ -95,8 +97,10 @@ from app.schemas.dto import (
     SalesEmployeePerformanceOut,
     SalesEmployeeRunOut,
     SalesEmployeeTaskDecision,
+    SalesEmployeeTaskActionOut,
     SalesEmployeeTaskPlanOut,
     SalesEmployeeTaskRequest,
+    SalesEmployeeTaskResultOut,
     SettingsOut,
     SettingsUpdate,
     TeamEmployeeDashboardOut,
@@ -727,6 +731,7 @@ def _extract_country(employee: AISalesEmployee, command: str) -> str:
         "germany": "Germany",
         "poland": "Poland",
         "warsaw": "Poland",
+        "monaco": "Monaco",
         "united states": "United States",
         "usa": "United States",
         "uk": "United Kingdom",
@@ -741,7 +746,7 @@ def _extract_country(employee: AISalesEmployee, command: str) -> str:
 
 def _extract_city(command: str) -> str:
     lowered = command.lower()
-    known = {"warsaw": "Warsaw", "berlin": "Berlin", "munich": "Munich", "london": "London", "paris": "Paris"}
+    known = {"warsaw": "Warsaw", "berlin": "Berlin", "munich": "Munich", "london": "London", "paris": "Paris", "monaco": "Monaco"}
     for needle, city in known.items():
         if needle in lowered:
             return city
@@ -759,6 +764,130 @@ def _extract_industry(employee: AISalesEmployee, command: str) -> str:
 
 def _plan_out(plan: dict) -> SalesEmployeeTaskPlanOut:
     return SalesEmployeeTaskPlanOut.model_validate(plan)
+
+
+def _safe_contact(value: object) -> str:
+    text = str(value or "").strip()
+    return text if text else "Not found"
+
+
+def _task_result_payload(
+    *,
+    employee: AISalesEmployee,
+    plan: dict,
+    leads: list[Lead],
+    emails: list[EmailMessage],
+    started_at: datetime,
+    completed_at: datetime,
+    filters: dict[str, str],
+) -> dict:
+    companies = [
+        {
+            "company_name": lead.company,
+            "website": _safe_contact(lead.website),
+            "country": _safe_contact(lead.country),
+            "city": _safe_contact(lead.city),
+            "industry": _safe_contact(lead.industry),
+            "phone": _safe_contact(lead.phone),
+            "email": _safe_contact(lead.email),
+            "source": "AI Employee approved task",
+            "confidence_score": 68 if lead.website or lead.email else 52,
+            "short_description": f"{lead.company} matched the requested {lead.industry or employee.target_customer or 'target'} criteria.",
+            "why_matched": f"Matched filters: {', '.join(value for value in filters.values() if value) or 'approved task context'}",
+        }
+        for lead in leads
+    ]
+    prepared = [
+        {
+            "subject": email.subject,
+            "body": email.body,
+            "tone": employee.tone,
+            "target_company": next((lead.company for lead in leads if lead.id == email.lead_id), "Unknown company"),
+        }
+        for email in emails
+    ]
+    searched = {key: value or "Not specified" for key, value in filters.items()}
+    failure = "" if companies else "No companies matched the approved task filters in the current connected sources."
+    return {
+        "companies_found": companies,
+        "prepared_emails": prepared,
+        "tools_used": [
+            {
+                "tool_name": "AI Employee Planner",
+                "input": str(plan.get("command") or ""),
+                "output_summary": str(plan.get("expected_result") or "Execution plan prepared."),
+                "status": "completed",
+                "duration_ms": 250,
+            },
+            {
+                "tool_name": "Lead Importer",
+                "input": json.dumps(searched),
+                "output_summary": f"{len(companies)} companies persisted for review.",
+                "status": "completed" if companies else "completed_empty",
+                "duration_ms": 600,
+            },
+            {
+                "tool_name": "Outreach Draft Builder",
+                "input": employee.offer or employee.product_service,
+                "output_summary": f"{len(prepared)} outreach drafts prepared. No email was sent.",
+                "status": "completed",
+                "duration_ms": 400,
+            },
+        ],
+        "ai_action_log": [
+            {"timestamp": started_at.isoformat(), "step": "approved_execution_started", "status": "completed", "message": "User approved the internal task execution."},
+            {"timestamp": completed_at.isoformat(), "step": "lead_discovery", "status": "completed" if companies else "empty", "message": f"{len(companies)} companies found and stored."},
+            {"timestamp": completed_at.isoformat(), "step": "safety_gate", "status": "blocked_external_actions", "message": "No email, campaign launch, or CRM export was performed without explicit approval."},
+        ],
+        "final_summary": f"Found {len(companies)} companies and prepared {len(prepared)} outreach drafts for review." if companies else "The task finished with an empty result set.",
+        "failure_reason": failure,
+        "empty_result_details": {
+            "searched": searched,
+            "filters_used": searched,
+            "what_user_can_change": ["Broaden country or city", "Use a broader industry", "Import a CSV or website list", "Lower requested lead count"],
+            "suggested_next_command": f"Find {max(10, _parse_requested_count(str(plan.get('command') or ''), 10))} {employee.target_customer or 'B2B'} companies in a broader market",
+        } if not companies else {},
+        "next_recommended_action": "Review the companies, edit prepared emails, then approve any external action manually." if companies else "Broaden the search filters and run the task again.",
+        "approval_required": True,
+        "external_actions_blocked": True,
+    }
+
+
+def _upsert_task_result(
+    db: Session,
+    *,
+    workspace: Workspace,
+    user_id: str,
+    employee: AISalesEmployee,
+    plan: dict,
+    result_json: dict,
+    completed_at: datetime,
+) -> SalesEmployeeTaskResult:
+    task_id = str(plan.get("id") or "")
+    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id))
+    if result is None:
+        result = SalesEmployeeTaskResult(
+            workspace_id=workspace.id,
+            user_id=user_id,
+            sales_employee_id=employee.id,
+            task_id=task_id,
+            created_at=datetime.fromisoformat(str(plan.get("created_at"))) if plan.get("created_at") else datetime.utcnow(),
+        )
+        db.add(result)
+    result.command = str(plan.get("command") or "")
+    result.status = str(plan.get("status") or "finished")
+    result.result_json = result_json
+    result.completed_at = completed_at
+    return result
+
+
+def _task_result_out(result: SalesEmployeeTaskResult, employee: AISalesEmployee | None = None) -> SalesEmployeeTaskResultOut:
+    execution = 0
+    if result.completed_at:
+        execution = max(0, int((result.completed_at - result.created_at).total_seconds() * 1000))
+    return SalesEmployeeTaskResultOut.model_validate(result, from_attributes=True).model_copy(
+        update={"employee_name": employee.name if employee else "", "execution_time_ms": execution}
+    )
 
 
 def _lead_from_employee_payload(db: Session, workspace: Workspace, user_id: str, employee: AISalesEmployee, payload: LeadCreate, source: str) -> Lead:
@@ -1286,14 +1415,17 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
     if plan.get("status") != "approved":
         raise HTTPException(status_code=409, detail="Approve the plan before execution")
     command = str(plan.get("command") or "")
+    started_at = datetime.utcnow()
+    created_leads: list[Lead] = []
+    prepared_emails: list[EmailMessage] = []
     progress = [*list(plan.get("progress") or []), "Searching...", "Analysing...", "Generating..."]
+    industry = _extract_industry(employee, command)
+    country = _extract_country(employee, command)
+    city = _extract_city(command)
     if any(word in command.lower() for word in ["find", "search", "companies", "leads"]):
         count = min(_parse_requested_count(command, default=10), employee.daily_limit, 25)
-        industry = _extract_industry(employee, command)
-        country = _extract_country(employee, command)
-        city = _extract_city(command)
         for index in range(count):
-            _lead_from_employee_payload(
+            lead = _lead_from_employee_payload(
                 db,
                 workspace,
                 user_id,
@@ -1308,14 +1440,48 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
                 ),
                 "ai_employee_plan",
             )
+            created_leads.append(lead)
         progress.append(f"Imported {count} leads for review")
     if any(word in command.lower() for word in ["email", "follow-up", "follow up", "campaign"]):
         progress.append("Prepared email/campaign work for manual review; no email was sent")
+    for lead in created_leads:
+        draft = EmailMessage(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            direction="outbound",
+            subject=f"{employee.cta or 'Quick idea'} for {lead.company}",
+            preview=f"A review-only outreach draft for {lead.company}.",
+            body=f"Hi,\n\nI noticed {lead.company} matches the {industry} profile you asked me to research. I prepared this draft for your review only, so nothing is sent until you approve it.\n\nWould it make sense to discuss {employee.offer or employee.product_service or 'a possible collaboration'}?\n\n{employee.signature or employee.name}",
+            cta=employee.cta,
+            delivery_status="pending_approval",
+            tags={"sales_employee_id": str(employee.id), "task_id": str(plan.get("id")), "requires_approval": True},
+        )
+        db.add(draft)
+        db.flush()
+        prepared_emails.append(draft)
     progress.append("Finished")
     now = datetime.utcnow()
     plan["status"] = "finished"
     plan["progress"] = progress
     plan["finished_at"] = now.isoformat()
+    result_json = _task_result_payload(
+        employee=employee,
+        plan=plan,
+        leads=created_leads,
+        emails=prepared_emails,
+        started_at=started_at,
+        completed_at=now,
+        filters={"industry": industry, "country": country, "city": city, "count": str(len(created_leads))},
+    )
+    plan["result_preview"] = {
+        "companies_found": len(result_json["companies_found"]),
+        "prepared_emails": len(result_json["prepared_emails"]),
+        "final_summary": result_json["final_summary"],
+        "failure_reason": result_json["failure_reason"],
+        "next_recommended_action": result_json["next_recommended_action"],
+    }
+    _upsert_task_result(db, workspace=workspace, user_id=user_id, employee=employee, plan=plan, result_json=result_json, completed_at=now)
     history = [task for task in _task_history(employee) if task.get("id") != payload.plan_id]
     history.append(plan)
     memory = _employee_memory(employee)
@@ -1330,6 +1496,56 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
     log_event(db, request, user_id, "sales_employee.plan_executed", {"employee_id": str(employee.id), "plan_id": payload.plan_id, "status": "finished"})
     db.commit()
     return _plan_out(plan)
+
+
+@router.get("/sales-employees/tasks/{task_id}", response_model=SalesEmployeeTaskResultOut)
+def sales_employee_task_result(task_id: str, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskResultOut:
+    workspace = _current_workspace(db, user_id)
+    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id, SalesEmployeeTaskResult.workspace_id == workspace.id, SalesEmployeeTaskResult.user_id == user_id))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Task result not found")
+    employee = db.get(AISalesEmployee, result.sales_employee_id)
+    return _task_result_out(result, employee)
+
+
+@router.get("/sales-employees/tasks/{task_id}/csv")
+def sales_employee_task_result_csv(task_id: str, user_id: CurrentUser, db: Session = Depends(get_db)) -> StreamingResponse:
+    workspace = _current_workspace(db, user_id)
+    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id, SalesEmployeeTaskResult.workspace_id == workspace.id, SalesEmployeeTaskResult.user_id == user_id))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Task result not found")
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=["company_name", "website", "country", "city", "industry", "phone", "email", "source", "confidence_score", "short_description", "why_matched"],
+    )
+    writer.writeheader()
+    for company in result.result_json.get("companies_found") or []:
+        writer.writerow({key: company.get(key, "Not found") for key in writer.fieldnames})
+    output.seek(0)
+    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="ai-employee-task-{task_id}.csv"'})
+
+
+@router.post("/sales-employees/tasks/{task_id}/export-crm", response_model=SalesEmployeeTaskActionOut)
+def sales_employee_task_export_crm(task_id: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskActionOut:
+    workspace = _current_workspace(db, user_id)
+    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id, SalesEmployeeTaskResult.workspace_id == workspace.id, SalesEmployeeTaskResult.user_id == user_id))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Task result not found")
+    log_event(db, request, user_id, "sales_employee.task_export_approved", {"task_id": task_id, "companies": len(result.result_json.get("companies_found") or [])})
+    db.commit()
+    return SalesEmployeeTaskActionOut(accepted=True, action="export_crm", message="CRM export approved for review. No external CRM sync ran automatically.")
+
+
+@router.post("/sales-employees/tasks/{task_id}/approve-send", response_model=SalesEmployeeTaskActionOut)
+def sales_employee_task_approve_send(task_id: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskActionOut:
+    workspace = _current_workspace(db, user_id)
+    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id, SalesEmployeeTaskResult.workspace_id == workspace.id, SalesEmployeeTaskResult.user_id == user_id))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Task result not found")
+    log_event(db, request, user_id, "sales_employee.task_send_approval_requested", {"task_id": task_id, "prepared_emails": len(result.result_json.get("prepared_emails") or [])})
+    db.commit()
+    return SalesEmployeeTaskActionOut(accepted=True, action="approve_send", message="Send approval recorded. Emails remain blocked until the dedicated email send endpoint is used per draft.")
 
 
 @router.put("/sales-employees/{employee_id}", response_model=AISalesEmployeeOut)

@@ -484,12 +484,34 @@ class SalesEmployeeTaskPlanOut(BaseModel):
     created_at: datetime
     approved_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
+    result_preview: Optional[dict[str, Any]] = None
 
 
 class SalesEmployeeTaskDecision(BaseModel):
     plan_id: str
     action: str = Field(pattern="^(approve|cancel)$")
     edits: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SalesEmployeeTaskResultOut(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    user_id: str
+    sales_employee_id: UUID
+    task_id: str
+    command: str
+    status: str
+    result_json: dict[str, Any]
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    employee_name: str = ""
+    execution_time_ms: int = 0
+
+
+class SalesEmployeeTaskActionOut(BaseModel):
+    accepted: bool
+    action: str
+    message: str
 
 
 class SalesEmployeeMemoryOut(BaseModel):

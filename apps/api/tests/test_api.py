@@ -813,6 +813,106 @@ def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(monkeypatch
     assert unauthorized.status_code == 401
 
 
+def test_ai_employee_task_results_persist_csv_and_block_external_send(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.plan_sales_employee_task",
+        lambda payload: {
+            "goal": payload["command"],
+            "intent": "lead_discovery",
+            "priority": "High",
+            "required_tools": ["Lead Importer", "Outreach Draft Builder"],
+            "estimated_execution_time": "2 minutes",
+            "expected_result": "A reviewed list of rental companies with outreach drafts.",
+            "steps": ["Search companies", "Store result report", "Prepare drafts", "Wait for approval"],
+            "external_actions": ["send_email_after_approval"],
+            "safety_notes": ["No email is sent automatically."],
+            "memory_updates": ["Rental companies in Monaco"],
+        },
+    )
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    db = get_sessionmaker()()
+    try:
+        db.query(AISalesEmployee).filter(AISalesEmployee.workspace_id == UUID(workspace["id"])).delete()
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
+        settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+        db.commit()
+    finally:
+        db.close()
+
+    employee = client.post(
+        "/api/sales-employees",
+        headers=AUTH,
+        json={
+            "name": "Monaco Ava",
+            "role": "AI Sales Employee",
+            "product_service": "Outbound for service businesses",
+            "target_customer": "Rental companies",
+            "target_countries": ["Monaco"],
+            "target_industries": ["Rental"],
+            "offer": "book more qualified local customers",
+            "cta": "Book a growth review",
+            "sending_mode": "Review Mode",
+            "daily_limit": 10,
+            "working_hours": "09:00-17:00",
+            "tone": "Professional",
+            "language": "English",
+            "signature": "Ava",
+        },
+    )
+    assert employee.status_code == 200
+    employee_id = employee.json()["id"]
+
+    plan = client.post(f"/api/sales-employees/{employee_id}/plan", headers=AUTH, json={"command": "Find 3 rental companies in Monaco", "transcript_source": "text"})
+    assert plan.status_code == 200
+    approved = client.post(f"/api/sales-employees/{employee_id}/approve-plan", headers=AUTH, json={"plan_id": plan.json()["id"], "action": "approve"})
+    assert approved.status_code == 200
+    executed = client.post(f"/api/sales-employees/{employee_id}/execute-plan", headers=AUTH, json={"plan_id": plan.json()["id"], "action": "approve"})
+    assert executed.status_code == 200
+    task = executed.json()
+    assert task["status"] == "finished"
+    assert task["result_preview"]["companies_found"] == 3
+    assert task["result_preview"]["prepared_emails"] == 3
+
+    details = client.get(f"/api/sales-employees/tasks/{task['id']}", headers=AUTH)
+    assert details.status_code == 200
+    report = details.json()["result_json"]
+    assert len(report["companies_found"]) == 3
+    assert report["companies_found"][0]["email"] == "Not found"
+    assert report["companies_found"][0]["phone"] == "Not found"
+    assert report["prepared_emails"]
+    assert report["external_actions_blocked"] is True
+    assert report["failure_reason"] == ""
+
+    csv_response = client.get(f"/api/sales-employees/tasks/{task['id']}/csv", headers=AUTH)
+    assert csv_response.status_code == 200
+    assert "company_name,website,country,city,industry,phone,email,source,confidence_score,short_description,why_matched" in csv_response.text
+    assert "Rental Prospect 1" in csv_response.text
+
+    send_approval = client.post(f"/api/sales-employees/tasks/{task['id']}/approve-send", headers=AUTH)
+    assert send_approval.status_code == 200
+    assert "remain blocked" in send_approval.json()["message"]
+
+    empty_plan = client.post(f"/api/sales-employees/{employee_id}/plan", headers=AUTH, json={"command": "Analyse my last campaign", "transcript_source": "text"})
+    assert empty_plan.status_code == 200
+    empty_approved = client.post(f"/api/sales-employees/{employee_id}/approve-plan", headers=AUTH, json={"plan_id": empty_plan.json()["id"], "action": "approve"})
+    assert empty_approved.status_code == 200
+    empty_executed = client.post(f"/api/sales-employees/{employee_id}/execute-plan", headers=AUTH, json={"plan_id": empty_plan.json()["id"], "action": "approve"})
+    assert empty_executed.status_code == 200
+    empty_details = client.get(f"/api/sales-employees/tasks/{empty_executed.json()['id']}", headers=AUTH)
+    assert empty_details.status_code == 200
+    empty_report = empty_details.json()["result_json"]
+    assert empty_report["companies_found"] == []
+    assert empty_report["failure_reason"]
+    assert empty_report["empty_result_details"]["searched"]["country"] == "Monaco"
+
+    db = get_sessionmaker()()
+    try:
+        sent = db.query(EmailMessage).filter(EmailMessage.tags["task_id"].as_string() == task["id"], EmailMessage.sent_at.is_not(None)).count()
+        assert sent == 0
+    finally:
+        db.close()
+
+
 def test_ai_sales_employee_review_mode_imports_qualifies_drafts_and_approves(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.api.routes.qualify_for_sales_employee",

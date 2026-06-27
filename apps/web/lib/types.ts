@@ -143,6 +143,39 @@ export type SalesEmployeeTaskPlan = {
   created_at: string;
   approved_at?: string | null;
   finished_at?: string | null;
+  result_preview?: {
+    companies_found?: number;
+    prepared_emails?: number;
+    final_summary?: string;
+    failure_reason?: string;
+    next_recommended_action?: string;
+  } | null;
+};
+
+export type SalesEmployeeTaskResult = {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  sales_employee_id: string;
+  task_id: string;
+  command: string;
+  status: string;
+  employee_name: string;
+  execution_time_ms: number;
+  created_at: string;
+  completed_at?: string | null;
+  result_json: {
+    companies_found: Array<Record<string, unknown>>;
+    prepared_emails: Array<Record<string, unknown>>;
+    tools_used: Array<Record<string, unknown>>;
+    ai_action_log: Array<Record<string, unknown>>;
+    final_summary: string;
+    failure_reason?: string;
+    empty_result_details?: Record<string, unknown>;
+    next_recommended_action: string;
+    approval_required: boolean;
+    external_actions_blocked: boolean;
+  };
 };
 
 export type SalesEmployeeMemory = {
