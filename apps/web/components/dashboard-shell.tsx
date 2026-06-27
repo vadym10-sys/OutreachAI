@@ -18,17 +18,23 @@ const nav = [
   { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
   { href: "/dashboard/crm", labelKey: "nav.crm", icon: Users },
   { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
-  { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3 },
+  { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3, featureFlag: "NEXT_PUBLIC_SHOW_ANALYTICS_NAV" },
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
   { href: "/dashboard/profile", labelKey: "nav.profile", icon: UserCircle },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
-  { href: "/admin", labelKey: "nav.admin", icon: Shield }
+  { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
 ];
+
+const featureFlags = {
+  NEXT_PUBLIC_SHOW_ANALYTICS_NAV: process.env.NEXT_PUBLIC_SHOW_ANALYTICS_NAV === "true",
+  NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
+};
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
-  const primaryMobileNav = nav.slice(0, 4);
+  const visibleNav = nav.filter((item) => !item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]);
+  const primaryMobileNav = visibleNav.slice(0, 4);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
@@ -37,7 +43,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white px-4 py-5 lg:block">
         <Link href="/dashboard" className="mb-8 block text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
         <nav className="space-y-1">
-          {nav.map((item) => {
+          {visibleNav.map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
             const label = t(item.labelKey);
@@ -58,7 +64,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 <Menu size={20} aria-hidden="true" />
               </button>
               {mobileMenuOpen && <div className="absolute left-0 top-12 z-40 w-[min(82vw,19rem)] rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
-                {nav.map((item) => {
+                {visibleNav.map((item) => {
                   const Icon = item.icon;
                   const active = pathname === item.href;
                   const label = t(item.labelKey);

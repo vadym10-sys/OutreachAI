@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
 import { CheckCircle2, Download, Loader2, Send, UploadCloud } from 'lucide-react';
-import { clientApi } from '@/lib/client-api';
+import { clientApi, friendlyErrorMessage } from '@/lib/client-api';
 import { apiUrl, hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
 import type { SalesEmployeeTaskResult } from '@/lib/types';
 
@@ -40,7 +40,7 @@ export function TaskResultClient({ taskId }: { taskId: string }) {
     void token()
       .then((authToken) => clientApi<SalesEmployeeTaskResult>(`/api/sales-employees/tasks/${taskId}`, authToken))
       .then(setResult)
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Task result could not be loaded.'))
+      .catch((nextError) => setError(friendlyErrorMessage(nextError, 'Task result could not be loaded. Please refresh and try again.')))
       .finally(() => setLoading(false));
   }, [ready, taskId, token]);
 
@@ -52,7 +52,10 @@ export function TaskResultClient({ taskId }: { taskId: string }) {
       const response = await fetch(`${apiUrl}/api/sales-employees/tasks/${taskId}/csv`, {
         headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
       });
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) {
+        console.error('Task CSV download failed', { status: response.status, body: await response.text() });
+        throw new Error('REQUEST_FAILED');
+      }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -61,7 +64,7 @@ export function TaskResultClient({ taskId }: { taskId: string }) {
       link.click();
       URL.revokeObjectURL(url);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'CSV download failed.');
+      setError(friendlyErrorMessage(nextError, 'CSV download could not be prepared. Please try again.'));
     } finally {
       setBusy('');
     }
@@ -75,7 +78,7 @@ export function TaskResultClient({ taskId }: { taskId: string }) {
       const response = await clientApi<{ message: string }>(`/api/sales-employees/tasks/${taskId}/${path}`, authToken, { method: 'POST' });
       setNotice(response.message);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Action failed.');
+      setError(friendlyErrorMessage(nextError, 'This action could not be completed. Please try again.'));
     } finally {
       setBusy('');
     }

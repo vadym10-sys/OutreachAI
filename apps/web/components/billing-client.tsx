@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { CalendarDays, CheckCircle2, CreditCard, Loader2, TrendingUp } from 'lucide-react';
-import { clientApi } from '@/lib/client-api';
+import { clientApi, friendlyErrorMessage } from '@/lib/client-api';
 import { appUrl, hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
 import { useI18n } from '@/lib/i18n/provider';
 import type { BillingPlan, BillingStatus } from '@/lib/types';
@@ -170,7 +170,10 @@ export function BillingWorkspace() {
           apiWithToken<Diagnostics>('/api/billing/diagnostics', authToken),
           apiWithToken<BillingStatus>('/api/billing/status', authToken),
           fetch('/api/runtime-diagnostics', { cache: 'no-store' }).then((response) => {
-            if (!response.ok) throw new Error('Runtime diagnostics could not be loaded.');
+            if (!response.ok) {
+              console.error('Runtime billing diagnostics failed', { status: response.status });
+              throw new Error('REQUEST_FAILED');
+            }
             return response.json() as Promise<RuntimeDiagnostics>;
           })
         ]);
@@ -179,7 +182,7 @@ export function BillingWorkspace() {
         setDiagnostics(nextDiagnostics);
         setRuntimeDiagnostics(nextRuntimeDiagnostics);
       })
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Billing could not be loaded.'))
+      .catch((nextError) => setError(friendlyErrorMessage(nextError, 'Billing could not be loaded. Please refresh and try again.')))
       .finally(() => setLoading(false));
   }, [isLoaded, isSignedIn, token]);
 
@@ -194,7 +197,7 @@ export function BillingWorkspace() {
         : await apiWithToken<{ url: string }>('/api/billing/checkout', authToken, { method: 'POST', body: JSON.stringify({ plan }) });
       safeRedirect(session.url);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Stripe session could not be created.');
+      setError(friendlyErrorMessage(nextError, 'Secure billing could not be opened. Please try again.'));
     } finally {
       setBusy('');
     }

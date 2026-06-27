@@ -15,7 +15,8 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   });
 
   if (!response.ok) {
-    throw new Error(`API error ${response.status}`);
+    console.error("OutreachAI server API request failed", { path, status: response.status });
+    throw new Error("REQUEST_FAILED");
   }
 
   return response.json() as Promise<T>;

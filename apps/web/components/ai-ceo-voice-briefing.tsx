@@ -12,6 +12,7 @@ const lengths = ['30 sec', '1 min', '3 min', '10 min'] as const;
 const languages = ['English', 'Russian', 'Spanish', 'American English', 'French', 'Italian', 'Polish'] as const;
 const briefingApiPath = '/api/ai-ceo/briefings';
 const questionApiPath = '/api/ai-ceo/question';
+const voiceControlsEnabled = process.env.NEXT_PUBLIC_ENABLE_AI_CEO_VOICE === 'true';
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -56,7 +57,7 @@ function sanitizeUserError(error: unknown, fallback: string) {
   if (error instanceof TypeError) return fallback;
   if (!(error instanceof Error)) return fallback;
   if (/load failed|failed to fetch|networkerror/i.test(error.message)) return fallback;
-  return error.message || fallback;
+  return fallback;
 }
 
 function logCEOFailure(step: string, reason: unknown, startedAt: number, api?: string) {
@@ -157,14 +158,18 @@ export function AICEOVoiceBriefing() {
       reportCreated = true;
       setBriefing(data);
       setHistory((items) => [data, ...items.filter((item) => item.id !== data.id)].slice(0, 30));
-      setStage(t('aiCeo.stageVoice'));
-      const playbackStarted = await speak(data.transcript, data.language);
-      if (!playbackStarted) {
-        setVoiceFallback(true);
-        setStage(t('aiCeo.stageReady'));
+      if (voiceControlsEnabled) {
+        setStage(t('aiCeo.stageVoice'));
+        const playbackStarted = await speak(data.transcript, data.language);
+        if (!playbackStarted) {
+          setVoiceFallback(true);
+          setStage(t('aiCeo.stageReady'));
+        } else {
+          setStage(t('aiCeo.stagePlayback'));
+          window.setTimeout(() => setStage(t('aiCeo.stageReady')), 500);
+        }
       } else {
-        setStage(t('aiCeo.stagePlayback'));
-        window.setTimeout(() => setStage(t('aiCeo.stageReady')), 500);
+        setStage(t('aiCeo.stageReady'));
       }
       void loadHistory();
     } catch (nextError) {
@@ -189,8 +194,10 @@ export function AICEOVoiceBriefing() {
         body: JSON.stringify({ question, language: languages.includes(aiLanguage as typeof languages[number]) ? aiLanguage : language })
       });
       setAnswer(data.answer);
-      const playbackStarted = await speak(data.answer, language);
-      if (!playbackStarted) setVoiceFallback(true);
+      if (voiceControlsEnabled) {
+        const playbackStarted = await speak(data.answer, language);
+        if (!playbackStarted) setVoiceFallback(true);
+      }
     } catch (nextError) {
       logCEOFailure('question_request', nextError, startedAt, questionApiPath);
       setError(sanitizeUserError(nextError, 'AI CEO could not answer right now. Please try again.'));
@@ -233,14 +240,14 @@ export function AICEOVoiceBriefing() {
         className="focus-ring fixed bottom-24 right-4 z-40 inline-flex min-h-12 items-center gap-2 rounded-full bg-ink px-4 py-3 text-sm font-bold text-white shadow-soft disabled:opacity-60 lg:bottom-6 lg:right-6"
       >
         {busy === 'briefing' ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
-        {t('aiCeo.button')}
+        {voiceControlsEnabled ? t('aiCeo.button') : t('aiCeo.reportButton')}
       </button>
 
       {open && <section data-i18n-skip="true" className="fixed inset-x-3 bottom-40 z-50 max-h-[min(78vh,44rem)] overflow-y-auto rounded-lg border border-slate-200 bg-white p-4 shadow-soft min-[430px]:left-auto min-[430px]:right-4 min-[430px]:w-[25rem] lg:bottom-24 lg:right-6">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="flex items-center gap-2 text-sm font-bold text-brand"><Bot size={18} /> {t('aiCeo.title')}</p>
-            <h2 className="mt-1 text-lg font-bold text-ink">{t('aiCeo.heading')}</h2>
+            <h2 className="mt-1 text-lg font-bold text-ink">{voiceControlsEnabled ? t('aiCeo.heading') : t('aiCeo.reportHeading')}</h2>
           </div>
           <button type="button" onClick={() => setOpen(false)} className="focus-ring grid size-10 place-items-center rounded-md border border-slate-300" aria-label={t('aiCeo.close')}><X size={18} /></button>
         </div>
@@ -251,13 +258,13 @@ export function AICEOVoiceBriefing() {
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" onClick={listenReport} disabled={busy === 'briefing'} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white"><Volume2 size={16} /> {t('aiCeo.generate')}</button>
-          {briefing && <button type="button" onClick={async () => { setVoiceFallback(false); const ok = await speak(briefing.transcript, briefing.language); if (!ok) setVoiceFallback(true); }} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold"><Play size={16} /> {t('aiCeo.replay')}</button>}
+          <button type="button" onClick={listenReport} disabled={busy === 'briefing'} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white"><Volume2 size={16} /> {voiceControlsEnabled ? t('aiCeo.generate') : t('aiCeo.generateReport')}</button>
+          {voiceControlsEnabled && briefing && <button type="button" onClick={async () => { setVoiceFallback(false); const ok = await speak(briefing.transcript, briefing.language); if (!ok) setVoiceFallback(true); }} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold"><Play size={16} /> {t('aiCeo.replay')}</button>}
         </div>
 
         {stage && <p className="mt-3 rounded-md bg-teal-50 p-3 text-sm font-semibold text-brand">{stage}</p>}
         {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-        {(!voiceAvailable || voiceFallback) && <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-800">{t('aiCeo.voiceUnavailable')}</p>}
+        {voiceControlsEnabled && (!voiceAvailable || voiceFallback) && <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-800">{t('aiCeo.voiceUnavailable')}</p>}
 
         <article className="mt-4 rounded-md bg-slate-50 p-3 text-sm leading-6 text-slate-700">
           {briefing ? briefing.transcript : t('aiCeo.intro')}
@@ -268,7 +275,7 @@ export function AICEOVoiceBriefing() {
           <div className="mt-2 grid gap-2 min-[390px]:grid-cols-[1fr_auto]">
             <input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={t('aiCeo.placeholder')} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
             <div className="flex gap-2">
-              <button type="button" onClick={startListening} disabled={!micAvailable || listening} className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300" aria-label={t('aiCeo.askVoice')}><Mic size={16} /></button>
+              {voiceControlsEnabled && <button type="button" onClick={startListening} disabled={!micAvailable || listening} className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300" aria-label={t('aiCeo.askVoice')}><Mic size={16} /></button>}
               <button type="button" onClick={askQuestion} disabled={busy === 'question'} className="focus-ring grid size-11 place-items-center rounded-md bg-ink text-white" aria-label={t('aiCeo.sendQuestion')}>{busy === 'question' ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}</button>
             </div>
           </div>
@@ -278,7 +285,7 @@ export function AICEOVoiceBriefing() {
         <details className="mt-4 rounded-md border border-slate-200 p-3">
           <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-bold"><span className="inline-flex items-center gap-2"><History size={16} /> {t('aiCeo.history')}</span><ChevronDown size={16} /></summary>
           <div className="mt-3 space-y-2">
-            {history.length ? history.map((item) => <button key={item.id} type="button" onClick={() => { setBriefing(item); speak(item.transcript, item.language); }} className="w-full rounded-md bg-slate-50 p-3 text-left text-sm"><span className="font-semibold">{item.title}</span><span className="mt-1 block text-slate-500">{new Date(item.created_at).toLocaleString()} · {item.length} · {item.language}</span></button>) : <p className="text-sm text-slate-500">{t('aiCeo.emptyHistory')}</p>}
+            {history.length ? history.map((item) => <button key={item.id} type="button" onClick={() => { setBriefing(item); if (voiceControlsEnabled) void speak(item.transcript, item.language); }} className="w-full rounded-md bg-slate-50 p-3 text-left text-sm"><span className="font-semibold">{item.title}</span><span className="mt-1 block text-slate-500">{new Date(item.created_at).toLocaleString()} · {item.length} · {item.language}</span></button>) : <p className="text-sm text-slate-500">{t('aiCeo.emptyHistory')}</p>}
           </div>
         </details>
       </section>}

@@ -3,8 +3,8 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
-import { Bell, Brain, Check, CheckCircle2, ClipboardList, Loader2, Mic, Moon, Play, Plus, Save, Search, Send, Sparkles, Wand2, X } from 'lucide-react';
-import { clientApi, splitList } from '@/lib/client-api';
+import { Bell, Brain, Check, CheckCircle2, ClipboardList, Loader2, Mic, Play, Plus, Save, Search, Send, Sparkles, Wand2, X } from 'lucide-react';
+import { clientApi, friendlyErrorMessage, splitList } from '@/lib/client-api';
 import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
 import { LanguageSwitcher } from '@/components/language-switcher';
 import { useI18n } from '@/lib/i18n/provider';
@@ -14,6 +14,7 @@ const pipeline = ['New', 'Qualified', 'Contacted', 'Interested', 'Meeting', 'Won
 const tones = ['Professional', 'Friendly', 'Direct', 'Consultative'];
 const salesModes = ['Review Mode', 'Semi-Auto Mode', 'Autonomous Mode'];
 const emptyMetrics: DashboardMetrics = { leads: 0, campaigns: 0, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: 'Starter', usage: {} };
+const dashboardOnboardingCopy = 'Create your first campaign or import leads to start seeing live metrics, recommendations, and revenue signals.';
 const devApi = async function api<T>(path: string, init: RequestInit = {}) {
   return clientApi<T>(path, 'dev', init);
 };
@@ -97,10 +98,6 @@ export function DashboardHome() {
   const [loading, setLoading] = useState(true);
   const [goalSaving, setGoalSaving] = useState(false);
   const [error, setError] = useState('');
-  const [darkMode, setDarkMode] = useState(false);
-
-  useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);
-
   useEffect(() => {
     if (!ready) return;
     void Promise.resolve()
@@ -112,11 +109,14 @@ export function DashboardHome() {
       .then(([nextMetrics, nextGrowth, nextActivity, nextNotifications]) => {
         setMetrics(nextMetrics);
         setGrowth(nextGrowth);
-        setGoalInput(nextGrowth.goal.goal);
+        setGoalInput(nextGrowth?.goal?.goal || 'I want 20 meetings this month.');
         setActivity(nextActivity);
         setNotifications(nextNotifications);
       })
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Dashboard data could not be loaded.'))
+      .catch((nextError) => {
+        console.error('Dashboard data could not be loaded', nextError);
+        setError('Dashboard data is temporarily unavailable.');
+      })
       .finally(() => setLoading(false));
   }, [api, ready]);
 
@@ -128,7 +128,8 @@ export function DashboardHome() {
       const goal = await api<GrowthEngine['goal']>('/api/growth-engine/goal', { method: 'POST', body: JSON.stringify({ goal: goalInput }) });
       setGrowth((current) => current ? { ...current, goal } : current);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Growth goal could not be saved.');
+      console.error('Growth goal could not be saved', nextError);
+      setError('Your goal could not be saved. Please try again.');
     } finally {
       setGoalSaving(false);
     }
@@ -141,7 +142,7 @@ export function DashboardHome() {
   ];
 
   const funnel = metrics.funnel || [];
-  return <div className="min-w-0"><div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><h1 className="text-2xl font-bold min-[390px]:text-3xl">Dashboard</h1><p className="mt-2 text-slate-600">Your AI Growth Engine refreshes daily with opportunities, recommendations, goals, and revenue signals.</p></div><button onClick={() => setDarkMode((value) => !value)} className="focus-ring inline-flex min-h-11 w-fit items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-semibold"><Moon size={16} /> {darkMode ? 'Light' : 'Dark'}</button></div>{error && <Notice message={error} kind="error" />}{loading ? <div className="mt-6"><Skeleton lines={5} /></div> : <><section className="mt-6 rounded-lg border border-teal-200 bg-teal-50 p-5"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div><p className="text-sm font-semibold text-brand">Today&apos;s AI Briefing · {growth?.briefing?.date || new Date().toISOString().slice(0, 10)}</p><h2 className="mt-1 text-2xl font-bold">Review {growth?.opportunity_feed?.length || 0} revenue opportunities before sending anything</h2><p className="mt-2 text-sm text-slate-700">New leads found: {growth?.briefing?.new_leads_found || 0} · Meetings booked: {growth?.briefing?.meetings_booked || 0} · Reply rate: {metrics.reply_rate}%</p></div><span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-brand">Approval required</span></div><div className="mt-4 grid gap-3 lg:grid-cols-3">{(growth?.briefing?.recommended_actions || []).map((item, index) => <article key={index} className="rounded-md bg-white p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Recommended action')}</p><p className="mt-1 text-slate-600">{textValue(item.why, 'AI found a revenue lever worth reviewing.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.action, 'Review now')}</p></article>)}</div></section><section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([label, value]) => <article key={label} className="rounded-lg border border-slate-200 bg-white p-4"><p className="text-sm text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold">{value}</p></article>)}</section><section className="mt-8 grid gap-6 xl:grid-cols-[1.2fr_0.8fr]"><div className="space-y-6"><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Opportunity feed</h2><div className="mt-4 space-y-3">{(growth?.opportunity_feed || []).map((item, index) => <article key={index} className="rounded-md border border-slate-200 p-3"><div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><p className="font-semibold">{textValue(item.company, 'Opportunity')}</p><p className="mt-1 text-sm text-slate-500">{textValue(item.industry, 'ICP')} · {textValue(item.country, 'Target market')} · {textValue(item.status, 'Recommended')}</p></div><span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">Score {metricNumber(item.score)}</span></div><p className="mt-2 text-sm text-slate-600">{textValue(item.reason, 'Matches your ideal customer profile.')}</p><p className="mt-2 text-sm font-semibold text-ink">{textValue(item.recommended_action, 'Prepare outreach for approval.')}</p></article>)}</div></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Smart recommendations</h2><div className="mt-4 grid gap-3 lg:grid-cols-3">{(growth?.smart_recommendations || []).map((item, index) => <article key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Recommendation')}</p><p className="mt-1 text-slate-600">{textValue(item.why, 'AI found a pattern in your workspace data.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.action, 'Review')}</p></article>)}</div></section><section className="grid gap-6 lg:grid-cols-2"><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Website monitoring</h2><div className="mt-4 space-y-3">{(growth?.website_monitoring || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.company, 'Tracked company')}</p><p className="mt-1 text-slate-600">{textValue(item.change, 'No change detected.')}</p><p className="mt-2 text-xs font-semibold uppercase text-brand">{textValue(item.priority, 'info')} · {textValue(item.recommended_action, 'Monitor')}</p></div>)}</div></div><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Campaign optimization</h2><div className="mt-4 space-y-3">{(growth?.campaign_optimizations || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.campaign, 'Campaign')}</p><p className="mt-1 text-slate-600">Open {metricNumber(item.open_rate)}% · Reply {metricNumber(item.reply_rate)}%</p><p className="mt-2 text-brand">{textValue(item.suggestion, 'Review campaign performance.')}</p></div>)}</div></div></section><section className="grid gap-6 lg:grid-cols-2"><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Reply assistant</h2><div className="mt-4 space-y-3">{(growth?.reply_assistant || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.subject, 'Reply')}</p><p className="mt-1 text-slate-600">Classification: {textValue(item.classification, 'Question')}</p><p className="mt-2 text-slate-600">{textValue(item.suggested_reply, 'AI will suggest a reply when messages arrive.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.next_step, 'Review')}</p></div>)}</div></div><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Activity timeline</h2>{activity.length ? <div className="mt-4 space-y-3">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item.action.replaceAll('.', ' ')}</p><p className="text-slate-500">{new Date(item.created_at).toLocaleString()}</p></div>)}</div> : <EmptyState title="No activity yet" copy="Create a campaign, import leads, or generate an email to start the timeline." />}</div></section></div><aside className="space-y-6"><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Revenue engine</h2><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Pipeline</dt><dd className="text-xl font-bold">€{metricNumber(growth?.revenue_dashboard?.estimated_pipeline).toLocaleString()}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Meetings</dt><dd className="text-xl font-bold">{metricNumber(growth?.revenue_dashboard?.meetings)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Influenced</dt><dd className="text-xl font-bold">€{metricNumber(growth?.revenue_dashboard?.revenue_influenced).toLocaleString()}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">ROI</dt><dd className="text-xl font-bold">{metricNumber(growth?.revenue_dashboard?.roi)}x</dd></div></dl></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Goal</h2><form onSubmit={saveGoal} className="mt-4 space-y-3"><textarea value={goalInput} onChange={(event) => setGoalInput(event.target.value)} className="min-h-24 w-full rounded-md border border-slate-300 p-3 text-sm" /><button disabled={goalSaving} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{goalSaving ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} Save goal</button></form><div className="mt-4 rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{growth?.goal?.meetings_booked || 0} / {growth?.goal?.target_meetings || 0} meetings</p><div className="mt-2 h-2 rounded-full bg-slate-200"><div className="h-2 rounded-full bg-brand" style={{ width: `${growth?.goal?.progress_percent || 0}%` }} /></div><p className="mt-2 text-slate-600">{growth?.goal?.next_action}</p></div><ol className="mt-4 space-y-2 text-sm">{(growth?.goal?.execution_plan || []).map((item, index) => <li key={item} className="rounded-md bg-slate-50 p-2"><span className="font-semibold">{index + 1}. </span>{item}</li>)}</ol></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">AI proactive mode</h2><div className="mt-4 space-y-3">{(growth?.proactive_mode || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p>{textValue(item.message, 'AI recommendation ready.')}</p><p className="mt-2 text-xs font-bold text-brand">{boolValue(item.approval_required) ? 'Approval required' : 'Internal only'}</p></div>)}</div></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="flex items-center gap-2 font-bold"><Bell size={18} /> Notifications</h2>{notifications.length ? <div className="mt-4 space-y-3">{notifications.slice(0, 5).map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item.title}</p><p className="text-slate-500">{item.message}</p></div>)}</div> : <div className="mt-4 space-y-3">{(growth?.notifications || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Growth update')}</p><p className="text-slate-500">{textValue(item.message, 'Recommendations are ready.')}</p></div>)}</div>}</section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">AI performance</h2><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">AI actions</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.ai_actions)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Time saved</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.time_saved_hours)}h</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Leads</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.leads_generated)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Revenue</dt><dd className="text-xl font-bold">€{metricNumber(growth?.performance?.revenue_influenced).toLocaleString()}</dd></div></dl></section></aside></section><section className="mt-8 rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Conversion funnel</h2>{funnel.length ? <div className="mt-4 space-y-3">{funnel.map((item) => <div key={item.status}><div className="flex justify-between text-sm"><span>{item.status}</span><span className="font-semibold">{item.count}</span></div><div className="mt-1 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-brand" style={{ width: `${Math.min(100, Math.max(8, metrics.leads ? item.count / metrics.leads * 100 : 0))}%` }} /></div></div>)}</div> : <EmptyState title="No funnel yet" copy="Leads will appear here as they move through the pipeline." />}</section></>}</div>;
+  return <div className="min-w-0"><div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><h1 className="text-2xl font-bold min-[390px]:text-3xl">Dashboard</h1><p className="mt-2 text-slate-600">Your AI Growth Engine refreshes daily with opportunities, recommendations, goals, and revenue signals.</p></div></div>{loading ? <div className="mt-6"><Skeleton lines={5} /></div> : error ? <div className="mt-6 space-y-6"><section className="rounded-lg border border-teal-200 bg-teal-50 p-6"><p className="text-sm font-semibold text-brand">Workspace ready</p><h2 className="mt-2 text-2xl font-bold text-ink">Start with your first revenue action</h2><p className="mt-2 text-slate-700">{dashboardOnboardingCopy}</p><div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/campaigns" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white">Create campaign</Link><Link href="/dashboard/leads" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-ink">Import leads</Link></div></section><section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.slice(0, 8).map(([label, value]) => <article key={label} className="rounded-lg border border-slate-200 bg-white p-4"><p className="text-sm text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold">{value}</p></article>)}</section></div> : <><section className="mt-6 rounded-lg border border-teal-200 bg-teal-50 p-5"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div><p className="text-sm font-semibold text-brand">Today&apos;s AI Briefing · {growth?.briefing?.date || new Date().toISOString().slice(0, 10)}</p><h2 className="mt-1 text-2xl font-bold">Review {growth?.opportunity_feed?.length || 0} revenue opportunities before sending anything</h2><p className="mt-2 text-sm text-slate-700">New leads found: {growth?.briefing?.new_leads_found || 0} · Meetings booked: {growth?.briefing?.meetings_booked || 0} · Reply rate: {metrics.reply_rate}%</p></div><span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-brand">Approval required</span></div><div className="mt-4 grid gap-3 lg:grid-cols-3">{(growth?.briefing?.recommended_actions || []).map((item, index) => <article key={index} className="rounded-md bg-white p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Recommended action')}</p><p className="mt-1 text-slate-600">{textValue(item.why, 'AI found a revenue lever worth reviewing.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.action, 'Review now')}</p></article>)}</div></section><section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([label, value]) => <article key={label} className="rounded-lg border border-slate-200 bg-white p-4"><p className="text-sm text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold">{value}</p></article>)}</section><section className="mt-8 grid gap-6 xl:grid-cols-[1.2fr_0.8fr]"><div className="space-y-6"><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Opportunity feed</h2><div className="mt-4 space-y-3">{(growth?.opportunity_feed || []).map((item, index) => <article key={index} className="rounded-md border border-slate-200 p-3"><div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><p className="font-semibold">{textValue(item.company, 'Opportunity')}</p><p className="mt-1 text-sm text-slate-500">{textValue(item.industry, 'ICP')} · {textValue(item.country, 'Target market')} · {textValue(item.status, 'Recommended')}</p></div><span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">Score {metricNumber(item.score)}</span></div><p className="mt-2 text-sm text-slate-600">{textValue(item.reason, 'Matches your ideal customer profile.')}</p><p className="mt-2 text-sm font-semibold text-ink">{textValue(item.recommended_action, 'Prepare outreach for approval.')}</p></article>)}</div></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Smart recommendations</h2><div className="mt-4 grid gap-3 lg:grid-cols-3">{(growth?.smart_recommendations || []).map((item, index) => <article key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Recommendation')}</p><p className="mt-1 text-slate-600">{textValue(item.why, 'AI found a pattern in your workspace data.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.action, 'Review')}</p></article>)}</div></section><section className="grid gap-6 lg:grid-cols-2"><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Website monitoring</h2><div className="mt-4 space-y-3">{(growth?.website_monitoring || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.company, 'Tracked company')}</p><p className="mt-1 text-slate-600">{textValue(item.change, 'No change detected.')}</p><p className="mt-2 text-xs font-semibold uppercase text-brand">{textValue(item.priority, 'info')} · {textValue(item.recommended_action, 'Monitor')}</p></div>)}</div></div><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Campaign optimization</h2><div className="mt-4 space-y-3">{(growth?.campaign_optimizations || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.campaign, 'Campaign')}</p><p className="mt-1 text-slate-600">Open {metricNumber(item.open_rate)}% · Reply {metricNumber(item.reply_rate)}%</p><p className="mt-2 text-brand">{textValue(item.suggestion, 'Review campaign performance.')}</p></div>)}</div></div></section><section className="grid gap-6 lg:grid-cols-2"><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Reply assistant</h2><div className="mt-4 space-y-3">{(growth?.reply_assistant || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.subject, 'Reply')}</p><p className="mt-1 text-slate-600">Classification: {textValue(item.classification, 'Question')}</p><p className="mt-2 text-slate-600">{textValue(item.suggested_reply, 'AI will suggest a reply when messages arrive.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.next_step, 'Review')}</p></div>)}</div></div><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Activity timeline</h2>{activity.length ? <div className="mt-4 space-y-3">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item.action.replaceAll('.', ' ')}</p><p className="text-slate-500">{new Date(item.created_at).toLocaleString()}</p></div>)}</div> : <EmptyState title="No activity yet" copy="Create a campaign, import leads, or generate an email to start the timeline." />}</div></section></div><aside className="space-y-6"><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Revenue engine</h2><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Pipeline</dt><dd className="text-xl font-bold">€{metricNumber(growth?.revenue_dashboard?.estimated_pipeline).toLocaleString()}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Meetings</dt><dd className="text-xl font-bold">{metricNumber(growth?.revenue_dashboard?.meetings)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Influenced</dt><dd className="text-xl font-bold">€{metricNumber(growth?.revenue_dashboard?.revenue_influenced).toLocaleString()}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">ROI</dt><dd className="text-xl font-bold">{metricNumber(growth?.revenue_dashboard?.roi)}x</dd></div></dl></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Goal</h2><form onSubmit={saveGoal} className="mt-4 space-y-3"><textarea value={goalInput} onChange={(event) => setGoalInput(event.target.value)} className="min-h-24 w-full rounded-md border border-slate-300 p-3 text-sm" /><button disabled={goalSaving} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{goalSaving ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} Save goal</button></form><div className="mt-4 rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{growth?.goal?.meetings_booked || 0} / {growth?.goal?.target_meetings || 0} meetings</p><div className="mt-2 h-2 rounded-full bg-slate-200"><div className="h-2 rounded-full bg-brand" style={{ width: `${growth?.goal?.progress_percent || 0}%` }} /></div><p className="mt-2 text-slate-600">{growth?.goal?.next_action}</p></div><ol className="mt-4 space-y-2 text-sm">{(growth?.goal?.execution_plan || []).map((item, index) => <li key={item} className="rounded-md bg-slate-50 p-2"><span className="font-semibold">{index + 1}. </span>{item}</li>)}</ol></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">AI proactive mode</h2><div className="mt-4 space-y-3">{(growth?.proactive_mode || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p>{textValue(item.message, 'AI recommendation ready.')}</p><p className="mt-2 text-xs font-bold text-brand">{boolValue(item.approval_required) ? 'Approval required' : 'Internal only'}</p></div>)}</div></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="flex items-center gap-2 font-bold"><Bell size={18} /> Notifications</h2>{notifications.length ? <div className="mt-4 space-y-3">{notifications.slice(0, 5).map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item.title}</p><p className="text-slate-500">{item.message}</p></div>)}</div> : <div className="mt-4 space-y-3">{(growth?.notifications || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Growth update')}</p><p className="text-slate-500">{textValue(item.message, 'Recommendations are ready.')}</p></div>)}</div>}</section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">AI performance</h2><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">AI actions</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.ai_actions)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Time saved</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.time_saved_hours)}h</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Leads</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.leads_generated)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Revenue</dt><dd className="text-xl font-bold">€{metricNumber(growth?.performance?.revenue_influenced).toLocaleString()}</dd></div></dl></section></aside></section><section className="mt-8 rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Conversion funnel</h2>{funnel.length ? <div className="mt-4 space-y-3">{funnel.map((item) => <div key={item.status}><div className="flex justify-between text-sm"><span>{item.status}</span><span className="font-semibold">{item.count}</span></div><div className="mt-1 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-brand" style={{ width: `${Math.min(100, Math.max(8, metrics.leads ? item.count / metrics.leads * 100 : 0))}%` }} /></div></div>)}</div> : <EmptyState title="No funnel yet" copy="Leads will appear here as they move through the pipeline." />}</section></>}</div>;
 }
 
 export function CampaignBuilder() {
@@ -163,7 +164,7 @@ export function CampaignBuilder() {
     setLoading(true);
     Promise.all([api<Campaign[]>('/api/campaigns'), api<{ items: Lead[] }>('/api/leads?page_size=100')])
       .then(([c, l]) => { setCampaigns(c); setLeads(l.items); if (c[0]) setSelectedCampaign(c[0].id); if (l.items[0]) setSelectedLead(l.items[0].id || ''); })
-      .catch((nextError) => setNotice(nextError instanceof Error ? nextError.message : 'Campaign data could not be loaded.'))
+      .catch((nextError) => setNotice(friendlyErrorMessage(nextError, 'Campaign data could not be loaded. Please refresh and try again.')))
       .finally(() => setLoading(false));
   }, [api, ready]);
   useEffect(() => { void Promise.resolve().then(load); }, [load]);
@@ -268,7 +269,7 @@ export function LeadManager() {
     setError('');
     Promise.all([api<{ items: Lead[] }>(`/api/leads?search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}&page_size=50`), api<Campaign[]>('/api/campaigns')])
       .then(([leadPage, nextCampaigns]) => { setLeads(leadPage.items); setCampaigns(nextCampaigns); })
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Lead data could not be loaded.'))
+      .catch((nextError) => setError(friendlyErrorMessage(nextError, 'Lead data could not be loaded. Please refresh and try again.')))
       .finally(() => setLoading(false));
   }, [api, ready, search, status]);
   useEffect(() => { void Promise.resolve().then(load); }, [load]);
@@ -293,7 +294,7 @@ export function LeadManager() {
       setLeads((items) => [...found, ...items.filter((item) => !found.some((lead) => lead.id === item.id))]);
       setNotice(`Imported ${found.length} leads and queued website analysis where possible.`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Lead discovery failed.');
+      setError(friendlyErrorMessage(nextError, 'Lead discovery could not be completed. Please adjust the filters and try again.'));
     } finally { setFinding(false); }
   }
 
@@ -322,7 +323,7 @@ export function LeadManager() {
       setter(lead.id, result);
       setNotice(`AI ${action.replace('-', ' ')} generated for ${lead.company}.`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : `AI ${action} failed.`);
+      setError(friendlyErrorMessage(nextError, `AI ${action.replace('-', ' ')} could not be completed. Please try again.`));
     } finally { setAiLoading(''); }
   }
 
@@ -387,7 +388,7 @@ export function AISalesEmployees() {
         setEmployeeId(next);
         return Promise.all([loadLeads(next), loadEmployeeContext(next)]);
       })
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'AI Sales Employees could not be loaded.'))
+      .catch((nextError) => setError(friendlyErrorMessage(nextError, 'AI Sales Employees could not be loaded. Please refresh and try again.')))
       .finally(() => setLoading(false));
   }, [api, ready, employeeId, loadLeads, loadEmployeeContext, loadTeam]);
 
@@ -426,7 +427,7 @@ export function AISalesEmployees() {
       setNotice(`${created.name} created in ${created.sending_mode}.`);
       form.reset();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'AI Sales Employee could not be created.');
+      setError(friendlyErrorMessage(nextError, 'AI Sales Employee could not be created. Please review the fields and try again.'));
     } finally { setBusy(''); }
   }
 
@@ -489,7 +490,7 @@ export function AISalesEmployees() {
       if (!dashboard.current_plan) setTeamPlan(plan);
       setNotice(`${plan.primary_employee} Employee is leading. ${plan.assigned_employees.join(', ')} received subtasks for approval.`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'AI Team Router could not classify this command.');
+      setError(friendlyErrorMessage(nextError, 'AI Team Router could not classify this command. Please simplify the request and try again.'));
     } finally { setBusy(''); }
   }
 
@@ -504,7 +505,7 @@ export function AISalesEmployees() {
       if (!dashboard.current_plan) setTeamPlan(plan);
       setNotice(action === 'approve' ? 'Team plan approved. Execution remains internal and safety-gated.' : 'Team plan cancelled.');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Team plan decision failed.');
+      setError(friendlyErrorMessage(nextError, 'Team plan decision could not be saved. Please try again.'));
     } finally { setBusy(''); }
   }
 
@@ -519,7 +520,7 @@ export function AISalesEmployees() {
       if (!dashboard.current_plan) setTeamPlan(plan);
       setNotice('AI team finished internal work. No email, campaign, CRM change, or deletion was performed automatically.');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Team execution failed.');
+      setError(friendlyErrorMessage(nextError, 'Team execution could not be completed. No external action was performed.'));
     } finally { setBusy(''); }
   }
 
@@ -533,7 +534,7 @@ export function AISalesEmployees() {
       await loadEmployeeContext(employeeId);
       setNotice(`${selectedEmployee?.name || 'Your AI employee'} prepared a plan and is waiting for approval.`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Planning failed.');
+      setError(friendlyErrorMessage(nextError, 'Planning could not be completed. Please try again.'));
     } finally { setBusy(''); }
   }
 
@@ -547,7 +548,7 @@ export function AISalesEmployees() {
       await loadEmployeeContext(employeeId);
       setNotice(action === 'approve' ? 'Plan approved. The employee can execute the safe workflow now.' : 'Plan cancelled.');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Plan decision failed.');
+      setError(friendlyErrorMessage(nextError, 'Plan decision could not be saved. Please try again.'));
     } finally { setBusy(''); }
   }
 
@@ -561,7 +562,7 @@ export function AISalesEmployees() {
       await Promise.all([loadLeads(employeeId), loadEmployeeContext(employeeId)]);
       setNotice('Execution finished. No emails were sent and no campaign was launched without approval.');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Execution failed.');
+      setError(friendlyErrorMessage(nextError, 'Execution could not be completed. No emails were sent.'));
     } finally { setBusy(''); }
   }
 
@@ -577,7 +578,7 @@ export function AISalesEmployees() {
       setNotice(`Imported ${imported.length} lead.`);
       form.reset();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Manual import failed.');
+      setError(friendlyErrorMessage(nextError, 'Manual import could not be completed. Please check the company details.'));
     } finally { setBusy(''); }
   }
 
@@ -591,7 +592,7 @@ export function AISalesEmployees() {
       setLeads((items) => [...imported, ...items.filter((item) => !imported.some((lead) => lead.id === item.id))]);
       setNotice(`Imported ${imported.length} leads.`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Import failed.');
+      setError(friendlyErrorMessage(nextError, 'Import could not be completed. Please review the list and try again.'));
     } finally { setBusy(''); }
   }
 
@@ -603,7 +604,7 @@ export function AISalesEmployees() {
       setInsights((items) => ({ ...items, [lead.id as string]: insight }));
       setNotice(`${lead.company} qualified: ICP ${insight.icp_score}/100.`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Qualification failed.');
+      setError(friendlyErrorMessage(nextError, 'Qualification could not be completed. Please try again.'));
     } finally { setBusy(''); }
   }
 
@@ -615,7 +616,7 @@ export function AISalesEmployees() {
       setEmails((items) => ({ ...items, [lead.id as string]: email }));
       setNotice(email.delivery_status === 'pending_approval' ? 'Draft created for approval.' : 'Draft created for automation.');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Draft failed.');
+      setError(friendlyErrorMessage(nextError, 'Draft could not be created. Please try again.'));
     } finally { setBusy(''); }
   }
 
@@ -628,7 +629,7 @@ export function AISalesEmployees() {
       setEmails((items) => ({ ...items, [lead.id as string]: approved }));
       setNotice('Email approved.');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Approval failed.');
+      setError(friendlyErrorMessage(nextError, 'Approval could not be saved. Please try again.'));
     } finally { setBusy(''); }
   }
 
@@ -641,7 +642,7 @@ export function AISalesEmployees() {
       await Promise.all([loadLeads(employeeId), loadEmployeeContext(employeeId)]);
       setNotice(`Run complete: ${result.leads_qualified} qualified, ${result.emails_generated} drafted, ${result.emails_sent} sent.`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Employee run failed.');
+      setError(friendlyErrorMessage(nextError, 'Employee run could not be completed. No unapproved external action was performed.'));
     } finally { setBusy(''); }
   }
 
@@ -666,7 +667,7 @@ export function InboxAndActivity() {
         return Promise.all([api<Email[]>('/api/inbox'), api<Activity[]>('/api/activity'), api<Notification[]>('/api/notifications')]);
       })
       .then(([messages, a, n]) => { setInbox(messages); setActivity(a); setNotifications(n); })
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Inbox data could not be loaded.'))
+      .catch((nextError) => setError(friendlyErrorMessage(nextError, 'Inbox data could not be loaded. Please refresh and try again.')))
       .finally(() => setLoading(false));
   }, [api, ready]);
   return <div className="min-w-0"><h1 className="text-2xl font-bold min-[390px]:text-3xl">Unified Inbox</h1><p className="mt-2 text-slate-600">Replies, AI categories, notifications, tags, and activity events in one operational view.</p>{error && <Notice message={error} kind="error" />}{loading ? <div className="mt-6"><Skeleton lines={4} /></div> : <div className="mt-6 grid gap-6 lg:grid-cols-2"><section className="rounded-lg border border-slate-200 bg-white p-5 lg:col-span-2"><h2 className="font-bold">Replies</h2>{inbox.length ? <div className="mt-4 space-y-3">{inbox.map((item) => <article key={item.id} className="rounded-md bg-slate-50 p-3"><div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><p className="font-semibold">{item.subject}</p><span className="w-fit rounded-full bg-white px-2 py-1 text-xs font-semibold">{String(item.tags?.category || item.delivery_status)}</span></div><p className="mt-2 text-sm text-slate-600">{item.preview || item.body}</p>{Boolean(item.reply_assistant?.next_step) && <p className="mt-2 text-xs font-semibold text-brand">Next step: {String(item.reply_assistant?.next_step)}</p>}</article>)}</div> : <EmptyState title="No replies yet" copy="Inbound replies will be categorized and routed here automatically." />}</section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Notifications</h2>{notifications.length ? <div className="mt-4 space-y-3">{notifications.map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3"><p className="font-semibold">{item.title}</p><p className="text-sm text-slate-500">{item.message}</p></div>)}</div> : <EmptyState title="No notifications" copy="Success, error, warning, and background job updates will appear here." />}</section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Activity</h2>{activity.length ? <div className="mt-4 space-y-3">{activity.map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3"><p className="font-semibold">{item.action.replaceAll('.', ' ')}</p><p className="text-sm text-slate-500">{new Date(item.created_at).toLocaleString()}</p></div>)}</div> : <EmptyState title="No activity" copy="Every campaign, lead, email, and reply action will be logged here." />}</section></div>}</div>;
@@ -685,7 +686,7 @@ export function SettingsAndProfile() {
     if (!ready) return;
     Promise.all([api<Profile>('/api/profile'), api<Settings>('/api/settings'), api<Workspace>('/api/workspace'), api<BillingPlan[]>('/api/billing/plans'), api<Usage>('/api/billing/usage')])
       .then(([p, s, w, nextPlans, nextUsage]) => { setProfile(p); setSettings(s); setWorkspace(w); setPlans(Array.isArray(nextPlans) ? nextPlans : []); setUsage(nextUsage?.usage ? nextUsage : null); })
-      .catch((nextError) => setNotice(nextError instanceof Error ? nextError.message : 'Settings could not be loaded.'));
+      .catch((nextError) => setNotice(friendlyErrorMessage(nextError, 'Settings could not be loaded. Please refresh and try again.')));
   }, [api, ready]);
   async function saveProfile(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); const saved = await api<Profile>('/api/profile', { method: 'PUT', body: JSON.stringify({ workspace: data.get('workspace'), company: data.get('company'), avatar_url: data.get('avatar_url') || null, timezone: data.get('timezone'), language: aiLanguage }) }); setProfile(saved); setNotice('Profile saved.'); }
   async function saveSettings() { if (!settings) return; await api<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); setNotice('Settings saved.'); }
@@ -705,7 +706,7 @@ export function AdminPanel() {
     if (!ready) return;
     Promise.all([api<AdminSummary>('/api/admin/summary'), api<Activity[]>('/api/admin/logs')])
       .then(([nextSummary, nextLogs]) => { setSummary(nextSummary); setLogs(nextLogs); })
-      .catch((nextError) => setError(nextError instanceof Error ? nextError.message : 'Admin data could not be loaded.'));
+      .catch((nextError) => setError(friendlyErrorMessage(nextError, 'Admin data could not be loaded. Please refresh and try again.')));
   }, [api, ready]);
 
   if (error) return <Notice message={error} kind="error" />;
@@ -738,7 +739,7 @@ export function OnboardingFlow() {
       setWorkspace(next);
       setStep(next.onboarding_step || 1);
       setForm({ company: next.company, industry: next.industry, target_country: next.target_country, target_customer: next.target_customer, connect_openai: false, launch_first_campaign: next.onboarding_completed });
-    }).catch((nextError) => setNotice(nextError instanceof Error ? nextError.message : 'Onboarding could not be loaded.'));
+    }).catch((nextError) => setNotice(friendlyErrorMessage(nextError, 'Onboarding could not be loaded. Please refresh and try again.')));
   }, [api, ready]);
 
   async function save(nextStep: number) {

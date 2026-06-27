@@ -153,9 +153,9 @@ for (const width of [320, 390, 480]) {
     await expect(page.getByRole("heading", { name: "Panel" })).toBeVisible();
     await page.locator('select').first().selectOption("en");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Listen AI Report" })).toBeVisible();
-    await page.getByRole("button", { name: "Listen AI Report" }).click();
-    await expect(page.getByText("Executive voice briefing")).toBeVisible();
+    await expect(page.getByRole("button", { name: "AI CEO Report" })).toBeVisible();
+    await page.getByRole("button", { name: "AI CEO Report" }).click();
+    await expect(page.getByRole("heading", { name: "Executive report" })).toBeVisible();
     await expect(page.getByText("Good morning. This is your AI CEO report.")).toBeVisible();
     await page.getByLabel("Close AI CEO report").click();
 
@@ -201,16 +201,16 @@ for (const width of [320, 390, 480]) {
   });
 }
 
-test("AI CEO voice report falls back professionally when playback is unavailable", async ({ page }) => {
+test("AI CEO written report is available without exposing broken voice playback", async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, "speechSynthesis", { value: undefined, configurable: true });
     Object.defineProperty(window, "SpeechSynthesisUtterance", { value: undefined, configurable: true });
   });
   await page.setViewportSize({ width: 390, height: 900 });
   await page.goto("/dashboard");
-  await page.getByRole("button", { name: "Listen AI Report" }).click();
-  await expect(page.getByText("Executive voice briefing")).toBeVisible();
+  await page.getByRole("button", { name: "AI CEO Report" }).click();
+  await expect(page.getByRole("heading", { name: "Executive report" })).toBeVisible();
   await expect(page.getByText("Good morning. This is your AI CEO report.")).toBeVisible();
-  await expect(page.getByText("Voice generation is temporarily unavailable. Your executive report is ready below.")).toBeVisible();
+  await expect(page.getByText("Voice generation is temporarily unavailable. Your executive report is ready below.")).toHaveCount(0);
   await expect(page.getByText("Load failed")).toHaveCount(0);
 });
