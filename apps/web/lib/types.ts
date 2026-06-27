@@ -350,7 +350,7 @@ export type AICEOBriefing = {
   id: string;
   title: string;
   length: '30 sec' | '1 min' | '3 min' | '10 min';
-  language: 'English' | 'Russian' | 'Ukrainian' | 'Polish';
+  language: 'English' | 'Russian' | 'Spanish' | 'American English' | 'French' | 'Italian' | 'Polish' | 'Ukrainian';
   transcript: string;
   summary_json: Record<string, unknown>;
   created_at: string;

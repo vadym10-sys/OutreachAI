@@ -10,6 +10,8 @@ import type { AICEOAnswer, AICEOBriefing } from '@/lib/types';
 
 const lengths = ['30 sec', '1 min', '3 min', '10 min'] as const;
 const languages = ['English', 'Russian', 'Spanish', 'American English', 'French', 'Italian', 'Polish'] as const;
+const briefingApiPath = '/api/ai-ceo/briefings';
+const questionApiPath = '/api/ai-ceo/question';
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -50,6 +52,24 @@ function speechLang(language: string) {
   return 'en-US';
 }
 
+function sanitizeUserError(error: unknown, fallback: string) {
+  if (error instanceof TypeError) return fallback;
+  if (!(error instanceof Error)) return fallback;
+  if (/load failed|failed to fetch|networkerror/i.test(error.message)) return fallback;
+  return error.message || fallback;
+}
+
+function logCEOFailure(step: string, reason: unknown, startedAt: number, api?: string) {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  console.error('AI CEO voice briefing failure', {
+    step,
+    reason: error.message,
+    stack: error.stack,
+    api,
+    duration_ms: Math.round(performance.now() - startedAt)
+  });
+}
+
 export function AICEOVoiceBriefing() {
   const { ready, getToken } = useCEOApi();
   const { aiLanguage, t } = useI18n();
@@ -61,7 +81,9 @@ export function AICEOVoiceBriefing() {
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState('');
   const [busy, setBusy] = useState('');
+  const [stage, setStage] = useState('');
   const [error, setError] = useState('');
+  const [voiceFallback, setVoiceFallback] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceAvailable] = useState(() => canSpeak());
   const [micAvailable] = useState(() => canListen());
@@ -69,13 +91,39 @@ export function AICEOVoiceBriefing() {
   const token = useCallback(async () => isClerkE2EBypass ? 'dev' : await getToken(), [getToken]);
 
   const speak = useCallback((text: string, selectedLanguage: string = language) => {
-    if (!voiceAvailable || !text.trim()) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = speechLang(selectedLanguage);
-    utterance.rate = 0.92;
-    utterance.pitch = 0.95;
-    window.speechSynthesis.speak(utterance);
+    const startedAt = performance.now();
+    const speechSynthesis = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
+    const SpeechSynthesisUtteranceConstructor = typeof window !== 'undefined' ? window.SpeechSynthesisUtterance : undefined;
+    if (!voiceAvailable || !text.trim() || !speechSynthesis || !SpeechSynthesisUtteranceConstructor) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      try {
+        speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtteranceConstructor(text);
+        utterance.lang = speechLang(selectedLanguage);
+        utterance.rate = 0.92;
+        utterance.pitch = 0.95;
+        let settled = false;
+        const finish = (value: boolean) => {
+          if (settled) return;
+          settled = true;
+          resolve(value);
+        };
+        const timeout = window.setTimeout(() => finish(true), 1800);
+        utterance.onstart = () => {
+          window.clearTimeout(timeout);
+          finish(true);
+        };
+        utterance.onerror = (event) => {
+          window.clearTimeout(timeout);
+          logCEOFailure('browser_playback', event.error || 'speech synthesis error', startedAt);
+          finish(false);
+        };
+        speechSynthesis.speak(utterance);
+      } catch (nextError) {
+        logCEOFailure('browser_playback', nextError, startedAt);
+        resolve(false);
+      }
+    });
   }, [language, voiceAvailable]);
 
   const loadHistory = useCallback(async () => {
@@ -90,40 +138,62 @@ export function AICEOVoiceBriefing() {
   }, [ready, token]);
 
   async function listenReport() {
+    const startedAt = performance.now();
+    let reportCreated = false;
     setOpen(true);
     setBusy('briefing');
+    setStage(t('aiCeo.stageAnalyzing'));
     setError('');
+    setVoiceFallback(false);
     try {
       const authToken = await token();
-      void loadHistory();
-      const data = await clientApi<AICEOBriefing>('/api/ai-ceo/briefings', authToken, {
+      if (!authToken) throw new Error('Authentication is required to generate an AI CEO report.');
+      setStage(t('aiCeo.stageBuilding'));
+      const selectedLanguage = languages.includes(aiLanguage as typeof languages[number]) ? aiLanguage : language;
+      const data = await clientApi<AICEOBriefing>(briefingApiPath, authToken, {
         method: 'POST',
-        body: JSON.stringify({ length, language: languages.includes(aiLanguage as typeof languages[number]) ? aiLanguage : language })
+        body: JSON.stringify({ length, language: selectedLanguage })
       });
+      reportCreated = true;
       setBriefing(data);
       setHistory((items) => [data, ...items.filter((item) => item.id !== data.id)].slice(0, 30));
-      speak(data.transcript, data.language);
+      setStage(t('aiCeo.stageVoice'));
+      const playbackStarted = await speak(data.transcript, data.language);
+      if (!playbackStarted) {
+        setVoiceFallback(true);
+        setStage(t('aiCeo.stageReady'));
+      } else {
+        setStage(t('aiCeo.stagePlayback'));
+        window.setTimeout(() => setStage(t('aiCeo.stageReady')), 500);
+      }
+      void loadHistory();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'AI CEO report could not be generated.');
+      logCEOFailure('briefing_request', nextError, startedAt, briefingApiPath);
+      setError(sanitizeUserError(nextError, 'Executive report could not be generated. Please check your connection and try again.'));
     } finally {
       setBusy('');
+      if (!reportCreated) window.setTimeout(() => setStage(''), 1600);
     }
   }
 
   async function askQuestion() {
     if (!question.trim()) return;
+    const startedAt = performance.now();
     setBusy('question');
     setError('');
     try {
       const authToken = await token();
-      const data = await clientApi<AICEOAnswer>('/api/ai-ceo/question', authToken, {
+      if (!authToken) throw new Error('Authentication is required to ask the AI CEO.');
+      const data = await clientApi<AICEOAnswer>(questionApiPath, authToken, {
         method: 'POST',
         body: JSON.stringify({ question, language: languages.includes(aiLanguage as typeof languages[number]) ? aiLanguage : language })
       });
       setAnswer(data.answer);
-      speak(data.answer, language);
+      const playbackStarted = await speak(data.answer, language);
+      if (!playbackStarted) setVoiceFallback(true);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'AI CEO could not answer.');
+      logCEOFailure('question_request', nextError, startedAt, questionApiPath);
+      setError(sanitizeUserError(nextError, 'AI CEO could not answer right now. Please try again.'));
     } finally {
       setBusy('');
     }
@@ -182,11 +252,12 @@ export function AICEOVoiceBriefing() {
 
         <div className="mt-3 flex flex-wrap gap-2">
           <button type="button" onClick={listenReport} disabled={busy === 'briefing'} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white"><Volume2 size={16} /> {t('aiCeo.generate')}</button>
-          {briefing && <button type="button" onClick={() => speak(briefing.transcript, briefing.language)} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold"><Play size={16} /> {t('aiCeo.replay')}</button>}
+          {briefing && <button type="button" onClick={async () => { setVoiceFallback(false); const ok = await speak(briefing.transcript, briefing.language); if (!ok) setVoiceFallback(true); }} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold"><Play size={16} /> {t('aiCeo.replay')}</button>}
         </div>
 
+        {stage && <p className="mt-3 rounded-md bg-teal-50 p-3 text-sm font-semibold text-brand">{stage}</p>}
         {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
-        {!voiceAvailable && <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-800">{t('aiCeo.voiceUnavailable')}</p>}
+        {(!voiceAvailable || voiceFallback) && <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-800">{t('aiCeo.voiceUnavailable')}</p>}
 
         <article className="mt-4 rounded-md bg-slate-50 p-3 text-sm leading-6 text-slate-700">
           {briefing ? briefing.transcript : t('aiCeo.intro')}

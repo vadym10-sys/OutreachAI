@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
+import time
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
@@ -146,6 +148,7 @@ from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceReq
 from app.services.website import WebsiteFetchError, collect_website
 
 router = APIRouter()
+logger = logging.getLogger("outreachai.api.routes")
 
 
 LEGACY_STATUS_MAP = {
@@ -2169,24 +2172,41 @@ def _ai_ceo_transcript(summary: dict[str, Any]) -> str:
 
 @router.post("/ai-ceo/briefings", response_model=AICEOBriefingOut)
 def create_ai_ceo_briefing(payload: AICEOBriefingRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AICEOBriefingOut:
-    workspace = _current_workspace(db, user_id)
-    language = payload.language or workspace.language or "English"
-    summary = _ai_ceo_summary(db, user_id, workspace, payload.length, language)
-    transcript = _ai_ceo_transcript(summary)
-    briefing = AICEOBriefing(
-        workspace_id=workspace.id,
-        user_id=user_id,
-        length=payload.length,
-        language=language,
-        title=f"AI CEO {payload.length} report",
-        transcript=transcript,
-        summary_json=summary,
-    )
-    db.add(briefing)
-    log_event(db, request, user_id, "ai_ceo.briefing_created", {"length": payload.length, "language": language, "report_only": True})
-    db.commit()
-    db.refresh(briefing)
-    return AICEOBriefingOut.model_validate(briefing)
+    started = time.perf_counter()
+    step = "workspace"
+    try:
+        workspace = _current_workspace(db, user_id)
+        language = payload.language or workspace.language or "English"
+        logger.info("AI CEO briefing step=%s user=%s workspace=%s length=%s language=%s", step, user_id, workspace.id, payload.length, language)
+        step = "summary"
+        summary = _ai_ceo_summary(db, user_id, workspace, payload.length, language)
+        logger.info("AI CEO briefing step=%s duration_ms=%s", step, round((time.perf_counter() - started) * 1000))
+        step = "transcript"
+        transcript = _ai_ceo_transcript(summary)
+        if not transcript.strip():
+            raise ValueError("AI CEO transcript is empty")
+        logger.info("AI CEO briefing step=%s transcript_chars=%s", step, len(transcript))
+        step = "db_save"
+        briefing = AICEOBriefing(
+            workspace_id=workspace.id,
+            user_id=user_id,
+            length=payload.length,
+            language=language,
+            title=f"AI CEO {payload.length} report",
+            transcript=transcript,
+            summary_json=summary,
+        )
+        db.add(briefing)
+        log_event(db, request, user_id, "ai_ceo.briefing_created", {"length": payload.length, "language": language, "report_only": True})
+        db.commit()
+        db.refresh(briefing)
+        step = "response"
+        response = AICEOBriefingOut.model_validate(briefing)
+        logger.info("AI CEO briefing step=%s id=%s duration_ms=%s", step, briefing.id, round((time.perf_counter() - started) * 1000))
+        return response
+    except Exception:
+        logger.exception("AI CEO briefing failed step=%s user=%s duration_ms=%s", step, user_id, round((time.perf_counter() - started) * 1000))
+        raise
 
 
 @router.get("/ai-ceo/briefings", response_model=list[AICEOBriefingOut])
@@ -2197,23 +2217,33 @@ def list_ai_ceo_briefings(user_id: CurrentUser, db: Session = Depends(get_db)) -
 
 @router.post("/ai-ceo/question", response_model=AICEOAnswerOut)
 def answer_ai_ceo_question(payload: AICEOQuestionIn, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AICEOAnswerOut:
-    workspace = _current_workspace(db, user_id)
-    summary = _ai_ceo_summary(db, user_id, workspace, "30 sec", payload.language)
-    question = payload.question.lower()
-    health = summary["business_health"]
-    if "why" in question or "choose" in question:
-        answer = f"Sales AI prioritizes companies with stronger ICP fit, available websites or contacts, and clearer buying signals. The top current opportunity is {summary['top_opportunities'][0]}."
-    elif "reply" in question:
-        answer = f"Current reply rate is {health['reply_rate']}%. The next best move is: {summary['top_priorities'][0]}"
-    elif "revenue" in question:
-        answer = f"Revenue is €{health['revenue']:,.0f}, estimated pipeline is €{health['pipeline']:,.0f}, MRR is €{health['mrr']:,.0f}, and ARR is €{health['arr']:,.0f}."
-    elif "next" in question or "should" in question:
-        answer = f"Do this next: {summary['recommended_action']}. Confidence is {summary['confidence']}%."
-    else:
-        answer = f"I reviewed the business state. The top priority is {summary['top_priorities'][0]}. The top risk is {summary['top_risks'][0]}."
-    log_event(db, request, user_id, "ai_ceo.question_answered", {"question": payload.question[:120], "report_only": True})
-    db.commit()
-    return AICEOAnswerOut(answer=answer, related_metrics=health)
+    started = time.perf_counter()
+    step = "workspace"
+    try:
+        workspace = _current_workspace(db, user_id)
+        step = "summary"
+        summary = _ai_ceo_summary(db, user_id, workspace, "30 sec", payload.language)
+        question = payload.question.lower()
+        health = summary["business_health"]
+        step = "answer"
+        if "why" in question or "choose" in question:
+            answer = f"Sales AI prioritizes companies with stronger ICP fit, available websites or contacts, and clearer buying signals. The top current opportunity is {summary['top_opportunities'][0]}."
+        elif "reply" in question:
+            answer = f"Current reply rate is {health['reply_rate']}%. The next best move is: {summary['top_priorities'][0]}"
+        elif "revenue" in question:
+            answer = f"Revenue is €{health['revenue']:,.0f}, estimated pipeline is €{health['pipeline']:,.0f}, MRR is €{health['mrr']:,.0f}, and ARR is €{health['arr']:,.0f}."
+        elif "next" in question or "should" in question:
+            answer = f"Do this next: {summary['recommended_action']}. Confidence is {summary['confidence']}%."
+        else:
+            answer = f"I reviewed the business state. The top priority is {summary['top_priorities'][0]}. The top risk is {summary['top_risks'][0]}."
+        step = "db_save"
+        log_event(db, request, user_id, "ai_ceo.question_answered", {"question": payload.question[:120], "report_only": True})
+        db.commit()
+        logger.info("AI CEO question step=response user=%s duration_ms=%s", user_id, round((time.perf_counter() - started) * 1000))
+        return AICEOAnswerOut(answer=answer, related_metrics=health)
+    except Exception:
+        logger.exception("AI CEO question failed step=%s user=%s duration_ms=%s", step, user_id, round((time.perf_counter() - started) * 1000))
+        raise
 
 
 @router.post("/growth-engine/goal", response_model=GrowthGoalOut)

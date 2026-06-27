@@ -914,18 +914,23 @@ def test_ai_employee_task_results_persist_csv_and_block_external_send(monkeypatc
 
 
 def test_ai_ceo_voice_briefing_persists_history_and_stays_read_only() -> None:
-    briefing = client.post("/api/ai-ceo/briefings", headers=AUTH, json={"length": "30 sec", "language": "English"})
-    assert briefing.status_code == 200
-    data = briefing.json()
-    assert data["transcript"]
-    assert data["title"].startswith("AI CEO")
-    assert data["summary_json"]["safety"] == "report_only"
-    assert len(data["summary_json"]["top_priorities"]) == 3
-    assert "will not launch campaigns" in data["transcript"]
+    for length in ["30 sec", "1 min", "3 min", "10 min"]:
+        for language in ["English", "Russian", "Spanish", "French", "Italian", "Polish"]:
+            briefing = client.post("/api/ai-ceo/briefings", headers=AUTH, json={"length": length, "language": language})
+            assert briefing.status_code == 200
+            data = briefing.json()
+            assert data["transcript"]
+            assert data["length"] == length
+            assert data["language"] == language
+            assert data["title"].startswith("AI CEO")
+            assert data["summary_json"]["safety"] == "report_only"
+            assert len(data["summary_json"]["top_priorities"]) == 3
+            if language == "English":
+                assert "will not launch campaigns" in data["transcript"]
 
     history = client.get("/api/ai-ceo/briefings", headers=AUTH)
     assert history.status_code == 200
-    assert any(item["id"] == data["id"] for item in history.json())
+    assert len(history.json()) >= 24
 
     answer = client.post("/api/ai-ceo/question", headers=AUTH, json={"question": "How much revenue did we create?", "language": "English"})
     assert answer.status_code == 200

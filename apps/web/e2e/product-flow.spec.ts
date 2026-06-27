@@ -200,3 +200,17 @@ for (const width of [320, 390, 480]) {
     expect(overflow).toBe(false);
   });
 }
+
+test("AI CEO voice report falls back professionally when playback is unavailable", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "speechSynthesis", { value: undefined, configurable: true });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { value: undefined, configurable: true });
+  });
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.goto("/dashboard");
+  await page.getByRole("button", { name: "Listen AI Report" }).click();
+  await expect(page.getByText("Executive voice briefing")).toBeVisible();
+  await expect(page.getByText("Good morning. This is your AI CEO report.")).toBeVisible();
+  await expect(page.getByText("Voice generation is temporarily unavailable. Your executive report is ready below.")).toBeVisible();
+  await expect(page.getByText("Load failed")).toHaveCount(0);
+});
