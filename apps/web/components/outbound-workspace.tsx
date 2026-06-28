@@ -121,7 +121,7 @@ function leadProfile(lead: Lead) {
     company: lead.company,
     website: leadWebsite(lead) || unavailable,
     industry: lead.industry || lead.niche || unavailable,
-    location: [lead.city, lead.country].filter(Boolean).join(", ") || unavailable,
+    location: lead.address || [lead.city, lead.country].filter(Boolean).join(", ") || unavailable,
     size: lead.employee_count ? `${lead.employee_count} employees` : lead.revenue_range || unavailable,
     decisionMaker: [lead.contact, lead.title].filter(Boolean).join(", ") || unavailable,
     verifiedEmail: lead.email ? `${lead.email}${lead.hunter_verified ? " · verified by Hunter" : ""}` : lead.hunter_status === "no_verified_email" ? "No verified email found by Hunter." : unavailable,
@@ -132,7 +132,7 @@ function leadProfile(lead: Lead) {
     opportunityAnalysis: lead.sales_angle || lead.outreach_strategy || text(metadata.sales_angle || metadata.outreach_strategy),
     offer: lead.suggested_offer || text(metadata.suggested_offer),
     expectedReplyRate: lead.expected_reply_rate || text(metadata.expected_reply_rate),
-    source: lead.source || unavailable
+    source: lead.source || text(metadata.source)
   };
 }
 
@@ -434,6 +434,8 @@ export function DashboardHome() {
 
 export function LeadFinderPage() {
   const { api, leads, setLeads, loading, error } = useSalesData();
+  const [searchResults, setSearchResults] = useState<Lead[]>([]);
+  const [hasSearched, setHasSearched] = useState(false);
   const [message, setMessage] = useState("");
   const [searching, setSearching] = useState(false);
   const visibleMessage = message === "Connecting to Google Maps..." && leads.length
@@ -443,6 +445,8 @@ export function LeadFinderPage() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setSearching(true);
+    setHasSearched(true);
+    setSearchResults([]);
     setMessage("Connecting to Google Maps...");
     try {
       const found = await api<Lead[]>("/api/leads/find", {
@@ -461,8 +465,10 @@ export function LeadFinderPage() {
         })
       });
       setLeads(found);
+      setSearchResults(found);
       setMessage(found.length ? `${found.length} real companies saved from Google Maps.` : "No companies found. Broaden filters or add a company manually.");
     } catch (err) {
+      setSearchResults([]);
       setMessage(friendlyErrorMessage(err, "Google Maps lead search could not be completed."));
     } finally {
       setSearching(false);
@@ -478,7 +484,10 @@ export function LeadFinderPage() {
         <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} Find leads</PrimaryButton>
         {visibleMessage && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{visibleMessage}</p>}
       </form>
-      {loading ? <EmptyState title="Loading leads" copy="Reading saved companies from PostgreSQL." /> : error ? <EmptyState title="Lead data unavailable" copy={error} /> : leads.length ? <div className="grid gap-5">{leads.map((lead) => <OpportunityCard key={lead.id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => setLeads((items) => items.map((item) => item.id === updated.id ? updated : item))} />)}</div> : <EmptyState title="No real leads yet" copy="Run a provider search or add a company through the existing backend. No demo companies are shown." />}
+      {loading && !hasSearched ? <EmptyState title="Loading leads" copy="Reading saved companies from PostgreSQL." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
+        setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
+        setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
+      }} />)}</div> : <EmptyState title={hasSearched ? "No matching companies found" : "No real leads yet"} copy={hasSearched ? "Google Maps did not return saved companies for those filters. Broaden the city, category, or radius and search again." : "Run a Google Maps search or add a company through the existing backend. No demo companies are shown."} />}
     </div>
   );
 }
