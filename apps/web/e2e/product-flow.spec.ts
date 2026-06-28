@@ -246,7 +246,7 @@ for (const width of [320, 390, 480]) {
     await page.getByLabel("Open navigation").click();
     await page.getByRole("link", { name: /Settings/ }).click();
     await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
-    await expect(page.getByText("Apollo powers production lead discovery.")).toBeVisible();
+    await expect(page.getByText("Apollo finds companies for your lead searches.")).toBeVisible();
     await expect(page.getByText("Hunter email verification").first()).toBeVisible();
     await expect(page.getByText("Connected").first()).toBeVisible();
     await page.getByRole("button", { name: "Save workspace" }).first().click();

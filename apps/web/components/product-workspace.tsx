@@ -1196,14 +1196,14 @@ export function SettingsAndProfile() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-ink">Integrations</h2>
-                <p className="mt-1 text-sm text-slate-600">Apollo powers production lead discovery. The API key stays on the backend.</p>
+                <p className="mt-1 text-sm text-slate-600">Apollo finds companies for your lead searches.</p>
               </div>
               <span className={`rounded-full px-3 py-1 text-xs font-bold ${apolloStatus?.connected ? 'bg-teal-50 text-brand' : 'bg-slate-100 text-slate-600'}`}>{apolloStatus?.connected ? 'Connected' : 'Not connected'}</span>
             </div>
             <dl className="mt-4 grid gap-2 text-sm">
-              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Backend key loaded</dt><dd>{apolloStatus?.configured ? 'true' : 'false'}</dd></div>
-              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Last successful request</dt><dd>{apolloStatus?.last_success_at ? new Date(apolloStatus.last_success_at).toLocaleString() : 'Not yet'}</dd></div>
-              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Last error</dt><dd>{apolloStatus?.last_error || 'None'}</dd></div>
+              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Ready for lead search</dt><dd>{apolloStatus?.connected ? 'Yes' : 'Needs attention'}</dd></div>
+              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Last checked</dt><dd>{apolloStatus?.last_success_at ? new Date(apolloStatus.last_success_at).toLocaleString() : 'Not yet'}</dd></div>
+              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">What to do next</dt><dd>{apolloStatus?.connected ? 'Find companies in Lead Finder.' : 'Ask the owner to reconnect Apollo.'}</dd></div>
             </dl>
             <button type="button" onClick={testApollo} disabled={testingApollo} className="focus-ring mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">{testingApollo && <Loader2 className="animate-spin" size={16} />} Test connection</button>
           </section>
@@ -1211,14 +1211,14 @@ export function SettingsAndProfile() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-ink">Hunter email verification</h2>
-                <p className="mt-1 text-sm text-slate-600">Hunter enriches Apollo companies with verified decision-maker emails. The API key stays on the backend.</p>
+                <p className="mt-1 text-sm text-slate-600">Hunter verifies decision-maker emails before you review outreach.</p>
               </div>
               <span className={`rounded-full px-3 py-1 text-xs font-bold ${hunterStatus?.connected ? 'bg-teal-50 text-brand' : 'bg-slate-100 text-slate-600'}`}>{hunterStatus?.connected ? 'Connected' : 'Not connected'}</span>
             </div>
             <dl className="mt-4 grid gap-2 text-sm">
-              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Backend key loaded</dt><dd>{hunterStatus?.configured ? 'true' : 'false'}</dd></div>
-              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Last successful request</dt><dd>{hunterStatus?.last_success_at ? new Date(hunterStatus.last_success_at).toLocaleString() : 'Not yet'}</dd></div>
-              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Last error</dt><dd>{hunterStatus?.last_error || 'None'}</dd></div>
+              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Ready for email verification</dt><dd>{hunterStatus?.connected ? 'Yes' : 'Needs attention'}</dd></div>
+              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Last checked</dt><dd>{hunterStatus?.last_success_at ? new Date(hunterStatus.last_success_at).toLocaleString() : 'Not yet'}</dd></div>
+              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">What to do next</dt><dd>{hunterStatus?.connected ? 'Find companies and review verified emails.' : 'Ask the owner to reconnect Hunter.'}</dd></div>
             </dl>
             <button type="button" onClick={testHunter} disabled={testingHunter} className="focus-ring mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">{testingHunter && <Loader2 className="animate-spin" size={16} />} Test Hunter connection</button>
           </section>
@@ -1276,14 +1276,14 @@ export function SettingsAndProfile() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="font-bold">Integrations</h2>
-              <p className="mt-1 text-sm text-slate-600">Apollo status is checked through the backend only.</p>
+              <p className="mt-1 text-sm text-slate-600">Apollo finds companies for your lead searches.</p>
             </div>
             <span className={`rounded-full px-3 py-1 text-xs font-bold ${apolloStatus?.connected ? 'bg-teal-50 text-brand' : 'bg-slate-100 text-slate-600'}`}>{apolloStatus?.connected ? 'Connected' : 'Not connected'}</span>
           </div>
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
-            <p className="rounded-md bg-slate-50 p-3">Backend key: <span className="font-semibold">{apolloStatus?.configured ? 'true' : 'false'}</span></p>
-            <p className="rounded-md bg-slate-50 p-3">Last success: <span className="font-semibold">{apolloStatus?.last_success_at ? new Date(apolloStatus.last_success_at).toLocaleString() : 'Not yet'}</span></p>
-            <p className="rounded-md bg-slate-50 p-3">Last error: <span className="font-semibold">{apolloStatus?.last_error || 'None'}</span></p>
+            <p className="rounded-md bg-slate-50 p-3">Ready: <span className="font-semibold">{apolloStatus?.connected ? 'Yes' : 'Needs attention'}</span></p>
+            <p className="rounded-md bg-slate-50 p-3">Last checked: <span className="font-semibold">{apolloStatus?.last_success_at ? new Date(apolloStatus.last_success_at).toLocaleString() : 'Not yet'}</span></p>
+            <p className="rounded-md bg-slate-50 p-3">Next step: <span className="font-semibold">{apolloStatus?.connected ? 'Find leads' : 'Reconnect Apollo'}</span></p>
           </div>
           <button type="button" onClick={testApollo} disabled={testingApollo} className="focus-ring mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold disabled:opacity-60">{testingApollo && <Loader2 className="animate-spin" size={16} />} Test Apollo connection</button>
         </section>
@@ -1291,21 +1291,21 @@ export function SettingsAndProfile() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="font-bold">Hunter email verification</h2>
-              <p className="mt-1 text-sm text-slate-600">Hunter status is checked through the backend only and enriches Apollo leads with verified emails.</p>
+              <p className="mt-1 text-sm text-slate-600">Hunter verifies emails before you review outreach.</p>
             </div>
             <span className={`rounded-full px-3 py-1 text-xs font-bold ${hunterStatus?.connected ? 'bg-teal-50 text-brand' : 'bg-slate-100 text-slate-600'}`}>{hunterStatus?.connected ? 'Connected' : 'Not connected'}</span>
           </div>
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
-            <p className="rounded-md bg-slate-50 p-3">Backend key: <span className="font-semibold">{hunterStatus?.configured ? 'true' : 'false'}</span></p>
-            <p className="rounded-md bg-slate-50 p-3">Last success: <span className="font-semibold">{hunterStatus?.last_success_at ? new Date(hunterStatus.last_success_at).toLocaleString() : 'Not yet'}</span></p>
-            <p className="rounded-md bg-slate-50 p-3">Last error: <span className="font-semibold">{hunterStatus?.last_error || 'None'}</span></p>
+            <p className="rounded-md bg-slate-50 p-3">Ready: <span className="font-semibold">{hunterStatus?.connected ? 'Yes' : 'Needs attention'}</span></p>
+            <p className="rounded-md bg-slate-50 p-3">Last checked: <span className="font-semibold">{hunterStatus?.last_success_at ? new Date(hunterStatus.last_success_at).toLocaleString() : 'Not yet'}</span></p>
+            <p className="rounded-md bg-slate-50 p-3">Next step: <span className="font-semibold">{hunterStatus?.connected ? 'Review verified emails' : 'Reconnect Hunter'}</span></p>
           </div>
           <button type="button" onClick={testHunter} disabled={testingHunter} className="focus-ring mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold disabled:opacity-60">{testingHunter && <Loader2 className="animate-spin" size={16} />} Test Hunter connection</button>
         </section>
         <section className="rounded-lg border border-slate-200 bg-white p-5">
           <h2 className="font-bold">Workspace preferences</h2>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {['General', 'AI', 'Email', 'Notifications', 'Billing', 'API', 'Security'].map((item) => <div key={item} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item}</p><p className="mt-1 text-slate-500">Configured for this workspace.</p></div>)}
+            {['Company profile', 'AI writing', 'Email review', 'Notifications', 'Billing', 'Security'].map((item) => <div key={item} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item}</p><p className="mt-1 text-slate-500">Ready for this workspace.</p></div>)}
           </div>
         </section>
         {showAdvancedSettings && <section className="rounded-lg border border-slate-200 bg-white p-5">

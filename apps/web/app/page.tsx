@@ -9,7 +9,7 @@ const features = [
   { title: "Personalization Engine", copy: "Generate cold emails, follow-ups, and A/B variants using company context.", Icon: Mail },
   { title: "Campaign Manager", copy: "Prepare, approve, schedule, and monitor outbound sequences with clear safety controls.", Icon: TrendingUp },
   { title: "CRM", copy: "Track every lead from New to Closed with notes, filters, and search.", Icon: Users },
-  { title: "Security", copy: "Rate limiting, audit logs, JWT auth, encrypted secrets, and production guardrails.", Icon: ShieldCheck }
+  { title: "Trust and control", copy: "Your team approves every external action, with safe access controls and protected customer data.", Icon: ShieldCheck }
 ];
 
 const pricing = [
@@ -32,11 +32,11 @@ const pricing = [
     price: "€499",
     desc: "Best for agencies, SaaS companies and larger teams.",
     cta: "Start Agency Trial",
-    items: ["Everything in Pro", "10 AI Sales Employees", "50,000 leads/month", "100,000 AI emails/month", "Approval-gated automation", "AI Lead Qualification", "AI Reply Automation", "AI Meeting Booking", "AI Sales Forecasting", "Unlimited Campaigns", "Unlimited Workspaces", "Team Members", "API Access", "Webhooks", "Priority Support", "14-day free trial"]
+    items: ["Everything in Pro", "10 AI Sales Employees", "50,000 leads/month", "100,000 AI emails/month", "Approval-gated automation", "AI Lead Qualification", "AI Reply Automation", "AI Meeting Booking", "AI Sales Forecasting", "Unlimited Campaigns", "Unlimited Workspaces", "Team Members", "Agency-ready controls", "Priority Support", "14-day free trial"]
   }
 ] as const;
 
-const everyPlanIncludes = ["Secure Stripe Billing", "Cancel Anytime", "Automatic Monthly Billing", "SSL Security", "GDPR-ready", "Email Tracking", "Open Tracking", "Reply Tracking", "Production Infrastructure", "Continuous Updates", "Automatic Backups", "AI Improvements"];
+const everyPlanIncludes = ["Secure billing", "Cancel anytime", "Automatic monthly billing", "Protected data", "GDPR-ready", "Email tracking", "Open tracking", "Reply tracking", "Reliable production hosting", "Continuous updates", "Automatic backups", "AI improvements"];
 
 export default function Home() {
   const schema = {
