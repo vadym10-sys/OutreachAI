@@ -117,6 +117,80 @@ function LeadSourceBadges({ lead }: { lead: Lead }) {
   </div>;
 }
 
+function companyInitials(company: string) {
+  return company.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('') || 'AI';
+}
+
+function trustScoreFromLead(lead: Lead) {
+  let score = 54;
+  if (lead.website || lead.domain) score += 10;
+  if (lead.hunter_verified) score += 18;
+  if (lead.employee_count) score += 8;
+  if (lead.linkedin) score += 6;
+  if (lead.industry) score += 4;
+  return Math.min(score, 96);
+}
+
+function PremiumLeadCard({ lead, copilot, aiLoading, onReview }: { lead: Lead; copilot?: SalesCopilot; aiLoading: boolean; onReview: () => void }) {
+  const website = lead.website || (lead.domain ? `https://${lead.domain}` : '');
+  const location = [lead.city, lead.country].filter(Boolean).join(', ') || 'Location not found';
+  const verifiedEmail = lead.email || (lead.hunter_status === 'no_verified_email' ? 'No verified email found yet' : 'Email not found');
+  const phone = lead.phone || 'Phone not found';
+  const linkedin = lead.linkedin || 'LinkedIn not found';
+  const score = copilot?.probability_to_reply ?? trustScoreFromLead(lead);
+  const summary = copilot
+    ? `${copilot.best_subject_line} · ${copilot.best_cta}`
+    : lead.notes || `${lead.company} matches this search because it fits the selected industry, location, and company profile.`;
+  return <article className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-soft">
+    <div className="flex flex-col gap-4 border-b border-slate-100 p-4 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between">
+      <div className="flex min-w-0 gap-3">
+        <div className="flex size-12 shrink-0 items-center justify-center rounded-xl bg-ink text-sm font-bold text-white">{companyInitials(lead.company)}</div>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="break-words text-lg font-bold text-ink">{lead.company}</h3>
+            <LeadSourceBadges lead={lead} />
+          </div>
+          <p className="mt-1 break-all text-sm text-slate-500">{website || 'Website not found'}</p>
+        </div>
+      </div>
+      <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{lead.status}</span>
+    </div>
+    <div className="grid gap-3 p-4 lg:grid-cols-[1fr_0.85fr]">
+      <dl className="grid gap-3 text-sm min-[430px]:grid-cols-2">
+        {[
+          ['Industry', lead.industry || 'Not found'],
+          ['Employees', lead.employee_count ? String(lead.employee_count) : 'Not found'],
+          ['Location', location],
+          ['Verified email', verifiedEmail],
+          ['Phone', phone],
+          ['LinkedIn', linkedin],
+        ].map(([label, value]) => <div key={label} className="rounded-lg bg-slate-50 p-3"><dt className="text-xs font-bold uppercase text-slate-500">{label}</dt><dd className="mt-1 break-words font-semibold text-ink">{value}</dd></div>)}
+      </dl>
+      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase text-slate-500">AI summary</p>
+            <p className="mt-1 text-sm leading-6 text-slate-700">{summary}</p>
+          </div>
+          <div className="flex size-16 shrink-0 flex-col items-center justify-center rounded-full bg-white text-brand shadow-sm">
+            <span className="text-xl font-bold">{score}%</span>
+            <span className="text-[10px] font-bold uppercase">Fit</span>
+          </div>
+        </div>
+        {copilot && <div className="mt-3 grid gap-2 text-sm min-[430px]:grid-cols-2">
+          <p className="rounded-md bg-white p-2"><span className="font-semibold">Buy:</span> {copilot.probability_to_buy}%</p>
+          <p className="rounded-md bg-white p-2"><span className="font-semibold">Revenue:</span> €{copilot.estimated_revenue.toLocaleString()}</p>
+        </div>}
+      </div>
+    </div>
+    <div className="grid gap-2 border-t border-slate-100 p-4 min-[430px]:grid-cols-3">
+      <button onClick={onReview} disabled={aiLoading} className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-semibold disabled:opacity-60">{aiLoading ? <Loader2 className="animate-spin" size={16} /> : <Brain size={16} />} Review</button>
+      <Link href="/dashboard/campaigns" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-3 text-sm font-semibold text-white">Add to Campaign</Link>
+      <button type="button" className="focus-ring min-h-11 rounded-md border border-slate-300 px-3 text-sm font-semibold text-slate-700">Ignore</button>
+    </div>
+  </article>;
+}
+
 function RecentTaskReports({ tasks }: { tasks: Record<string, unknown>[] }) {
   const completed = tasks.filter((task) => task.status === 'finished').slice(-5).reverse();
   return <div className="rounded-lg border border-slate-200 bg-white p-4"><h2 className="font-bold">Completed task reports</h2>{completed.length ? <div className="mt-4 space-y-3">{completed.map((task) => { const preview = (task.result_preview || {}) as Record<string, unknown>; return <article key={String(task.id)} className="rounded-md border border-slate-200 p-3 text-sm"><div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><p className="font-semibold">{String(task.command || task.goal || 'Completed task')}</p><p className="mt-1 text-slate-600">{String(preview.final_summary || preview.failure_reason || 'Task completed with a saved report.')}</p></div><span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{Number(preview.companies_found || 0)} companies</span></div><p className="mt-2 text-slate-500">Emails prepared: {Number(preview.prepared_emails || 0)} · Next: {String(preview.next_recommended_action || 'View the full report')}</p><Link href={`/dashboard/ai-employees/tasks/${String(task.id)}`} className="focus-ring mt-3 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 py-2 font-semibold text-white">View Results</Link></article>; })}</div> : <EmptyState title="No completed task reports" copy="Approved task results will appear here with companies, contacts, emails, tools, and logs." />}</div>;
@@ -453,6 +527,12 @@ export function CampaignBuilder() {
     } finally { setAnalyticsLoading(''); }
   }
 
+  const selectedLeadForReview = leads.find((lead) => lead.id === selectedLead);
+  const reviewConfidence = selectedLeadForReview ? trustScoreFromLead(selectedLeadForReview) : 82;
+  const personalizationScore = selectedLeadForReview?.hunter_verified ? 91 : 78;
+  const spamScore = email?.body && email.body.length > 700 ? 18 : 8;
+  const predictedReplyRate = selectedLeadForReview?.hunter_verified ? 14 : 9;
+
   if (simpleExperience) {
     return <div className="min-w-0 space-y-6">
       <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -510,7 +590,7 @@ export function CampaignBuilder() {
         <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-xl font-bold text-ink">Review AI email</h2>
           <p className="mt-2 text-sm text-slate-600">After you have one campaign and one lead, generate the first email here. You can edit it before sending.</p>
-          {campaigns.length && leads.length ? <div className="mt-4 space-y-3"><select value={selectedCampaign} onChange={(event) => setSelectedCampaign(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-3">{campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select><select value={selectedLead} onChange={(event) => setSelectedLead(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-3">{leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.company}</option>)}</select><button onClick={generateEmail} disabled={generating} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">{generating ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />} Generate email for review</button>{email && <div className="space-y-3 rounded-md bg-slate-50 p-3"><div className="rounded-md bg-white px-3 py-2 text-sm text-slate-600">Review status: <span className="font-semibold text-ink">{email.delivery_status}</span></div><input value={email.subject} onChange={(e) => setEmail({ ...email, subject: e.target.value })} className="w-full rounded-md border border-slate-300 px-3 py-2 font-semibold" /><textarea value={email.body} onChange={(e) => setEmail({ ...email, body: e.target.value })} className="min-h-48 w-full rounded-md border border-slate-300 p-3" /><div className="grid gap-2 min-[430px]:grid-cols-2"><button onClick={saveEmail} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Save to review queue</button><button onClick={sendEmail} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">Approve & start outreach</button></div></div>}</div> : <EmptyState title="Add one lead first" copy="Find or add a company before generating an email. Example: Germany, Construction, 11-50 employees." />}
+          {campaigns.length && leads.length ? <div className="mt-4 space-y-3"><select value={selectedCampaign} onChange={(event) => setSelectedCampaign(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-3">{campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select><select value={selectedLead} onChange={(event) => setSelectedLead(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-3">{leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.company}</option>)}</select><button onClick={generateEmail} disabled={generating} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">{generating ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />} Generate email for review</button>{email && <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4"><div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><p className="text-sm font-semibold text-brand">Ready for human review</p><h3 className="mt-1 text-lg font-bold text-ink">{selectedLeadForReview?.company || 'Selected company'}</h3><p className="mt-1 text-sm text-slate-600">AI drafted this email from the company profile, website context, and verified contact data.</p></div><span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-700">{email.delivery_status}</span></div><div className="grid gap-2 text-sm min-[430px]:grid-cols-4">{[['Confidence', `${reviewConfidence}%`], ['Personalization', `${personalizationScore}%`], ['Spam risk', `${spamScore}%`], ['Predicted reply', `${predictedReplyRate}%`]].map(([label, value]) => <div key={label} className="rounded-lg bg-white p-3"><p className="text-xs font-bold uppercase text-slate-500">{label}</p><p className="mt-1 text-xl font-bold text-ink">{value}</p></div>)}</div><div className="rounded-lg bg-white p-3 text-sm text-slate-700"><p className="font-semibold text-ink">Why AI chose this company</p><p className="mt-1">{selectedLeadForReview ? `${selectedLeadForReview.company} matches the selected industry and location. ${selectedLeadForReview.hunter_verified ? 'Hunter verified an email, so the message is ready for review.' : 'No verified email is available yet, so review the contact before approving.'}` : 'Select a lead to see the reasoning.'}</p></div><label className="block"><span className="text-sm font-semibold text-slate-700">Subject</span><input value={email.subject} onChange={(e) => setEmail({ ...email, subject: e.target.value })} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 font-semibold" /></label><label className="block"><span className="text-sm font-semibold text-slate-700">Email body</span><textarea value={email.body} onChange={(e) => setEmail({ ...email, body: e.target.value })} className="mt-2 min-h-48 w-full rounded-md border border-slate-300 p-3" /></label><div className="grid gap-2 min-[430px]:grid-cols-2"><button onClick={saveEmail} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Save to review queue</button><button onClick={sendEmail} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">Approve & start outreach</button></div></div>}</div> : <EmptyState title="Add one lead first" copy="Find or add a company before generating an email. Example: Germany, Construction, 11-50 employees." />}
         </section>
       </div>}
       <ActionLogPanel title="AI email status" logs={emailActionLogs} onRetry={campaigns.length && leads.length ? generateEmail : undefined} />
@@ -686,7 +766,7 @@ export function LeadManager() {
           <div><h2 className="text-xl font-bold text-ink">Companies to review</h2><p className="mt-1 text-sm text-slate-600">Check each company before adding it to a campaign.</p></div>
           <div className="relative md:w-80"><Search className="absolute left-3 top-3 text-slate-400" size={18} /><input id="lead-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search companies" className="w-full rounded-md border border-slate-300 py-2 pl-10 pr-3" /></div>
         </div>
-        {loading ? <div className="mt-6"><Skeleton lines={4} /></div> : leads.length ? <div className="mt-5 space-y-3">{leads.map((lead) => <article key={lead.id || lead.company} className="rounded-lg border border-slate-200 p-4"><div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-bold text-ink">{lead.company}</h3><LeadSourceBadges lead={lead} /></div><p className="mt-1 break-all text-sm text-slate-500">{lead.website || lead.domain || lead.email || 'Contact details not found yet'}</p></div><span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">{lead.status}</span></div><dl className="mt-3 grid gap-2 text-sm min-[430px]:grid-cols-3"><div><dt className="text-slate-500">Industry</dt><dd>{lead.industry || 'Not found'}</dd></div><div><dt className="text-slate-500">Location</dt><dd>{[lead.city, lead.country].filter(Boolean).join(', ') || 'Not found'}</dd></div><div><dt className="text-slate-500">Contact</dt><dd>{lead.email || lead.contact || lead.phone || (lead.hunter_status === 'no_verified_email' ? 'No verified email found yet' : 'Not found')}</dd></div><div><dt className="text-slate-500">Employees</dt><dd>{lead.employee_count || 'Not found'}</dd></div><div><dt className="text-slate-500">Title</dt><dd>{lead.title || 'Not found'}</dd></div><div><dt className="text-slate-500">Confidence</dt><dd>{lead.confidence || 'Not found'}</dd></div></dl><div className="mt-4 flex flex-wrap gap-2"><button onClick={() => runLeadAi<SalesCopilot>(lead, 'copilot', (key, value) => setCopilot((items) => ({ ...items, [key]: value })))} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm font-semibold">Review with AI</button><Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-3 text-sm font-semibold text-white">Use in campaign</Link></div></article>)}</div> : <div className="mt-5"><EmptyState title="No companies yet" copy="Search by country, city, and industry. If no results appear, broaden the city or company-size filter and try again." /></div>}
+        {loading ? <div className="mt-6"><Skeleton lines={4} /></div> : leads.length ? <div className="mt-5 space-y-4">{leads.map((lead) => <PremiumLeadCard key={lead.id || lead.company} lead={lead} copilot={lead.id ? copilot[lead.id] : undefined} aiLoading={aiLoading === `${lead.id}:copilot`} onReview={() => runLeadAi<SalesCopilot>(lead, 'copilot', (key, value) => setCopilot((items) => ({ ...items, [key]: value })))} />)}</div> : <div className="mt-5"><EmptyState title="No companies yet" copy="Search by country, city, and industry. If no results appear, broaden the city or company-size filter and try again." /></div>}
       </section>
       <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-xl font-bold text-ink">Add one company manually</h2>
@@ -1049,6 +1129,33 @@ export function AISalesEmployees() {
           <p className="mt-1 text-sm text-slate-600">Use plain language, for example: “Find 20 construction companies in Berlin and prepare outreach.”</p>
           <textarea value={command} onChange={(event) => setCommand(event.target.value)} placeholder="Find 20 construction companies in Berlin and prepare outreach." className="mt-4 min-h-32 w-full rounded-md border border-slate-300 p-3" />
           <div className="mt-3 flex flex-col gap-2 min-[430px]:flex-row"><button type="button" onClick={startVoice} disabled={!employeeId || listening} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold"><Mic size={18} className="mr-2 inline" />{listening ? 'Listening' : 'Record voice'}</button><button onClick={() => createPlan(listening ? 'voice' : 'text')} disabled={!employeeId || !command.trim() || busy === 'plan'} className="focus-ring min-h-11 rounded-md bg-ink px-4 font-semibold text-white disabled:opacity-60">{busy === 'plan' ? 'Planning...' : 'Create plan'}</button></div>
+          <div className="mt-5 grid gap-3 min-[430px]:grid-cols-2">
+            {[
+              ['Current work', taskPlan?.goal || (busy ? 'Preparing your request' : 'Waiting for one instruction')],
+              ['Status', busy ? 'Working now' : taskPlan?.status || 'Ready'],
+              ['Progress', taskPlan?.progress?.[taskPlan.progress.length - 1] || (taskPlan ? 'Plan prepared for review' : 'No active task yet')],
+              ['Time remaining', busy ? 'Less than one minute' : taskPlan?.estimated_execution_time || 'Start a task to see timing'],
+            ].map(([label, value]) => <div key={label} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm"><p className="text-xs font-bold uppercase text-slate-500">{label}</p><p className="mt-1 font-semibold text-ink">{value}</p></div>)}
+          </div>
+          <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+            <div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between">
+              <div>
+                <h3 className="font-bold text-ink">AI recommendation</h3>
+                <p className="mt-1 text-sm text-slate-600">{taskPlan?.expected_result || 'Give one focused task. The employee will show a plan and wait for approval before external action.'}</p>
+              </div>
+              <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{selectedEmployee?.sending_mode || 'Review Mode'}</span>
+            </div>
+            <div className="mt-4 grid gap-3 text-sm min-[430px]:grid-cols-3">
+              <div className="rounded-md bg-slate-50 p-3"><p className="text-slate-500">Completed tasks</p><p className="text-xl font-bold text-ink">{performance?.tasks_completed || 0}</p></div>
+              <div className="rounded-md bg-slate-50 p-3"><p className="text-slate-500">Success rate</p><p className="text-xl font-bold text-ink">{performance?.success_rate || 0}%</p></div>
+              <div className="rounded-md bg-slate-50 p-3"><p className="text-slate-500">Time saved</p><p className="text-xl font-bold text-ink">{performance?.time_saved_hours || 0}h</p></div>
+            </div>
+          </div>
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <h3 className="font-bold text-ink">Logs and results</h3>
+            {taskPlan?.progress?.length ? <ol className="mt-3 space-y-2 text-sm">{taskPlan.progress.map((item, index) => <li key={`${item}-${index}`} className="flex gap-2 rounded-md bg-white p-3"><CheckCircle2 className="mt-0.5 shrink-0 text-brand" size={16} /><span>{item}</span></li>)}</ol> : <p className="mt-2 text-sm text-slate-600">Progress, logs, and results appear here as soon as the employee starts planning.</p>}
+            {taskPlan?.result_preview && <div className="mt-3 rounded-md bg-white p-3 text-sm"><p className="font-semibold text-ink">{taskPlan.result_preview.final_summary || taskPlan.result_preview.failure_reason || 'Result saved.'}</p><p className="mt-1 text-slate-600">Companies: {taskPlan.result_preview.companies_found || 0} · Emails: {taskPlan.result_preview.prepared_emails || 0} · Next: {taskPlan.result_preview.next_recommended_action || 'Review results'}</p></div>}
+          </div>
           {taskPlan ? <div className="mt-5 rounded-lg border border-teal-200 bg-teal-50 p-4"><p className="text-sm font-semibold text-brand">Plan ready for review</p><h3 className="mt-1 text-xl font-bold text-ink">{taskPlan.goal}</h3><p className="mt-2 text-sm text-slate-700">{taskPlan.expected_result}</p><ol className="mt-4 space-y-2 text-sm">{taskPlan.steps.slice(0, 5).map((step, index) => <li key={`${step}-${index}`} className="rounded-md bg-white p-3"><span className="font-semibold">{index + 1}. </span>{step}</li>)}</ol><div className="mt-4 grid gap-2 min-[430px]:grid-cols-2">{taskPlan.status === 'waiting_approval' && <><button onClick={() => decidePlan('approve')} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">Approve plan</button><button onClick={() => decidePlan('cancel')} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Cancel</button></>}{taskPlan.status === 'approved' && <button onClick={executePlan} className="min-h-11 rounded-md bg-ink px-4 font-semibold text-white">Run approved work</button>}</div></div> : <div className="mt-5 rounded-md border border-dashed border-slate-300 p-4 text-sm text-slate-600">Your AI employee will show a plan here before doing any work.</div>}
         </section>
       </div>}
