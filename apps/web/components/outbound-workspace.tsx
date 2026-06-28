@@ -111,6 +111,22 @@ function text(value: unknown, fallback = unavailable) {
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
 function leadWebsite(lead: Lead) {
   return lead.website || (lead.domain ? `https://${lead.domain}` : "");
 }
@@ -447,21 +463,25 @@ export function LeadFinderPage() {
     setSearchResults([]);
     setMessage("Connecting to Google Maps...");
     try {
-      const found = await api<Lead[]>("/api/leads/find", {
-        method: "POST",
-        body: JSON.stringify({
-          country: String(data.get("country") || ""),
-          city: String(data.get("city") || ""),
-          industry: String(data.get("industry") || ""),
-          category: String(data.get("category") || data.get("industry") || ""),
-          keyword: String(data.get("keyword") || ""),
-          company_size: String(data.get("company_size") || ""),
-          keywords: splitList(String(data.get("keywords") || "")),
-          technologies: splitList(String(data.get("technology") || "")),
-          radius: Number(data.get("radius") || 10000),
-          limit: 10
-        })
-      });
+      const found = await withTimeout(
+        api<Lead[]>("/api/leads/find", {
+          method: "POST",
+          body: JSON.stringify({
+            country: String(data.get("country") || ""),
+            city: String(data.get("city") || ""),
+            industry: String(data.get("industry") || ""),
+            category: String(data.get("category") || data.get("industry") || ""),
+            keyword: String(data.get("keyword") || ""),
+            company_size: String(data.get("company_size") || ""),
+            keywords: splitList(String(data.get("keywords") || "")),
+            technologies: splitList(String(data.get("technology") || "")),
+            radius: Number(data.get("radius") || 10000),
+            limit: 10
+          })
+        }),
+        45000,
+        "Lead search timed out. Try a smaller radius or broader filters."
+      );
       setLeads(found);
       setSearchResults(found);
       setMessage(found.length ? `${found.length} real companies saved from Google Maps.` : "No companies found. Broaden filters or add a company manually.");
