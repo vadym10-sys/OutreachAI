@@ -1022,13 +1022,21 @@ export function AISalesEmployees() {
       <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-sm font-semibold text-brand">Step 4 of 4</p>
         <h1 className="mt-2 text-2xl font-bold min-[390px]:text-3xl">AI Employees</h1>
-        <p className="mt-2 max-w-2xl text-slate-600">Give one clear instruction. The AI prepares work and waits for your approval before anything external happens.</p>
-        <a href="#give-work" className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">Give work</a>
+        <p className="mt-2 max-w-2xl text-slate-600">Ask one AI sales employee to prepare reviewed sales work. It can find leads, draft outreach, and organize the next step, but you approve external actions.</p>
+        <a href="#give-work" className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">Start with one instruction</a>
       </header>
       {error && <Notice message={error} kind="error" />}
       {notice && <Notice message={notice} />}
       {loading ? <Skeleton lines={4} /> : <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
         <section className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {[
+              ['Why this page exists', 'It turns one sales goal into a reviewed plan instead of asking you to configure software.'],
+              ['What happens next', 'The employee prepares a plan, shows the expected result, and waits for approval.'],
+              ['Expected time', 'Most plans are ready in under one minute.'],
+              ['Success', 'You see saved results, review the next action, and approve only the work you trust.']
+            ].map(([label, copy]) => <article key={label} className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm"><h2 className="font-bold text-ink">{label}</h2><p className="mt-2 text-slate-600">{copy}</p></article>)}
+          </div>
           <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-xl font-bold text-ink">Your sales employee</h2>
             <p className="mt-1 text-sm text-slate-600">Start with one employee in Review Mode. You stay in control.</p>
@@ -1037,7 +1045,7 @@ export function AISalesEmployees() {
           <RecentTaskReports tasks={memory?.previous_tasks || []} />
         </section>
         <section id="give-work" className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-bold text-ink">What should your employee do?</h2>
+          <h2 className="text-xl font-bold text-ink">Give one instruction</h2>
           <p className="mt-1 text-sm text-slate-600">Use plain language, for example: “Find 20 construction companies in Berlin and prepare outreach.”</p>
           <textarea value={command} onChange={(event) => setCommand(event.target.value)} placeholder="Find 20 construction companies in Berlin and prepare outreach." className="mt-4 min-h-32 w-full rounded-md border border-slate-300 p-3" />
           <div className="mt-3 flex flex-col gap-2 min-[430px]:flex-row"><button type="button" onClick={startVoice} disabled={!employeeId || listening} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold"><Mic size={18} className="mr-2 inline" />{listening ? 'Listening' : 'Record voice'}</button><button onClick={() => createPlan(listening ? 'voice' : 'text')} disabled={!employeeId || !command.trim() || busy === 'plan'} className="focus-ring min-h-11 rounded-md bg-ink px-4 font-semibold text-white disabled:opacity-60">{busy === 'plan' ? 'Planning...' : 'Create plan'}</button></div>

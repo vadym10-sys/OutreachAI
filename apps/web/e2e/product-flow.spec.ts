@@ -254,7 +254,7 @@ for (const width of [320, 390, 480]) {
 
     await page.getByRole("link", { name: /AI Employees/ }).click();
     await expect(page.getByRole("heading", { name: "AI Employees" })).toBeVisible();
-    await expect(page.getByText("What should your employee do?")).toBeVisible();
+    await expect(page.getByText("Give one instruction")).toBeVisible();
     await page.getByPlaceholder("Find 20 construction companies in Berlin and prepare outreach.").fill("Find clients and create posts");
     await expect(page.getByRole("button", { name: "Create plan" })).toBeVisible();
 
