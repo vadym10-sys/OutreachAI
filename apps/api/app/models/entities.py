@@ -225,6 +225,96 @@ class Lead(Base):
     sales_employee: Mapped[Optional[AISalesEmployee]] = relationship()
 
 
+class Company(Base):
+    __tablename__ = "companies"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    name: Mapped[str] = mapped_column(String(220), index=True)
+    website: Mapped[Optional[str]] = mapped_column(String(500), index=True)
+    domain: Mapped[Optional[str]] = mapped_column(String(220), index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(80))
+    email: Mapped[Optional[str]] = mapped_column(String(320), index=True)
+    address: Mapped[Optional[str]] = mapped_column(String(500))
+    city: Mapped[Optional[str]] = mapped_column(String(120), index=True)
+    country: Mapped[Optional[str]] = mapped_column(String(120), index=True)
+    industry: Mapped[Optional[str]] = mapped_column(String(160), index=True)
+    google_rating: Mapped[Optional[float]] = mapped_column(Numeric)
+    place_id: Mapped[Optional[str]] = mapped_column(String(160), index=True)
+    source: Mapped[str] = mapped_column(String(80), default="manual", index=True)
+    ai_summary: Mapped[str] = mapped_column(Text, default="")
+    suggested_offer: Mapped[str] = mapped_column(Text, default="")
+    outreach_strategy: Mapped[str] = mapped_column(Text, default="")
+    sales_angle: Mapped[str] = mapped_column(Text, default="")
+    expected_reply_rate: Mapped[str] = mapped_column(String(80), default="")
+    email_status: Mapped[str] = mapped_column(String(80), default="Not prepared", index=True)
+    crm_stage: Mapped[str] = mapped_column(String(80), default="New Lead", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    lead: Mapped[Optional[Lead]] = relationship()
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    name: Mapped[str] = mapped_column(String(180), default="")
+    title: Mapped[str] = mapped_column(String(180), default="")
+    email: Mapped[Optional[str]] = mapped_column(String(320), index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(80))
+    linkedin: Mapped[Optional[str]] = mapped_column(String(500))
+    confidence: Mapped[str] = mapped_column(String(80), default="")
+    source: Mapped[str] = mapped_column(String(80), default="manual", index=True)
+    email_status: Mapped[str] = mapped_column(String(80), default="Unknown")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    company: Mapped[Optional[Company]] = relationship()
+    lead: Mapped[Optional[Lead]] = relationship()
+
+
+class Deal(Base):
+    __tablename__ = "deals"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    name: Mapped[str] = mapped_column(String(220))
+    stage: Mapped[str] = mapped_column(String(80), default="New Lead", index=True)
+    value: Mapped[float] = mapped_column(Numeric, default=0)
+    probability: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(80), default="manual", index=True)
+    next_step: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    company: Mapped[Optional[Company]] = relationship()
+    lead: Mapped[Optional[Lead]] = relationship()
+
+
+class Note(Base):
+    __tablename__ = "notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    body: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String(80), default="note")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    company: Mapped[Optional[Company]] = relationship()
+    lead: Mapped[Optional[Lead]] = relationship()
+
+
 class SalesEmployeeLeadInsight(Base):
     __tablename__ = "sales_employee_lead_insights"
     __table_args__ = (UniqueConstraint("sales_employee_id", "lead_id", name="uq_sales_employee_lead_insight"),)

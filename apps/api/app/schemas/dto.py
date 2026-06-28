@@ -8,6 +8,19 @@ from pydantic import BaseModel, EmailStr, Field, HttpUrl
 
 
 PIPELINE_STATUSES = ["New", "Qualified", "Contacted", "Interested", "Meeting", "Won", "Lost", "Archive"]
+CRM_STAGES = [
+    "New Lead",
+    "Qualified",
+    "Website Analyzed",
+    "Contact Found",
+    "Email Draft Ready",
+    "Approved",
+    "Sent",
+    "Replied",
+    "Meeting Scheduled",
+    "Won",
+    "Lost",
+]
 SALES_EMPLOYEE_MODES = ["Review Mode", "Semi-Auto Mode", "Autonomous Mode"]
 
 PLAN_LIMITS = {
@@ -165,6 +178,94 @@ class LeadOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CrmContactOut(BaseModel):
+    id: UUID
+    company_id: Optional[UUID] = None
+    lead_id: Optional[UUID] = None
+    company: str = ""
+    name: str = ""
+    title: str = ""
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    linkedin: Optional[str] = None
+    confidence: str = ""
+    source: str = "manual"
+    email_status: str = "Unknown"
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CrmDealOut(BaseModel):
+    id: UUID
+    company_id: Optional[UUID] = None
+    lead_id: Optional[UUID] = None
+    company: str = ""
+    name: str
+    stage: str = "New Lead"
+    value: float = 0
+    probability: int = 0
+    source: str = "manual"
+    next_step: str = ""
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CrmNoteOut(BaseModel):
+    id: UUID
+    company_id: Optional[UUID] = None
+    lead_id: Optional[UUID] = None
+    body: str
+    kind: str = "note"
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CrmCompanyOut(BaseModel):
+    id: UUID
+    lead_id: Optional[UUID] = None
+    name: str
+    website: Optional[str] = None
+    domain: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[EmailStr] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    industry: Optional[str] = None
+    google_rating: Optional[float] = None
+    place_id: Optional[str] = None
+    source: str = "manual"
+    ai_summary: str = ""
+    suggested_offer: str = ""
+    outreach_strategy: str = ""
+    sales_angle: str = ""
+    expected_reply_rate: str = ""
+    email_status: str = "Not prepared"
+    crm_stage: str = "New Lead"
+    contacts: list[CrmContactOut] = Field(default_factory=list)
+    deals: list[CrmDealOut] = Field(default_factory=list)
+    notes: list[CrmNoteOut] = Field(default_factory=list)
+    activity: list["ActivityOut"] = Field(default_factory=list)
+    generated_emails: list["EmailOut"] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CrmPipelineOut(BaseModel):
+    stages: list[str] = Field(default_factory=lambda: CRM_STAGES.copy())
+    companies: list[CrmCompanyOut] = Field(default_factory=list)
+    deals: list[CrmDealOut] = Field(default_factory=list)
 
 
 class SalesCopilotOut(BaseModel):

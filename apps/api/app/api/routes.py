@@ -28,9 +28,13 @@ from app.models.entities import (
     Campaign,
     CampaignSequence,
     CampaignStatus,
+    Company,
+    Contact,
+    Deal,
     EmailMessage,
     Lead,
     LeadStatus,
+    Note,
     Notification,
     NotificationKind,
     SalesEmployeeLeadInsight,
@@ -73,6 +77,12 @@ from app.schemas.dto import (
     CampaignSequenceIn,
     CampaignUpdate,
     CheckoutRequest,
+    CrmCompanyOut,
+    CrmContactOut,
+    CrmDealOut,
+    CrmNoteOut,
+    CrmPipelineOut,
+    CRM_STAGES,
     DashboardMetrics,
     EmailOut,
     EmailUpdate,
@@ -519,6 +529,239 @@ def _lead_metadata(lead: Lead | LeadOut) -> dict[str, Any]:
         return {}
 
 
+def _crm_stage_for_lead(lead: Lead) -> str:
+    metadata = _lead_metadata(lead)
+    if _display_status(lead.status) == "Won":
+        return "Won"
+    if _display_status(lead.status) == "Lost":
+        return "Lost"
+    if _display_status(lead.status) == "Interested":
+        return "Replied"
+    if _display_status(lead.status) == "Contacted":
+        return "Sent"
+    if metadata.get("email_status") == "Approved":
+        return "Approved"
+    if metadata.get("email_status") in {"Draft Ready", "draft"}:
+        return "Email Draft Ready"
+    if lead.email or metadata.get("hunter_verified"):
+        return "Contact Found"
+    if metadata.get("ai_summary") or metadata.get("suggested_offer") or metadata.get("outreach_strategy"):
+        return "Website Analyzed"
+    if _display_status(lead.status) == "Qualified":
+        return "Qualified"
+    return "New Lead"
+
+
+def _email_status_for_lead(lead: Lead) -> str:
+    metadata = _lead_metadata(lead)
+    if lead.email:
+        return "Verified" if metadata.get("hunter_verified") else "Found"
+    if metadata.get("hunter_status") == "no_verified_email":
+        return "No verified email"
+    return str(metadata.get("email_status") or "Not prepared")
+
+
+def _company_duplicate_stmt(workspace: Workspace, user_id: str, lead: Lead):
+    metadata = _lead_metadata(lead)
+    place_id = str(metadata.get("place_id") or "")
+    domain = str(metadata.get("domain") or "")
+    criteria = []
+    if place_id:
+        criteria.append(Company.place_id == place_id)
+    if lead.website:
+        criteria.append(Company.website == lead.website)
+    if domain:
+        criteria.append(Company.domain == domain)
+    if lead.company and lead.city:
+        criteria.append((Company.name == lead.company) & (Company.city == lead.city))
+    if not criteria:
+        criteria.append(Company.lead_id == lead.id)
+    return select(Company).where(_workspace_stmt(Company, workspace, user_id), or_(*criteria)).order_by(Company.updated_at.desc())
+
+
+def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lead) -> Company:
+    metadata = _lead_metadata(lead)
+    company = db.scalar(_company_duplicate_stmt(workspace, user_id, lead))
+    now = datetime.utcnow()
+    if company is None:
+        company = Company(user_id=user_id, workspace_id=workspace.id, lead_id=lead.id, name=lead.company)
+        db.add(company)
+    company.lead_id = company.lead_id or lead.id
+    company.name = lead.company or company.name
+    company.website = lead.website or company.website
+    company.domain = str(metadata.get("domain") or company.domain or "") or None
+    company.phone = lead.phone or company.phone
+    company.email = lead.email or company.email
+    company.address = str(metadata.get("address") or company.address or "") or None
+    company.city = lead.city or company.city
+    company.country = lead.country or company.country
+    company.industry = lead.industry or lead.niche or company.industry
+    company.google_rating = metadata.get("google_rating") if isinstance(metadata.get("google_rating"), (int, float)) else company.google_rating
+    company.place_id = str(metadata.get("place_id") or company.place_id or "") or None
+    company.source = str(metadata.get("source") or company.source or "manual")
+    company.ai_summary = str(metadata.get("ai_summary") or company.ai_summary or "")
+    company.suggested_offer = str(metadata.get("suggested_offer") or company.suggested_offer or "")
+    company.outreach_strategy = str(metadata.get("outreach_strategy") or company.outreach_strategy or "")
+    company.sales_angle = str(metadata.get("sales_angle") or company.sales_angle or "")
+    company.expected_reply_rate = str(metadata.get("expected_reply_rate") or company.expected_reply_rate or "")
+    company.email_status = _email_status_for_lead(lead)
+    company.crm_stage = _crm_stage_for_lead(lead)
+    company.metadata_json = {**(company.metadata_json or {}), **metadata}
+    company.updated_at = now
+    db.flush()
+
+    if lead.email or lead.contact or lead.phone or lead.linkedin:
+        contact = db.scalar(
+            select(Contact)
+            .where(
+                _workspace_stmt(Contact, workspace, user_id),
+                or_(
+                    Contact.lead_id == lead.id,
+                    Contact.email == lead.email if lead.email else Contact.id.is_(None),
+                ),
+            )
+            .order_by(Contact.updated_at.desc())
+        )
+        if contact is None:
+            contact = Contact(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id)
+            db.add(contact)
+        contact.company_id = company.id
+        contact.lead_id = contact.lead_id or lead.id
+        contact.name = lead.contact or contact.name or ""
+        contact.title = str(metadata.get("title") or contact.title or "")
+        contact.email = lead.email or contact.email
+        contact.phone = lead.phone or contact.phone
+        contact.linkedin = lead.linkedin or contact.linkedin
+        contact.confidence = str(metadata.get("confidence") or contact.confidence or "")
+        contact.source = "hunter" if metadata.get("hunter_verified") else str(metadata.get("source") or contact.source or "manual")
+        contact.email_status = "Verified" if metadata.get("hunter_verified") else ("Found" if lead.email else "Unknown")
+        contact.metadata_json = {**(contact.metadata_json or {}), **metadata}
+        contact.updated_at = now
+
+    deal = db.scalar(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.lead_id == lead.id).order_by(Deal.updated_at.desc()))
+    if deal is None:
+        deal = Deal(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id, name=f"{lead.company} opportunity")
+        db.add(deal)
+    deal.company_id = company.id
+    deal.stage = company.crm_stage
+    deal.source = company.source
+    deal.value = lead.revenue or deal.value or 0
+    deal.probability = 70 if company.crm_stage in {"Email Draft Ready", "Approved", "Sent", "Replied"} else 35
+    deal.next_step = "Review AI email and approve campaign." if company.crm_stage in {"Website Analyzed", "Contact Found", "Email Draft Ready"} else "Find contact details and complete research."
+    deal.updated_at = now
+
+    if company.ai_summary and not db.scalar(select(Note.id).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id, Note.kind == "ai_summary").limit(1)):
+        db.add(Note(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id, kind="ai_summary", body=company.ai_summary))
+    return company
+
+
+def _crm_contact_out(contact: Contact, company_name: str = "") -> CrmContactOut:
+    return CrmContactOut(
+        id=contact.id,
+        company_id=contact.company_id,
+        lead_id=contact.lead_id,
+        company=company_name or (contact.company.name if contact.company else ""),
+        name=contact.name,
+        title=contact.title,
+        email=contact.email,
+        phone=contact.phone,
+        linkedin=contact.linkedin,
+        confidence=contact.confidence,
+        source=contact.source,
+        email_status=contact.email_status,
+        created_at=contact.created_at,
+    )
+
+
+def _crm_deal_out(deal: Deal, company_name: str = "") -> CrmDealOut:
+    return CrmDealOut(
+        id=deal.id,
+        company_id=deal.company_id,
+        lead_id=deal.lead_id,
+        company=company_name or (deal.company.name if deal.company else ""),
+        name=deal.name,
+        stage=deal.stage,
+        value=float(deal.value or 0),
+        probability=deal.probability,
+        source=deal.source,
+        next_step=deal.next_step,
+        created_at=deal.created_at,
+    )
+
+
+def _crm_note_out(note: Note) -> CrmNoteOut:
+    return CrmNoteOut(id=note.id, company_id=note.company_id, lead_id=note.lead_id, body=note.body, kind=note.kind, created_at=note.created_at)
+
+
+def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: Company) -> CrmCompanyOut:
+    contacts = list(db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id).order_by(Contact.created_at.desc())).all())
+    deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc())).all())
+    notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc()).limit(20)).all())
+    emails = list(db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc()).limit(10)).all()) if company.lead_id else []
+    activity = list(db.scalars(select(AuditLog).where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id), AuditLog.metadata_json.contains({"lead_id": str(company.lead_id)})).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
+    return CrmCompanyOut(
+        id=company.id,
+        lead_id=company.lead_id,
+        name=company.name,
+        website=company.website,
+        domain=company.domain,
+        phone=company.phone,
+        email=company.email,
+        address=company.address,
+        city=company.city,
+        country=company.country,
+        industry=company.industry,
+        google_rating=float(company.google_rating) if company.google_rating is not None else None,
+        place_id=company.place_id,
+        source=company.source,
+        ai_summary=company.ai_summary,
+        suggested_offer=company.suggested_offer,
+        outreach_strategy=company.outreach_strategy,
+        sales_angle=company.sales_angle,
+        expected_reply_rate=company.expected_reply_rate,
+        email_status=company.email_status,
+        crm_stage=company.crm_stage,
+        contacts=[_crm_contact_out(contact, company.name) for contact in contacts],
+        deals=[_crm_deal_out(deal, company.name) for deal in deals],
+        notes=[_crm_note_out(note) for note in notes],
+        activity=[ActivityOut.model_validate(item, from_attributes=True) for item in activity],
+        generated_emails=[EmailOut.model_validate(item, from_attributes=True) for item in emails],
+        created_at=company.created_at,
+        updated_at=company.updated_at,
+    )
+
+
+def _ensure_crm_backfilled(db: Session, user_id: str, workspace: Workspace) -> None:
+    leads = list(db.scalars(select(Lead).where(_workspace_stmt(Lead, workspace, user_id)).order_by(Lead.created_at.desc()).limit(500)).all())
+    changed = False
+    for lead in leads:
+        if not db.scalar(select(Company.id).where(_workspace_stmt(Company, workspace, user_id), Company.lead_id == lead.id).limit(1)):
+            _sync_lead_to_crm(db, user_id, workspace, lead)
+            changed = True
+    if changed:
+        db.commit()
+
+
+def _crm_company_query(workspace: Workspace, user_id: str, search: str = "", city: str = "", country: str = "", industry: str = "", stage: str = "", email_status: str = "", source: str = ""):
+    stmt = select(Company).where(_workspace_stmt(Company, workspace, user_id))
+    if search:
+        term = f"%{search}%"
+        stmt = stmt.where(or_(Company.name.ilike(term), Company.website.ilike(term), Company.email.ilike(term), Company.phone.ilike(term)))
+    if city:
+        stmt = stmt.where(Company.city.ilike(f"%{city}%"))
+    if country:
+        stmt = stmt.where(Company.country.ilike(f"%{country}%"))
+    if industry:
+        stmt = stmt.where(Company.industry.ilike(f"%{industry}%"))
+    if stage:
+        stmt = stmt.where(Company.crm_stage == stage)
+    if email_status:
+        stmt = stmt.where(Company.email_status == email_status)
+    if source:
+        stmt = stmt.where(Company.source == source)
+    return stmt.order_by(Company.updated_at.desc())
+
+
 def _merge_lead_metadata(lead: Lead, updates: dict[str, Any], readable: list[str] | None = None) -> str:
     metadata = _lead_metadata(lead)
     clean_updates = {
@@ -768,6 +1011,7 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
     lead.industry = lead.industry or result.industry
     lead.niche = lead.niche or result.niche
     lead.notes = _merge_lead_metadata(lead, _analysis_metadata(result, score, audit), _analysis_readable_notes(result, score, audit))
+    _sync_lead_to_crm(db, user_id, workspace, lead)
     logger.info("lead_finder_trace step=openai_analysis_completed data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "icp_score": score}, sort_keys=True))
 
 
@@ -2778,6 +3022,7 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
             existing.city = payload.city or existing.city
             existing.website = payload.website or existing.website
             log_event(db, request, user_id, "lead.duplicate_reused", {"company": existing.company, "source": "manual"})
+            _sync_lead_to_crm(db, user_id, workspace, existing)
             db.commit()
             db.refresh(existing)
             return _lead_out(existing)
@@ -2803,6 +3048,7 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
     db.add(lead)
     db.flush()
     _analyze_lead_if_possible(db, user_id, workspace, lead)
+    _sync_lead_to_crm(db, user_id, workspace, lead)
     log_event(db, request, user_id, "lead.imported", {"company": lead.company, "source": "manual", "hunter_verified": bool(enriched.hunter_verified)})
     if enriched.hunter_verified:
         _notify(db, user_id, NotificationKind.success, "Company analyzed", f"{lead.company} was saved, Hunter verified an email, and AI prepared the company summary.")
@@ -2940,6 +3186,7 @@ def _save_provider_leads(
         db.flush()
         _lead_trace(request_id or str(uuid4()), "database_lead_inserted", lead_id=str(lead.id), company=lead.company, website=lead.website or "", email=lead.email or "")
         _analyze_lead_if_possible(db, user_id, workspace, lead)
+        _sync_lead_to_crm(db, user_id, workspace, lead)
         saved.append(lead)
     log_event(db, request, user_id, action, {"source": source, "saved": len(saved), "duplicates_skipped": skipped, **payload.model_dump()})
     verified = sum(1 for item in found if item.hunter_verified)
@@ -3013,6 +3260,84 @@ def leads_list(
     return PaginatedLeads(items=[_lead_out(item) for item in items], total=total, page=page, page_size=page_size)
 
 
+@router.get("/crm/companies", response_model=list[CrmCompanyOut])
+def crm_companies(
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+    search: str = "",
+    city: str = "",
+    country: str = "",
+    industry: str = "",
+    stage: str = "",
+    email_status: str = "",
+    source: str = "",
+) -> list[CrmCompanyOut]:
+    workspace = _current_workspace(db, user_id)
+    _ensure_crm_backfilled(db, user_id, workspace)
+    companies = list(db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(100)).all())
+    return [_crm_company_out(db, workspace, user_id, company) for company in companies]
+
+
+@router.get("/crm/contacts", response_model=list[CrmContactOut])
+def crm_contacts(
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+    search: str = "",
+    city: str = "",
+    country: str = "",
+    industry: str = "",
+    stage: str = "",
+    email_status: str = "",
+    source: str = "",
+) -> list[CrmContactOut]:
+    workspace = _current_workspace(db, user_id)
+    _ensure_crm_backfilled(db, user_id, workspace)
+    companies = list(db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(100)).all())
+    company_ids = [company.id for company in companies]
+    if not company_ids:
+        return []
+    contacts = list(db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id.in_(company_ids)).order_by(Contact.updated_at.desc()).limit(200)).all())
+    names = {company.id: company.name for company in companies}
+    return [_crm_contact_out(contact, names.get(contact.company_id, "")) for contact in contacts]
+
+
+@router.get("/crm/deals", response_model=list[CrmDealOut])
+def crm_deals(
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+    search: str = "",
+    city: str = "",
+    country: str = "",
+    industry: str = "",
+    stage: str = "",
+    email_status: str = "",
+    source: str = "",
+) -> list[CrmDealOut]:
+    workspace = _current_workspace(db, user_id)
+    _ensure_crm_backfilled(db, user_id, workspace)
+    companies = list(db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(100)).all())
+    company_ids = [company.id for company in companies]
+    if not company_ids:
+        return []
+    deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id.in_(company_ids)).order_by(Deal.updated_at.desc()).limit(200)).all())
+    names = {company.id: company.name for company in companies}
+    return [_crm_deal_out(deal, names.get(deal.company_id, "")) for deal in deals]
+
+
+@router.get("/crm/pipeline", response_model=CrmPipelineOut)
+def crm_pipeline(user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmPipelineOut:
+    workspace = _current_workspace(db, user_id)
+    _ensure_crm_backfilled(db, user_id, workspace)
+    companies = list(db.scalars(_crm_company_query(workspace, user_id).limit(200)).all())
+    deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id)).order_by(Deal.updated_at.desc()).limit(300)).all())
+    company_names = {company.id: company.name for company in companies}
+    return CrmPipelineOut(
+        stages=CRM_STAGES.copy(),
+        companies=[_crm_company_out(db, workspace, user_id, company) for company in companies],
+        deals=[_crm_deal_out(deal, company_names.get(deal.company_id, "")) for deal in deals],
+    )
+
+
 @router.patch("/leads/{lead_id}", response_model=LeadOut)
 def update_lead(lead_id: UUID, payload: LeadUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> LeadOut:
     workspace = _current_workspace(db, user_id)
@@ -3023,6 +3348,7 @@ def update_lead(lead_id: UUID, payload: LeadUpdate, request: Request, user_id: C
         if key == "status" and value:
             value = _status(value)
         setattr(lead, key, value)
+    _sync_lead_to_crm(db, user_id, workspace, lead)
     log_event(db, request, user_id, "lead.updated", {"lead_id": str(lead.id)})
     db.commit()
     db.refresh(lead)
@@ -3287,7 +3613,9 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
         tags={"requires_approval": True, "source": "manual_lead_flow"},
     )
     lead.status = LeadStatus.qualified
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready"})
     db.add(message)
+    _sync_lead_to_crm(db, user_id, workspace, lead)
     log_event(db, request, user_id, "email.generated", {"lead_id": str(lead.id), "source": "manual_lead_flow"})
     _notify(db, user_id, NotificationKind.success, "Draft ready for review", f"A personalized email for {lead.company} is ready. Nothing was sent.")
     db.commit()
@@ -3352,7 +3680,9 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
         delivery_status="draft",
     )
     lead.status = LeadStatus.qualified
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready"})
     db.add(message)
+    _sync_lead_to_crm(db, user_id, workspace, lead)
     log_event(db, request, user_id, "email.generated", {"campaign_id": str(campaign.id), "lead_id": str(lead.id)})
     _notify(db, user_id, NotificationKind.success, "Email generated", f"A personalized email for {lead.company} is ready to edit.")
     db.commit()
@@ -3398,6 +3728,8 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     message.provider_message_id = str(provider_response.get("id"))
     message.delivery_status = "sent"
     lead.status = LeadStatus.contacted
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent"})
+    _sync_lead_to_crm(db, user_id, workspace, lead)
     log_event(db, request, user_id, "email.sent", {"email_id": str(message.id), "provider_message_id": message.provider_message_id})
     _notify(db, user_id, NotificationKind.info, "Email sent", message.subject)
     db.commit()

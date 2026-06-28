@@ -98,6 +98,82 @@ export type Lead = {
   expected_reply_rate?: string | null;
 };
 
+export type CrmContact = {
+  id: string;
+  company_id?: string | null;
+  lead_id?: string | null;
+  company: string;
+  name: string;
+  title: string;
+  email?: string | null;
+  phone?: string | null;
+  linkedin?: string | null;
+  confidence: string;
+  source: string;
+  email_status: string;
+  created_at: string;
+};
+
+export type CrmDeal = {
+  id: string;
+  company_id?: string | null;
+  lead_id?: string | null;
+  company: string;
+  name: string;
+  stage: string;
+  value: number;
+  probability: number;
+  source: string;
+  next_step: string;
+  created_at: string;
+};
+
+export type CrmNote = {
+  id: string;
+  company_id?: string | null;
+  lead_id?: string | null;
+  body: string;
+  kind: string;
+  created_at: string;
+};
+
+export type CrmCompany = {
+  id: string;
+  lead_id?: string | null;
+  name: string;
+  website?: string | null;
+  domain?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  industry?: string | null;
+  google_rating?: number | null;
+  place_id?: string | null;
+  source: string;
+  ai_summary: string;
+  suggested_offer: string;
+  outreach_strategy: string;
+  sales_angle: string;
+  expected_reply_rate: string;
+  email_status: string;
+  crm_stage: string;
+  contacts: CrmContact[];
+  deals: CrmDeal[];
+  notes: CrmNote[];
+  activity: Activity[];
+  generated_emails: Email[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type CrmPipeline = {
+  stages: string[];
+  companies: CrmCompany[];
+  deals: CrmDeal[];
+};
+
 export type IntegrationConnectionStatus = {
   configured: boolean;
   connected: boolean;

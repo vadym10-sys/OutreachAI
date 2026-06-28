@@ -739,6 +739,17 @@ def test_manual_lead_creation_enriches_with_hunter_and_ai(monkeypatch) -> None:
     assert lead["suggested_offer"] == "Offer a reviewed outreach campaign for project leads."
     assert lead["expected_reply_rate"] == "8-12%"
 
+    crm_response = client.get("/api/crm/companies?search=Manual%20Build", headers=AUTH)
+    assert crm_response.status_code == 200
+    companies = crm_response.json()
+    assert len(companies) == 1
+    company = companies[0]
+    assert company["name"] == "Manual Build GmbH"
+    assert company["email"] == "ada@manual-build.example"
+    assert company["crm_stage"] in {"Contact Found", "Website Analyzed"}
+    assert company["contacts"][0]["email_status"] == "Verified"
+    assert company["deals"][0]["stage"] == company["crm_stage"]
+
 
 def test_manual_lead_creation_survives_hunter_no_email(monkeypatch) -> None:
     def no_email(db, request, user_id, workspace, leads):
@@ -792,6 +803,29 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
     assert draft["delivery_status"] == "draft"
     assert draft["sent_at"] is None
     assert draft["tags"]["requires_approval"] is True
+
+    crm_response = client.get("/api/crm/companies?search=Manual%20Draft", headers=AUTH)
+    assert crm_response.status_code == 200
+    company = crm_response.json()[0]
+    assert company["crm_stage"] == "Email Draft Ready"
+    assert company["generated_emails"][0]["delivery_status"] == "draft"
+
+
+def test_crm_duplicate_prevention_reuses_manual_company(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    payload = {"company": "CRM Duplicate Build", "website": "https://crm-duplicate.example", "country": "Germany", "city": "Berlin", "industry": "Construction"}
+
+    first = client.post("/api/leads", headers=AUTH, json=payload)
+    second = client.post("/api/leads", headers=AUTH, json=payload)
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    crm_response = client.get("/api/crm/companies?search=CRM%20Duplicate", headers=AUTH)
+    assert crm_response.status_code == 200
+    companies = crm_response.json()
+    assert len(companies) == 1
+    assert companies[0]["website"] == "https://crm-duplicate.example"
 
 
 def test_ai_sales_copilot_endpoints(monkeypatch) -> None:

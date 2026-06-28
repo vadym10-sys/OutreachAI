@@ -8,7 +8,7 @@ import { ArrowRight, BarChart3, CheckCircle2, Clock3, Download, Globe2, Inbox, L
 import { clientApi, friendlyErrorMessage, splitList } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { trackEvent } from "@/lib/posthog";
-import type { Activity, AISalesEmployee, Campaign, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
+import type { Activity, AISalesEmployee, Campaign, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
 
 type ApiFn = <T>(path: string, init?: RequestInit) => Promise<T>;
 
@@ -240,6 +240,56 @@ function useSalesData() {
   }, [refresh]);
 
   return { api, ready, leads, setLeads, campaigns, metrics, loading, error, refresh };
+}
+
+function useCrmData() {
+  const { api, ready } = useTokenApi();
+  const [companies, setCompanies] = useState<CrmCompany[]>([]);
+  const [contacts, setContacts] = useState<CrmContact[]>([]);
+  const [deals, setDeals] = useState<CrmDeal[]>([]);
+  const [pipeline, setPipeline] = useState<CrmPipeline>({ stages: [], companies: [], deals: [] });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [filters, setFilters] = useState({ search: "", city: "", country: "", industry: "", stage: "", email_status: "", source: "" });
+
+  const queryString = useMemo(() => {
+    const query = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value.trim()) query.set(key, value.trim());
+    });
+    return query.toString();
+  }, [filters]);
+
+  const refresh = useCallback(async () => {
+    if (!ready) return;
+    setLoading(true);
+    setError("");
+    try {
+      const suffix = queryString ? `?${queryString}` : "";
+      const [companyList, contactList, dealList, pipelineData] = await Promise.all([
+        api<CrmCompany[]>(`/api/crm/companies${suffix}`),
+        api<CrmContact[]>(`/api/crm/contacts${suffix}`),
+        api<CrmDeal[]>(`/api/crm/deals${suffix}`),
+        api<CrmPipeline>("/api/crm/pipeline")
+      ]);
+      setCompanies(companyList);
+      setContacts(contactList);
+      setDeals(dealList);
+      setPipeline(pipelineData);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "CRM data could not be loaded. Please refresh or sign in again."));
+    } finally {
+      setLoading(false);
+    }
+  }, [api, queryString, ready]);
+
+  useEffect(() => {
+    // Initial CRM synchronization with the backend; state updates happen asynchronously inside refresh.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void refresh();
+  }, [refresh]);
+
+  return { api, companies, contacts, deals, pipeline, loading, error, filters, setFilters, refresh };
 }
 
 function useDashboardData() {
@@ -571,9 +621,87 @@ export function LeadFinderPage() {
   );
 }
 
+function leadFromCrmCompany(company: CrmCompany): Lead {
+  return {
+    id: company.lead_id || undefined,
+    company: company.name,
+    website: company.website,
+    domain: company.domain,
+    industry: company.industry,
+    country: company.country,
+    city: company.city,
+    contact: company.contacts[0]?.name || null,
+    email: company.email || company.contacts[0]?.email || null,
+    phone: company.phone || company.contacts[0]?.phone || null,
+    linkedin: company.contacts[0]?.linkedin || null,
+    status: company.crm_stage,
+    notes: company.notes[0]?.body || null,
+    google_rating: company.google_rating,
+    place_id: company.place_id,
+    hunter_verified: company.contacts.some((contact) => contact.source === "hunter" && contact.email_status === "Verified"),
+    source: company.source,
+    ai_summary: company.ai_summary,
+    suggested_offer: company.suggested_offer,
+    outreach_strategy: company.outreach_strategy,
+    sales_angle: company.sales_angle,
+    expected_reply_rate: company.expected_reply_rate,
+  };
+}
+
+function CrmFilters({ filters, setFilters }: { filters: Record<string, string>; setFilters: (filters: { search: string; city: string; country: string; industry: string; stage: string; email_status: string; source: string }) => void }) {
+  const update = (key: string, value: string) => setFilters({ search: "", city: "", country: "", industry: "", stage: "", email_status: "", source: "", ...filters, [key]: value });
+  return <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <p className="text-sm font-bold text-ink">Search and filter CRM</p>
+    <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <input value={filters.search} onChange={(event) => update("search", event.target.value)} placeholder="Company or website" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.city} onChange={(event) => update("city", event.target.value)} placeholder="City" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.country} onChange={(event) => update("country", event.target.value)} placeholder="Country" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.industry} onChange={(event) => update("industry", event.target.value)} placeholder="Industry" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.stage} onChange={(event) => update("stage", event.target.value)} placeholder="Stage" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.source} onChange={(event) => update("source", event.target.value)} placeholder="Source" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+    </div>
+  </section>;
+}
+
+function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
+  const lead = leadFromCrmCompany(company);
+  return <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="flex flex-col gap-4 min-[520px]:flex-row min-[520px]:items-start min-[520px]:justify-between">
+      <div>
+        <p className="text-xs font-bold uppercase text-brand">{company.crm_stage}</p>
+        <h2 className="mt-1 text-xl font-bold text-ink">{company.name}</h2>
+        <p className="mt-1 break-all text-sm text-slate-500">{company.website || company.domain || "Website not found"}</p>
+        <p className="mt-2 text-sm text-slate-600">{[company.industry, company.city, company.country].filter(Boolean).join(" · ") || "Company details pending"}</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">Source: {company.source}</span>
+        <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{company.email_status}</span>
+      </div>
+    </div>
+    <div className="mt-5 grid gap-3 lg:grid-cols-3">
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Company data</p><p className="mt-2 text-slate-600">{company.address || "Address not found"}</p><p className="text-slate-600">{company.phone || "Phone not found"}</p><p className="text-slate-600">{company.google_rating ? `Google rating ${company.google_rating}` : "Rating unavailable"}</p></div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Contacts</p>{company.contacts.length ? company.contacts.slice(0, 2).map((contact) => <p key={contact.id} className="mt-2 text-slate-600">{contact.name || "Decision maker"} · {contact.email || "No email"} · {contact.source}</p>) : <p className="mt-2 text-slate-600">No verified contact yet.</p>}</div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Email status</p><p className="mt-2 text-slate-600">{company.generated_emails[0]?.subject || "No generated email yet"}</p><p className="text-slate-600">{company.generated_emails[0]?.delivery_status || company.email_status}</p></div>
+    </div>
+    <div className="mt-4 rounded-xl bg-teal-50 p-4 text-sm">
+      <p className="font-bold text-brand">AI summary</p>
+      <p className="mt-2 leading-6 text-slate-700">{company.ai_summary || "Run AI research to create a company summary, sales angle and suggested offer."}</p>
+      {company.suggested_offer && <p className="mt-2 font-semibold text-slate-800">Offer: {company.suggested_offer}</p>}
+    </div>
+    <details className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <summary className="cursor-pointer text-sm font-bold text-ink">Notes and activity timeline</summary>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div>{company.notes.length ? company.notes.slice(0, 4).map((note) => <p key={note.id} className="mb-2 rounded-lg bg-white p-3 text-sm text-slate-600">{note.body}</p>) : <p className="rounded-lg bg-white p-3 text-sm text-slate-600">No notes yet.</p>}</div>
+        <div>{company.activity.length ? company.activity.slice(0, 4).map((item) => <p key={item.id} className="mb-2 rounded-lg bg-white p-3 text-sm text-slate-600">{item.action.replaceAll(".", " ")} · {new Date(item.created_at).toLocaleString()}</p>) : <p className="rounded-lg bg-white p-3 text-sm text-slate-600">Activity will appear after lead search, AI generation or email events.</p>}</div>
+      </div>
+    </details>
+    {company.lead_id ? <div className="mt-5"><OpportunityCard lead={lead} api={api} /></div> : <p className="mt-4 rounded-xl bg-orange-50 p-3 text-sm font-semibold text-orange-700">This CRM company is missing its lead link. Re-import or update the company before generating outreach.</p>}
+  </article>;
+}
+
 export function CompaniesPage() {
-  const { api, leads, setLeads, loading, error } = useSalesData();
-  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company should become a complete sales opportunity." copy="Review real companies from PostgreSQL. Run AI research to fill missing opportunity fields." />{loading ? <EmptyState title="Loading companies" copy="Reading saved companies." /> : error ? <EmptyState title="Companies unavailable" copy={error} /> : leads.length ? <div className="grid gap-5">{leads.map((lead) => <OpportunityCard key={lead.id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => setLeads((items) => items.map((item) => item.id === updated.id ? updated : item))} />)}</div> : <EmptyState title="No companies found" copy="Lead Finder must return real provider data before companies appear here." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
+  const { api, companies, loading, error, filters, setFilters } = useCrmData();
+  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by Google Maps, enriched by Hunter, or added manually stay here after refresh." /> <CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading CRM companies" copy="Reading saved companies from PostgreSQL." /> : error ? <EmptyState title="Companies unavailable" copy={error} /> : companies.length ? <div className="grid gap-5">{companies.map((company) => <CrmCompanyCard key={company.id} company={company} api={api} />)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
 }
 
 export function WebsiteAnalyzerPage() {
@@ -598,9 +726,8 @@ export function WebsiteAnalyzerPage() {
 }
 
 export function ContactsPage() {
-  const { leads, loading, error } = useSalesData();
-  const contacts = leads.filter((lead) => lead.contact || lead.email || lead.title);
-  return <div className="space-y-6"><PageHeader eyebrow="Contacts" title="Decision makers and verified emails." copy="Contacts are shown only when provider or manual data exists. Missing emails are not invented." />{loading ? <EmptyState title="Loading contacts" copy="Checking saved leads." /> : error ? <EmptyState title="Contacts unavailable" copy={error} /> : contacts.length ? <section className="grid gap-4 lg:grid-cols-3">{contacts.map((lead) => <article key={lead.id || lead.company} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{lead.contact || "Decision maker unavailable"}</h2><p className="mt-1 text-sm text-slate-600">{lead.title || "Role unavailable"} · {lead.company}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold">{lead.email || "No verified email available"}</p><p className="mt-3 text-sm text-slate-600">{lead.hunter_verified ? "Verified by Hunter" : "Not verified yet"}</p></article>)}</section> : <EmptyState title="No decision makers yet" copy="Run Hunter enrichment or add a contact manually. OutreachAI will not create fake contacts." />}</div>;
+  const { contacts, loading, error, filters, setFilters } = useCrmData();
+  return <div className="space-y-6"><PageHeader eyebrow="Contacts" title="Decision makers and verified emails." copy="Contacts come from Hunter, Google Maps data, or manual lead import. Missing emails are not invented." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading contacts" copy="Checking saved CRM contacts." /> : error ? <EmptyState title="Contacts unavailable" copy={error} /> : contacts.length ? <section className="grid gap-4 lg:grid-cols-3">{contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{contact.name || "Decision maker unavailable"}</h2><p className="mt-1 text-sm text-slate-600">{contact.title || "Role unavailable"} · {contact.company}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold">{contact.email || "No verified email available"}</p><p className="mt-3 text-sm text-slate-600">{contact.email_status} · Source: {contact.source}</p></article>)}</section> : <EmptyState title="No decision makers yet" copy="Run Hunter enrichment or add a contact manually. OutreachAI will not create fake contacts." />}</div>;
 }
 
 export function CampaignsPage() {
@@ -613,9 +740,13 @@ export function InboxPage() {
 }
 
 export function CrmPipelinePage() {
-  const { leads, loading, error } = useSalesData();
-  const statuses = ["New", "Researched", "Email prepared", "Contacted", "Replied", "Meeting booked", "Client", "Lost"];
-  return <div className="space-y-6"><PageHeader eyebrow="CRM Pipeline" title="Move real leads from research to revenue." copy="Pipeline columns are populated only from saved lead statuses." />{loading ? <EmptyState title="Loading pipeline" copy="Reading lead statuses." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : <section className="grid gap-4 lg:grid-cols-4">{statuses.map((status) => { const items = leads.filter((lead) => lead.status === status); return <article key={status} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><h2 className="font-bold text-ink">{status}</h2><div className="mt-4 space-y-3">{items.length ? items.map((lead) => <div key={lead.id || lead.company} className="rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{lead.company}</div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No leads</p>}</div></article>; })}</section>}</div>;
+  const { pipeline, loading, error } = useCrmData();
+  return <div className="space-y-6"><PageHeader eyebrow="CRM Pipeline" title="Move real leads from research to revenue." copy="Pipeline stages update from saved CRM data, AI analysis, email drafts and email delivery status." action={<Link href="/dashboard/deals" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">Open deals</Link>} />{loading ? <EmptyState title="Loading pipeline" copy="Reading CRM stages." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : <section className="grid gap-4 xl:grid-cols-3 2xl:grid-cols-4">{pipeline.stages.map((stage) => { const items = pipeline.companies.filter((company) => company.crm_stage === stage); return <article key={stage} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-3"><h2 className="font-bold text-ink">{stage}</h2><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{items.length}</span></div><div className="mt-4 space-y-3">{items.length ? items.map((company) => <div key={company.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-semibold text-slate-800">{company.name}</p><p className="mt-1 text-slate-600">{company.email_status} · {company.source}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No companies in this stage</p>}</div></article>; })}</section>}</div>;
+}
+
+export function DealsPage() {
+  const { deals, loading, error, filters, setFilters } = useCrmData();
+  return <div className="space-y-6"><PageHeader eyebrow="Deals" title="Revenue opportunities from saved companies." copy="Every saved company gets a CRM deal so you can track the next step toward a meeting or customer." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading deals" copy="Reading CRM opportunities." /> : error ? <EmptyState title="Deals unavailable" copy={error} /> : deals.length ? <section className="grid gap-4 lg:grid-cols-3">{deals.map((deal) => <article key={deal.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold uppercase text-brand">{deal.stage}</p><h2 className="mt-2 font-bold text-ink">{deal.name}</h2><p className="mt-1 text-sm text-slate-600">{deal.company}</p><div className="mt-4 grid grid-cols-2 gap-2 text-sm"><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">Value</span><br />€{Math.round(deal.value || 0).toLocaleString()}</p><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">Probability</span><br />{deal.probability}%</p></div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{deal.next_step || "Review the company and prepare outreach."}</p></article>)}</section> : <EmptyState title="No deals yet" copy="Saved companies automatically create CRM deals. Start with Lead Finder to build your first opportunity list." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
 }
 
 export function AnalyticsPage() {

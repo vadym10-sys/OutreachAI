@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.observability import capture_provider_exception
-from app.models.entities import AppSettings, AuditLog, EmailMessage, Lead, LeadStatus, Subscription, User, Workspace
+from app.models.entities import AppSettings, AuditLog, Company, Deal, EmailMessage, Lead, LeadStatus, Subscription, User, Workspace
 from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 from app.services.billing import plan_from_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
@@ -212,6 +212,22 @@ def _reply_category(reply_body: str, assistant: dict) -> str:
     return "Needs review"
 
 
+def _sync_crm_email_status(db: Session, message: EmailMessage, stage: str, email_status: str) -> None:
+    if not message.lead_id:
+        return
+    company = db.scalar(select(Company).where(Company.lead_id == message.lead_id).order_by(Company.updated_at.desc()))
+    if company is None:
+        return
+    company.email_status = email_status
+    company.crm_stage = stage
+    company.updated_at = datetime.utcnow()
+    deal = db.scalar(select(Deal).where(Deal.lead_id == message.lead_id).order_by(Deal.updated_at.desc()))
+    if deal:
+        deal.stage = stage
+        deal.next_step = "Reply received. Review and book the next step." if stage == "Replied" else deal.next_step
+        deal.updated_at = datetime.utcnow()
+
+
 @router.post("/resend")
 async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
     settings = get_settings()
@@ -238,17 +254,21 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
     if event_type == "email.delivered":
         message.delivered_at = message.delivered_at or now
         message.delivery_status = "delivered"
+        _sync_crm_email_status(db, message, "Sent", "Delivered")
     elif event_type == "email.opened":
         message.opened_at = message.opened_at or now
         message.delivery_status = "opened"
+        _sync_crm_email_status(db, message, "Sent", "Opened")
         lead = db.get(Lead, message.lead_id) if message.lead_id else None
         if lead:
             lead.status = LeadStatus.contacted
     elif event_type == "email.bounced":
         message.bounced_at = message.bounced_at or now
         message.delivery_status = "bounced"
+        _sync_crm_email_status(db, message, "Sent", "Bounced")
     elif event_type == "email.complained":
         message.delivery_status = "complained"
+        _sync_crm_email_status(db, message, "Sent", "Complained")
     elif event_type in {"email.replied", "email.received"}:
         reply_body = _event_reply_body(data)
         message.replied_at = message.replied_at or now
@@ -265,8 +285,12 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         category = _reply_category(reply_body, message.reply_assistant or {})
         if category == "Meeting" and lead:
             lead.status = LeadStatus.meeting
+            _sync_crm_email_status(db, message, "Meeting Scheduled", "Replied")
         if category == "Not interested" and lead:
             lead.status = LeadStatus.archive
+            _sync_crm_email_status(db, message, "Lost", "Replied")
+        if category not in {"Meeting", "Not interested"}:
+            _sync_crm_email_status(db, message, "Replied", "Replied")
         inbound_exists = db.scalar(
             select(EmailMessage.id).where(
                 EmailMessage.provider_message_id == f"reply:{message_id}",

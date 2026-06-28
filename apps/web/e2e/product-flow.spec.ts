@@ -3,12 +3,13 @@ import { expect, test } from "@playwright/test";
 const pages = [
   ["/dashboard", "What should I do now?"],
   ["/dashboard/leads", "Find real companies and turn each into a sales opportunity."],
-  ["/dashboard/companies", "Every company should become a complete sales opportunity."],
+  ["/dashboard/companies", "Every company is saved in your CRM."],
   ["/dashboard/website-analyzer", "Analyze a real prospect website."],
   ["/dashboard/contacts", "Decision makers and verified emails."],
   ["/dashboard/campaigns", "Review real outreach before anything is sent."],
   ["/dashboard/inbox", "Replies will appear here when campaigns receive real responses."],
   ["/dashboard/crm", "Move real leads from research to revenue."],
+  ["/dashboard/deals", "Revenue opportunities from saved companies."],
   ["/dashboard/analytics", "Measure real outbound performance."],
   ["/dashboard/settings", "Configure real providers before relying on automation."],
   ["/dashboard/billing", "Subscription and usage."],
@@ -72,12 +73,51 @@ const campaign = {
   created_at: new Date().toISOString()
 };
 
+const crmCompany = {
+  id: "44444444-4444-4444-4444-444444444444",
+  lead_id: lead.id,
+  name: lead.company,
+  website: lead.website,
+  domain: lead.domain,
+  phone: "+1 512 555 0101",
+  email: lead.email,
+  address: "1 Congress Ave, Austin, TX",
+  city: lead.city,
+  country: lead.country,
+  industry: lead.industry,
+  google_rating: 4.7,
+  place_id: "google_place_1",
+  source: "google_maps_hunter",
+  ai_summary: lead.ai_summary,
+  suggested_offer: lead.suggested_offer,
+  outreach_strategy: lead.outreach_strategy,
+  sales_angle: lead.sales_angle,
+  expected_reply_rate: lead.expected_reply_rate,
+  email_status: "Verified",
+  crm_stage: "Contact Found",
+  contacts: [{ id: "55555555-5555-5555-5555-555555555555", company_id: "44444444-4444-4444-4444-444444444444", lead_id: lead.id, company: lead.company, name: "Jane Doe", title: "Owner", email: lead.email, phone: null, linkedin: lead.linkedin, confidence: "97", source: "hunter", email_status: "Verified", created_at: new Date().toISOString() }],
+  deals: [{ id: "66666666-6666-6666-6666-666666666666", company_id: "44444444-4444-4444-4444-444444444444", lead_id: lead.id, company: lead.company, name: "Hill Country Build Co opportunity", stage: "Contact Found", value: 0, probability: 35, source: "google_maps_hunter", next_step: "Review AI email and approve campaign.", created_at: new Date().toISOString() }],
+  notes: [{ id: "77777777-7777-7777-7777-777777777777", company_id: "44444444-4444-4444-4444-444444444444", lead_id: lead.id, body: lead.ai_summary, kind: "ai_summary", created_at: new Date().toISOString() }],
+  activity: [{ id: "88888888-8888-8888-8888-888888888888", action: "google_maps.company_search", metadata_json: {}, created_at: new Date().toISOString() }],
+  generated_emails: [{ id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "draft" }],
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString()
+};
+
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     let body: unknown = {};
     if (url.pathname === "/api/leads") {
       body = { items: [lead], total: 1, page: 1, page_size: 100 };
+    } else if (url.pathname === "/api/crm/companies") {
+      body = [crmCompany];
+    } else if (url.pathname === "/api/crm/contacts") {
+      body = crmCompany.contacts;
+    } else if (url.pathname === "/api/crm/deals") {
+      body = crmCompany.deals;
+    } else if (url.pathname === "/api/crm/pipeline") {
+      body = { stages: ["New Lead", "Qualified", "Website Analyzed", "Contact Found", "Email Draft Ready", "Approved", "Sent", "Replied", "Meeting Scheduled", "Won", "Lost"], companies: [crmCompany], deals: crmCompany.deals };
     } else if (url.pathname === "/api/leads/find") {
       body = [lead];
     } else if (url.pathname === "/api/campaigns") {

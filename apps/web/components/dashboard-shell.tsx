@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { BarChart3, Bot, Building2, CreditCard, Crown, Globe2, Inbox, LayoutDashboard, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
+import { BarChart3, Bot, Building2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
 import { e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -17,6 +17,7 @@ const nav = [
   { href: "/dashboard/companies", labelKey: "nav.companies", icon: Building2 },
   { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
   { href: "/dashboard/crm", labelKey: "nav.crm", icon: Users },
+  { href: "/dashboard/deals", labelKey: "nav.deals", icon: Handshake },
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
   { href: "/dashboard/website-analyzer", labelKey: "nav.websiteAnalyzer", icon: Globe2, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
