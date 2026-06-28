@@ -37,6 +37,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core import security  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
 from app.schemas.dto import CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
+from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.main import app  # noqa: E402
 
 Base.metadata.create_all(bind=get_engine())
@@ -45,6 +46,7 @@ client = TestClient(app)
 AUTH = {"Authorization": "Bearer dev"}
 OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "romaniukvadym10@gmail.com"}
 NON_OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "not-owner@example.com"}
+security.limiter.limit = 10000
 
 
 def stripe_signature(payload: dict) -> tuple[str, str]:
@@ -212,18 +214,24 @@ def test_production_auth_rejects_expired_clerk_jwt(monkeypatch) -> None:
 
 def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
     monkeypatch.setattr(
-        "app.api.routes.find_leads",
-        lambda payload: [
-            LeadOut(
+        "app.api.routes.search_apollo_companies",
+        lambda payload: ApolloSearchResult(
+            leads=[LeadOut(
                 company="Austin Commercial Build",
                 website="https://example.com",
                 industry=payload.industry or payload.niche,
                 country=payload.country,
                 city=payload.city,
-                email="hello@example.com",
-                notes="source: deterministic provider test",
-            )
-        ],
+                email="apollo-austin@example.com",
+                notes='{"source":"apollo","domain":"example.com","apollo_company_id":"apollo_org_1","employee_count":42}',
+                domain="example.com",
+                apollo_company_id="apollo_org_1",
+                employee_count=42,
+                source="apollo",
+            )],
+            raw_count=1,
+            duration_ms=10,
+        ),
     )
     response = client.post(
         "/api/leads/find",
@@ -243,6 +251,100 @@ def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
     lead = response.json()[0]
     assert lead["company"] == "Austin Commercial Build"
     assert lead["status"] == "New"
+    assert lead["source"] == "apollo"
+    assert lead["apollo_company_id"] == "apollo_org_1"
+
+
+def test_apollo_status_and_missing_key(monkeypatch) -> None:
+    monkeypatch.setenv("APOLLO_API_KEY", "")
+    get_settings.cache_clear()
+    status = client.get("/api/integrations/apollo/status", headers=AUTH)
+    assert status.status_code == 200
+    assert status.json()["configured"] is False
+
+    test = client.post("/api/integrations/apollo/test", headers=AUTH)
+    assert test.status_code == 200
+    assert test.json()["configured"] is False
+    assert test.json()["connected"] is False
+    get_settings.cache_clear()
+
+
+def test_apollo_invalid_key_reports_safe_error(monkeypatch) -> None:
+    monkeypatch.setenv("APOLLO_API_KEY", "invalid")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.api.routes.test_apollo_connection", lambda: (_ for _ in ()).throw(ApolloRequestError("Apollo rejected the backend API key. Verify the live Apollo key and account access.")))
+    response = client.post("/api/integrations/apollo/test", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
+    assert "Apollo rejected" in response.json()["last_error"]
+    get_settings.cache_clear()
+
+
+def test_apollo_timeout_returns_user_safe_error(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.search_apollo_companies", lambda payload: (_ for _ in ()).throw(ApolloRequestError("Apollo is temporarily unavailable. Please try again in a few minutes.")))
+    response = client.post("/api/apollo/search-companies", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 502
+    assert "temporarily unavailable" in response.json()["detail"]
+
+
+def test_apollo_empty_results_are_safe(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.search_apollo_companies", lambda payload: ApolloSearchResult(leads=[], raw_count=0, duration_ms=5))
+    response = client.post("/api/apollo/search-companies", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_apollo_duplicate_prevention(monkeypatch) -> None:
+    lead = LeadOut(
+        company="Duplicate Apollo GmbH",
+        website="https://duplicate-apollo.example",
+        industry="Construction",
+        country="Germany",
+        city="Berlin",
+        email="duplicate-apollo@example.com",
+        notes='{"source":"apollo","domain":"duplicate-apollo.example","apollo_company_id":"apollo_duplicate"}',
+        domain="duplicate-apollo.example",
+        apollo_company_id="apollo_duplicate",
+        source="apollo",
+    )
+    monkeypatch.setattr("app.api.routes.search_apollo_companies", lambda payload: ApolloSearchResult(leads=[lead], raw_count=1, duration_ms=5))
+    payload = {"industry": "Construction", "country": "Germany", "city": "Berlin"}
+    first = client.post("/api/apollo/search-companies", headers=AUTH, json=payload)
+    second = client.post("/api/apollo/search-companies", headers=AUTH, json=payload)
+    assert first.status_code == 200
+    assert len(first.json()) == 1
+    assert second.status_code == 200
+    assert second.json() == []
+
+
+def test_apollo_contact_search_saves_to_db(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.search_apollo_contacts",
+        lambda payload: ApolloSearchResult(
+            leads=[LeadOut(
+                company="Berlin Contact Build",
+                website="https://berlin-contact.example",
+                industry="Construction",
+                country="Germany",
+                city="Berlin",
+                contact="Jane Builder",
+                email="jane.builder@example.com",
+                title="Founder",
+                confidence="high",
+                notes='{"source":"apollo","domain":"berlin-contact.example","apollo_company_id":"apollo_org_contact","apollo_contact_id":"apollo_person_1","title":"Founder","confidence":"high"}',
+                apollo_company_id="apollo_org_contact",
+                apollo_contact_id="apollo_person_1",
+                source="apollo",
+            )],
+            raw_count=1,
+            duration_ms=8,
+        ),
+    )
+    response = client.post("/api/apollo/search-contacts", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 200
+    saved = response.json()[0]
+    assert saved["contact"] == "Jane Builder"
+    assert saved["apollo_contact_id"] == "apollo_person_1"
 
 
 def test_campaign_lead_email_and_dashboard_flow(monkeypatch) -> None:

@@ -60,17 +60,34 @@ export type Lead = {
   id?: string;
   company: string;
   website?: string | null;
+  domain?: string | null;
   industry?: string | null;
   country?: string | null;
   city?: string | null;
   contact?: string | null;
   email?: string | null;
+  phone?: string | null;
+  linkedin?: string | null;
   status: string;
   campaign_id?: string | null;
   sales_employee_id?: string | null;
   campaign?: string | null;
   notes?: string | null;
   revenue?: number;
+  employee_count?: number | null;
+  revenue_range?: string | null;
+  title?: string | null;
+  confidence?: string | null;
+  apollo_company_id?: string | null;
+  apollo_contact_id?: string | null;
+  source?: string | null;
+};
+
+export type ApolloIntegrationStatus = {
+  configured: boolean;
+  connected: boolean;
+  last_success_at?: string | null;
+  last_error: string;
 };
 
 export type AISalesEmployee = {

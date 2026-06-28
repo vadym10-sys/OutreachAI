@@ -136,6 +136,14 @@ class LeadOut(BaseModel):
     notes: Optional[str] = None
     revenue: float = 0
     created_at: Optional[datetime] = None
+    domain: Optional[str] = None
+    employee_count: Optional[int] = None
+    revenue_range: Optional[str] = None
+    title: Optional[str] = None
+    confidence: Optional[str] = None
+    apollo_company_id: Optional[str] = None
+    apollo_contact_id: Optional[str] = None
+    source: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -219,6 +227,21 @@ class IntegrationStatusOut(BaseModel):
     resend: bool
     crm_sync: bool
     automation_secret: bool
+
+
+class ApolloIntegrationStatusOut(BaseModel):
+    configured: bool
+    connected: bool = False
+    last_success_at: Optional[datetime] = None
+    last_error: str = ""
+
+
+class ApolloConnectionTestOut(BaseModel):
+    configured: bool
+    connected: bool
+    duration_ms: int = 0
+    last_success_at: Optional[datetime] = None
+    last_error: str = ""
 
 
 class PaginatedLeads(BaseModel):

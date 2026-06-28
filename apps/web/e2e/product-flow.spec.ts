@@ -34,6 +34,14 @@ const lead = {
   email: "jane@example.com",
   phone: null,
   linkedin: null,
+  domain: "example.com",
+  employee_count: 42,
+  revenue_range: "1M-10M",
+  title: "Owner",
+  confidence: "high",
+  apollo_company_id: "apollo_org_1",
+  apollo_contact_id: null,
+  source: "apollo",
   niche: "Construction",
   status: "Qualified",
   campaign_id: campaign.id,
@@ -93,6 +101,8 @@ test.beforeEach(async ({ page }) => {
       body = { items: [lead], total: 1, page: 1, page_size: 50 };
     } else if (url.pathname === "/api/leads" && method === "POST") {
       body = lead;
+    } else if (url.pathname === "/api/leads/find") {
+      body = [lead];
     } else if (url.pathname === "/api/leads/bulk") {
       body = { updated: 1 };
     } else if (url.pathname === "/api/emails/generate") {
@@ -107,6 +117,10 @@ test.beforeEach(async ({ page }) => {
       body = { status: "queued" };
     } else if (url.pathname === "/api/settings") {
       body = { general: {}, ai: {}, email: {}, billing: {}, security: {}, api: {} };
+    } else if (url.pathname === "/api/integrations/apollo/status") {
+      body = { configured: true, connected: true, last_success_at: new Date().toISOString(), last_error: "" };
+    } else if (url.pathname === "/api/integrations/apollo/test") {
+      body = { configured: true, connected: true, duration_ms: 12, last_success_at: new Date().toISOString(), last_error: "" };
     } else if (url.pathname === "/api/owner/console") {
       const email = route.request().headers()["x-test-user-email"] || "";
       if (email.toLowerCase() !== "romaniukvadym10@gmail.com") {
@@ -210,6 +224,8 @@ for (const width of [320, 390, 480]) {
 
     await page.getByRole("link", { name: /Leads/ }).first().click();
     await expect(page.getByRole("heading", { name: "Find leads" })).toBeVisible();
+    await expect(page.getByText("Apollo").first()).toBeVisible();
+    await expect(page.getByText("42").first()).toBeVisible();
     await page.getByPlaceholder("Company name").fill("Hill Country Build Co");
     await page.getByPlaceholder("Website").fill("https://example.com");
     await page.getByRole("button", { name: "Add company" }).click();
@@ -218,6 +234,8 @@ for (const width of [320, 390, 480]) {
     await page.getByLabel("Open navigation").click();
     await page.getByRole("link", { name: /Settings/ }).click();
     await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+    await expect(page.getByText("Apollo powers production lead discovery.")).toBeVisible();
+    await expect(page.getByText("Connected").first()).toBeVisible();
     await page.getByRole("button", { name: "Save workspace" }).first().click();
     await expect(page.getByText("Workspace saved.")).toBeVisible();
 

@@ -55,6 +55,8 @@ from app.schemas.dto import (
     AdminSummaryOut,
     AnalysisOut,
     AnalyzeRequest,
+    ApolloConnectionTestOut,
+    ApolloIntegrationStatusOut,
     AutomationRunOut,
     BulkLeadAction,
     BillingPlanOut,
@@ -148,6 +150,14 @@ from app.services.audit import log_event
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError, find_leads
+from app.services.apollo import (
+    ApolloConfigurationError,
+    ApolloRequestError,
+    apollo_key_loaded,
+    search_apollo_companies,
+    search_apollo_contacts,
+    test_apollo_connection,
+)
 from app.services.website import WebsiteFetchError, collect_website
 
 router = APIRouter()
@@ -431,6 +441,7 @@ def _campaign_out(db: Session, campaign: Campaign) -> CampaignOut:
 
 
 def _lead_out(lead: Lead) -> LeadOut:
+    metadata = _lead_metadata(lead)
     return LeadOut(
         id=lead.id,
         company=lead.company,
@@ -450,7 +461,28 @@ def _lead_out(lead: Lead) -> LeadOut:
         notes=lead.notes,
         revenue=float(lead.revenue or 0),
         created_at=lead.created_at,
+        domain=str(metadata.get("domain") or "") or None,
+        employee_count=int(metadata["employee_count"]) if isinstance(metadata.get("employee_count"), int) else None,
+        revenue_range=str(metadata.get("revenue") or "") or None,
+        title=str(metadata.get("title") or "") or None,
+        confidence=str(metadata.get("confidence") or "") or None,
+        apollo_company_id=str(metadata.get("apollo_company_id") or "") or None,
+        apollo_contact_id=str(metadata.get("apollo_contact_id") or "") or None,
+        source=str(metadata.get("source") or "") or None,
     )
+
+
+def _lead_metadata(lead: Lead | LeadOut) -> dict[str, Any]:
+    notes = getattr(lead, "notes", None) or ""
+    if not notes:
+        return {}
+    lines = notes.splitlines() if isinstance(notes, str) else []
+    candidate = lines[0] if lines else notes
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
 
 
 def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, message: str) -> None:
@@ -458,9 +490,9 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
 
 
 def _provider_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError)):
+    if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError)):
         return HTTPException(status_code=503, detail=str(exc))
-    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError)):
+    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError)):
         return HTTPException(status_code=502, detail=str(exc))
     return HTTPException(status_code=500, detail="Provider request failed.")
 
@@ -624,6 +656,31 @@ def _default_settings() -> dict:
     }
 
 
+def _apollo_settings_state(settings: AppSettings) -> dict[str, Any]:
+    api_settings = settings.api if isinstance(settings.api, dict) else {}
+    state = api_settings.get("apollo") if isinstance(api_settings.get("apollo"), dict) else {}
+    return state
+
+
+def _save_apollo_settings_state(db: Session, settings: AppSettings, **updates: Any) -> None:
+    api_settings = settings.api if isinstance(settings.api, dict) else {}
+    current = api_settings.get("apollo") if isinstance(api_settings.get("apollo"), dict) else {}
+    serializable_updates = {key: value.isoformat() if isinstance(value, datetime) else value for key, value in updates.items()}
+    settings.api = {**api_settings, "apollo": {**current, **serializable_updates}}
+    db.add(settings)
+
+
+def _datetime_or_none(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
 @router.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -641,6 +698,41 @@ def integrations_status(user_id: CurrentUser) -> IntegrationStatusOut:
         crm_sync=bool(settings.crm_sync_webhook_url),
         automation_secret=bool(settings.automation_secret),
     )
+
+
+@router.get("/integrations/apollo/status", response_model=ApolloIntegrationStatusOut)
+def apollo_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> ApolloIntegrationStatusOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    state = _apollo_settings_state(settings)
+    return ApolloIntegrationStatusOut(
+        configured=apollo_key_loaded(),
+        connected=bool(state.get("connected")),
+        last_success_at=_datetime_or_none(state.get("last_success_at")),
+        last_error=str(state.get("last_error") or ""),
+    )
+
+
+@router.post("/integrations/apollo/test", response_model=ApolloConnectionTestOut)
+def apollo_test_connection(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> ApolloConnectionTestOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    if not apollo_key_loaded():
+        _save_apollo_settings_state(db, settings, connected=False, last_error="Apollo is not connected on the backend.")
+        return ApolloConnectionTestOut(configured=False, connected=False, last_error="Apollo is not connected on the backend.")
+    try:
+        result = test_apollo_connection()
+    except Exception as exc:
+        friendly = _provider_error(exc).detail
+        _save_apollo_settings_state(db, settings, connected=False, last_error=str(friendly))
+        log_event(db, request, user_id, "apollo.connection_failed", {"reason": str(friendly)})
+        db.commit()
+        return ApolloConnectionTestOut(configured=True, connected=False, last_error=str(friendly))
+    now = datetime.utcnow()
+    _save_apollo_settings_state(db, settings, connected=True, last_success_at=now, last_error="")
+    log_event(db, request, user_id, "apollo.connection_tested", {"records": result.get("records", 0), "duration_ms": result.get("duration_ms", 0)})
+    db.commit()
+    return ApolloConnectionTestOut(configured=True, connected=True, duration_ms=int(result.get("duration_ms", 0)), last_success_at=now)
 
 
 @router.post("/automation/run", response_model=AutomationRunOut)
@@ -2465,13 +2557,46 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace)
     try:
-        found = find_leads(payload)
+        result = search_apollo_companies(payload)
     except Exception as exc:
         raise _provider_error(exc) from exc
+    _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
+    saved = _save_provider_leads(db, request, user_id, workspace, result.leads, payload, source="apollo", action="apollo.company_search")
+    return [_lead_out(lead) for lead in saved]
+
+
+@router.post("/apollo/search-companies", response_model=list[LeadOut])
+def apollo_search_companies(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    try:
+        result = search_apollo_companies(payload)
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
+    saved = _save_provider_leads(db, request, user_id, workspace, result.leads, payload, source="apollo", action="apollo.company_search")
+    return [_lead_out(lead) for lead in saved]
+
+
+@router.post("/apollo/search-contacts", response_model=list[LeadOut])
+def apollo_search_contacts(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    try:
+        result = search_apollo_contacts(payload)
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
+    saved = _save_provider_leads(db, request, user_id, workspace, result.leads, payload, source="apollo", action="apollo.contact_search")
+    return [_lead_out(lead) for lead in saved]
+
+
+def _save_provider_leads(db: Session, request: Request, user_id: str, workspace: Workspace, found: list[LeadOut], payload: LeadFinderRequest, source: str, action: str) -> list[Lead]:
     saved: list[Lead] = []
+    skipped = 0
     for item in found:
-        exists = db.scalar(select(Lead.id).where(_workspace_stmt(Lead, workspace, user_id), Lead.email == str(item.email))) if item.email else None
-        if exists:
+        if _lead_duplicate_exists(db, workspace, user_id, item):
+            skipped += 1
             continue
         _enforce_usage(db, user_id, workspace, "leads")
         lead = Lead(
@@ -2479,6 +2604,7 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
             workspace_id=workspace.id,
             company=item.company,
             website=item.website,
+            contact=item.contact,
             email=str(item.email) if item.email else None,
             phone=item.phone,
             linkedin=item.linkedin,
@@ -2493,10 +2619,39 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
         db.flush()
         _analyze_lead_if_possible(db, user_id, workspace, lead)
         saved.append(lead)
-    log_event(db, request, user_id, "lead.imported", {"count": len(saved), **payload.model_dump()})
-    _notify(db, user_id, NotificationKind.success, "Leads imported", f"{len(saved)} leads were added to your workspace.")
+    log_event(db, request, user_id, action, {"source": source, "saved": len(saved), "duplicates_skipped": skipped, **payload.model_dump()})
+    if saved:
+        _notify(db, user_id, NotificationKind.success, "Apollo leads imported", f"{len(saved)} Apollo companies were added to your workspace.")
+    elif found:
+        _notify(db, user_id, NotificationKind.info, "Apollo search finished", "All matching Apollo results were already in your workspace.")
+    else:
+        _notify(db, user_id, NotificationKind.info, "Apollo search finished", "Apollo did not find matching companies for those filters.")
     db.commit()
-    return [_lead_out(lead) for lead in saved]
+    return saved
+
+
+def _lead_duplicate_exists(db: Session, workspace: Workspace, user_id: str, item: LeadOut) -> bool:
+    metadata = _lead_metadata(item)
+    apollo_company_id = str(metadata.get("apollo_company_id") or item.apollo_company_id or "")
+    apollo_contact_id = str(metadata.get("apollo_contact_id") or item.apollo_contact_id or "")
+    domain = str(metadata.get("domain") or item.domain or "")
+    criteria = []
+    if item.email:
+        criteria.append(Lead.email == str(item.email))
+    if item.website:
+        criteria.append(Lead.website == item.website)
+    if apollo_company_id:
+        criteria.append(Lead.notes.ilike(f"%{apollo_company_id}%"))
+    if apollo_contact_id:
+        criteria.append(Lead.notes.ilike(f"%{apollo_contact_id}%"))
+    if domain:
+        criteria.append(Lead.website.ilike(f"%{domain}%"))
+        criteria.append(Lead.notes.ilike(f"%{domain}%"))
+    if not criteria and item.company:
+        criteria.append(Lead.company == item.company)
+    if not criteria:
+        return False
+    return bool(db.scalar(select(Lead.id).where(_workspace_stmt(Lead, workspace, user_id), or_(*criteria)).limit(1)))
 
 
 @router.get("/leads", response_model=PaginatedLeads)
