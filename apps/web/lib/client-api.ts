@@ -1,5 +1,6 @@
 import { apiUrl } from '@/lib/env';
 import * as Sentry from '@sentry/nextjs';
+import { trackEvent } from '@/lib/posthog';
 
 const technicalErrorPattern = /api error|load failed|failed to fetch|networkerror|unexpected token|json|traceback|stack|500|502|503|504/i;
 
@@ -45,7 +46,21 @@ async function logApiFailure(path: string, response: Response) {
       response_detail: detail.slice(0, 1000)
     }
   });
+  trackEvent('api_request_failed', {
+    endpoint: path,
+    status: response.status,
+    provider: providerFromPath(path)
+  });
   return detail;
+}
+
+function providerFromPath(path: string) {
+  if (path.includes('apollo')) return 'apollo';
+  if (path.includes('hunter')) return 'hunter';
+  if (path.includes('leads/find')) return 'google_maps';
+  if (path.includes('analyze') || path.includes('draft-email') || path.includes('copilot') || path.includes('follow-ups')) return 'openai';
+  if (path.includes('billing') || path.includes('stripe')) return 'stripe';
+  return 'outreachai_api';
 }
 
 function safeApiMessage(status: number, detail: string) {
@@ -94,6 +109,10 @@ export async function clientApi<T>(path: string, token: string | null, init: Req
     Sentry.captureException(error, {
       tags: { area: 'api-client', api_status: 'network-error' },
       extra: { path }
+    });
+    trackEvent('api_network_error', {
+      endpoint: path,
+      provider: providerFromPath(path)
     });
     throw error;
   }

@@ -1,11 +1,12 @@
 "use client";
 
 import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
-import { ClerkFailed, ClerkProvider } from "@clerk/nextjs";
+import { ClerkFailed, ClerkProvider, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { I18nProvider } from "@/lib/i18n/provider";
+import { capturePostHogException, identifyPostHogUser, initializePostHog, resetPostHogUser, trackPageView } from "@/lib/posthog";
 
 function StabilityFallback({ title = "Something went wrong. Please refresh or sign in again." }: { title?: string }) {
   return (
@@ -48,6 +49,10 @@ class ClientErrorBoundary extends Component<{ children: ReactNode }, { failed: b
       tags: { area: "react-error-boundary" },
       extra: { componentStack: info.componentStack }
     });
+    capturePostHogException(error, {
+      area: "react-error-boundary",
+      component_stack: info.componentStack
+    });
   }
 
   render() {
@@ -72,6 +77,68 @@ function SentryPageContext() {
   return null;
 }
 
+function PostHogPageContext() {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    initializePostHog();
+  }, []);
+
+  useEffect(() => {
+    trackPageView(pathname);
+  }, [pathname]);
+
+  useEffect(() => {
+    function handleError(event: ErrorEvent) {
+      capturePostHogException(event.error || event.message, {
+        area: "window-error",
+        filename: event.filename,
+        line: event.lineno,
+        column: event.colno
+      });
+    }
+
+    function handleUnhandledRejection(event: PromiseRejectionEvent) {
+      capturePostHogException(event.reason, {
+        area: "unhandled-promise-rejection"
+      });
+    }
+
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
+
+  return null;
+}
+
+function PostHogIdentityContext() {
+  const { isLoaded, isSignedIn, user } = useUser();
+  const workspaceMetadata = user?.publicMetadata as { workspace_id?: unknown; workspaceId?: unknown } | undefined;
+
+  useEffect(() => {
+    if (!isLoaded) {
+      return;
+    }
+
+    if (!isSignedIn || !user) {
+      resetPostHogUser();
+      return;
+    }
+
+    identifyPostHogUser({
+      userId: user.id,
+      email: user.primaryEmailAddress?.emailAddress || user.emailAddresses?.[0]?.emailAddress,
+      workspaceId: String(workspaceMetadata?.workspace_id || workspaceMetadata?.workspaceId || "unknown-workspace")
+    });
+  }, [isLoaded, isSignedIn, user, workspaceMetadata?.workspace_id, workspaceMetadata?.workspaceId]);
+
+  return null;
+}
+
 export function AppProviders({
   children,
   clerkPublishableKey,
@@ -82,13 +149,15 @@ export function AppProviders({
   clerkEnabled: boolean;
 }) {
   if (!clerkEnabled || !clerkPublishableKey) {
-    return <ClientErrorBoundary><SentryPageContext /><I18nProvider>{children}</I18nProvider></ClientErrorBoundary>;
+    return <ClientErrorBoundary><SentryPageContext /><PostHogPageContext /><I18nProvider>{children}</I18nProvider></ClientErrorBoundary>;
   }
 
   return (
     <ClerkProvider publishableKey={clerkPublishableKey}>
       <ClientErrorBoundary>
         <SentryPageContext />
+        <PostHogPageContext />
+        <PostHogIdentityContext />
         <ClerkFailed>
           <StabilityFallback title="Authentication could not load. Please refresh or sign in again." />
         </ClerkFailed>

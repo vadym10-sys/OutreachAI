@@ -7,6 +7,7 @@ import * as Sentry from "@sentry/nextjs";
 import { ArrowRight, BarChart3, CheckCircle2, Clock3, Download, Globe2, Inbox, Loader2, Mail, Pause, Play, Plus, Search, Send, Sparkles, UserRoundSearch } from "lucide-react";
 import { clientApi, friendlyErrorMessage, splitList } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { trackEvent } from "@/lib/posthog";
 import type { Activity, AISalesEmployee, Campaign, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
 
 type ApiFn = <T>(path: string, init?: RequestInit) => Promise<T>;
@@ -329,6 +330,11 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
     }
     setBusy(true);
     setError("");
+    trackEvent("sales_research_started", {
+      lead_id: lead.id,
+      company: lead.company,
+      has_website: Boolean(lead.website || lead.domain)
+    });
     try {
       if (lead.website || lead.domain) {
         setStatus("Analyzing website...");
@@ -349,8 +355,19 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       setStatus("Preparing personalized first email...");
       setDraft(await api<Email>(`/api/leads/${lead.id}/draft-email`, { method: "POST" }));
       setStatus("Complete sales opportunity is ready for review. No email was sent.");
+      trackEvent("sales_research_completed", {
+        lead_id: lead.id,
+        company: lead.company,
+        has_verified_email: Boolean(lead.email && lead.hunter_verified)
+      });
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Research could not be completed. Check subscription, OpenAI, Hunter, website access, or provider limits."));
+      const reason = friendlyErrorMessage(err, "Research could not be completed. Check subscription, OpenAI, Hunter, website access, or provider limits.");
+      setError(reason);
+      trackEvent("sales_research_failed", {
+        lead_id: lead.id,
+        company: lead.company,
+        reason
+      });
     } finally {
       setBusy(false);
     }
@@ -458,26 +475,35 @@ export function LeadFinderPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const payload = {
+      country: String(data.get("country") || ""),
+      city: String(data.get("city") || ""),
+      industry: String(data.get("industry") || ""),
+      category: String(data.get("category") || data.get("industry") || ""),
+      keyword: String(data.get("keyword") || ""),
+      company_size: String(data.get("company_size") || ""),
+      keywords: splitList(String(data.get("keywords") || "")),
+      technologies: splitList(String(data.get("technology") || "")),
+      radius: Number(data.get("radius") || 10000),
+      limit: 10
+    };
     setSearching(true);
     setHasSearched(true);
     setSearchResults([]);
     setMessage("Connecting to Google Maps...");
+    trackEvent("lead_finder_search_started", {
+      country: payload.country,
+      city: payload.city,
+      industry: payload.industry,
+      company_size: payload.company_size,
+      radius: payload.radius,
+      source: "google_maps"
+    });
     try {
       const found = await withTimeout(
         api<Lead[]>("/api/leads/find", {
           method: "POST",
-          body: JSON.stringify({
-            country: String(data.get("country") || ""),
-            city: String(data.get("city") || ""),
-            industry: String(data.get("industry") || ""),
-            category: String(data.get("category") || data.get("industry") || ""),
-            keyword: String(data.get("keyword") || ""),
-            company_size: String(data.get("company_size") || ""),
-            keywords: splitList(String(data.get("keywords") || "")),
-            technologies: splitList(String(data.get("technology") || "")),
-            radius: Number(data.get("radius") || 10000),
-            limit: 10
-          })
+          body: JSON.stringify(payload)
         }),
         45000,
         "Lead search timed out. Try a smaller radius or broader filters."
@@ -485,9 +511,24 @@ export function LeadFinderPage() {
       setLeads(found);
       setSearchResults(found);
       setMessage(found.length ? `${found.length} real companies saved from Google Maps.` : "No companies found. Broaden filters or add a company manually.");
+      trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
+        country: payload.country,
+        city: payload.city,
+        industry: payload.industry,
+        result_count: found.length,
+        source: "google_maps"
+      });
     } catch (err) {
+      const reason = friendlyErrorMessage(err, "Google Maps lead search could not be completed.");
       setSearchResults([]);
-      setMessage(friendlyErrorMessage(err, "Google Maps lead search could not be completed."));
+      setMessage(reason);
+      trackEvent("lead_finder_search_failed", {
+        country: payload.country,
+        city: payload.city,
+        industry: payload.industry,
+        source: "google_maps",
+        reason
+      });
     } finally {
       setSearching(false);
     }
