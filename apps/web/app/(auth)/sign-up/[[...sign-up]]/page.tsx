@@ -37,12 +37,18 @@ export default function Page() {
               appearance={{
                 elements: {
                   rootBox: "w-full",
+                  cardBox: "w-full border-0 bg-transparent p-0 shadow-none",
                   card: "w-full border-0 bg-transparent p-0 shadow-none",
+                  main: "w-full",
                   header: "hidden",
                   headerTitle: "hidden",
                   headerSubtitle: "hidden",
                   socialButtonsBlockButton: "hidden",
                   dividerRow: "hidden",
+                  form: "w-full",
+                  formField: "w-full",
+                  formFieldInput: "min-h-11 w-full rounded-md border-slate-300",
+                  formButtonPrimary: "min-h-11 w-full rounded-md bg-ink text-sm font-semibold text-white hover:bg-slate-900",
                   footer: "bg-transparent"
                 }
               }}
