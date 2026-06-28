@@ -4,9 +4,9 @@ import { hasClerkPublishableKey } from "@/lib/env";
 function MissingClerkConfig() {
   return (
     <div className="max-w-md rounded-lg border border-slate-200 bg-white p-6 text-center shadow-soft">
-      <h1 className="text-xl font-bold text-ink">Password reset is not configured</h1>
+      <h1 className="text-xl font-bold text-ink">Password reset is temporarily unavailable</h1>
       <p className="mt-3 text-sm leading-6 text-slate-600">
-        Add Clerk environment variables to enable password recovery for this deployment.
+        We could not load secure password recovery for this session. Please try again shortly.
       </p>
     </div>
   );

@@ -49,7 +49,7 @@ export function PasswordResetClient() {
         setMessage('Password updated successfully. You can continue to your dashboard.');
         return;
       }
-      setError('Password reset needs one more verification step. Open the latest Clerk email and try again.');
+      setError('Password reset needs one more verification step. Open the latest reset email and try again.');
     } catch {
       setError('The reset code or new password could not be accepted. Request a new email if the code expired.');
     } finally {
@@ -62,7 +62,7 @@ export function PasswordResetClient() {
       <div className="mb-6">
         <p className="inline-flex rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">Secure account recovery</p>
         <h1 className="mt-4 text-2xl font-bold text-ink">Reset your password</h1>
-        <p className="mt-2 text-sm leading-6 text-slate-600">Use the email connected to your OutreachAI account. Clerk handles the reset securely.</p>
+        <p className="mt-2 text-sm leading-6 text-slate-600">Use the email connected to your OutreachAI account. We will send secure reset instructions.</p>
       </div>
 
       {message && <div className="mb-4 rounded-md border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-brand">{message}</div>}
@@ -100,7 +100,7 @@ export function PasswordResetClient() {
               value={code}
               onChange={(event) => setCode(event.target.value)}
               className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-teal-100"
-              placeholder="Enter the code from Clerk"
+              placeholder="Enter the code from your email"
             />
           </label>
           <label className="block">

@@ -99,13 +99,13 @@ function ActionLogPanel({ title, logs, onRetry }: { title: string; logs: string[
     <div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center min-[430px]:justify-between">
       <div>
         <h2 className="font-bold text-ink">{t(title)}</h2>
-        <p className="mt-1 text-sm text-slate-600">{t('Running, completed, failed, retry, and logs stay visible so you always know what happened.')}</p>
+        <p className="mt-1 text-sm text-slate-600">{t('Progress stays visible so you always know what happened and what to do next.')}</p>
       </div>
       {onRetry && <button type="button" onClick={onRetry} className="min-h-11 rounded-md border border-slate-300 px-4 text-sm font-semibold">{t('Retry')}</button>}
     </div>
     {logs.length ? <ol className="mt-4 space-y-2 text-sm">
       {logs.map((item, index) => <li key={`${item}-${index}`} className="flex gap-2 rounded-md bg-slate-50 p-3"><CheckCircle2 size={16} className="mt-0.5 shrink-0 text-brand" /><span>{item}</span></li>)}
-    </ol> : <p className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">{t('No AI action has started yet. Run the next step to see live progress here.')}</p>}
+    </ol> : <p className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">{t('Nothing has started yet. Run the next step to see progress here.')}</p>}
   </section>;
 }
 
@@ -482,16 +482,16 @@ export function CampaignBuilder() {
   async function generateEmail() {
     if (!selectedCampaign || !selectedLead) { setNotice('Select a campaign and lead before generating an email.'); return; }
     setGenerating(true);
-    setEmailActionLogs(['Running: AI is reading the selected company, website analysis, and verified contact data.']);
+    setEmailActionLogs(['Reading the selected company, website analysis, and verified contact data.']);
     try {
-      setEmailActionLogs((items) => [...items, 'Running: generating a personalized subject, body, CTA, and follow-ups.']);
+      setEmailActionLogs((items) => [...items, 'Generating a personalized subject, body, call to action, and follow-ups.']);
       const created = await api<Email>('/api/emails/generate', { method: 'POST', body: JSON.stringify({ campaign_id: selectedCampaign, lead_id: selectedLead }) });
       setEmail(created);
-      setEmailActionLogs((items) => [...items, 'Completed: AI email is saved in review and ready for approval.']);
+      setEmailActionLogs((items) => [...items, 'Email is saved in review and ready for approval.']);
       setNotice('AI email generated and saved for review.');
     } catch (nextError) {
       const message = friendlyErrorMessage(nextError, 'AI email generation could not be completed. Check the lead and try again.');
-      setEmailActionLogs((items) => [...items, `Failed: ${message}`, 'Retry: choose a lead with a website or verified contact, then generate again.']);
+      setEmailActionLogs((items) => [...items, message, 'Choose a lead with a website or verified contact, then generate again.']);
       setNotice(message);
     } finally { setGenerating(false); }
   }
@@ -500,7 +500,7 @@ export function CampaignBuilder() {
     if (!email) return;
     const saved = await api<Email>(`/api/emails/${email.id}`, { method: 'PATCH', body: JSON.stringify({ subject: email.subject, preview: email.preview, body: email.body, cta: email.cta, follow_up_1: email.follow_up_1, follow_up_2: email.follow_up_2 }) });
     setEmail(saved);
-    setEmailActionLogs((items) => [...items, 'Completed: edited email saved to the review queue.']);
+    setEmailActionLogs((items) => [...items, 'Edited email saved to the review queue.']);
     setNotice('Email saved to review queue.');
   }
 
@@ -508,7 +508,7 @@ export function CampaignBuilder() {
     if (!email) return;
     const sent = await api<Email>(`/api/emails/${email.id}/send`, { method: 'POST' });
     setEmail(sent);
-    setEmailActionLogs((items) => [...items, `Completed: email status changed to ${sent.delivery_status}.`]);
+    setEmailActionLogs((items) => [...items, `Email status changed to ${sent.delivery_status}.`]);
     setNotice(`Email ${sent.delivery_status}.`);
   }
 
@@ -653,26 +653,26 @@ export function LeadManager() {
     const data = new FormData(event.currentTarget);
     setFinding(true);
     setFindingStep('Connecting to Apollo and Hunter...');
-    setLeadActionLogs(['Running: connecting to Apollo and Hunter.']);
+    setLeadActionLogs(['Connecting to trusted lead sources.']);
     setNotice('');
     setError('');
     try {
       await delay(120);
       setFindingStep('Searching companies...');
-      setLeadActionLogs((items) => [...items, 'Running: Apollo is searching companies that match the country, industry, and size.']);
+      setLeadActionLogs((items) => [...items, 'Searching companies that match the country, industry, and size.']);
       const found = await api<Lead[]>('/api/leads/find', { method: 'POST', body: JSON.stringify({ industry: data.get('industry'), niche: data.get('industry'), country: data.get('country'), city: data.get('city'), employee_count: data.get('employee_count'), revenue: data.get('revenue'), technologies: splitList(String(data.get('technologies') || '')), keywords: splitList(String(data.get('keywords') || '')), limit: Number(data.get('limit') || 10) }) });
       setFindingStep('Saving verified results...');
-      setLeadActionLogs((items) => [...items, 'Running: Hunter is checking decision-maker emails and confidence.', 'Running: saving new companies without duplicates.']);
+      setLeadActionLogs((items) => [...items, 'Checking decision-maker emails and confidence.', 'Saving new companies without duplicates.']);
       setLeads((items) => [...found, ...items.filter((item) => !found.some((lead) => lead.id === item.id))]);
       setFindingStep('Done.');
       const verified = found.filter((lead) => lead.hunter_verified).length;
       setNotice(found.length ? `Imported ${found.length} companies. Hunter verified ${verified} email${verified === 1 ? '' : 's'} and queued website analysis where possible.` : 'No matching companies were found. Try a broader industry, larger company size, or remove city filters.');
-      setLeadActionLogs((items) => [...items, `Completed: imported ${found.length} companies and verified ${verified} email${verified === 1 ? '' : 's'}.`]);
+      setLeadActionLogs((items) => [...items, `Imported ${found.length} companies and verified ${verified} email${verified === 1 ? '' : 's'}.`]);
     } catch (nextError) {
       setFindingStep('');
       const message = friendlyErrorMessage(nextError, 'Lead discovery could not be completed. Please adjust the filters and try again.');
       setError(message);
-      setLeadActionLogs((items) => [...items, `Failed: ${message}`, 'Retry: broaden the location or company size, then run the search again.']);
+      setLeadActionLogs((items) => [...items, message, 'Broaden the location or company size, then run the search again.']);
     } finally { setFinding(false); }
   }
 
@@ -1486,7 +1486,7 @@ export function OnboardingFlow() {
     const saved = await api<Workspace>('/api/onboarding', { method: 'PUT', body: JSON.stringify({ ...form, step: nextStep }) });
     setWorkspace(saved);
     setStep(nextStep);
-    setNotice(saved.onboarding_completed ? 'Onboarding complete. Your first campaign can be launched from Campaigns.' : 'Progress saved.');
+    setNotice(saved.onboarding_completed ? 'Setup complete. You are ready to create your first campaign.' : 'Progress saved.');
   }
 
   if (!workspace) return <div className="mx-auto max-w-3xl p-4"><Skeleton lines={5} /></div>;
@@ -1496,7 +1496,7 @@ export function OnboardingFlow() {
     { title: 'Industry', why: 'This helps OutreachAI choose relevant sales angles and avoid generic outreach.', next: 'Your lead search will start from businesses that match this market.', time: 'About 20 seconds', success: 'Lead Finder has a clear market to search.' },
     { title: 'Target country', why: 'A focused market gives cleaner lead results and easier campaign review.', next: 'Lead Finder will use this country as the default search area.', time: 'About 15 seconds', success: 'Your first search is focused enough to review quickly.' },
     { title: 'Target customer', why: 'AI writes better emails when it knows who the buyer is.', next: 'Campaign Builder will turn this into the first outreach angle.', time: 'About 30 seconds', success: 'AI has a buyer profile for personalization.' },
-    { title: 'AI connection', why: 'Production AI powers analysis, outreach drafts, and recommendations.', next: 'You can continue now and manage AI settings later if needed.', time: 'Optional', success: 'AI actions remain safe and review-first.' },
+    { title: 'AI writing', why: 'OutreachAI uses your workspace settings to prepare analysis, drafts, and recommendations.', next: 'You can continue now and adjust writing preferences later if needed.', time: 'Optional', success: 'AI actions remain safe and review-first.' },
     { title: 'First campaign', why: 'The fastest path to value is one reviewed campaign with one focused audience.', next: 'After setup, create a campaign and approve the first email draft.', time: 'About 2 minutes', success: 'You are ready to find leads and generate the first reviewed email.' }
   ];
   const current = steps[step - 1] || steps[0];
@@ -1504,11 +1504,11 @@ export function OnboardingFlow() {
   return <main className="mx-auto min-h-screen max-w-3xl px-4 py-8">
     <p className="text-sm font-semibold text-brand">Setup</p>
     <h1 className="mt-2 text-2xl font-bold min-[390px]:text-3xl">Set up OutreachAI</h1>
-    <p className="mt-2 text-slate-600">Finish the basics, then create your first reviewed campaign. You can adjust everything later.</p>
+    <p className="mt-2 text-slate-600">Finish the basics, then create your first reviewed campaign. Most teams complete this in under 3 minutes.</p>
     {notice && <Notice message={notice} /> }
     <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="mb-5 grid gap-2 min-[430px]:grid-cols-3">
-        {steps.map((item, index) => <button key={item.title} onClick={() => setStep(index + 1)} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${step === index + 1 ? 'bg-brand text-white' : 'border border-slate-300 text-slate-700'}`}>{index + 1}. {t(item.title)}</button>)}
+      <div className="mb-5 grid gap-2 min-[430px]:grid-cols-3" aria-label={t('Setup progress')}>
+        {steps.map((item, index) => <div key={item.title} className={`min-h-11 rounded-md px-3 py-3 text-sm font-semibold ${step === index + 1 ? 'bg-brand text-white' : index + 1 < step ? 'bg-teal-50 text-brand' : 'border border-slate-200 text-slate-500'}`}>{index + 1}. {t(item.title)}</div>)}
       </div>
       <div className="rounded-lg bg-slate-50 p-4">
         <h2 className="text-xl font-bold text-ink">{t(current.title)}</h2>
@@ -1524,10 +1524,10 @@ export function OnboardingFlow() {
         {step === 2 && <label className="block"><span className="font-semibold">{t('Industry')}</span><input value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} placeholder={t('Construction, real estate, consulting...')} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
         {step === 3 && <label className="block"><span className="font-semibold">{t('Target country')}</span><input value={form.target_country} onChange={(e) => setForm({ ...form, target_country: e.target.value })} placeholder={t('Germany')} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
         {step === 4 && <label className="block"><span className="font-semibold">{t('Target customer')}</span><input value={form.target_customer} onChange={(e) => setForm({ ...form, target_customer: e.target.value })} placeholder={t('Construction company owners with 10-50 employees')} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
-        {step === 5 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.connect_openai} onChange={(e) => setForm({ ...form, connect_openai: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">{t('Use workspace AI settings')}</span><span className="mt-1 block text-sm text-slate-600">{t('You can manage provider settings later. No customer action is sent automatically.')}</span></span></label>}
+        {step === 5 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.connect_openai} onChange={(e) => setForm({ ...form, connect_openai: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">{t('Use workspace AI settings')}</span><span className="mt-1 block text-sm text-slate-600">{t('You can adjust writing preferences later. No customer action is sent automatically.')}</span></span></label>}
         {step === 6 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.launch_first_campaign} onChange={(e) => setForm({ ...form, launch_first_campaign: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">{t('Prepare my first campaign')}</span><span className="mt-1 block text-sm text-slate-600">{t('OutreachAI will guide you to Campaigns after setup. You still approve every email.')}</span></span></label>}
       </div>
-      <div className="mt-6 grid gap-3 min-[430px]:grid-cols-2"><button onClick={() => save(Math.max(1, step - 1))} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">{t('Back')}</button><button onClick={() => save(Math.min(6, step + 1))} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">{step === 6 ? t('Finish setup') : t('Continue')}</button></div>
+      <div className="mt-6 grid gap-3 min-[430px]:grid-cols-2"><button type="button" onClick={() => setStep(Math.max(1, step - 1))} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">{t('Back')}</button><button onClick={() => save(Math.min(6, step + 1))} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">{step === 6 ? t('Finish setup') : t('Continue')}</button></div>
     </section>
   </main>;
 }

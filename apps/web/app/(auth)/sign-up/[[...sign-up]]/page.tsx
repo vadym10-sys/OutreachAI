@@ -5,9 +5,9 @@ import { OAuthProviderButtons } from "@/components/oauth-provider-buttons";
 function MissingClerkConfig() {
   return (
     <div className="max-w-md rounded-lg border border-slate-200 bg-white p-6 text-center shadow-soft">
-      <h1 className="text-xl font-bold text-ink">Authentication is not configured</h1>
+      <h1 className="text-xl font-bold text-ink">Sign up is temporarily unavailable</h1>
       <p className="mt-3 text-sm leading-6 text-slate-600">
-        Add Clerk environment variables to enable trial signup for this deployment.
+        We could not load secure account creation for this session. Please try again shortly.
       </p>
     </div>
   );
