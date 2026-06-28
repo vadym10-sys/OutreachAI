@@ -6,7 +6,7 @@ import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { I18nProvider } from "@/lib/i18n/provider";
-import { capturePostHogException, identifyPostHogUser, initializePostHog, resetPostHogUser, trackPageView } from "@/lib/posthog";
+import { bootPostHog, capturePostHogException, identifyPostHogUser, resetPostHogUser, trackPageView } from "@/lib/posthog";
 
 function StabilityFallback({ title = "Something went wrong. Please refresh or sign in again." }: { title?: string }) {
   return (
@@ -81,7 +81,7 @@ function PostHogPageContext() {
   const pathname = usePathname();
 
   useEffect(() => {
-    initializePostHog();
+    void bootPostHog();
   }, []);
 
   useEffect(() => {

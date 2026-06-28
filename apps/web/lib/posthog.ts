@@ -1,7 +1,7 @@
 "use client";
 
 import posthog, { type Properties } from "posthog-js";
-import { hasPostHog, posthogHost, posthogKey } from "@/lib/env";
+import { posthogHost, posthogKey } from "@/lib/env";
 
 const ignoredErrorPatterns = [
   /chrome-extension:\/\//i,
@@ -16,17 +16,96 @@ const ignoredErrorPatterns = [
 ];
 
 let initialized = false;
+let runtimePostHogKey = posthogKey;
+let runtimePostHogHost = posthogHost;
+let runtimeRelease = process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0";
+let runtimeEnvironment = process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development";
+let configPromise: Promise<boolean> | null = null;
+
+declare global {
+  interface Window {
+    __OUTREACHAI_POSTHOG__?: {
+      enabled: boolean;
+      host: string | null;
+      loaded: boolean;
+      release: string;
+      environment: string;
+    };
+  }
+}
+
+type ClientConfig = {
+  posthog?: {
+    enabled?: boolean;
+    key?: string;
+    host?: string;
+  };
+  app?: {
+    environment?: string;
+    release?: string;
+  };
+};
 
 export function posthogEnabled() {
-  return hasPostHog && typeof window !== "undefined";
+  return Boolean(runtimePostHogKey) && typeof window !== "undefined";
 }
 
 function release() {
-  return process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0";
+  return runtimeRelease;
 }
 
 function environment() {
-  return process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development";
+  return runtimeEnvironment;
+}
+
+async function loadRuntimeConfig() {
+  if (runtimePostHogKey || typeof window === "undefined") {
+    return Boolean(runtimePostHogKey);
+  }
+
+  try {
+    const response = await fetch("/api/client-config", {
+      cache: "no-store",
+      headers: {
+        Accept: "application/json"
+      }
+    });
+    if (!response.ok) {
+      return false;
+    }
+
+    const config = (await response.json()) as ClientConfig;
+    if (config.posthog?.enabled && config.posthog.key) {
+      runtimePostHogKey = config.posthog.key;
+      runtimePostHogHost = config.posthog.host || runtimePostHogHost;
+      runtimeRelease = config.app?.release || runtimeRelease;
+      runtimeEnvironment = config.app?.environment || runtimeEnvironment;
+      window.__OUTREACHAI_POSTHOG__ = {
+        enabled: true,
+        host: runtimePostHogHost,
+        loaded: false,
+        release: runtimeRelease,
+        environment: runtimeEnvironment
+      };
+      return true;
+    }
+  } catch (error) {
+    console.error("PostHog runtime config could not be loaded", error);
+  }
+
+  return false;
+}
+
+export function bootPostHog() {
+  if (initializePostHog()) {
+    return Promise.resolve(true);
+  }
+
+  if (!configPromise) {
+    configPromise = loadRuntimeConfig().then(() => initializePostHog());
+  }
+
+  return configPromise;
 }
 
 export function initializePostHog() {
@@ -39,8 +118,8 @@ export function initializePostHog() {
     return true;
   }
 
-  posthog.init(posthogKey, {
-    api_host: posthogHost,
+  posthog.init(runtimePostHogKey, {
+    api_host: runtimePostHogHost,
     defaults: "2025-05-24",
     autocapture: {
       dom_event_allowlist: ["click", "change", "submit"],
@@ -77,6 +156,13 @@ export function initializePostHog() {
   });
 
   initialized = true;
+  window.__OUTREACHAI_POSTHOG__ = {
+    enabled: true,
+    host: runtimePostHogHost,
+    loaded: true,
+    release: release(),
+    environment: environment()
+  };
   return true;
 }
 
@@ -89,70 +175,65 @@ export function identifyPostHogUser({
   email?: string;
   workspaceId?: string;
 }) {
-  if (!initializePostHog() || !userId) {
+  if (!userId) {
     return;
   }
 
-  const safeWorkspaceId = workspaceId || "unknown-workspace";
-  posthog.identify(userId, {
-    email,
-    workspace_id: safeWorkspaceId
-  });
-  posthog.group("workspace", safeWorkspaceId);
-  posthog.register({
-    user_id: userId,
-    workspace_id: safeWorkspaceId,
-    current_route: typeof window !== "undefined" ? window.location.pathname : "",
-    release: release(),
-    environment: environment()
+  void bootPostHog().then((ready) => {
+    if (!ready) return;
+    const safeWorkspaceId = workspaceId || "unknown-workspace";
+    posthog.identify(userId, {
+      email,
+      workspace_id: safeWorkspaceId
+    });
+    posthog.group("workspace", safeWorkspaceId);
+    posthog.register({
+      user_id: userId,
+      workspace_id: safeWorkspaceId,
+      current_route: typeof window !== "undefined" ? window.location.pathname : "",
+      release: release(),
+      environment: environment()
+    });
   });
 }
 
 export function resetPostHogUser() {
-  if (!initializePostHog()) {
-    return;
-  }
-
-  posthog.reset();
+  void bootPostHog().then((ready) => {
+    if (ready) posthog.reset();
+  });
 }
 
 export function trackEvent(name: string, properties: Properties = {}) {
-  if (!initializePostHog()) {
-    return;
-  }
-
-  posthog.capture(name, {
-    ...properties,
-    current_route: typeof window !== "undefined" ? window.location.pathname : "",
-    release: release(),
-    environment: environment()
+  void bootPostHog().then((ready) => {
+    if (!ready) return;
+    posthog.capture(name, {
+      ...properties,
+      current_route: typeof window !== "undefined" ? window.location.pathname : "",
+      release: release(),
+      environment: environment()
+    });
   });
 }
 
 export function trackPageView(pathname: string) {
-  if (!initializePostHog()) {
-    return;
-  }
+  void bootPostHog().then((ready) => {
+    if (!ready) return;
+    posthog.register({
+      current_route: pathname,
+      release: release(),
+      environment: environment()
+    });
 
-  posthog.register({
-    current_route: pathname,
-    release: release(),
-    environment: environment()
-  });
-
-  posthog.capture("$pageview", {
-    current_url: typeof window !== "undefined" ? window.location.href : pathname,
-    current_route: pathname,
-    release: release(),
-    environment: environment()
+    posthog.capture("$pageview", {
+      current_url: typeof window !== "undefined" ? window.location.href : pathname,
+      current_route: pathname,
+      release: release(),
+      environment: environment()
+    });
   });
 }
 
 export function capturePostHogException(error: unknown, properties: Properties = {}) {
-  if (!initializePostHog()) {
-    return;
-  }
-
   const message = error instanceof Error ? error.message : String(error || "Unknown client error");
   const stack = error instanceof Error ? error.stack : undefined;
 
@@ -160,13 +241,16 @@ export function capturePostHogException(error: unknown, properties: Properties =
     return;
   }
 
-  posthog.startSessionRecording();
-  posthog.capture("$exception", {
-    ...properties,
-    $exception_message: message,
-    $exception_stack_trace_raw: stack,
-    current_route: typeof window !== "undefined" ? window.location.pathname : "",
-    release: release(),
-    environment: environment()
+  void bootPostHog().then((ready) => {
+    if (!ready) return;
+    posthog.startSessionRecording();
+    posthog.capture("$exception", {
+      ...properties,
+      $exception_message: message,
+      $exception_stack_trace_raw: stack,
+      current_route: typeof window !== "undefined" ? window.location.pathname : "",
+      release: release(),
+      environment: environment()
+    });
   });
 }
