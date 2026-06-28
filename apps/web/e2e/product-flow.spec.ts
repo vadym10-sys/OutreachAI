@@ -60,7 +60,7 @@ const teamRouterDashboard = {
 };
 
 test.beforeEach(async ({ page }) => {
-  await page.route("http://127.0.0.1:8000/api/**", async (route) => {
+  await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
     let body: unknown = {};
@@ -175,8 +175,9 @@ for (const width of [320, 390, 480]) {
     });
     await page.reload();
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-    await expect(page.getByRole("main").getByText("Today's priority", { exact: true })).toBeVisible();
-    await expect(page.getByRole("main").getByText("Suggested next action", { exact: true })).toBeVisible();
+    await expect(page.getByRole("main").getByText(/Today's priority|Prioridad de hoy|Dzisiejszy priorytet|Priorité du jour|Priorità di oggi/)).toBeVisible();
+    await expect(page.getByRole("main").getByText(/Workspace Setup|Configuración del espacio|Konfiguracja workspace|Configuration workspace/)).toBeVisible();
+    await expect(page.locator('main header a[href="/dashboard/campaigns"]')).toHaveCount(1);
     await expect(page.getByRole("main").getByText("Campaign health", { exact: true })).toBeVisible();
     const languageSelect = page.locator('select[aria-label]').first();
     await languageSelect.selectOption("es");
@@ -185,6 +186,10 @@ for (const width of [320, 390, 480]) {
     await page.reload();
     await expect(page.getByRole("heading", { name: /Dashboard|Panel/ })).toBeVisible();
     await page.locator('select').first().selectOption("en");
+    await page.evaluate(() => {
+      window.localStorage.setItem("outreachai.locale", "en");
+      document.cookie = "outreachai_locale=en; path=/; max-age=31536000; SameSite=Lax";
+    });
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
     await expect(page.getByRole("button", { name: "AI CEO Report" })).toHaveCount(0);
 
@@ -235,6 +240,9 @@ test("AI CEO voice controls stay hidden from the default dashboard", async ({ pa
 });
 
 test("Owner Console is hidden from non-owner users and direct access returns 403", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.removeItem("outreachai.e2eUserEmail");
+  });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/dashboard");
   await expect(page.getByRole("link", { name: /Owner Console/ })).toHaveCount(0);

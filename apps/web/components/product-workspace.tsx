@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
-import { Bell, Brain, Check, CheckCircle2, ClipboardList, Loader2, Mic, Play, Plus, Save, Search, Send, Sparkles, Wand2, X } from 'lucide-react';
+import { Brain, Check, CheckCircle2, ClipboardList, Loader2, Mic, Play, Plus, Save, Search, Send, Sparkles, Wand2, X } from 'lucide-react';
 import { clientApi, friendlyErrorMessage, splitList } from '@/lib/client-api';
 import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -14,7 +14,6 @@ const pipeline = ['New', 'Qualified', 'Contacted', 'Interested', 'Meeting', 'Won
 const tones = ['Professional', 'Friendly', 'Direct', 'Consultative'];
 const salesModes = ['Review Mode', 'Semi-Auto Mode'];
 const emptyMetrics: DashboardMetrics = { leads: 0, campaigns: 0, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: 'Starter', usage: {} };
-const dashboardOnboardingCopy = 'Create your first campaign or import leads to start seeing live metrics, recommendations, and revenue signals.';
 const simpleExperience = process.env.NEXT_PUBLIC_SIMPLE_EXPERIENCE !== 'false';
 const showAdvancedSettings = process.env.NEXT_PUBLIC_SHOW_ADVANCED_SETTINGS === 'true';
 const devApi = async function api<T>(path: string, init: RequestInit = {}) {
@@ -59,43 +58,6 @@ function EmptyState({ title, copy }: { title: string; copy: string }) {
   return <div className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center"><p className="font-semibold text-ink">{title}</p><p className="mt-2 text-sm text-slate-500">{copy}</p></div>;
 }
 
-function CustomerJourney({ currentStep }: { currentStep: number }) {
-  const steps = [
-    ['Register', 'Your account is ready.'],
-    ['Connect website', 'Add your company so AI understands what you sell.'],
-    ['AI analyzes company', 'OutreachAI prepares the context for better targeting.'],
-    ['Find leads', 'Choose one market and one customer type.'],
-    ['Generate outreach', 'AI writes the first email for review.'],
-    ['Review', 'Check the lead and message before anything is sent.'],
-    ['Approve', 'You decide what goes live.'],
-    ['Campaign running', 'OutreachAI tracks replies and meetings.'],
-    ['Results', 'Use real metrics to improve the next campaign.']
-  ];
-
-  return <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-      <div>
-        <p className="text-sm font-semibold text-brand">First success path</p>
-        <h2 className="mt-1 text-xl font-bold text-ink">From signup to first approved campaign</h2>
-      </div>
-      <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">Approval-first</span>
-    </div>
-    <ol className="mt-5 grid gap-3 md:grid-cols-3">
-      {steps.map(([title, copy], index) => {
-        const done = index + 1 < currentStep;
-        const active = index + 1 === currentStep;
-        return <li key={title} className={`rounded-md border p-3 text-sm ${active ? 'border-brand bg-teal-50' : done ? 'border-teal-100 bg-white' : 'border-slate-200 bg-slate-50'}`}>
-          <div className="flex items-center gap-2">
-            <span className={`grid size-7 place-items-center rounded-full text-xs font-bold ${done ? 'bg-brand text-white' : active ? 'bg-ink text-white' : 'bg-white text-slate-500'}`}>{done ? '✓' : index + 1}</span>
-            <p className="font-semibold text-ink">{title}</p>
-          </div>
-          <p className="mt-2 text-slate-600">{copy}</p>
-        </li>;
-      })}
-    </ol>
-  </section>;
-}
-
 function Notice({ message, kind = 'success' }: { message: string; kind?: 'success' | 'error' | 'warning' }) {
   const color = kind === 'error' ? 'border-red-200 bg-red-50 text-red-700' : kind === 'warning' ? 'border-orange-200 bg-orange-50 text-orange-700' : 'border-teal-200 bg-teal-50 text-brand';
   return <div className={`mt-4 rounded-md border px-4 py-3 text-sm ${color}`}>{message}</div>;
@@ -114,10 +76,6 @@ function textValue(value: unknown, fallback = '') {
   return typeof value === 'string' && value.trim() ? value : fallback;
 }
 
-function boolValue(value: unknown) {
-  return Boolean(value);
-}
-
 function speechRecognitionLocale(language: string) {
   if (language === 'Russian') return 'ru-RU';
   if (language === 'Spanish') return 'es-ES';
@@ -127,109 +85,207 @@ function speechRecognitionLocale(language: string) {
   return 'en-US';
 }
 
+type DashboardStageId = 'registration' | 'company' | 'leads' | 'campaign' | 'approval' | 'launch' | 'results';
+
+type DashboardStage = {
+  id: DashboardStageId;
+  labelKey: string;
+  helpKey: string;
+  complete: boolean;
+  active: boolean;
+};
+
+function DashboardSkeleton() {
+  const { t } = useI18n();
+  return <div className="space-y-5" aria-label={t('dashboard.loading')}>
+    <div className="h-40 animate-pulse rounded-lg bg-slate-200" />
+    <div className="h-24 animate-pulse rounded-lg bg-slate-200" />
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="h-28 animate-pulse rounded-lg bg-slate-200" />
+      <div className="h-28 animate-pulse rounded-lg bg-slate-200" />
+      <div className="h-28 animate-pulse rounded-lg bg-slate-200" />
+    </div>
+  </div>;
+}
+
+function DashboardProgressTracker({ stages }: { stages: DashboardStage[] }) {
+  const { t } = useI18n();
+  return <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="dashboard-progress-title">
+    <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <p className="text-sm font-semibold text-brand">{t('dashboard.progressEyebrow')}</p>
+        <h2 id="dashboard-progress-title" className="mt-1 text-lg font-bold text-ink">{t('dashboard.progressTitle')}</h2>
+      </div>
+      <p className="max-w-xl text-sm text-slate-600">{t('dashboard.progressHelp')}</p>
+    </div>
+    <ol className="mt-5 grid gap-2 min-[480px]:grid-cols-2 lg:grid-cols-7">
+      {stages.map((stage, index) => {
+        const className = 'rounded-md border p-3 text-sm ' + (stage.active ? 'border-brand bg-teal-50' : stage.complete ? 'border-teal-100 bg-white' : 'border-slate-200 bg-slate-50');
+        const markerClassName = 'grid size-7 shrink-0 place-items-center rounded-full text-xs font-bold ' + (stage.complete ? 'bg-brand text-white' : stage.active ? 'bg-ink text-white' : 'bg-white text-slate-500');
+        return <li key={stage.id} aria-current={stage.active ? 'step' : undefined} className={className}>
+          <div className="flex items-center gap-2">
+            <span className={markerClassName}>{stage.complete ? '✓' : index + 1}</span>
+            <p className="font-semibold text-ink">{t(stage.labelKey)}</p>
+          </div>
+          <p className="mt-2 text-xs leading-5 text-slate-600">{t(stage.helpKey)}</p>
+        </li>;
+      })}
+    </ol>
+  </section>;
+}
+
+function DashboardCelebrations({ milestones }: { milestones: string[] }) {
+  const { t } = useI18n();
+  if (!milestones.length) return null;
+  return <section className="grid gap-3 sm:grid-cols-2" aria-label={t('dashboard.celebrations')}>
+    {milestones.map((key) => <article key={key} className="rounded-lg border border-teal-200 bg-teal-50 p-4 text-sm text-brand">
+      <p className="font-bold">{t('dashboard.milestoneComplete')}</p>
+      <p className="mt-1 text-slate-700">{t(key)}</p>
+    </article>)}
+  </section>;
+}
+
 export function DashboardHome() {
   const { api, ready } = useTokenApi();
+  const { t, formatCurrency, formatNumber } = useI18n();
   const [metrics, setMetrics] = useState<DashboardMetrics>(emptyMetrics);
   const [growth, setGrowth] = useState<GrowthEngine | null>(null);
-  const [activity, setActivity] = useState<Activity[]>([]);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [goalInput, setGoalInput] = useState('I want 20 meetings this month.');
   const [loading, setLoading] = useState(true);
-  const [goalSaving, setGoalSaving] = useState(false);
   const [error, setError] = useState('');
+  const [optimisticAction, setOptimisticAction] = useState('');
+
   useEffect(() => {
     if (!ready) return;
     void Promise.resolve()
       .then(() => {
         setLoading(true);
         setError('');
-        return Promise.all([api<DashboardMetrics>('/api/dashboard'), api<GrowthEngine>('/api/growth-engine'), api<Activity[]>('/api/activity'), api<Notification[]>('/api/notifications')]);
+        return Promise.all([api<DashboardMetrics>('/api/dashboard'), api<GrowthEngine>('/api/growth-engine')]);
       })
-      .then(([nextMetrics, nextGrowth, nextActivity, nextNotifications]) => {
+      .then(([nextMetrics, nextGrowth]) => {
         setMetrics(nextMetrics);
         setGrowth(nextGrowth);
-        setGoalInput(nextGrowth?.goal?.goal || 'I want 20 meetings this month.');
-        setActivity(nextActivity);
-        setNotifications(nextNotifications);
       })
       .catch((nextError) => {
         console.error('Dashboard data could not be loaded', nextError);
-        setError('Dashboard data is temporarily unavailable.');
+        setError(t('dashboard.loadError'));
       })
       .finally(() => setLoading(false));
-  }, [api, ready]);
+  }, [api, ready, t]);
 
-  async function saveGoal(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setGoalSaving(true);
-    setError('');
-    try {
-      const goal = await api<GrowthEngine['goal']>('/api/growth-engine/goal', { method: 'POST', body: JSON.stringify({ goal: goalInput }) });
-      setGrowth((current) => current ? { ...current, goal } : current);
-    } catch (nextError) {
-      console.error('Growth goal could not be saved', nextError);
-      setError('Your goal could not be saved. Please try again.');
-    } finally {
-      setGoalSaving(false);
-    }
-  }
+  const hasLeads = metrics.leads > 0;
+  const hasCampaigns = metrics.campaigns > 0;
+  const hasEmails = metrics.emails_sent > 0;
+  const hasReplies = metrics.replies > 0;
+  const hasRevenue = metricNumber(metrics.revenue) > 0;
+  const aiResult = growth?.briefing?.recommended_actions?.[0];
+  const hasAiResult = Boolean(aiResult?.title || aiResult?.action || aiResult?.why);
 
-  const cards = [
-    ['Leads', metrics.leads], ['Campaigns', metrics.campaigns], ['Emails sent', metrics.emails_sent], ['Delivered', metrics.delivered],
-    ['Opened', metrics.opened], ['Replies', metrics.replies], ['Bounces', metrics.bounces], ['Open rate', `${metrics.open_rate}%`],
-    ['Reply rate', `${metrics.reply_rate}%`], ['CTR', `${metrics.ctr}%`], ['Conversion', `${metrics.conversion_rate}%`], ['Meetings', metrics.meetings], ['Revenue', `€${metricNumber(metrics.revenue).toLocaleString()}`], ['Forecast', `€${metricNumber(metrics.revenue_forecast).toLocaleString()}`], ['MRR', `€${metricNumber(metrics.mrr).toLocaleString()}`], ['ARR', `€${metricNumber(metrics.arr).toLocaleString()}`], ['Plan', metrics.plan || 'Starter']
+  const currentStage: DashboardStageId = hasRevenue || hasReplies
+    ? 'results'
+    : hasEmails
+      ? 'launch'
+      : hasCampaigns
+        ? 'approval'
+        : hasLeads
+          ? 'campaign'
+          : 'leads';
+
+  const primaryAction = currentStage === 'results'
+    ? { href: '/dashboard/analytics', label: t('dashboard.ctaReviewResults'), help: t('dashboard.ctaReviewResultsHelp') }
+    : currentStage === 'launch'
+      ? { href: '/dashboard/inbox', label: t('dashboard.ctaCheckReplies'), help: t('dashboard.ctaCheckRepliesHelp') }
+      : currentStage === 'approval'
+        ? { href: '/dashboard/campaigns', label: t('dashboard.ctaApproveCampaign'), help: t('dashboard.ctaApproveCampaignHelp') }
+        : currentStage === 'campaign'
+          ? { href: '/dashboard/campaigns', label: t('dashboard.ctaCreateCampaign'), help: t('dashboard.ctaCreateCampaignHelp') }
+          : { href: '/dashboard/leads', label: t('dashboard.ctaFindLeads'), help: t('dashboard.ctaFindLeadsHelp') };
+
+  const stages: DashboardStage[] = [
+    { id: 'registration', labelKey: 'dashboard.stepRegistration', helpKey: 'dashboard.stepRegistrationHelp', complete: true, active: false },
+    { id: 'company', labelKey: 'dashboard.stepCompany', helpKey: 'dashboard.stepCompanyHelp', complete: true, active: false },
+    { id: 'leads', labelKey: 'dashboard.stepFindLeads', helpKey: 'dashboard.stepFindLeadsHelp', complete: hasLeads, active: currentStage === 'leads' },
+    { id: 'campaign', labelKey: 'dashboard.stepCampaign', helpKey: 'dashboard.stepCampaignHelp', complete: hasCampaigns, active: currentStage === 'campaign' },
+    { id: 'approval', labelKey: 'dashboard.stepApproval', helpKey: 'dashboard.stepApprovalHelp', complete: hasEmails, active: currentStage === 'approval' },
+    { id: 'launch', labelKey: 'dashboard.stepLaunch', helpKey: 'dashboard.stepLaunchHelp', complete: hasReplies || hasRevenue, active: currentStage === 'launch' },
+    { id: 'results', labelKey: 'dashboard.stepResults', helpKey: 'dashboard.stepResultsHelp', complete: hasRevenue, active: currentStage === 'results' },
   ];
 
-  const funnel = metrics.funnel || [];
-  if (simpleExperience) {
-    const firstAction = metrics.campaigns > 0 ? { href: '/dashboard/campaigns', label: 'Review campaign' } : metrics.leads > 0 ? { href: '/dashboard/campaigns', label: 'Create campaign' } : { href: '/dashboard/leads', label: 'Find leads' };
-    const todayPriority = metrics.campaigns > 0
-      ? 'Review your campaign health and approve the next outreach draft.'
-      : metrics.leads > 0
-        ? 'Turn your reviewed leads into one simple campaign.'
-        : 'Find your first focused list of companies to contact.';
-    const latestAiResult = textValue(growth?.briefing?.recommended_actions?.[0]?.title, activity[0]?.action?.replaceAll('.', ' ') || 'No AI result yet');
-    const latestAiCopy = textValue(growth?.briefing?.recommended_actions?.[0]?.why, activity[0] ? 'Latest workspace activity is ready for review.' : 'Ask OutreachAI to find leads or create a campaign and the result will appear here.');
-    const campaignHealth = metrics.campaigns > 0 ? `${metrics.reply_rate}% reply rate · ${metrics.open_rate}% open rate` : 'No campaign running yet';
-    return <div className="min-w-0 space-y-6">
-      <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-        <p className="text-sm font-semibold text-brand">Today&apos;s workspace</p>
-        <h1 className="mt-2 text-2xl font-bold min-[390px]:text-3xl">Dashboard</h1>
-        <p className="mt-2 max-w-2xl text-slate-600">See what needs attention today, then take one clear next step.</p>
-        <Link href={firstAction.href} className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">{firstAction.label}</Link>
-      </header>
-      {loading ? <Skeleton lines={4} /> : <section className="rounded-lg border border-teal-200 bg-teal-50 p-5">
-        <p className="text-sm font-semibold text-brand">Today&apos;s priority</p>
-        <h2 className="mt-2 text-xl font-bold text-ink">{todayPriority}</h2>
-        <p className="mt-2 text-sm text-slate-700">OutreachAI prepares the work. You review and approve before anything is sent.</p>
+  const milestones = [
+    hasLeads ? 'dashboard.celebrationLeads' : '',
+    hasCampaigns ? 'dashboard.celebrationCampaign' : '',
+    hasEmails ? 'dashboard.celebrationLaunch' : '',
+    hasRevenue ? 'dashboard.celebrationRevenue' : '',
+  ].filter(Boolean);
+
+  const visibleMetrics = [
+    hasLeads ? { label: t('dashboard.metricLeads'), value: formatNumber(metrics.leads), help: t('dashboard.metricLeadsHelp') } : null,
+    hasCampaigns ? { label: t('dashboard.metricCampaigns'), value: formatNumber(metrics.campaigns), help: t('dashboard.metricCampaignsHelp') } : null,
+    hasEmails ? { label: t('dashboard.metricEmails'), value: formatNumber(metrics.emails_sent), help: t('dashboard.metricEmailsHelp') } : null,
+    metrics.replies > 0 ? { label: t('dashboard.metricReplies'), value: formatNumber(metrics.replies), help: t('dashboard.metricRepliesHelp') } : null,
+    metrics.meetings > 0 ? { label: t('dashboard.metricMeetings'), value: formatNumber(metrics.meetings), help: t('dashboard.metricMeetingsHelp') } : null,
+    hasRevenue ? { label: t('dashboard.metricRevenue'), value: formatCurrency(metricNumber(metrics.revenue)), help: t('dashboard.metricRevenueHelp') } : null,
+  ].filter(Boolean) as { label: string; value: string; help: string }[];
+
+  return <div className="min-w-0 space-y-6">
+    <header className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+        <div className="max-w-3xl">
+          <p className="text-sm font-semibold text-brand">{t('dashboard.eyebrow')}</p>
+          <h1 className="mt-2 text-3xl font-bold tracking-normal text-ink min-[430px]:text-4xl">{t('dashboard.title')}</h1>
+          <p className="mt-3 text-base leading-7 text-slate-600">{t('dashboard.v2Subtitle')}</p>
+        </div>
+        <Link href={primaryAction.href} onClick={() => setOptimisticAction(primaryAction.label)} className="focus-ring inline-flex min-h-11 w-full items-center justify-center rounded-md bg-ink px-5 py-3 text-sm font-bold text-white sm:w-auto" aria-describedby="dashboard-primary-help">
+          {primaryAction.label}
+        </Link>
+      </div>
+      <p id="dashboard-primary-help" className="mt-4 max-w-2xl text-sm text-slate-600">{primaryAction.help}</p>
+      {optimisticAction && <p role="status" className="mt-4 rounded-md bg-teal-50 px-4 py-3 text-sm font-semibold text-brand">{t('dashboard.optimisticPrefix')} {optimisticAction}</p>}
+    </header>
+
+    {loading ? <DashboardSkeleton /> : <>
+      {error && <Notice message={error} kind="warning" />}
+
+      <section className="rounded-xl border border-teal-200 bg-teal-50 p-5 shadow-sm sm:p-6" aria-labelledby="dashboard-priority-title">
+        <p className="text-sm font-semibold text-brand">{t('dashboard.priorityEyebrow')}</p>
+        <h2 id="dashboard-priority-title" className="mt-2 text-2xl font-bold text-ink">{t('dashboard.stage.' + currentStage + '.title')}</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-700">{t('dashboard.stage.' + currentStage + '.copy')}</p>
+      </section>
+
+      <DashboardProgressTracker stages={stages} />
+      <DashboardCelebrations milestones={milestones} />
+
+      {visibleMetrics.length > 0 ? <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-label={t('dashboard.relevantSignals')}>
+        {visibleMetrics.map((item) => <article key={item.label} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm font-semibold text-slate-500">{item.label}</p>
+          <p className="mt-2 text-3xl font-bold text-ink">{item.value}</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{item.help}</p>
+        </article>)}
+      </section> : <section className="rounded-lg border border-dashed border-slate-300 bg-white p-6 text-center" aria-labelledby="dashboard-empty-title">
+        <p className="text-sm font-semibold text-brand">{t('dashboard.emptyEyebrow')}</p>
+        <h2 id="dashboard-empty-title" className="mt-2 text-xl font-bold text-ink">{t('dashboard.emptyTitle')}</h2>
+        <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t('dashboard.emptyCopy')}</p>
       </section>}
-      {error && <Notice message="Your workspace is ready. Live metrics will appear after your first lead or campaign." kind="warning" />}
-      <section className="grid gap-4 xl:grid-cols-2">
-        <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm font-semibold text-brand">Suggested next action</p>
-          <h2 className="mt-2 text-xl font-bold text-ink">{firstAction.label}</h2>
-          <p className="mt-2 text-sm text-slate-600">{metrics.leads > 0 ? 'Use your reviewed companies to generate outreach and approve the first campaign.' : 'Start with a country, industry, and company size. Keep the first search narrow.'}</p>
-          <Link href={firstAction.href} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white">{firstAction.label}</Link>
-        </article>
-        <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm font-semibold text-brand">Latest AI result</p>
-          <h2 className="mt-2 text-xl font-bold text-ink">{latestAiResult}</h2>
-          <p className="mt-2 text-sm text-slate-600">{latestAiCopy}</p>
-          <Link href="/dashboard/sales-employees" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-ink">View AI work</Link>
-        </article>
-      </section>
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {[
-          ['Campaign health', campaignHealth],
-          ['Revenue summary', `€${metricNumber(metrics.revenue).toLocaleString()} revenue`],
-          ['Meetings', metrics.meetings],
-          ['Subscription', metrics.plan || 'Starter']
-        ].map(([label, value]) => <article key={label} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><p className="text-sm text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold text-ink">{value}</p></article>)}
-      </section>
-      <CustomerJourney currentStep={metrics.campaigns > 0 ? 8 : metrics.leads > 0 ? 5 : 4} />
-    </div>;
-  }
-  return <div className="min-w-0"><div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><h1 className="text-2xl font-bold min-[390px]:text-3xl">Dashboard</h1><p className="mt-2 text-slate-600">Your AI Growth Engine refreshes daily with opportunities, recommendations, goals, and revenue signals.</p></div></div>{loading ? <div className="mt-6"><Skeleton lines={5} /></div> : error ? <div className="mt-6 space-y-6"><section className="rounded-lg border border-teal-200 bg-teal-50 p-6"><p className="text-sm font-semibold text-brand">Workspace ready</p><h2 className="mt-2 text-2xl font-bold text-ink">Start with your first revenue action</h2><p className="mt-2 text-slate-700">{dashboardOnboardingCopy}</p><div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/campaigns" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white">Create campaign</Link><Link href="/dashboard/leads" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-ink">Import leads</Link></div></section><section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.slice(0, 8).map(([label, value]) => <article key={label} className="rounded-lg border border-slate-200 bg-white p-4"><p className="text-sm text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold">{value}</p></article>)}</section></div> : <><section className="mt-6 rounded-lg border border-teal-200 bg-teal-50 p-5"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div><p className="text-sm font-semibold text-brand">Today&apos;s AI Briefing · {growth?.briefing?.date || new Date().toISOString().slice(0, 10)}</p><h2 className="mt-1 text-2xl font-bold">Review {growth?.opportunity_feed?.length || 0} revenue opportunities before sending anything</h2><p className="mt-2 text-sm text-slate-700">New leads found: {growth?.briefing?.new_leads_found || 0} · Meetings booked: {growth?.briefing?.meetings_booked || 0} · Reply rate: {metrics.reply_rate}%</p></div><span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-brand">Approval required</span></div><div className="mt-4 grid gap-3 lg:grid-cols-3">{(growth?.briefing?.recommended_actions || []).map((item, index) => <article key={index} className="rounded-md bg-white p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Recommended action')}</p><p className="mt-1 text-slate-600">{textValue(item.why, 'AI found a revenue lever worth reviewing.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.action, 'Review now')}</p></article>)}</div></section><section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([label, value]) => <article key={label} className="rounded-lg border border-slate-200 bg-white p-4"><p className="text-sm text-slate-500">{label}</p><p className="mt-2 text-2xl font-bold">{value}</p></article>)}</section><section className="mt-8 grid gap-6 xl:grid-cols-[1.2fr_0.8fr]"><div className="space-y-6"><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Opportunity feed</h2><div className="mt-4 space-y-3">{(growth?.opportunity_feed || []).map((item, index) => <article key={index} className="rounded-md border border-slate-200 p-3"><div className="flex flex-col gap-2 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between"><div><p className="font-semibold">{textValue(item.company, 'Opportunity')}</p><p className="mt-1 text-sm text-slate-500">{textValue(item.industry, 'ICP')} · {textValue(item.country, 'Target market')} · {textValue(item.status, 'Recommended')}</p></div><span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">Score {metricNumber(item.score)}</span></div><p className="mt-2 text-sm text-slate-600">{textValue(item.reason, 'Matches your ideal customer profile.')}</p><p className="mt-2 text-sm font-semibold text-ink">{textValue(item.recommended_action, 'Prepare outreach for approval.')}</p></article>)}</div></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Smart recommendations</h2><div className="mt-4 grid gap-3 lg:grid-cols-3">{(growth?.smart_recommendations || []).map((item, index) => <article key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Recommendation')}</p><p className="mt-1 text-slate-600">{textValue(item.why, 'AI found a pattern in your workspace data.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.action, 'Review')}</p></article>)}</div></section><section className="grid gap-6 lg:grid-cols-2"><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Website monitoring</h2><div className="mt-4 space-y-3">{(growth?.website_monitoring || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.company, 'Tracked company')}</p><p className="mt-1 text-slate-600">{textValue(item.change, 'No change detected.')}</p><p className="mt-2 text-xs font-semibold uppercase text-brand">{textValue(item.priority, 'info')} · {textValue(item.recommended_action, 'Monitor')}</p></div>)}</div></div><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Campaign optimization</h2><div className="mt-4 space-y-3">{(growth?.campaign_optimizations || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.campaign, 'Campaign')}</p><p className="mt-1 text-slate-600">Open {metricNumber(item.open_rate)}% · Reply {metricNumber(item.reply_rate)}%</p><p className="mt-2 text-brand">{textValue(item.suggestion, 'Review campaign performance.')}</p></div>)}</div></div></section><section className="grid gap-6 lg:grid-cols-2"><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Reply assistant</h2><div className="mt-4 space-y-3">{(growth?.reply_assistant || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.subject, 'Reply')}</p><p className="mt-1 text-slate-600">Classification: {textValue(item.classification, 'Question')}</p><p className="mt-2 text-slate-600">{textValue(item.suggested_reply, 'AI will suggest a reply when messages arrive.')}</p><p className="mt-2 font-semibold text-brand">{textValue(item.next_step, 'Review')}</p></div>)}</div></div><div className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Activity timeline</h2>{activity.length ? <div className="mt-4 space-y-3">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item.action.replaceAll('.', ' ')}</p><p className="text-slate-500">{new Date(item.created_at).toLocaleString()}</p></div>)}</div> : <EmptyState title="No activity yet" copy="Create a campaign, import leads, or generate an email to start the timeline." />}</div></section></div><aside className="space-y-6"><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Revenue engine</h2><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Pipeline</dt><dd className="text-xl font-bold">€{metricNumber(growth?.revenue_dashboard?.estimated_pipeline).toLocaleString()}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Meetings</dt><dd className="text-xl font-bold">{metricNumber(growth?.revenue_dashboard?.meetings)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Influenced</dt><dd className="text-xl font-bold">€{metricNumber(growth?.revenue_dashboard?.revenue_influenced).toLocaleString()}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">ROI</dt><dd className="text-xl font-bold">{metricNumber(growth?.revenue_dashboard?.roi)}x</dd></div></dl></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Goal</h2><form onSubmit={saveGoal} className="mt-4 space-y-3"><textarea value={goalInput} onChange={(event) => setGoalInput(event.target.value)} className="min-h-24 w-full rounded-md border border-slate-300 p-3 text-sm" /><button disabled={goalSaving} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{goalSaving ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} Save goal</button></form><div className="mt-4 rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{growth?.goal?.meetings_booked || 0} / {growth?.goal?.target_meetings || 0} meetings</p><div className="mt-2 h-2 rounded-full bg-slate-200"><div className="h-2 rounded-full bg-brand" style={{ width: `${growth?.goal?.progress_percent || 0}%` }} /></div><p className="mt-2 text-slate-600">{growth?.goal?.next_action}</p></div><ol className="mt-4 space-y-2 text-sm">{(growth?.goal?.execution_plan || []).map((item, index) => <li key={item} className="rounded-md bg-slate-50 p-2"><span className="font-semibold">{index + 1}. </span>{item}</li>)}</ol></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">AI proactive mode</h2><div className="mt-4 space-y-3">{(growth?.proactive_mode || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p>{textValue(item.message, 'AI recommendation ready.')}</p><p className="mt-2 text-xs font-bold text-brand">{boolValue(item.approval_required) ? 'Approval required' : 'Internal only'}</p></div>)}</div></section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="flex items-center gap-2 font-bold"><Bell size={18} /> Notifications</h2>{notifications.length ? <div className="mt-4 space-y-3">{notifications.slice(0, 5).map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{item.title}</p><p className="text-slate-500">{item.message}</p></div>)}</div> : <div className="mt-4 space-y-3">{(growth?.notifications || []).map((item, index) => <div key={index} className="rounded-md bg-slate-50 p-3 text-sm"><p className="font-semibold">{textValue(item.title, 'Growth update')}</p><p className="text-slate-500">{textValue(item.message, 'Recommendations are ready.')}</p></div>)}</div>}</section><section className="rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">AI performance</h2><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">AI actions</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.ai_actions)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Time saved</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.time_saved_hours)}h</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Leads</dt><dd className="text-xl font-bold">{metricNumber(growth?.performance?.leads_generated)}</dd></div><div className="rounded-md bg-slate-50 p-3"><dt className="text-slate-500">Revenue</dt><dd className="text-xl font-bold">€{metricNumber(growth?.performance?.revenue_influenced).toLocaleString()}</dd></div></dl></section></aside></section><section className="mt-8 rounded-lg border border-slate-200 bg-white p-5"><h2 className="font-bold">Conversion funnel</h2>{funnel.length ? <div className="mt-4 space-y-3">{funnel.map((item) => <div key={item.status}><div className="flex justify-between text-sm"><span>{item.status}</span><span className="font-semibold">{item.count}</span></div><div className="mt-1 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-brand" style={{ width: `${Math.min(100, Math.max(8, metrics.leads ? item.count / metrics.leads * 100 : 0))}%` }} /></div></div>)}</div> : <EmptyState title="No funnel yet" copy="Leads will appear here as they move through the pipeline." />}</section></>}</div>;
+
+      {hasCampaigns && <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="dashboard-campaign-health-title">
+        <p className="text-sm font-semibold text-brand">{t('dashboard.campaignHealth')}</p>
+        <h2 id="dashboard-campaign-health-title" className="mt-2 text-xl font-bold text-ink">{t('dashboard.campaignHealthTitle')}</h2>
+        <p className="mt-2 text-sm text-slate-600">{t('dashboard.campaignHealthHelp')}</p>
+        <dl className="mt-4 grid gap-3 min-[430px]:grid-cols-3">
+          <div className="rounded-md bg-slate-50 p-3"><dt className="text-sm text-slate-500">{t('dashboard.metricOpenRate')}</dt><dd className="mt-1 text-2xl font-bold">{metrics.open_rate}%</dd></div>
+          <div className="rounded-md bg-slate-50 p-3"><dt className="text-sm text-slate-500">{t('dashboard.metricReplyRate')}</dt><dd className="mt-1 text-2xl font-bold">{metrics.reply_rate}%</dd></div>
+          <div className="rounded-md bg-slate-50 p-3"><dt className="text-sm text-slate-500">{t('dashboard.metricConversion')}</dt><dd className="mt-1 text-2xl font-bold">{metrics.conversion_rate}%</dd></div>
+        </dl>
+      </section>}
+
+      {hasAiResult && <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="dashboard-ai-result-title">
+        <p className="text-sm font-semibold text-brand">{t('dashboard.latestAiResult')}</p>
+        <h2 id="dashboard-ai-result-title" className="mt-2 text-xl font-bold text-ink">{textValue(aiResult?.title, t('dashboard.latestAiFallback'))}</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">{textValue(aiResult?.why, t('dashboard.latestAiHelp'))}</p>
+        {Boolean(aiResult?.action) && <p className="mt-3 rounded-md bg-slate-50 p-3 text-sm font-semibold text-ink">{textValue(aiResult?.action)}</p>}
+      </section>}
+    </>}
+  </div>;
 }
 
 export function CampaignBuilder() {
