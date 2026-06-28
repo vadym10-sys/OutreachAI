@@ -1,5 +1,5 @@
-import { BillingDiagnosticsOnly } from '@/components/billing-client';
+import { redirect } from 'next/navigation';
 
 export default function BillingDiagnosticsPage() {
-  return <BillingDiagnosticsOnly />;
+  redirect('/dashboard/owner');
 }

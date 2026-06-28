@@ -32,7 +32,7 @@ OutreachAI should help a non-technical business owner reach one outcome quickly:
 | Billing | Manage plan, usage, and payment. | Customer | Keep. Customer page should not show diagnostics; diagnostics stay admin-only. |
 | Settings / Profile | Configure company, language, and workspace. | Customer | Merge profile into Settings. Default to company setup only. |
 | Admin | Internal operations. | Operator | Hide by feature flag. |
-| Owner Console | Owner-only company control plane. | Owner | Keep hidden and backend-protected. Avoid raw JSON and show readable owner data. |
+| Owner Console | Owner-only company control plane. | Owner | Keep hidden and backend-protected. Use customer-quality language even for internal controls. |
 | Error / Empty states | Recover and guide next action. | Everyone | Keep improving. Never show raw technical failures. |
 
 ## Prioritized Improvements
@@ -73,6 +73,10 @@ OutreachAI should help a non-technical business owner reach one outcome quickly:
 - Billing diagnostics are hidden from the normal customer billing page and remain available only through the diagnostics surface.
 - Owner Console audit logs show readable metadata instead of raw JSON.
 - E2E tests now cover the executive dashboard sections, language persistence, mobile widths, and owner-only access.
+- Standalone admin and billing diagnostics pages now redirect to the Owner Console instead of exposing operational UI.
+- Onboarding now explains why each step exists, what happens next, and expected time.
+- AI task result pages now include useful empty-result guidance, examples, and CTAs instead of bare “not found” states.
+- New copy introduced in this pass was added to the visible phrase translation map for all supported locales.
 
 ## Performance Improvements
 
@@ -86,12 +90,29 @@ OutreachAI should help a non-technical business owner reach one outcome quickly:
 - Primary actions keep minimum 44px tap targets.
 - Owner feature flags retain `aria-pressed`.
 - Empty and error states use readable text instead of technical data dumps.
+- Empty task-result states include explanatory headings, help text, examples, and two keyboard-accessible actions.
 
 ## Conversion Improvements
 
 - The dashboard points to one action instead of presenting many equal choices.
 - Billing copy now focuses on secure subscription management instead of diagnostics.
 - Lead Finder guides a non-technical user through one decision at a time.
+- Onboarding now frames setup as a short path to the first reviewed campaign, not a settings checklist.
+
+## Remaining Blockers
+
+- Legacy advanced screens still rely on DOM phrase translation rather than translation keys throughout every component.
+- Full authenticated production QA still requires a controlled test account and production-safe test workspace.
+- Dedicated accessibility tooling such as axe is not yet wired into CI.
+- Performance budgets are documented but not enforced automatically in CI.
+
+## v2 Roadmap
+
+1. Replace DOM phrase translation with typed translation keys across every visible component.
+2. Add CI accessibility checks with axe and keyboard traversal tests.
+3. Add route-level performance budgets and bundle analysis gates.
+4. Merge CRM, Inbox, and Analytics into a single workflow-aware “Results” area once real usage data supports it.
+5. Build a production-safe QA tenant with seeded Stripe, Clerk, Resend, and OpenAI test fixtures.
 
 ## QA Focus
 

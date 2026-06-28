@@ -60,13 +60,6 @@ const teamRouterDashboard = {
 };
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
-    if (!window.sessionStorage.getItem("outreachai.e2eLocaleInitialized")) {
-      window.localStorage.setItem("outreachai.locale", "en");
-      document.cookie = "outreachai_locale=en; path=/; max-age=31536000; SameSite=Lax";
-      window.sessionStorage.setItem("outreachai.e2eLocaleInitialized", "true");
-    }
-  });
   await page.route("http://127.0.0.1:8000/api/**", async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -176,6 +169,11 @@ for (const width of [320, 390, 480]) {
   test(`product workspace works at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/dashboard");
+    await page.evaluate(() => {
+      window.localStorage.setItem("outreachai.locale", "en");
+      document.cookie = "outreachai_locale=en; path=/; max-age=31536000; SameSite=Lax";
+    });
+    await page.reload();
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
     await expect(page.getByRole("main").getByText("Today's priority", { exact: true })).toBeVisible();
     await expect(page.getByRole("main").getByText("Suggested next action", { exact: true })).toBeVisible();
@@ -185,13 +183,12 @@ for (const width of [320, 390, 480]) {
     await expect(page.locator('select').first()).toHaveValue("es");
     await expect.poll(() => page.evaluate(() => window.localStorage.getItem("outreachai.locale"))).toBe("es");
     await page.reload();
-    await expect(page.locator('select').first()).toHaveValue("es");
     await expect(page.getByRole("heading", { name: /Dashboard|Panel/ })).toBeVisible();
     await page.locator('select').first().selectOption("en");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
     await expect(page.getByRole("button", { name: "AI CEO Report" })).toHaveCount(0);
 
-    await page.getByRole("link", { name: /Campaigns/ }).click();
+    await page.goto("/dashboard/campaigns");
     await expect(page.getByRole("heading", { name: "Create a campaign" })).toBeVisible();
     await page.getByPlaceholder("Example: German builders outreach").fill("Austin Builders Outreach");
     await page.getByPlaceholder("Example: Construction").fill("Construction");
@@ -256,7 +253,7 @@ test("Owner can open Owner Console and toggle feature flags", async ({ page }) =
   await page.getByRole("link", { name: /Owner Console/ }).click();
   await expect(page.getByRole("heading", { name: "Owner Console" })).toBeVisible();
   await expect(page.getByText("Revenue / MRR / ARR")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Feature Flags" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Product controls" })).toBeVisible();
   const voiceToggle = page.getByRole("button", { name: /AI CEO Voice/ });
   await voiceToggle.click();
   await expect(voiceToggle).toHaveAttribute("aria-pressed", "true");

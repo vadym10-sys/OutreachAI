@@ -37,9 +37,9 @@ type OwnerConsoleData = {
 
 const flagLabels: Array<[keyof OwnerFeatureFlags, string]> = [
   ["ai_ceo_voice", "AI CEO Voice"],
-  ["experimental_features", "Experimental features"],
-  ["admin_nav", "Admin nav"],
-  ["analytics_nav", "Analytics nav"],
+  ["experimental_features", "Lab features"],
+  ["admin_nav", "Operations navigation"],
+  ["analytics_nav", "Analytics navigation"],
   ["ai_marketplace", "AI Marketplace"]
 ];
 
@@ -277,7 +277,7 @@ export function OwnerConsole() {
       <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex items-center gap-2">
           <Flag className="text-brand" size={18} aria-hidden="true" />
-          <h2 className="text-base font-bold text-ink">{t("owner.featureFlags")}</h2>
+          <h2 className="text-base font-bold text-ink">Product controls</h2>
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           {flagLabels.map(([flag, label]) => (

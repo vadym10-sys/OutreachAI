@@ -1130,5 +1130,42 @@ export function OnboardingFlow() {
 
   if (!workspace) return <div className="mx-auto max-w-3xl p-4"><Skeleton lines={5} /></div>;
 
-  return <main className="mx-auto min-h-screen max-w-3xl px-4 py-8"><h1 className="text-2xl font-bold min-[390px]:text-3xl">Set up OutreachAI</h1><p className="mt-2 text-slate-600">Complete the six commercial onboarding steps before launching your first campaign.</p>{notice && <Notice message={notice} /> }<section className="mt-6 rounded-lg border border-slate-200 bg-white p-5"><div className="mb-5 flex flex-wrap gap-2">{[1, 2, 3, 4, 5, 6].map((item) => <button key={item} onClick={() => setStep(item)} className={`min-h-11 rounded-md px-4 font-semibold ${step === item ? 'bg-brand text-white' : 'border border-slate-300'}`}>Step {item}</button>)}</div>{step === 1 && <label className="block"><span className="font-semibold">Company</span><input value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2" /></label>}{step === 2 && <label className="block"><span className="font-semibold">Industry</span><input value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2" /></label>}{step === 3 && <label className="block"><span className="font-semibold">Target country</span><input value={form.target_country} onChange={(e) => setForm({ ...form, target_country: e.target.value })} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2" /></label>}{step === 4 && <label className="block"><span className="font-semibold">Target customer</span><input value={form.target_customer} onChange={(e) => setForm({ ...form, target_customer: e.target.value })} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2" /></label>}{step === 5 && <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={form.connect_openai} onChange={(e) => setForm({ ...form, connect_openai: e.target.checked })} className="size-5" /><span>Connect OpenAI later from Settings</span></label>}{step === 6 && <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={form.launch_first_campaign} onChange={(e) => setForm({ ...form, launch_first_campaign: e.target.checked })} className="size-5" /><span>Launch first campaign after setup</span></label>}<div className="mt-6 grid gap-3 min-[430px]:grid-cols-2"><button onClick={() => save(Math.max(1, step - 1))} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Back</button><button onClick={() => save(Math.min(6, step + 1))} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">{step === 6 ? 'Finish' : 'Continue'}</button></div></section></main>;
+  const steps = [
+    { title: 'Company website', why: 'AI needs to understand what you sell before it can find the right customers.', next: 'OutreachAI will use your company context when preparing leads and emails.', time: 'About 30 seconds' },
+    { title: 'Industry', why: 'This helps OutreachAI choose relevant sales angles and avoid generic outreach.', next: 'Your lead search will start from businesses that match this market.', time: 'About 20 seconds' },
+    { title: 'Target country', why: 'A focused market gives cleaner lead results and easier campaign review.', next: 'Lead Finder will use this country as the default search area.', time: 'About 15 seconds' },
+    { title: 'Target customer', why: 'AI writes better emails when it knows who the buyer is.', next: 'Campaign Builder will turn this into the first outreach angle.', time: 'About 30 seconds' },
+    { title: 'AI connection', why: 'Production AI powers analysis, outreach drafts, and recommendations.', next: 'You can continue now and manage AI settings later if needed.', time: 'Optional' },
+    { title: 'First campaign', why: 'The fastest path to value is one reviewed campaign with one focused audience.', next: 'After setup, create a campaign and approve the first email draft.', time: 'About 2 minutes' }
+  ];
+  const current = steps[step - 1] || steps[0];
+
+  return <main className="mx-auto min-h-screen max-w-3xl px-4 py-8">
+    <p className="text-sm font-semibold text-brand">Setup</p>
+    <h1 className="mt-2 text-2xl font-bold min-[390px]:text-3xl">Set up OutreachAI</h1>
+    <p className="mt-2 text-slate-600">Finish the basics, then create your first reviewed campaign. You can adjust everything later.</p>
+    {notice && <Notice message={notice} /> }
+    <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-5 grid gap-2 min-[430px]:grid-cols-3">
+        {steps.map((item, index) => <button key={item.title} onClick={() => setStep(index + 1)} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${step === index + 1 ? 'bg-brand text-white' : 'border border-slate-300 text-slate-700'}`}>{index + 1}. {item.title}</button>)}
+      </div>
+      <div className="rounded-lg bg-slate-50 p-4">
+        <h2 className="text-xl font-bold text-ink">{current.title}</h2>
+        <dl className="mt-4 grid gap-3 text-sm md:grid-cols-3">
+          <div><dt className="font-semibold text-slate-700">Why</dt><dd className="mt-1 text-slate-600">{current.why}</dd></div>
+          <div><dt className="font-semibold text-slate-700">What happens next</dt><dd className="mt-1 text-slate-600">{current.next}</dd></div>
+          <div><dt className="font-semibold text-slate-700">Expected time</dt><dd className="mt-1 text-slate-600">{current.time}</dd></div>
+        </dl>
+      </div>
+      <div className="mt-5">
+        {step === 1 && <label className="block"><span className="font-semibold">Company website or name</span><input value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} placeholder="outreachaiaiai.com" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
+        {step === 2 && <label className="block"><span className="font-semibold">Industry</span><input value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} placeholder="Construction, real estate, consulting..." className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
+        {step === 3 && <label className="block"><span className="font-semibold">Target country</span><input value={form.target_country} onChange={(e) => setForm({ ...form, target_country: e.target.value })} placeholder="Germany" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
+        {step === 4 && <label className="block"><span className="font-semibold">Target customer</span><input value={form.target_customer} onChange={(e) => setForm({ ...form, target_customer: e.target.value })} placeholder="Construction company owners with 10-50 employees" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
+        {step === 5 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.connect_openai} onChange={(e) => setForm({ ...form, connect_openai: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">Use workspace AI settings</span><span className="mt-1 block text-sm text-slate-600">You can manage provider settings later. No customer action is sent automatically.</span></span></label>}
+        {step === 6 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.launch_first_campaign} onChange={(e) => setForm({ ...form, launch_first_campaign: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">Prepare my first campaign</span><span className="mt-1 block text-sm text-slate-600">OutreachAI will guide you to Campaigns after setup. You still approve every email.</span></span></label>}
+      </div>
+      <div className="mt-6 grid gap-3 min-[430px]:grid-cols-2"><button onClick={() => save(Math.max(1, step - 1))} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Back</button><button onClick={() => save(Math.min(6, step + 1))} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">{step === 6 ? 'Finish setup' : 'Continue'}</button></div>
+    </section>
+  </main>;
 }

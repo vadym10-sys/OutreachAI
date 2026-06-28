@@ -1,6 +1,5 @@
-import { DashboardShell } from '@/components/dashboard-shell';
-import { AdminPanel } from '@/components/product-workspace';
+import { redirect } from 'next/navigation';
 
 export default function AdminPage() {
-  return <DashboardShell><AdminPanel /></DashboardShell>;
+  redirect('/dashboard/owner');
 }
