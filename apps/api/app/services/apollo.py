@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -53,8 +54,15 @@ def test_apollo_connection() -> dict[str, Any]:
 def search_apollo_companies(payload: LeadFinderRequest) -> ApolloSearchResult:
     started = time.monotonic()
     body = _company_search_body(payload)
+    logger.info("apollo.company_search request payload=%s", _safe_json(body))
     data = _apollo_post("/mixed_companies/search", body, operation="apollo.company_search")
     records = _records(data, "organizations", "companies", "accounts")
+    logger.info(
+        "apollo.company_search response raw_count=%s parsed_leads=%s sample=%s",
+        len(records),
+        len([item for item in records if isinstance(item, dict)]),
+        _record_sample(records),
+    )
     leads = [_company_to_lead(item, payload) for item in records if isinstance(item, dict)]
     leads = [lead for lead in leads if lead.company]
     return ApolloSearchResult(leads=_dedupe(leads, payload.limit), raw_count=len(records), duration_ms=_duration_ms(started))
@@ -63,8 +71,15 @@ def search_apollo_companies(payload: LeadFinderRequest) -> ApolloSearchResult:
 def search_apollo_contacts(payload: LeadFinderRequest) -> ApolloSearchResult:
     started = time.monotonic()
     body = _contact_search_body(payload)
+    logger.info("apollo.contact_search request payload=%s", _safe_json(body))
     data = _apollo_post("/mixed_people/search", body, operation="apollo.contact_search")
     records = _records(data, "people", "contacts")
+    logger.info(
+        "apollo.contact_search response raw_count=%s parsed_leads=%s sample=%s",
+        len(records),
+        len([item for item in records if isinstance(item, dict)]),
+        _record_sample(records),
+    )
     leads = [_contact_to_lead(item, payload) for item in records if isinstance(item, dict)]
     leads = [lead for lead in leads if lead.company]
     return ApolloSearchResult(leads=_dedupe(leads, payload.limit), raw_count=len(records), duration_ms=_duration_ms(started))
@@ -87,30 +102,45 @@ def _apollo_post(path: str, body: dict[str, Any], operation: str) -> dict[str, A
             with httpx.Client(timeout=httpx.Timeout(20.0, connect=6.0), headers=headers) as client:
                 response = client.post(f"{APOLLO_BASE_URL}{path}", json=body)
                 response.raise_for_status()
-                logger.info("%s succeeded attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
-                return response.json()
+                data = response.json()
+                logger.info(
+                    "%s succeeded attempt=%s status=%s duration_ms=%s raw_response_preview=%s",
+                    operation,
+                    attempt,
+                    response.status_code,
+                    _duration_ms(started),
+                    _preview(data),
+                )
+                return data
         except httpx.TimeoutException as exc:
             last_error = exc
             logger.warning("%s timeout attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            logger.warning("%s failed status=%s attempt=%s duration_ms=%s", operation, status, attempt, _duration_ms(started))
+            detail = _safe_response_detail(exc.response)
+            logger.warning(
+                "%s failed status=%s attempt=%s duration_ms=%s response=%s",
+                operation,
+                status,
+                attempt,
+                _duration_ms(started),
+                detail,
+            )
             if status in {401, 403}:
-                raise ApolloRequestError("Apollo rejected the backend API key. Verify the live Apollo key and account access.") from exc
+                raise ApolloRequestError(f"Apollo rejected the backend API key or account access. Apollo status={status}. Detail: {detail}") from exc
             if status == 429:
                 last_error = exc
             elif 500 <= status < 600:
                 last_error = exc
             else:
-                detail = _safe_response_detail(exc.response)
-                raise ApolloRequestError(f"Apollo could not complete the request: {detail}") from exc
+                raise ApolloRequestError(f"Apollo could not complete the request. Apollo status={status}. Detail: {detail}") from exc
         except (httpx.HTTPError, ValueError) as exc:
             last_error = exc
             logger.warning("%s request_error attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
         if attempt < 3:
             time.sleep(0.35 * attempt)
 
-    raise ApolloRequestError("Apollo is temporarily unavailable. Please try again in a few minutes.") from last_error
+    raise ApolloRequestError(f"Apollo is temporarily unavailable after retries. Last error: {last_error}") from last_error
 
 
 def _company_search_body(payload: LeadFinderRequest) -> dict[str, Any]:
@@ -311,6 +341,34 @@ def _safe_response_detail(response: httpx.Response) -> str:
         message = data.get("message") or data.get("error") or data.get("detail")
         if message:
             return str(message)
+        return _preview(data)
     except ValueError:
         pass
-    return f"HTTP {response.status_code}"
+    return (response.text or f"HTTP {response.status_code}")[:4000]
+
+
+def _safe_json(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)[:4000]
+    except TypeError:
+        return str(value)[:4000]
+
+
+def _preview(value: Any) -> str:
+    return _safe_json(value)
+
+
+def _record_sample(records: list[dict[str, Any]]) -> str:
+    sample = []
+    for item in records[:3]:
+        if not isinstance(item, dict):
+            continue
+        sample.append(
+            {
+                "id": item.get("id") or item.get("organization_id"),
+                "name": item.get("name") or item.get("organization_name"),
+                "domain": item.get("primary_domain") or item.get("domain"),
+                "website_url": item.get("website_url") or item.get("website"),
+            }
+        )
+    return _safe_json(sample)

@@ -45,8 +45,10 @@ def test_hunter_connection() -> dict[str, Any]:
 
 def enrich_leads_with_hunter(leads: list[LeadOut]) -> list[LeadOut]:
     if not leads or not hunter_key_loaded():
+        logger.info("hunter.enrichment skipped leads=%s configured=%s", len(leads), hunter_key_loaded())
         return leads
     enriched: list[LeadOut] = []
+    logger.info("hunter.enrichment started leads=%s", len(leads))
     for lead in leads:
         try:
             enriched.append(enrich_lead_with_hunter(lead))
@@ -55,19 +57,28 @@ def enrich_leads_with_hunter(leads: list[LeadOut]) -> list[LeadOut]:
         except HunterRequestError as exc:
             logger.warning("hunter.enrichment_failed company=%s reason=%s", lead.company, exc)
             enriched.append(_with_hunter_metadata(lead, {"hunter_status": "error", "hunter_error": str(exc)}))
+    logger.info(
+        "hunter.enrichment completed leads=%s verified=%s",
+        len(enriched),
+        sum(1 for lead in enriched if lead.hunter_verified),
+    )
     return enriched
 
 
 def enrich_lead_with_hunter(lead: LeadOut) -> LeadOut:
     domain = _lead_domain(lead)
     if not domain:
+        logger.info("hunter.lead skipped company=%s reason=no_domain", lead.company)
         return _with_hunter_metadata(lead, {"hunter_status": "no_domain"})
 
     started = time.monotonic()
+    logger.info("hunter.lead request company=%s domain=%s", lead.company, domain)
     candidates = _domain_search(domain)
+    logger.info("hunter.domain_search response company=%s domain=%s candidates=%s", lead.company, domain, len(candidates))
     verified = [_verify_candidate(candidate, domain) for candidate in candidates]
     verified = [candidate for candidate in verified if candidate.get("verified")]
     if not verified:
+        logger.info("hunter.lead no_verified_email company=%s domain=%s duration_ms=%s", lead.company, domain, _duration_ms(started))
         return _with_hunter_metadata(
             lead,
             {
@@ -100,6 +111,14 @@ def enrich_lead_with_hunter(lead: LeadOut) -> LeadOut:
         "hunter_duration_ms": _duration_ms(started),
     }
     try:
+        logger.info(
+            "hunter.lead verified company=%s domain=%s title=%s confidence=%s duration_ms=%s",
+            lead.company,
+            domain,
+            title,
+            best.get("score"),
+            _duration_ms(started),
+        )
         return lead.model_copy(
             update={
                 "contact": contact or lead.contact,
@@ -127,6 +146,7 @@ def enrich_lead_with_hunter(lead: LeadOut) -> LeadOut:
 
 
 def _domain_search(domain: str) -> list[dict[str, Any]]:
+    logger.info("hunter.domain_search request domain=%s", domain)
     data = _hunter_get(
         "/domain-search",
         {
@@ -138,6 +158,7 @@ def _domain_search(domain: str) -> list[dict[str, Any]]:
     )
     payload = data.get("data") if isinstance(data.get("data"), dict) else {}
     emails = payload.get("emails") if isinstance(payload.get("emails"), list) else []
+    logger.info("hunter.domain_search raw_response domain=%s emails=%s preview=%s", domain, len(emails), _preview(data))
     return [item for item in emails if isinstance(item, dict) and _is_decision_maker(item)]
 
 
@@ -172,26 +193,28 @@ def _hunter_get(path: str, params: dict[str, Any], operation: str) -> dict[str, 
             with httpx.Client(timeout=httpx.Timeout(16.0, connect=5.0)) as client:
                 response = client.get(f"{HUNTER_BASE_URL}{path}", params=query)
                 response.raise_for_status()
-                logger.info("%s succeeded attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
-                return response.json()
+                data = response.json()
+                logger.info("%s succeeded attempt=%s status=%s duration_ms=%s raw_response_preview=%s", operation, attempt, response.status_code, _duration_ms(started), _preview(data))
+                return data
         except httpx.TimeoutException as exc:
             last_error = exc
             logger.warning("%s timeout attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            logger.warning("%s failed status=%s attempt=%s duration_ms=%s", operation, status, attempt, _duration_ms(started))
+            detail = _safe_response_detail(exc.response)
+            logger.warning("%s failed status=%s attempt=%s duration_ms=%s response=%s", operation, status, attempt, _duration_ms(started), detail)
             if status in {401, 403}:
-                raise HunterRequestError("Hunter rejected the backend API key. Verify the live Hunter key and account access.") from exc
+                raise HunterRequestError(f"Hunter rejected the backend API key or account access. Hunter status={status}. Detail: {detail}") from exc
             if status == 429 or 500 <= status < 600:
                 last_error = exc
             else:
-                raise HunterRequestError(f"Hunter could not complete the request: {_safe_response_detail(exc.response)}") from exc
+                raise HunterRequestError(f"Hunter could not complete the request. Hunter status={status}. Detail: {detail}") from exc
         except (httpx.HTTPError, ValueError) as exc:
             last_error = exc
             logger.warning("%s request_error attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
         if attempt < 3:
             time.sleep(0.35 * attempt)
-    raise HunterRequestError("Hunter is temporarily unavailable. Apollo leads were saved without verified Hunter emails.") from last_error
+    raise HunterRequestError(f"Hunter is temporarily unavailable after retries. Apollo leads were saved without verified Hunter emails. Last error: {last_error}") from last_error
 
 
 def _is_decision_maker(candidate: dict[str, Any]) -> bool:
@@ -287,6 +310,14 @@ def _safe_response_detail(response: httpx.Response) -> str:
         message = data.get("message") or data.get("error") or data.get("detail")
         if message:
             return str(message)
+        return _preview(data)
     except ValueError:
         pass
-    return f"HTTP {response.status_code}"
+    return (response.text or f"HTTP {response.status_code}")[:4000]
+
+
+def _preview(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)[:4000]
+    except TypeError:
+        return str(value)[:4000]

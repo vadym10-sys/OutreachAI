@@ -530,6 +530,11 @@ def _provider_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="Provider request failed.")
 
 
+def _lead_trace(request_id: str, step: str, **data: Any) -> None:
+    safe = {key: value for key, value in data.items() if key not in {"api_key", "secret", "token"}}
+    logger.info("lead_finder_trace request_id=%s step=%s data=%s", request_id, step, json.dumps(safe, default=str, ensure_ascii=False, sort_keys=True)[:4000])
+
+
 def _icp_score(analysis: AnalysisOut, lead: Lead) -> int:
     score = 40
     if lead.website:
@@ -693,9 +698,12 @@ def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Cam
 
 def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, lead: Lead) -> None:
     if not lead.website:
+        logger.info("lead_finder_trace step=website_analysis_skipped data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "reason": "no_website"}, sort_keys=True))
         return
     try:
+        logger.info("lead_finder_trace step=website_fetch_started data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "website": lead.website}, sort_keys=True))
         snapshot = collect_website(lead.website)
+        logger.info("lead_finder_trace step=openai_analysis_started data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "website": snapshot.url}, sort_keys=True))
         result = analyze_company_website(
             company=lead.company,
             website=snapshot.url,
@@ -706,6 +714,7 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
             technologies=snapshot.technologies,
         )
     except Exception as exc:
+        logger.exception("lead_finder_trace step=website_or_openai_analysis_failed lead_id=%s company=%s reason=%s", lead.id, lead.company, exc)
         lead.notes = "\n".join(part for part in [lead.notes or "", f"Website analysis pending: {exc}"] if part)
         return
     score = _icp_score(result, lead)
@@ -731,6 +740,7 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
     lead.industry = lead.industry or result.industry
     lead.niche = lead.niche or result.niche
     lead.notes = _merge_lead_metadata(lead, _analysis_metadata(result, score, audit), _analysis_readable_notes(result, score, audit))
+    logger.info("lead_finder_trace step=openai_analysis_completed data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "icp_score": score}, sort_keys=True))
 
 
 def _default_settings() -> dict:
@@ -2707,16 +2717,36 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
 
 @router.post("/leads/find", response_model=list[LeadOut])
 def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+    request_id = request.headers.get("x-request-id") or str(uuid4())
     workspace = _current_workspace(db, user_id)
+    _lead_trace(
+        request_id,
+        "request_received",
+        user_id=user_id,
+        workspace_id=str(workspace.id),
+        payload=payload.model_dump(),
+        apollo_configured=apollo_key_loaded(),
+        hunter_configured=hunter_key_loaded(),
+        openai_configured=bool(get_app_settings().openai_api_key),
+        database_configured=bool(get_app_settings().database_url),
+        resend_configured=bool(get_app_settings().resend_api_key),
+    )
     _require_active_subscription(db, workspace)
     try:
+        _lead_trace(request_id, "apollo_request_started")
         result = search_apollo_companies(payload)
     except Exception as exc:
+        _lead_trace(request_id, "apollo_request_failed", error=str(exc), error_type=type(exc).__name__)
         raise _provider_error(exc) from exc
+    _lead_trace(request_id, "apollo_response_received", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
     _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
+    _lead_trace(request_id, "hunter_enrichment_started", leads=len(result.leads), hunter_configured=hunter_key_loaded())
     leads = _hunter_enriched_leads(db, request, user_id, workspace, result.leads)
-    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="apollo_hunter", action="apollo.company_search")
-    return [_lead_out(lead) for lead in saved]
+    _lead_trace(request_id, "hunter_response_received", leads=len(leads), verified=sum(1 for lead in leads if lead.hunter_verified))
+    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="apollo_hunter", action="apollo.company_search", request_id=request_id)
+    response = [_lead_out(lead) for lead in saved]
+    _lead_trace(request_id, "frontend_response_ready", response_count=len(response), companies=[lead.company for lead in response[:5]])
+    return response
 
 
 @router.post("/apollo/search-companies", response_model=list[LeadOut])
@@ -2765,12 +2795,24 @@ def _hunter_enriched_leads(db: Session, request: Request, user_id: str, workspac
     return enriched
 
 
-def _save_provider_leads(db: Session, request: Request, user_id: str, workspace: Workspace, found: list[LeadOut], payload: LeadFinderRequest, source: str, action: str) -> list[Lead]:
+def _save_provider_leads(
+    db: Session,
+    request: Request,
+    user_id: str,
+    workspace: Workspace,
+    found: list[LeadOut],
+    payload: LeadFinderRequest,
+    source: str,
+    action: str,
+    request_id: str = "",
+) -> list[Lead]:
     saved: list[Lead] = []
     skipped = 0
+    _lead_trace(request_id or str(uuid4()), "database_save_started", found=len(found))
     for item in found:
         if _lead_duplicate_exists(db, workspace, user_id, item):
             skipped += 1
+            _lead_trace(request_id or str(uuid4()), "database_duplicate_skipped", company=item.company, email=str(item.email or ""), website=item.website or "", apollo_company_id=item.apollo_company_id)
             continue
         _enforce_usage(db, user_id, workspace, "leads")
         lead = Lead(
@@ -2791,6 +2833,7 @@ def _save_provider_leads(db: Session, request: Request, user_id: str, workspace:
         )
         db.add(lead)
         db.flush()
+        _lead_trace(request_id or str(uuid4()), "database_lead_inserted", lead_id=str(lead.id), company=lead.company, website=lead.website or "", email=lead.email or "")
         _analyze_lead_if_possible(db, user_id, workspace, lead)
         saved.append(lead)
     log_event(db, request, user_id, action, {"source": source, "saved": len(saved), "duplicates_skipped": skipped, **payload.model_dump()})
@@ -2803,6 +2846,7 @@ def _save_provider_leads(db: Session, request: Request, user_id: str, workspace:
     else:
         _notify(db, user_id, NotificationKind.info, "Lead search finished", "No matching companies were found for those filters.")
     db.commit()
+    _lead_trace(request_id or str(uuid4()), "database_save_committed", saved=len(saved), duplicates_skipped=skipped)
     return saved
 
 
