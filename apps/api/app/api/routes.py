@@ -481,6 +481,11 @@ def _lead_out(lead: Lead) -> LeadOut:
         hunter_verified=bool(metadata.get("hunter_verified")),
         hunter_status=str(metadata.get("hunter_status") or "") or None,
         source=str(metadata.get("source") or "") or None,
+        ai_summary=str(metadata.get("ai_summary") or "") or None,
+        suggested_offer=str(metadata.get("suggested_offer") or "") or None,
+        outreach_strategy=str(metadata.get("outreach_strategy") or "") or None,
+        sales_angle=str(metadata.get("sales_angle") or "") or None,
+        expected_reply_rate=str(metadata.get("expected_reply_rate") or "") or None,
     )
 
 
@@ -495,6 +500,22 @@ def _lead_metadata(lead: Lead | LeadOut) -> dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except (TypeError, ValueError):
         return {}
+
+
+def _merge_lead_metadata(lead: Lead, updates: dict[str, Any], readable: list[str] | None = None) -> str:
+    metadata = _lead_metadata(lead)
+    clean_updates = {
+        key: value
+        for key, value in updates.items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+    header = json.dumps({**metadata, **clean_updates}, sort_keys=True)
+    existing = lead.notes or ""
+    existing_lines = existing.splitlines()
+    existing_readable = "\n".join(existing_lines[1:] if existing_lines and existing_lines[0].lstrip().startswith("{") else existing_lines).strip()
+    next_readable = "\n".join(item.strip() for item in readable or [] if item and item.strip())
+    body_parts = [part for part in [next_readable, existing_readable] if part]
+    return "\n".join([header, *body_parts])
 
 
 def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, message: str) -> None:
@@ -523,11 +544,51 @@ def _icp_score(analysis: AnalysisOut, lead: Lead) -> int:
         score += 15
     if analysis.industry and lead.industry and analysis.industry.lower() in lead.industry.lower():
         score += 5
-    return max(0, min(100, score))
+    return max(0, min(100, max(score, analysis.icp_score)))
 
 
 def _analysis_summary_with_score(analysis: AnalysisOut, score: int) -> str:
-    return f"ICP score: {score}/100. {analysis.summary}".strip()
+    parts = [
+        f"ICP score: {score}/100.",
+        analysis.company_summary or analysis.summary,
+        f"Sales angle: {analysis.sales_angle}" if analysis.sales_angle else "",
+        f"Suggested offer: {analysis.suggested_offer}" if analysis.suggested_offer else "",
+        f"Outreach strategy: {analysis.outreach_strategy}" if analysis.outreach_strategy else "",
+    ]
+    return " ".join(part for part in parts if part).strip()
+
+
+def _analysis_metadata(analysis: AnalysisOut, score: int, audit: dict | None = None) -> dict[str, Any]:
+    return {
+        "ai_summary": analysis.company_summary or analysis.summary,
+        "icp_score": score,
+        "icp": analysis.icp,
+        "value_proposition": analysis.value_proposition,
+        "detected_language": analysis.detected_language,
+        "target_geography": analysis.target_geography,
+        "sales_angle": analysis.sales_angle,
+        "suggested_offer": analysis.suggested_offer,
+        "outreach_strategy": analysis.outreach_strategy,
+        "recommended_tone": analysis.recommended_tone,
+        "recommended_cta": analysis.recommended_cta,
+        "follow_up_strategy": analysis.follow_up_strategy,
+        "expected_reply_rate": analysis.expected_reply_rate,
+        "website_audit_actions": list((audit or {}).get("priority_actions") or []),
+    }
+
+
+def _analysis_readable_notes(analysis: AnalysisOut, score: int, audit: dict | None = None) -> list[str]:
+    audit_notes = ", ".join((audit or {}).get("priority_actions") or []) or "No critical website audit issues detected"
+    return [
+        f"AI summary: {analysis.company_summary or analysis.summary}",
+        f"ICP score: {score}/100",
+        f"Value proposition: {analysis.value_proposition}" if analysis.value_proposition else "",
+        f"Sales angle: {analysis.sales_angle}" if analysis.sales_angle else "",
+        f"Suggested offer: {analysis.suggested_offer}" if analysis.suggested_offer else "",
+        f"Outreach strategy: {analysis.outreach_strategy}" if analysis.outreach_strategy else "",
+        f"Expected reply rate: {analysis.expected_reply_rate}" if analysis.expected_reply_rate else "",
+        f"Website audit: {audit_notes}",
+    ]
 
 
 def _website_audit_markers(page_text: str, technologies: list[str], load_ms: int = 0) -> dict:
@@ -574,6 +635,7 @@ def _lead_context(db: Session, workspace: Workspace, user_id: str, lead_id: UUID
 
 
 def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Campaign | None, messages: list[EmailMessage]) -> dict:
+    intelligence = _lead_metadata(lead)
     return {
         "lead": {
             "company": lead.company,
@@ -585,6 +647,10 @@ def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Cam
             "status": lead.status.value if lead.status else "",
             "notes": lead.notes,
             "revenue": float(lead.revenue or 0),
+            "verified_email": lead.email,
+            "source": intelligence.get("source"),
+            "apollo_company_id": intelligence.get("apollo_company_id"),
+            "hunter_verified": intelligence.get("hunter_verified"),
         },
         "website_analysis": {
             "summary": analysis.summary if analysis else "",
@@ -592,6 +658,17 @@ def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Cam
             "technologies": analysis.technologies if analysis else [],
             "strengths": analysis.strengths if analysis else [],
             "weaknesses": analysis.weaknesses if analysis else [],
+            "icp": intelligence.get("icp", ""),
+            "value_proposition": intelligence.get("value_proposition", ""),
+            "detected_language": intelligence.get("detected_language", ""),
+            "target_geography": intelligence.get("target_geography", ""),
+            "sales_angle": intelligence.get("sales_angle", ""),
+            "suggested_offer": intelligence.get("suggested_offer", ""),
+            "outreach_strategy": intelligence.get("outreach_strategy", ""),
+            "recommended_tone": intelligence.get("recommended_tone", ""),
+            "recommended_cta": intelligence.get("recommended_cta", ""),
+            "follow_up_strategy": intelligence.get("follow_up_strategy", ""),
+            "expected_reply_rate": intelligence.get("expected_reply_rate", ""),
         },
         "campaign": {
             "name": campaign.name if campaign else "",
@@ -632,6 +709,7 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
         lead.notes = "\n".join(part for part in [lead.notes or "", f"Website analysis pending: {exc}"] if part)
         return
     score = _icp_score(result, lead)
+    audit = _website_audit_markers(snapshot.text, snapshot.technologies)
     analysis = WebsiteAnalysis(
         user_id=user_id,
         workspace_id=workspace.id,
@@ -652,9 +730,7 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
     db.add(analysis)
     lead.industry = lead.industry or result.industry
     lead.niche = lead.niche or result.niche
-    audit = _website_audit_markers(snapshot.text, snapshot.technologies)
-    audit_notes = ", ".join(audit["priority_actions"]) or "No critical website audit issues detected"
-    lead.notes = "\n".join(part for part in [lead.notes or "", f"ICP score: {score}/100", f"Website audit: {audit_notes}", result.summary] if part)
+    lead.notes = _merge_lead_metadata(lead, _analysis_metadata(result, score, audit), _analysis_readable_notes(result, score, audit))
 
 
 def _default_settings() -> dict:
@@ -1819,15 +1895,25 @@ def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Reques
     _enforce_usage(db, user_id, workspace, "ai_generations")
     employee, lead, analysis = _employee_lead_context(db, workspace, user_id, employee_id, lead_id)
     insight = db.scalar(select(SalesEmployeeLeadInsight).where(SalesEmployeeLeadInsight.sales_employee_id == employee.id, SalesEmployeeLeadInsight.lead_id == lead.id))
+    intelligence = _lead_metadata(lead)
+    website_context = "\n".join(
+        part for part in [
+            analysis.summary if analysis else "",
+            str(intelligence.get("ai_summary") or ""),
+            f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
+            f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
+            f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
+        ] if part
+    )
     try:
         generated = personalize_email(
             PersonalizeRequest(
                 company=lead.company,
                 niche=lead.industry or employee.target_customer or "B2B",
-                website_summary=(analysis.summary if analysis else lead.notes) or lead.company,
-                offer=employee.offer or employee.product_service,
-                cta=(insight.best_cta if insight else employee.cta) or employee.cta,
-                tone=employee.tone,
+                website_summary=website_context or lead.notes or lead.company,
+                offer=employee.offer or employee.product_service or str(intelligence.get("suggested_offer") or ""),
+                cta=(insight.best_cta if insight else employee.cta) or str(intelligence.get("recommended_cta") or "") or employee.cta,
+                tone=employee.tone or str(intelligence.get("recommended_tone") or "Professional"),
                 language=employee.language,
                 signature=employee.signature,
             )
@@ -2040,8 +2126,9 @@ def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> Growth
             "country": lead.country or workspace.target_country or "",
             "status": _display_status(lead.status),
             "score": _opportunity_score(lead),
-            "reason": "Strong fit because it matches your ICP and has a reachable contact." if lead.email else "Worth researching today; add a contact before sending.",
-            "recommended_action": "Generate a personalized email and keep approval required.",
+            "reason": str(_lead_metadata(lead).get("sales_angle") or _lead_metadata(lead).get("ai_summary") or ("Strong fit because it matches your ICP and has a reachable contact." if lead.email else "Worth researching today; add a contact before sending.")),
+            "recommended_action": str(_lead_metadata(lead).get("outreach_strategy") or "Generate a personalized email and keep approval required."),
+            "predicted_outcome": str(_lead_metadata(lead).get("expected_reply_rate") or "Reply rate prediction improves after AI analysis."),
         }
         for lead in sorted(recent_leads, key=_opportunity_score, reverse=True)[:6]
     ]
@@ -2058,13 +2145,15 @@ def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> Growth
                 "score": 72,
                 "reason": "Your workspace has no imported leads yet, so the best revenue move is focused discovery.",
                 "recommended_action": "Run Lead Finder and import the first 25 prospects for review.",
+                "predicted_outcome": "Expect the first reviewed lead list in 1-2 minutes.",
             }
         ]
+    best = opportunities[0] if opportunities else {}
     smart_recommendations = [
         {
-            "title": "Contact the highest ICP leads today",
-            "why": "Fresh, qualified opportunities convert best when outreach happens within the same workday.",
-            "action": "Review top opportunities and approve prepared emails.",
+            "title": f"Review {best.get('company', 'the highest ICP lead')} today",
+            "why": str(best.get("reason") or "Fresh, qualified opportunities convert best when outreach happens within the same workday."),
+            "action": str(best.get("recommended_action") or "Review top opportunities and approve prepared emails."),
         },
         {
             "title": "Use the best sending window",
@@ -2932,6 +3021,7 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
     if lead:
         lead.industry = lead.industry or result.industry
         lead.niche = lead.niche or result.niche
+        lead.notes = _merge_lead_metadata(lead, _analysis_metadata(result, result.icp_score), _analysis_readable_notes(result, result.icp_score))
     log_event(db, request, user_id, "website.analyzed", {"company": result.company, "website": result.website})
     db.commit()
     return result
@@ -3005,13 +3095,23 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
     website_summary = analysis.summary if analysis else " ".join(
         part for part in [lead.website, lead.industry, lead.country, lead.city] if part
     )
+    intelligence = _lead_metadata(lead)
+    intelligence_summary = "\n".join(
+        part for part in [
+            str(intelligence.get("ai_summary") or ""),
+            f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
+            f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
+            f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
+            f"Verified email source: Hunter" if intelligence.get("hunter_verified") else "",
+        ] if part
+    )
     ai_payload = PersonalizeRequest(
         company=lead.company,
         niche=lead.industry or campaign.industry or "B2B",
-        website_summary=website_summary or lead.company,
-        offer=campaign.offer or "a measurable outbound growth system",
-        cta=campaign.cta,
-        tone=campaign.email_tone,
+        website_summary=intelligence_summary or website_summary or lead.company,
+        offer=campaign.offer or str(intelligence.get("suggested_offer") or "") or "a measurable outbound growth system",
+        cta=campaign.cta or str(intelligence.get("recommended_cta") or ""),
+        tone=campaign.email_tone or str(intelligence.get("recommended_tone") or "Professional"),
         language=campaign.language,
         signature=campaign.signature,
     )

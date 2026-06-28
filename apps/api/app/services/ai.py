@@ -103,9 +103,13 @@ def analyze_company_website(
     system = (
         "You are OutreachAI's production website analyst. Return only JSON with keys "
         "company, website, description, industry, location, niche, products_services, "
-        "services, technologies, strengths, weaknesses, icp_score, summary. icp_score "
-        "must be an integer from 0 to 100. Do not invent contact details. Mark unknown "
-        "fields as empty strings or empty arrays."
+        "services, technologies, strengths, weaknesses, icp_score, summary, icp, "
+        "value_proposition, detected_language, target_geography, sales_angle, "
+        "company_summary, suggested_offer, outreach_strategy, recommended_tone, "
+        "recommended_cta, follow_up_strategy, expected_reply_rate. icp_score must be "
+        "an integer from 0 to 100. expected_reply_rate should be a realistic percentage "
+        "range like 6-10%. Do not invent contact details. Mark unknown fields as empty "
+        "strings or empty arrays."
     )
     data = _json_completion(
         system,
@@ -133,6 +137,18 @@ def analyze_company_website(
         weaknesses=_list(data.get("weaknesses")),
         icp_score=max(0, min(100, int(data.get("icp_score") or 0))),
         summary=str(data.get("summary") or ""),
+        icp=str(data.get("icp") or ""),
+        value_proposition=str(data.get("value_proposition") or ""),
+        detected_language=str(data.get("detected_language") or ""),
+        target_geography=str(data.get("target_geography") or data.get("location") or ""),
+        sales_angle=str(data.get("sales_angle") or ""),
+        company_summary=str(data.get("company_summary") or data.get("summary") or ""),
+        suggested_offer=str(data.get("suggested_offer") or ""),
+        outreach_strategy=str(data.get("outreach_strategy") or ""),
+        recommended_tone=str(data.get("recommended_tone") or "Professional"),
+        recommended_cta=str(data.get("recommended_cta") or "Book a quick call"),
+        follow_up_strategy=str(data.get("follow_up_strategy") or ""),
+        expected_reply_rate=str(data.get("expected_reply_rate") or ""),
     )
 
 

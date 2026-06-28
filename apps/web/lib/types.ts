@@ -84,6 +84,11 @@ export type Lead = {
   hunter_verified?: boolean;
   hunter_status?: string | null;
   source?: string | null;
+  ai_summary?: string | null;
+  suggested_offer?: string | null;
+  outreach_strategy?: string | null;
+  sales_angle?: string | null;
+  expected_reply_rate?: string | null;
 };
 
 export type IntegrationConnectionStatus = {

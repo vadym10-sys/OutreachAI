@@ -147,6 +147,11 @@ class LeadOut(BaseModel):
     hunter_verified: bool = False
     hunter_status: Optional[str] = None
     source: Optional[str] = None
+    ai_summary: Optional[str] = None
+    suggested_offer: Optional[str] = None
+    outreach_strategy: Optional[str] = None
+    sales_angle: Optional[str] = None
+    expected_reply_rate: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -291,6 +296,18 @@ class AnalysisOut(BaseModel):
     weaknesses: List[str]
     icp_score: int = Field(default=0, ge=0, le=100)
     summary: str
+    icp: str = ""
+    value_proposition: str = ""
+    detected_language: str = ""
+    target_geography: str = ""
+    sales_angle: str = ""
+    company_summary: str = ""
+    suggested_offer: str = ""
+    outreach_strategy: str = ""
+    recommended_tone: str = ""
+    recommended_cta: str = ""
+    follow_up_strategy: str = ""
+    expected_reply_rate: str = ""
 
 
 class CampaignCreate(BaseModel):

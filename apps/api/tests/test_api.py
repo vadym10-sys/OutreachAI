@@ -37,7 +37,7 @@ from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core import security  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
-from app.schemas.dto import CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
+from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
 from app.main import app  # noqa: E402
@@ -256,6 +256,83 @@ def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
     assert lead["status"] == "New"
     assert lead["source"] == "apollo"
     assert lead["apollo_company_id"] == "apollo_org_1"
+
+
+def test_lead_finder_persists_ai_intelligence_from_website_analysis(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
+    monkeypatch.setattr(
+        "app.api.routes.collect_website",
+        lambda url: type(
+            "Snapshot",
+            (),
+            {
+                "url": "https://intelligence-build.example",
+                "title": "Intelligence Build",
+                "meta_description": "Commercial construction services",
+                "text": "Commercial construction, renovation, project management, contact us",
+                "technologies": ["WordPress"],
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.analyze_company_website",
+        lambda **kwargs: AnalysisOut(
+            company="Intelligence Build GmbH",
+            website="https://intelligence-build.example",
+            description="Commercial construction services",
+            industry="Construction",
+            location="Berlin, Germany",
+            niche="Commercial construction",
+            products_services=["Renovation", "Project management"],
+            services=["Renovation", "Project management"],
+            technologies=["WordPress"],
+            strengths=["Clear services"],
+            weaknesses=["Weak CTA"],
+            icp_score=82,
+            summary="A Berlin construction firm with a clear commercial services offer.",
+            icp="Owner-led commercial construction companies",
+            value_proposition="Reliable commercial renovation delivery",
+            detected_language="English",
+            target_geography="Germany",
+            sales_angle="Turn website traffic into qualified project calls.",
+            company_summary="Intelligence Build serves commercial renovation buyers in Germany.",
+            suggested_offer="Offer a booked-project consultation system.",
+            outreach_strategy="Lead with the weak CTA and propose a short growth audit.",
+            recommended_tone="Consultative",
+            recommended_cta="Book a 15 minute growth audit",
+            follow_up_strategy="Follow up with one website-specific improvement.",
+            expected_reply_rate="8-12%",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.search_apollo_companies",
+        lambda payload: ApolloSearchResult(
+            leads=[
+                LeadOut(
+                    company="Intelligence Build GmbH",
+                    website="https://intelligence-build.example",
+                    industry="Construction",
+                    country="Germany",
+                    city="Berlin",
+                    email="owner@intelligence-build.example",
+                    notes='{"source":"apollo","domain":"intelligence-build.example","apollo_company_id":"apollo_intelligence_1"}',
+                    domain="intelligence-build.example",
+                    apollo_company_id="apollo_intelligence_1",
+                    source="apollo",
+                )
+            ],
+            raw_count=1,
+            duration_ms=9,
+        ),
+    )
+    response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 200
+    lead = response.json()[0]
+    assert lead["ai_summary"] == "Intelligence Build serves commercial renovation buyers in Germany."
+    assert lead["suggested_offer"] == "Offer a booked-project consultation system."
+    assert lead["outreach_strategy"] == "Lead with the weak CTA and propose a short growth audit."
+    assert lead["sales_angle"] == "Turn website traffic into qualified project calls."
+    assert lead["expected_reply_rate"] == "8-12%"
 
 
 def test_apollo_status_and_missing_key(monkeypatch) -> None:
