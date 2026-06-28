@@ -13,25 +13,23 @@ import { useI18n } from "@/lib/i18n/provider";
 
 const nav = [
   { href: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/leads", labelKey: "Lead Finder", icon: Search },
-  { href: "/dashboard/companies", labelKey: "Companies", icon: Building2 },
-  { href: "/dashboard/website-analyzer", labelKey: "Website Analyzer", icon: Globe2 },
-  { href: "/dashboard/contacts", labelKey: "Contacts", icon: UserRoundSearch },
+  { href: "/dashboard/leads", labelKey: "nav.leads", icon: Search },
+  { href: "/dashboard/companies", labelKey: "nav.companies", icon: Building2 },
   { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
-  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
-  { href: "/dashboard/crm", labelKey: "CRM Pipeline", icon: Users },
-  { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3 },
-  { href: "/dashboard/sales-employees", labelKey: "AI Sales Employee", icon: Bot },
+  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Users },
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
+  { href: "/dashboard/website-analyzer", labelKey: "nav.websiteAnalyzer", icon: Globe2, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
+  { href: "/dashboard/contacts", labelKey: "nav.contacts", icon: UserRoundSearch, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
+  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
+  { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
+  { href: "/dashboard/sales-employees", labelKey: "nav.aiEmployees", icon: Bot, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
   { href: "/dashboard/owner", labelKey: "nav.owner", icon: Crown, ownerOnly: true },
   { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
 ];
 
 const featureFlags = {
-  NEXT_PUBLIC_SHOW_CRM_NAV: process.env.NEXT_PUBLIC_SHOW_CRM_NAV === "true",
-  NEXT_PUBLIC_SHOW_INBOX_NAV: process.env.NEXT_PUBLIC_SHOW_INBOX_NAV === "true",
-  NEXT_PUBLIC_SHOW_ANALYTICS_NAV: process.env.NEXT_PUBLIC_SHOW_ANALYTICS_NAV === "true",
+  NEXT_PUBLIC_SHOW_ADVANCED_NAV: process.env.NEXT_PUBLIC_SHOW_ADVANCED_NAV === "true",
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };
 
@@ -139,7 +137,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 })}
               </div>}
             </div>
-            <span className="truncate text-sm font-semibold text-slate-600">AI Sales Workspace</span>
+            <span className="truncate text-sm font-semibold text-slate-600">{t("shell.workspace")}</span>
           </div>
           <LanguageSwitcher compact />
           {hasClerkPublishableKey && !isClerkE2EBypass ? (

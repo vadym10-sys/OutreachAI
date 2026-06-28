@@ -432,23 +432,21 @@ export function DashboardHome() {
   if (error) return <EmptyState title="Workspace data unavailable" copy={error} />;
   const nextLead = leads[0];
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
+  const activeSignals = [
+    { label: "Leads found", value: String(metrics.leads || leads.length), help: "Real workspace leads", show: metrics.leads > 0 || leads.length > 0 },
+    { label: "Campaigns", value: String(metrics.campaigns || campaigns.length), help: "Saved campaigns", show: metrics.campaigns > 0 || campaigns.length > 0 },
+    { label: "Emails sent", value: String(metrics.emails_sent), help: "Approved sends only", show: metrics.emails_sent > 0 },
+    { label: "Reply rate", value: `${metrics.reply_rate || 0}%`, help: "From tracked replies", show: metrics.replies > 0 || metrics.emails_sent > 0 }
+  ].filter((signal) => signal.show);
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Today" title="What should I do now?" copy="Turn the next real company in your workspace into a complete sales opportunity." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">Find leads <ArrowRight size={17} /></Link>} />
       {supportingError && <p role="status" className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm font-semibold text-orange-700">{supportingError}</p>}
       {nextLead ? <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6"><h2 className="text-2xl font-bold text-ink">Complete research for {nextLead.company}</h2><p className="mt-3 text-sm leading-6 text-slate-600">One click can analyze the website, score the opportunity, prepare the first email and create follow-ups. If a provider cannot supply a field, OutreachAI will say why.</p><Link href="/dashboard/companies" className="mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">Review opportunities</Link></section> : <EmptyState title="No real companies yet" copy="Add or search for companies in Lead Finder. OutreachAI will not show fake pipeline data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find real leads</Link>} />}
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Leads found" value={String(metrics.leads || leads.length)} help="Real workspace leads" />
-        <MetricCard label="Campaigns" value={String(metrics.campaigns || campaigns.length)} help="Saved campaigns" />
-        <MetricCard label="Emails sent" value={String(metrics.emails_sent)} help="Approved sends only" />
-        <MetricCard label="Reply rate" value={`${metrics.reply_rate || 0}%`} help="From tracked replies" />
-      </section>
-      {!hasAnyData && <section className="grid gap-4 md:grid-cols-2">
-        <EmptyState title="No leads yet — Find your first companies." copy="Start in Lead Finder with one country and one industry. Saved companies will appear here." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />
-        <EmptyState title="No campaigns yet — Create your first campaign." copy="After leads exist, OutreachAI can prepare outreach drafts for your review." action={<Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 px-4 text-sm font-bold text-ink">Create campaign</Link>} />
-        <EmptyState title="No meetings yet." copy="Meetings appear after replies are tracked and marked as booked in the CRM pipeline." action={<Link href="/dashboard/crm" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 px-4 text-sm font-bold text-ink">Open CRM</Link>} />
-        <EmptyState title="No AI work yet." copy="Ask the AI Sales Employee to analyze a saved company or prepare outreach." action={<Link href="/dashboard/sales-employees" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 px-4 text-sm font-bold text-ink">Open AI Employee</Link>} />
+      {activeSignals.length > 0 && <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {activeSignals.map((signal) => <MetricCard key={signal.label} label={signal.label} value={signal.value} help={signal.help} />)}
       </section>}
+      {!hasAnyData && <EmptyState title="Start with one focused lead search." copy="Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after provider data exists." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}
       {(employees.length > 0 || activity.length > 0) && <section className="grid gap-4 lg:grid-cols-2">
         {employees.length > 0 && <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold text-ink">AI Employees</h2>
@@ -537,10 +535,32 @@ export function LeadFinderPage() {
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search runs through Google Maps, then Hunter and AI enrich what is available. Missing provider data is shown clearly instead of invented." />
       <form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {["country", "city", "industry", "category", "keyword", "company_size", "keywords", "technology", "contact_role", "radius"].map((name) => <label key={name} className="text-sm font-semibold capitalize text-slate-700">{name.replace("_", " ")}<input name={name} type={name === "radius" ? "number" : "text"} defaultValue={name === "radius" ? "10000" : undefined} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>)}
+        <div className="mb-5 rounded-xl bg-teal-50 p-4">
+          <p className="text-sm font-bold text-brand">Step 1 of 3 · Choose a focused market</p>
+          <p className="mt-1 text-sm leading-6 text-slate-700">Use one country, one city and one industry. A narrower search creates better opportunities faster.</p>
         </div>
-        <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} Find leads</PrimaryButton>
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="text-sm font-semibold text-slate-700">Country<input name="country" required placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">City<input name="city" required placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Industry<input name="industry" required placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Company size<input name="company_size" placeholder="11-50" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        </div>
+        <details className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <summary className="cursor-pointer text-sm font-bold text-ink">Advanced settings</summary>
+          <p className="mt-2 text-sm text-slate-600">Use these only when the first search is too broad or too narrow.</p>
+          <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <label className="text-sm font-semibold text-slate-700">Business category<input name="category" placeholder="Construction company" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">Keyword<input name="keyword" placeholder="renovation, contractor" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">Extra keywords<input name="keywords" placeholder="commercial, builders" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">Technology<input name="technology" placeholder="WordPress, Shopify" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">Contact role<input name="contact_role" placeholder="Owner, Founder, CEO" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">Radius meters<input name="radius" type="number" defaultValue="10000" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          </div>
+        </details>
+        <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
+          <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} Find leads</PrimaryButton>
+          <p className="text-sm text-slate-600">Expected time: 30-60 seconds. Saved companies will stay after refresh.</p>
+        </div>
         {visibleMessage && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{visibleMessage}</p>}
       </form>
       {loading && !hasSearched ? <EmptyState title="Loading leads" copy="Reading saved companies from PostgreSQL." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
