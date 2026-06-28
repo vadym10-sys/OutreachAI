@@ -60,6 +60,13 @@ const teamRouterDashboard = {
 };
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!window.sessionStorage.getItem("outreachai.e2eLocaleInitialized")) {
+      window.localStorage.setItem("outreachai.locale", "en");
+      document.cookie = "outreachai_locale=en; path=/; max-age=31536000; SameSite=Lax";
+      window.sessionStorage.setItem("outreachai.e2eLocaleInitialized", "true");
+    }
+  });
   await page.route("http://127.0.0.1:8000/api/**", async (route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -170,10 +177,13 @@ for (const width of [320, 390, 480]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-    await expect(page.getByRole("main").getByText("Leads", { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole("main").getByText("Today's priority", { exact: true })).toBeVisible();
+    await expect(page.getByRole("main").getByText("Suggested next action", { exact: true })).toBeVisible();
+    await expect(page.getByRole("main").getByText("Campaign health", { exact: true })).toBeVisible();
     const languageSelect = page.locator('select[aria-label]').first();
     await languageSelect.selectOption("es");
     await expect(page.locator('select').first()).toHaveValue("es");
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem("outreachai.locale"))).toBe("es");
     await page.reload();
     await expect(page.locator('select').first()).toHaveValue("es");
     await expect(page.getByRole("heading", { name: /Dashboard|Panel/ })).toBeVisible();
@@ -242,6 +252,7 @@ test("Owner can open Owner Console and toggle feature flags", async ({ page }) =
   });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/dashboard");
+  await expect(page.getByRole("link", { name: /Owner Console/ })).toBeVisible();
   await page.getByRole("link", { name: /Owner Console/ }).click();
   await expect(page.getByRole("heading", { name: "Owner Console" })).toBeVisible();
   await expect(page.getByText("Revenue / MRR / ARR")).toBeVisible();

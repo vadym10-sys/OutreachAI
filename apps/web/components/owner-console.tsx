@@ -133,6 +133,21 @@ function KeyValuePanel({ title, values }: { title: string; values: Record<string
   );
 }
 
+function AuditMetadata({ metadata }: { metadata?: Record<string, unknown> }) {
+  const entries = Object.entries(metadata || {}).filter(([, value]) => value !== null && value !== undefined && value !== "");
+  if (!entries.length) return <p className="mt-1 text-xs text-slate-500">No extra details</p>;
+  return (
+    <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+      {entries.slice(0, 6).map(([key, value]) => (
+        <div key={key} className="rounded-md bg-slate-50 px-3 py-2">
+          <dt className="font-semibold capitalize text-slate-500">{key.replaceAll("_", " ")}</dt>
+          <dd className="mt-1 break-words text-slate-700">{Array.isArray(value) ? value.join(", ") : typeof value === "object" ? "Saved details" : String(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function OwnerConsole() {
   const { t } = useI18n();
   const { getToken, isLoaded, isSignedIn } = useOwnerAuth();
@@ -290,7 +305,7 @@ export function OwnerConsole() {
                   <p className="font-semibold text-ink">{log.action}</p>
                   <time className="text-xs text-slate-500">{new Date(log.created_at).toLocaleString()}</time>
                 </div>
-                <p className="mt-1 break-words text-xs text-slate-500">{JSON.stringify(log.metadata_json || {})}</p>
+                <AuditMetadata metadata={log.metadata_json} />
               </article>
             ))}
           </div>
