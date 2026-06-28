@@ -211,6 +211,9 @@ export function trackEvent(name: string, properties: Properties = {}) {
       current_route: typeof window !== "undefined" ? window.location.pathname : "",
       release: release(),
       environment: environment()
+    }, {
+      send_instantly: true,
+      transport: "fetch"
     });
   });
 }
@@ -229,6 +232,9 @@ export function trackPageView(pathname: string) {
       current_route: pathname,
       release: release(),
       environment: environment()
+    }, {
+      send_instantly: true,
+      transport: "fetch"
     });
   });
 }
@@ -251,6 +257,9 @@ export function capturePostHogException(error: unknown, properties: Properties =
       current_route: typeof window !== "undefined" ? window.location.pathname : "",
       release: release(),
       environment: environment()
+    }, {
+      send_instantly: true,
+      transport: "fetch"
     });
   });
 }
