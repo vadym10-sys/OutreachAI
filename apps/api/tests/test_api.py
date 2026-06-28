@@ -30,6 +30,7 @@ os.environ["NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY"] = "pk_test"
 os.environ["AUTOMATION_SECRET"] = "automation_test"
 os.environ["APOLLO_API_KEY"] = "apollo_test"
 os.environ["HUNTER_API_KEY"] = "hunter_test"
+os.environ["GOOGLE_MAPS_API_KEY"] = "google_maps_test"
 os.environ["OPENAI_API_KEY"] = "openai_test"
 os.environ["RESEND_API_KEY"] = "resend_test"
 os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
@@ -40,6 +41,7 @@ from app.core import security  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
+from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -231,20 +233,24 @@ def test_production_auth_rejects_expired_clerk_jwt(monkeypatch) -> None:
 def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
     monkeypatch.setattr(
-        "app.api.routes.search_apollo_companies",
-        lambda payload: ApolloSearchResult(
+        "app.api.routes.search_google_places",
+        lambda payload: GooglePlacesSearchResult(
             leads=[LeadOut(
                 company="Austin Commercial Build",
                 website="https://example.com",
                 industry=payload.industry or payload.niche,
                 country=payload.country,
                 city=payload.city,
-                email="apollo-austin@example.com",
-                notes='{"source":"apollo","domain":"example.com","apollo_company_id":"apollo_org_1","employee_count":42}',
+                phone="+1 512 555 0101",
+                notes='{"source":"google_maps","domain":"example.com","place_id":"places/austin_1","address":"1 Congress Ave, Austin, TX","google_rating":4.7,"business_category":"Construction company"}',
                 domain="example.com",
-                apollo_company_id="apollo_org_1",
-                employee_count=42,
-                source="apollo",
+                source="google_maps",
+                place_id="places/austin_1",
+                address="1 Congress Ave, Austin, TX",
+                google_rating=4.7,
+                business_category="Construction company",
+                latitude=30.2672,
+                longitude=-97.7431,
             )],
             raw_count=1,
             duration_ms=10,
@@ -268,8 +274,11 @@ def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
     lead = response.json()[0]
     assert lead["company"] == "Austin Commercial Build"
     assert lead["status"] == "New"
-    assert lead["source"] == "apollo"
-    assert lead["apollo_company_id"] == "apollo_org_1"
+    assert lead["source"] == "google_maps"
+    assert lead["place_id"] == "places/austin_1"
+    assert lead["address"] == "1 Congress Ave, Austin, TX"
+    assert lead["google_rating"] == 4.7
+    assert lead["business_category"] == "Construction company"
 
 
 def test_lead_finder_persists_ai_intelligence_from_website_analysis(monkeypatch) -> None:
@@ -319,8 +328,8 @@ def test_lead_finder_persists_ai_intelligence_from_website_analysis(monkeypatch)
         ),
     )
     monkeypatch.setattr(
-        "app.api.routes.search_apollo_companies",
-        lambda payload: ApolloSearchResult(
+        "app.api.routes.search_google_places",
+        lambda payload: GooglePlacesSearchResult(
             leads=[
                 LeadOut(
                     company="Intelligence Build GmbH",
@@ -329,10 +338,11 @@ def test_lead_finder_persists_ai_intelligence_from_website_analysis(monkeypatch)
                     country="Germany",
                     city="Berlin",
                     email="owner@intelligence-build.example",
-                    notes='{"source":"apollo","domain":"intelligence-build.example","apollo_company_id":"apollo_intelligence_1"}',
+                    notes='{"source":"google_maps","domain":"intelligence-build.example","place_id":"google_intelligence_1","business_category":"Construction company"}',
                     domain="intelligence-build.example",
-                    apollo_company_id="apollo_intelligence_1",
-                    source="apollo",
+                    place_id="google_intelligence_1",
+                    business_category="Construction company",
+                    source="google_maps",
                 )
             ],
             raw_count=1,
@@ -347,6 +357,46 @@ def test_lead_finder_persists_ai_intelligence_from_website_analysis(monkeypatch)
     assert lead["outreach_strategy"] == "Lead with the weak CTA and propose a short growth audit."
     assert lead["sales_angle"] == "Turn website traffic into qualified project calls."
     assert lead["expected_reply_rate"] == "8-12%"
+
+
+def test_google_maps_missing_key_blocks_lead_finder(monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "")
+    get_settings.cache_clear()
+    response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 503
+    assert "Google Maps is not connected" in response.json()["detail"]
+    get_settings.cache_clear()
+
+
+def test_google_maps_timeout_returns_user_safe_error(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.search_google_places", lambda payload: (_ for _ in ()).throw(GoogleMapsRequestError("Google Maps is temporarily unavailable after retries.")))
+    response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 502
+    assert "Google Maps is temporarily unavailable" in response.json()["detail"]
+
+
+def test_google_maps_duplicate_prevention_by_place_id(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
+    lead = LeadOut(
+        company="Duplicate Google Maps GmbH",
+        website="https://duplicate-google-maps.example",
+        industry="Construction",
+        country="Germany",
+        city="Berlin",
+        phone="+49 30 555 0101",
+        notes='{"source":"google_maps","domain":"duplicate-google-maps.example","place_id":"google_duplicate_place"}',
+        domain="duplicate-google-maps.example",
+        place_id="google_duplicate_place",
+        source="google_maps",
+    )
+    monkeypatch.setattr("app.api.routes.search_google_places", lambda payload: GooglePlacesSearchResult(leads=[lead], raw_count=1, duration_ms=5))
+    payload = {"industry": "Construction", "country": "Germany", "city": "Berlin"}
+    first = client.post("/api/leads/find", headers=AUTH, json=payload)
+    second = client.post("/api/leads/find", headers=AUTH, json=payload)
+    assert first.status_code == 200
+    assert len(first.json()) == 1
+    assert second.status_code == 200
+    assert second.json() == []
 
 
 def test_apollo_status_and_missing_key(monkeypatch) -> None:

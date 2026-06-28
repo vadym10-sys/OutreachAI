@@ -113,6 +113,7 @@ function ActionLogPanel({ title, logs, onRetry }: { title: string; logs: string[
 
 function LeadSourceBadges({ lead }: { lead: Lead }) {
   return <div className="flex flex-wrap items-center gap-2">
+    {lead.source === 'google_maps' && <span className="rounded-full bg-sky-50 px-2 py-1 text-xs font-bold text-sky-700">Google Maps</span>}
     {lead.source === 'apollo' && <span className="rounded-full bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700">Apollo</span>}
     {lead.source === 'manual' && <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">Manual</span>}
     {lead.hunter_verified ? <span className="rounded-full bg-teal-50 px-2 py-1 text-xs font-bold text-brand">Hunter verified email</span> : null}
@@ -779,15 +780,15 @@ export function LeadManager() {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setFinding(true);
-    setFindingStep('Connecting to Apollo and Hunter...');
-    setLeadActionLogs(['Connecting to trusted lead sources.']);
+    setFindingStep('Connecting to Google Maps and Hunter...');
+    setLeadActionLogs(['Connecting to Google Maps, Hunter, and AI analysis.']);
     setNotice('');
     setError('');
     try {
       await delay(120);
       setFindingStep('Searching companies...');
-      setLeadActionLogs((items) => [...items, 'Searching companies that match the country, industry, and size.']);
-      const found = await api<Lead[]>('/api/leads/find', { method: 'POST', body: JSON.stringify({ industry: data.get('industry'), niche: data.get('industry'), country: data.get('country'), city: data.get('city'), employee_count: data.get('employee_count'), revenue: data.get('revenue'), technologies: splitList(String(data.get('technologies') || '')), keywords: splitList(String(data.get('keywords') || '')), limit: Number(data.get('limit') || 10) }) });
+      setLeadActionLogs((items) => [...items, 'Searching Google Maps for companies that match the country, city, industry, and radius.']);
+      const found = await api<Lead[]>('/api/leads/find', { method: 'POST', body: JSON.stringify({ industry: data.get('industry'), niche: data.get('industry'), category: data.get('category') || data.get('industry'), keyword: data.get('keyword') || '', country: data.get('country'), city: data.get('city'), employee_count: data.get('employee_count'), revenue: data.get('revenue'), technologies: splitList(String(data.get('technologies') || '')), keywords: splitList(String(data.get('keywords') || '')), radius: Number(data.get('radius') || 10000), limit: Number(data.get('limit') || 10) }) });
       setFindingStep('Saving verified results...');
       setLeadActionLogs((items) => [...items, 'Checking decision-maker emails and confidence.', 'Saving new companies without duplicates.']);
       setLeads((items) => [...found, ...items.filter((item) => !found.some((lead) => lead.id === item.id))]);
@@ -797,7 +798,7 @@ export function LeadManager() {
       setLeadActionLogs((items) => [...items, `Imported ${found.length} companies and verified ${verified} email${verified === 1 ? '' : 's'}.`]);
     } catch (nextError) {
       setFindingStep('');
-      const message = friendlyErrorMessage(nextError, 'Lead discovery could not be completed. Please adjust the filters and try again.');
+      const message = friendlyErrorMessage(nextError, 'Google Maps lead discovery could not be completed. Please adjust the filters and try again.');
       setError(message);
       setLeadActionLogs((items) => [...items, message, 'Broaden the location or company size, then run the search again.']);
     } finally { setFinding(false); }
@@ -901,7 +902,7 @@ export function LeadManager() {
           <button className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 font-semibold text-white md:col-span-2"><Plus size={18} /> Analyze company</button>
         </form>
       </section>
-      {showApolloLeadSearch ? <form id="lead-search-form" onSubmit={find} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <form id="lead-search-form" onSubmit={find} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-5"><h2 className="text-xl font-bold text-ink">Who should OutreachAI find?</h2><p className="mt-1 text-sm text-slate-600">Start simple. You can narrow the search after the first results.</p></div>
         <div className="mb-5 grid gap-2 min-[430px]:grid-cols-3">
           {['Country', 'Industry', 'Company size'].map((label, index) => <button key={label} type="button" onClick={() => setLeadStep(index + 1)} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${leadStep === index + 1 ? 'bg-brand text-white' : 'border border-slate-300 text-slate-700'}`}>{index + 1}. {label}</button>)}
@@ -932,12 +933,15 @@ export function LeadManager() {
           <summary className="cursor-pointer font-semibold text-ink">Advanced settings</summary>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <input name="keywords" placeholder="Keywords" className="rounded-md border border-slate-300 px-3 py-2" />
+            <input name="keyword" placeholder="Main keyword" className="rounded-md border border-slate-300 px-3 py-2" />
+            <input name="category" placeholder="Google category" className="rounded-md border border-slate-300 px-3 py-2" />
             <input name="revenue" placeholder="Revenue" className="rounded-md border border-slate-300 px-3 py-2" />
             <input name="technologies" placeholder="Technologies" className="rounded-md border border-slate-300 px-3 py-2" />
+            <input name="radius" type="number" min="100" max="50000" defaultValue="10000" placeholder="Radius in meters" className="rounded-md border border-slate-300 px-3 py-2" />
             <input name="limit" type="number" min="1" max="25" defaultValue="10" className="rounded-md border border-slate-300 px-3 py-2" />
           </div>
         </details>
-      </form> : <Notice message="Apollo company search is unavailable on the current Apollo plan. Add a company website above to analyze it and prepare outreach today." kind="warning" />}
+      </form>
       <ActionLogPanel title="Lead discovery status" logs={leadActionLogs} />
       <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">

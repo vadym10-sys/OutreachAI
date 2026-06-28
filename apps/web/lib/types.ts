@@ -79,6 +79,12 @@ export type Lead = {
   revenue_range?: string | null;
   title?: string | null;
   confidence?: string | null;
+  address?: string | null;
+  google_rating?: number | null;
+  business_category?: string | null;
+  place_id?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   apollo_company_id?: string | null;
   apollo_contact_id?: string | null;
   hunter_contact_id?: string | null;

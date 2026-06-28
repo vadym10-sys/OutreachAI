@@ -74,12 +74,16 @@ PLAN_LIMITS = {
 class LeadFinderRequest(BaseModel):
     niche: str = Field(default="", max_length=120)
     industry: str = Field(default="", max_length=120)
+    category: str = Field(default="", max_length=120)
+    keyword: str = Field(default="", max_length=160)
     country: str = Field(min_length=2, max_length=120)
     city: str = Field(default="", max_length=120)
+    company_size: Optional[str] = None
     employee_count: Optional[str] = None
     revenue: Optional[str] = None
     technologies: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+    radius: int = Field(default=10000, ge=100, le=50000)
     limit: int = Field(default=10, ge=1, le=25)
 
 
@@ -141,6 +145,12 @@ class LeadOut(BaseModel):
     revenue_range: Optional[str] = None
     title: Optional[str] = None
     confidence: Optional[str] = None
+    address: Optional[str] = None
+    google_rating: Optional[float] = None
+    business_category: Optional[str] = None
+    place_id: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     apollo_company_id: Optional[str] = None
     apollo_contact_id: Optional[str] = None
     hunter_contact_id: Optional[str] = None

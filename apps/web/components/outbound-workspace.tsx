@@ -436,14 +436,14 @@ export function LeadFinderPage() {
   const { api, leads, setLeads, loading, error } = useSalesData();
   const [message, setMessage] = useState("");
   const [searching, setSearching] = useState(false);
-  const visibleMessage = message === "Connecting to configured lead providers..." && leads.length
-    ? `${leads.length} real companies saved from configured providers.`
+  const visibleMessage = message === "Connecting to Google Maps..." && leads.length
+    ? `${leads.length} real companies saved from Google Maps.`
     : message;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setSearching(true);
-    setMessage("Connecting to configured lead providers...");
+    setMessage("Connecting to Google Maps...");
     try {
       const found = await api<Lead[]>("/api/leads/find", {
         method: "POST",
@@ -451,26 +451,29 @@ export function LeadFinderPage() {
           country: String(data.get("country") || ""),
           city: String(data.get("city") || ""),
           industry: String(data.get("industry") || ""),
+          category: String(data.get("category") || data.get("industry") || ""),
+          keyword: String(data.get("keyword") || ""),
           company_size: String(data.get("company_size") || ""),
           keywords: splitList(String(data.get("keywords") || "")),
           technologies: splitList(String(data.get("technology") || "")),
+          radius: Number(data.get("radius") || 10000),
           limit: 10
         })
       });
       setLeads(found);
-      setMessage(found.length ? `${found.length} real companies saved from configured providers.` : "No companies found. Broaden filters or add a company manually.");
+      setMessage(found.length ? `${found.length} real companies saved from Google Maps.` : "No companies found. Broaden filters or add a company manually.");
     } catch (err) {
-      setMessage(friendlyErrorMessage(err, "Lead search could not be completed by configured providers."));
+      setMessage(friendlyErrorMessage(err, "Google Maps lead search could not be completed."));
     } finally {
       setSearching(false);
     }
   }
   return (
     <div className="space-y-6">
-      <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search runs through configured providers. If Apollo, Hunter or OpenAI cannot supply a field, the card states what is unavailable." />
+      <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search runs through Google Maps, then Hunter and AI enrich what is available. Missing provider data is shown clearly instead of invented." />
       <form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {["country", "city", "industry", "company_size", "keywords", "technology", "contact_role"].map((name) => <label key={name} className="text-sm font-semibold capitalize text-slate-700">{name.replace("_", " ")}<input name={name} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>)}
+          {["country", "city", "industry", "category", "keyword", "company_size", "keywords", "technology", "contact_role", "radius"].map((name) => <label key={name} className="text-sm font-semibold capitalize text-slate-700">{name.replace("_", " ")}<input name={name} type={name === "radius" ? "number" : "text"} defaultValue={name === "radius" ? "10000" : undefined} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>)}
         </div>
         <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} Find leads</PrimaryButton>
         {visibleMessage && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{visibleMessage}</p>}

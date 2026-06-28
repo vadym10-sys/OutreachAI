@@ -168,6 +168,12 @@ from app.services.hunter import (
     hunter_key_loaded,
     test_hunter_connection,
 )
+from app.services.google_maps import (
+    GoogleMapsConfigurationError,
+    GoogleMapsRequestError,
+    google_maps_key_loaded,
+    search_google_places,
+)
 from app.services.website import WebsiteFetchError, collect_website
 
 router = APIRouter()
@@ -480,6 +486,12 @@ def _lead_out(lead: Lead) -> LeadOut:
         revenue_range=str(metadata.get("revenue") or "") or None,
         title=str(metadata.get("title") or "") or None,
         confidence=str(metadata.get("confidence") or "") or None,
+        address=str(metadata.get("address") or "") or None,
+        google_rating=float(metadata["google_rating"]) if isinstance(metadata.get("google_rating"), (int, float)) else None,
+        business_category=str(metadata.get("business_category") or "") or None,
+        place_id=str(metadata.get("place_id") or "") or None,
+        latitude=float(metadata["latitude"]) if isinstance(metadata.get("latitude"), (int, float)) else None,
+        longitude=float(metadata["longitude"]) if isinstance(metadata.get("longitude"), (int, float)) else None,
         apollo_company_id=str(metadata.get("apollo_company_id") or "") or None,
         apollo_contact_id=str(metadata.get("apollo_contact_id") or "") or None,
         hunter_contact_id=str(metadata.get("hunter_contact_id") or "") or None,
@@ -537,9 +549,9 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
 
 
 def _provider_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError, HunterConfigurationError)):
+    if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError, HunterConfigurationError, GoogleMapsConfigurationError)):
         return HTTPException(status_code=503, detail=str(exc))
-    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError)):
+    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError, GoogleMapsRequestError)):
         return HTTPException(status_code=502, detail=str(exc))
     return HTTPException(status_code=500, detail="Provider request failed.")
 
@@ -2811,7 +2823,7 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
         user_id=user_id,
         workspace_id=str(workspace.id),
         payload=payload.model_dump(),
-        apollo_configured=apollo_key_loaded(),
+        google_maps_configured=google_maps_key_loaded(),
         hunter_configured=hunter_key_loaded(),
         openai_configured=bool(get_app_settings().openai_api_key),
         database_configured=bool(get_app_settings().database_url),
@@ -2819,17 +2831,16 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
     )
     _require_active_subscription(db, workspace)
     try:
-        _lead_trace(request_id, "apollo_request_started")
-        result = search_apollo_companies(payload)
+        _lead_trace(request_id, "google_maps_request_started")
+        result = search_google_places(payload)
     except Exception as exc:
-        _lead_trace(request_id, "apollo_request_failed", error=str(exc), error_type=type(exc).__name__)
+        _lead_trace(request_id, "google_maps_request_failed", error=str(exc), error_type=type(exc).__name__)
         raise _provider_error(exc) from exc
-    _lead_trace(request_id, "apollo_response_received", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
-    _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
+    _lead_trace(request_id, "google_maps_response_received", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
     _lead_trace(request_id, "hunter_enrichment_started", leads=len(result.leads), hunter_configured=hunter_key_loaded())
     leads = _hunter_enriched_leads(db, request, user_id, workspace, result.leads)
     _lead_trace(request_id, "hunter_response_received", leads=len(leads), verified=sum(1 for lead in leads if lead.hunter_verified))
-    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="apollo_hunter", action="apollo.company_search", request_id=request_id)
+    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="google_maps_hunter", action="google_maps.company_search", request_id=request_id)
     response = [_lead_out(lead) for lead in saved]
     _lead_trace(request_id, "frontend_response_ready", response_count=len(response), companies=[lead.company for lead in response[:5]])
     return response
@@ -2898,7 +2909,15 @@ def _save_provider_leads(
     for item in found:
         if _lead_duplicate_exists(db, workspace, user_id, item):
             skipped += 1
-            _lead_trace(request_id or str(uuid4()), "database_duplicate_skipped", company=item.company, email=str(item.email or ""), website=item.website or "", apollo_company_id=item.apollo_company_id)
+            _lead_trace(
+                request_id or str(uuid4()),
+                "database_duplicate_skipped",
+                company=item.company,
+                email=str(item.email or ""),
+                website=item.website or "",
+                place_id=item.place_id,
+                apollo_company_id=item.apollo_company_id,
+            )
             continue
         _enforce_usage(db, user_id, workspace, "leads")
         lead = Lead(
@@ -2938,6 +2957,7 @@ def _save_provider_leads(
 
 def _lead_duplicate_exists(db: Session, workspace: Workspace, user_id: str, item: LeadOut) -> bool:
     metadata = _lead_metadata(item)
+    place_id = str(metadata.get("place_id") or item.place_id or "")
     apollo_company_id = str(metadata.get("apollo_company_id") or item.apollo_company_id or "")
     apollo_contact_id = str(metadata.get("apollo_contact_id") or item.apollo_contact_id or "")
     hunter_contact_id = str(metadata.get("hunter_contact_id") or item.hunter_contact_id or "")
@@ -2947,6 +2967,8 @@ def _lead_duplicate_exists(db: Session, workspace: Workspace, user_id: str, item
         criteria.append(Lead.email == str(item.email))
     if item.website:
         criteria.append(Lead.website == item.website)
+    if place_id:
+        criteria.append(Lead.notes.ilike(f"%{place_id}%"))
     if apollo_company_id:
         criteria.append(Lead.notes.ilike(f"%{apollo_company_id}%"))
     if apollo_contact_id:

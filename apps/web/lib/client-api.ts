@@ -63,6 +63,9 @@ function safeApiMessage(status: number, detail: string) {
   if (status === 429 || lower.includes('rate limit')) return 'Rate limit exceeded. Please wait a minute and try again.';
   if (lower.includes('database unavailable') || lower.includes('database schema') || lower.includes('database connection') || lower.includes('could not connect')) return 'Database unavailable. Please try again in a moment.';
   if (lower.includes('workspace not found')) return 'Workspace not found. Please create or select a workspace before continuing.';
+  if (lower.includes('google maps rejected') || lower.includes('google maps key') || lower.includes('places api access')) return 'Google Maps connection failed. Please verify the Google Maps API key and Places API access.';
+  if (lower.includes('google maps is not connected')) return 'Google Maps is not connected. Ask the owner to connect Google Maps before searching companies.';
+  if (lower.includes('google maps is temporarily unavailable')) return 'Google Maps is temporarily unavailable. Please try again in a few minutes.';
   if (lower.includes('apollo rejected') || lower.includes('apollo key') || lower.includes('invalid api key')) return 'Apollo connection failed. Please verify the Apollo API key and account access.';
   if (lower.includes('apollo is not connected')) return 'Apollo is not connected. Please connect Apollo before searching leads.';
   if (lower.includes('apollo is temporarily unavailable') || lower.includes('apollo unavailable')) return 'Apollo is temporarily unavailable. Please try again in a few minutes.';

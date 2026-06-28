@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     resend_webhook_secret: str = ""
     apollo_api_key: str = ""
     hunter_api_key: str = ""
+    google_maps_api_key: str = ""
     clay_api_key: str = ""
     clay_workspace_id: str = ""
     crm_sync_webhook_url: str = ""
@@ -86,6 +87,8 @@ class Settings(BaseSettings):
             missing.append("APOLLO_API_KEY")
         if not self.hunter_api_key:
             missing.append("HUNTER_API_KEY")
+        if not self.google_maps_api_key:
+            missing.append("GOOGLE_MAPS_API_KEY")
         if not self.clay_api_key:
             missing.append("CLAY_API_KEY")
         if not self.stripe_secret_key:
