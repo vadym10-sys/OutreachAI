@@ -12,7 +12,7 @@ const providers: Array<{ id: OAuthProvider; label: string }> = [
   { id: "apple", label: "Continue with Apple" }
 ];
 
-export function OAuthProviderButtons({ mode }: { mode: AuthMode }) {
+export function OAuthProviderButtons({ mode, embedded = false }: { mode: AuthMode; embedded?: boolean }) {
   const signInState = useSignIn();
   const signUpState = useSignUp();
   const [busyProvider, setBusyProvider] = useState<OAuthProvider | null>(null);
@@ -43,8 +43,8 @@ export function OAuthProviderButtons({ mode }: { mode: AuthMode }) {
   }
 
   return (
-    <section aria-label="Social authentication" className="mb-4 rounded-lg border border-slate-200 bg-white p-3 shadow-soft">
-      <div className="grid gap-2 min-[390px]:grid-cols-2">
+    <section aria-label="Social authentication" className={embedded ? "w-full" : "mb-4 rounded-lg border border-slate-200 bg-white p-3 shadow-soft"}>
+      <div className="grid gap-2">
         {providers.map((provider) => {
           const isBusy = busyProvider === provider.id;
           return (
@@ -53,7 +53,7 @@ export function OAuthProviderButtons({ mode }: { mode: AuthMode }) {
               type="button"
               onClick={() => authenticate(provider.id)}
               disabled={!isLoaded || busyProvider !== null}
-              className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-ink transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-ink transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isBusy ? <Loader2 className="animate-spin" size={17} /> : <span className="text-base">{provider.id === "apple" ? "A" : "G"}</span>}
               <span>{provider.label}</span>
