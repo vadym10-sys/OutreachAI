@@ -39,9 +39,9 @@ from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core import security  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
-from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
+from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
-from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult  # noqa: E402
+from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -373,6 +373,22 @@ def test_google_maps_timeout_returns_user_safe_error(monkeypatch) -> None:
     response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
     assert response.status_code == 502
     assert "Google Maps is temporarily unavailable" in response.json()["detail"]
+
+
+def test_google_maps_text_query_keeps_radius_out_of_search_phrase() -> None:
+    payload = LeadFinderRequest(
+        industry="Construction",
+        country="Germany",
+        city="Berlin",
+        keyword="construction",
+        category="Construction company",
+        company_size="11-50",
+        radius=50000,
+    )
+    query = _text_query(payload)
+    assert query.endswith("in Berlin, Germany")
+    assert "within" not in query
+    assert "50000" not in query
 
 
 def test_google_maps_duplicate_prevention_by_place_id(monkeypatch) -> None:

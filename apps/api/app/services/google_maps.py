@@ -86,19 +86,20 @@ def _search_body(payload: LeadFinderRequest) -> dict[str, Any]:
 
 
 def _text_query(payload: LeadFinderRequest) -> str:
-    terms = [
+    business_terms = [
         payload.keyword,
         payload.category,
         payload.industry or payload.niche,
         *payload.keywords,
-        payload.city,
-        payload.country,
     ]
-    cleaned = [_clean_term(term) for term in terms if _clean_term(term)]
-    query = " ".join(cleaned)
-    if payload.radius:
-        query = f"{query} within {payload.radius} meters".strip()
-    return query[:500]
+    cleaned_business_terms = [_clean_term(term) for term in business_terms if _clean_term(term)]
+    location = ", ".join([term for term in [_clean_term(payload.city), _clean_term(payload.country)] if term])
+    business_query = " ".join(cleaned_business_terms)
+    if location and business_query:
+        return f"{business_query} in {location}"[:500]
+    if location:
+        return f"companies in {location}"[:500]
+    return business_query[:500]
 
 
 def _google_places_post(body: dict[str, Any], operation: str) -> dict[str, Any]:
