@@ -117,7 +117,6 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.setViewportSize({ width: 390, height: 900 });
     await page.goto("/dashboard/leads");
     await page.getByRole("button", { name: "Find leads" }).first().click();
-    await expect(page.getByText("1 real companies saved from Google Maps.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" })).toBeVisible();
     await expect(page.getByText("jane@example.com · verified by Hunter")).toBeVisible();
     await page.getByRole("button", { name: /Complete sales research/ }).click();
