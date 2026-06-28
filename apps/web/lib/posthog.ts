@@ -21,6 +21,7 @@ let runtimePostHogHost = posthogHost;
 let runtimeRelease = process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0";
 let runtimeEnvironment = process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development";
 let configPromise: Promise<boolean> | null = null;
+let appLoadedCaptured = false;
 
 declare global {
   interface Window {
@@ -163,6 +164,17 @@ export function initializePostHog() {
     release: release(),
     environment: environment()
   };
+  if (!appLoadedCaptured) {
+    appLoadedCaptured = true;
+    posthog.capture("app_loaded", {
+      current_route: typeof window !== "undefined" ? window.location.pathname : "",
+      release: release(),
+      environment: environment()
+    }, {
+      send_instantly: true,
+      transport: "fetch"
+    });
+  }
   return true;
 }
 
