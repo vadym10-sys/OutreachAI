@@ -438,7 +438,9 @@ export function LeadFinderPage() {
   const [hasSearched, setHasSearched] = useState(false);
   const [message, setMessage] = useState("");
   const [searching, setSearching] = useState(false);
-  const visibleMessage = message === "Connecting to Google Maps..." && leads.length
+  const visibleMessage = message.includes("real companies saved") && hasSearched && searchResults.length === 0
+    ? ""
+    : message === "Connecting to Google Maps..." && leads.length
     ? `${leads.length} real companies saved from Google Maps.`
     : message;
   async function submit(event: FormEvent<HTMLFormElement>) {
