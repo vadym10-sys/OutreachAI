@@ -1,5 +1,5 @@
-import { LeadManager } from '@/components/product-workspace';
+import { LeadFinderPage } from '@/components/outbound-workspace';
 
 export default function LeadsPage() {
-  return <LeadManager />;
+  return <LeadFinderPage />;
 }

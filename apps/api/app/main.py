@@ -4,13 +4,16 @@ import logging
 import sys
 import traceback
 
-from fastapi import Depends, FastAPI
+import sentry_sdk
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import Response
 
 from app.api.routes import router as api_router
 from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
 from app.core.database import Base, get_engine
+from app.core.observability import init_sentry, sentry_transaction_name, set_request_context
 from app.core.security import rate_limit
 
 logging.basicConfig(
@@ -21,6 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("outreachai.api")
 settings = get_settings()
+init_sentry(settings)
 
 app = FastAPI(
     title="OutreachAI API",
@@ -38,9 +42,26 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def sentry_request_context(request: Request, call_next) -> Response:
+    set_request_context(request)
+    sentry_sdk.set_tag("endpoint", request.url.path)
+    sentry_sdk.set_tag("environment", settings.app_env)
+    sentry_sdk.set_tag("release", "outreachai-api@1.0.0")
+    sentry_sdk.set_context("transaction", {"name": sentry_transaction_name(request)})
+    return await call_next(request)
+
+
 @app.get("/")
 def root() -> dict[str, str]:
     return {"service": "outreachai-api", "status": "ok"}
+
+
+@app.get("/api/debug/sentry-error", include_in_schema=False)
+def sentry_error_probe() -> dict[str, str]:
+    if not settings.debug:
+        raise HTTPException(status_code=404, detail="Not found")
+    raise RuntimeError("OutreachAI backend development Sentry test error")
 
 
 app.include_router(api_router, prefix="/api", tags=["api"])

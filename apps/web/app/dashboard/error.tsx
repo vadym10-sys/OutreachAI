@@ -2,10 +2,15 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import * as Sentry from "@sentry/nextjs";
 
 export default function DashboardError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   useEffect(() => {
     console.error("OutreachAI dashboard render failed", error);
+    Sentry.captureException(error, {
+      tags: { area: "dashboard-route-error" },
+      extra: { digest: error.digest }
+    });
   }, [error]);
 
   return (

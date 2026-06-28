@@ -1,5 +1,5 @@
-import { CampaignBuilder } from '@/components/product-workspace';
+import { CampaignsPage as CampaignsWorkspacePage } from '@/components/outbound-workspace';
 
 export default function CampaignsPage() {
-  return <CampaignBuilder />;
+  return <CampaignsWorkspacePage />;
 }

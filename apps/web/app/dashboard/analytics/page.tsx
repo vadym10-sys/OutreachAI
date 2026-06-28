@@ -1,5 +1,5 @@
-import { AnalyticsReal } from '@/components/product-workspace';
+import { AnalyticsPage as AnalyticsWorkspacePage } from '@/components/outbound-workspace';
 
 export default function AnalyticsPage() {
-  return <AnalyticsReal />;
+  return <AnalyticsWorkspacePage />;
 }

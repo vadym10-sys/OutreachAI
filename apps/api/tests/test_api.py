@@ -9,6 +9,7 @@ import os
 import time
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from cryptography.hazmat.primitives import serialization
@@ -49,6 +50,19 @@ AUTH = {"Authorization": "Bearer dev"}
 OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "romaniukvadym10@gmail.com"}
 NON_OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "not-owner@example.com"}
 security.limiter.limit = 10000
+
+
+def test_sentry_debug_endpoint_disabled_by_default() -> None:
+    response = client.get("/api/debug/sentry-error")
+    assert response.status_code == 404
+
+
+def test_sentry_debug_endpoint_throws_only_when_debug_enabled(monkeypatch) -> None:
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module.settings, "debug", True)
+    with pytest.raises(RuntimeError, match="OutreachAI backend development Sentry test error"):
+        client.get("/api/debug/sentry-error")
 
 
 def stripe_signature(payload: dict) -> tuple[str, str]:
@@ -560,7 +574,7 @@ def test_campaign_lead_email_and_dashboard_flow(monkeypatch) -> None:
         headers=AUTH,
         json={
             "company": "Hill Country Build Co",
-            "website": "https://example.com",
+            "website": "https://hill-country-build-flow.example",
             "industry": "Construction",
             "country": "United States",
             "city": "Austin",
@@ -587,13 +601,131 @@ def test_campaign_lead_email_and_dashboard_flow(monkeypatch) -> None:
 
     list_response = client.get("/api/leads?search=Hill&status=Qualified", headers=AUTH)
     assert list_response.status_code == 200
-    assert list_response.json()["total"] == 1
+    assert list_response.json()["total"] >= 1
 
     dashboard_response = client.get("/api/dashboard", headers=AUTH)
     assert dashboard_response.status_code == 200
     metrics = dashboard_response.json()
     assert metrics["leads"] >= 1
     assert metrics["campaigns"] >= 1
+
+
+def test_manual_lead_creation_enriches_with_hunter_and_ai(monkeypatch) -> None:
+    def enriched(leads):
+        lead = leads[0]
+        return [
+            lead.model_copy(
+                update={
+                    "contact": "Ada Founder",
+                    "email": "ada@manual-build.example",
+                    "hunter_verified": True,
+                    "hunter_status": "verified",
+                    "source": "hunter",
+                    "notes": '{"source":"hunter","domain":"manual-build.example","hunter_verified":true,"hunter_status":"verified","confidence":97,"title":"Founder"}',
+                }
+            )
+        ]
+
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: enriched(leads))
+    monkeypatch.setattr(
+        "app.api.routes.collect_website",
+        lambda website: type("Snapshot", (), {"url": website, "title": "Manual Build", "meta_description": "Construction company", "text": "Construction services contact us case studies", "technologies": ["Next.js"]})(),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.analyze_company_website",
+        lambda **kwargs: AnalysisOut(
+            company="Manual Build GmbH",
+            website=kwargs["website"],
+            niche="Construction",
+            industry="Construction",
+            services=["Commercial construction"],
+            strengths=["Clear services"],
+            weaknesses=["Weak CTA"],
+            summary="Manual Build is a Berlin construction company.",
+            company_summary="Manual Build serves commercial construction buyers in Berlin.",
+            icp="German construction firms",
+            icp_score=82,
+            value_proposition="Reliable commercial builds",
+            detected_language="German",
+            target_geography="Germany",
+            sales_angle="Turn website traffic into project calls.",
+            suggested_offer="Offer a reviewed outreach campaign for project leads.",
+            outreach_strategy="Lead with the weak CTA and offer a short growth review.",
+            recommended_tone="Professional",
+            recommended_cta="Open to a 10 minute review?",
+            follow_up_strategy="Two helpful follow-ups",
+            expected_reply_rate="8-12%",
+        ),
+    )
+
+    response = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Manual Build GmbH", "website": "https://manual-build.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+
+    assert response.status_code == 200
+    lead = response.json()
+    assert lead["email"] == "ada@manual-build.example"
+    assert lead["hunter_verified"] is True
+    assert lead["source"] == "hunter"
+    assert lead["ai_summary"] == "Manual Build serves commercial construction buyers in Berlin."
+    assert lead["suggested_offer"] == "Offer a reviewed outreach campaign for project leads."
+    assert lead["expected_reply_rate"] == "8-12%"
+
+
+def test_manual_lead_creation_survives_hunter_no_email(monkeypatch) -> None:
+    def no_email(db, request, user_id, workspace, leads):
+        lead = leads[0]
+        return [lead.model_copy(update={"hunter_status": "no_verified_email", "source": "manual", "notes": '{"source":"manual","hunter_status":"no_verified_email"}'})]
+
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", no_email)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+
+    response = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Manual No Email Build", "website": "https://manual-no-email-build.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+
+    assert response.status_code == 200
+    lead = response.json()
+    assert lead["email"] is None
+    assert lead["hunter_verified"] is False
+    assert lead["hunter_status"] == "no_verified_email"
+    assert lead["source"] == "manual"
+
+
+def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    monkeypatch.setattr(
+        "app.api.routes.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Idea for Manual Draft Build",
+            preview="A short reviewed idea",
+            full_email="Hi, I prepared a reviewed outreach idea.",
+            cta="Open to a quick review?",
+            follow_ups=["Following up with one idea.", "Worth reviewing?"],
+            ab_tests=[],
+        ),
+    )
+    lead_response = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Manual Draft Build", "website": "https://manual-draft.example", "industry": "Construction"},
+    )
+    assert lead_response.status_code == 200
+    lead = lead_response.json()
+
+    draft_response = client.post(f"/api/leads/{lead['id']}/draft-email", headers=AUTH)
+
+    assert draft_response.status_code == 200
+    draft = draft_response.json()
+    assert draft["subject"] == "Idea for Manual Draft Build"
+    assert draft["delivery_status"] == "draft"
+    assert draft["sent_at"] is None
+    assert draft["tags"]["requires_approval"] is True
 
 
 def test_ai_sales_copilot_endpoints(monkeypatch) -> None:

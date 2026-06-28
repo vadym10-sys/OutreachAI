@@ -1,8 +1,10 @@
 "use client";
 
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
 import { ClerkFailed, ClerkProvider } from "@clerk/nextjs";
+import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { I18nProvider } from "@/lib/i18n/provider";
 
 function StabilityFallback({ title = "Something went wrong. Please refresh or sign in again." }: { title?: string }) {
@@ -42,6 +44,10 @@ class ClientErrorBoundary extends Component<{ children: ReactNode }, { failed: b
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("OutreachAI client render failed", error, info);
+    Sentry.captureException(error, {
+      tags: { area: "react-error-boundary" },
+      extra: { componentStack: info.componentStack }
+    });
   }
 
   render() {
@@ -51,6 +57,19 @@ class ClientErrorBoundary extends Component<{ children: ReactNode }, { failed: b
 
     return this.props.children;
   }
+}
+
+function SentryPageContext() {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    Sentry.setTag("current_route", pathname);
+    Sentry.setTag("release", process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0");
+    Sentry.setTag("environment", process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development");
+    Sentry.setContext("outreachai_page", { current_route: pathname });
+  }, [pathname]);
+
+  return null;
 }
 
 export function AppProviders({
@@ -63,12 +82,13 @@ export function AppProviders({
   clerkEnabled: boolean;
 }) {
   if (!clerkEnabled || !clerkPublishableKey) {
-    return <ClientErrorBoundary><I18nProvider>{children}</I18nProvider></ClientErrorBoundary>;
+    return <ClientErrorBoundary><SentryPageContext /><I18nProvider>{children}</I18nProvider></ClientErrorBoundary>;
   }
 
   return (
     <ClerkProvider publishableKey={clerkPublishableKey}>
       <ClientErrorBoundary>
+        <SentryPageContext />
         <ClerkFailed>
           <StabilityFallback title="Authentication could not load. Please refresh or sign in again." />
         </ClerkFailed>

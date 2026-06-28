@@ -2,10 +2,15 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import * as Sentry from "@sentry/nextjs";
 
 export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   useEffect(() => {
     console.error("OutreachAI route render failed", error);
+    Sentry.captureException(error, {
+      tags: { area: "app-route-error" },
+      extra: { digest: error.digest }
+    });
   }, [error]);
 
   return (

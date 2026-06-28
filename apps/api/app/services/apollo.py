@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.core.config import get_settings
+from app.core.observability import capture_provider_exception
 from app.schemas.dto import LeadFinderRequest, LeadOut
 
 logger = logging.getLogger("outreachai.apollo")
@@ -115,6 +116,7 @@ def _apollo_post(path: str, body: dict[str, Any], operation: str) -> dict[str, A
         except httpx.TimeoutException as exc:
             last_error = exc
             logger.warning("%s timeout attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
+            capture_provider_exception(exc, provider="apollo", endpoint=operation, extra={"attempt": attempt, "duration_ms": _duration_ms(started)})
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             detail = _safe_response_detail(exc.response)
@@ -126,6 +128,7 @@ def _apollo_post(path: str, body: dict[str, Any], operation: str) -> dict[str, A
                 _duration_ms(started),
                 detail,
             )
+            capture_provider_exception(exc, provider="apollo", endpoint=operation, extra={"attempt": attempt, "status": status, "duration_ms": _duration_ms(started), "detail": detail[:1000]})
             if status in {401, 403}:
                 raise ApolloRequestError(f"Apollo rejected the backend API key or account access. Apollo status={status}. Detail: {detail}") from exc
             if status == 429:
@@ -137,6 +140,7 @@ def _apollo_post(path: str, body: dict[str, Any], operation: str) -> dict[str, A
         except (httpx.HTTPError, ValueError) as exc:
             last_error = exc
             logger.warning("%s request_error attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
+            capture_provider_exception(exc, provider="apollo", endpoint=operation, extra={"attempt": attempt, "duration_ms": _duration_ms(started)})
         if attempt < 3:
             time.sleep(0.35 * attempt)
 

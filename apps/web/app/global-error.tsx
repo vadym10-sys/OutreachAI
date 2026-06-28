@@ -2,11 +2,16 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import * as Sentry from "@sentry/nextjs";
 import "./globals.css";
 
 export default function GlobalError({ error }: { error: Error & { digest?: string } }) {
   useEffect(() => {
     console.error("OutreachAI global render failed", error);
+    Sentry.captureException(error, {
+      tags: { area: "global-error" },
+      extra: { digest: error.digest }
+    });
   }, [error]);
 
   return (

@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
+import * as Sentry from '@sentry/nextjs';
 import { Brain, Check, CheckCircle2, ClipboardList, Loader2, Mic, Play, Plus, Save, Search, Send, Sparkles, Wand2, X } from 'lucide-react';
 import { clientApi, friendlyErrorMessage, splitList } from '@/lib/client-api';
 import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
@@ -16,6 +17,7 @@ const salesModes = ['Review Mode', 'Semi-Auto Mode'];
 const emptyMetrics: DashboardMetrics = { leads: 0, campaigns: 0, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: 'Starter', usage: {} };
 const simpleExperience = process.env.NEXT_PUBLIC_SIMPLE_EXPERIENCE !== 'false';
 const showAdvancedSettings = process.env.NEXT_PUBLIC_SHOW_ADVANCED_SETTINGS === 'true';
+const showApolloLeadSearch = process.env.NEXT_PUBLIC_ENABLE_APOLLO_LEAD_SEARCH === 'true';
 const devApi = async function api<T>(path: string, init: RequestInit = {}) {
   return clientApi<T>(path, 'dev', init);
 };
@@ -111,7 +113,8 @@ function ActionLogPanel({ title, logs, onRetry }: { title: string; logs: string[
 
 function LeadSourceBadges({ lead }: { lead: Lead }) {
   return <div className="flex flex-wrap items-center gap-2">
-    {(lead.source === 'apollo' || lead.source === 'hunter') && <span className="rounded-full bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700">Apollo</span>}
+    {lead.source === 'apollo' && <span className="rounded-full bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700">Apollo</span>}
+    {lead.source === 'manual' && <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">Manual</span>}
     {lead.hunter_verified ? <span className="rounded-full bg-teal-50 px-2 py-1 text-xs font-bold text-brand">Hunter verified email</span> : null}
     {!lead.hunter_verified && lead.hunter_status === 'no_verified_email' ? <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">No verified email found yet</span> : null}
   </div>;
@@ -162,7 +165,7 @@ function leadIntelligence(lead: Lead) {
   };
 }
 
-function PremiumLeadCard({ lead, copilot, aiLoading, onReview }: { lead: Lead; copilot?: SalesCopilot; aiLoading: boolean; onReview: () => void }) {
+function PremiumLeadCard({ lead, copilot, aiLoading, draft, draftLoading, onReview, onGenerateEmail }: { lead: Lead; copilot?: SalesCopilot; aiLoading: boolean; draft?: Email; draftLoading?: boolean; onReview: () => void; onGenerateEmail: () => void }) {
   const website = lead.website || (lead.domain ? `https://${lead.domain}` : '');
   const location = [lead.city, lead.country].filter(Boolean).join(', ') || 'Location not found';
   const verifiedEmail = lead.email || (lead.hunter_status === 'no_verified_email' ? 'No verified email found yet' : 'Email not found');
@@ -213,6 +216,11 @@ function PremiumLeadCard({ lead, copilot, aiLoading, onReview }: { lead: Lead; c
           <p className="rounded-md bg-white p-2"><span className="font-semibold">Buy:</span> {copilot.probability_to_buy}%</p>
           <p className="rounded-md bg-white p-2"><span className="font-semibold">Revenue:</span> €{copilot.estimated_revenue.toLocaleString()}</p>
         </div>}
+        {draft && <div className="mt-3 rounded-md bg-white p-3 text-sm">
+          <p className="font-semibold text-ink">{draft.subject}</p>
+          <p className="mt-1 text-slate-600">{draft.preview || 'Draft ready for review.'}</p>
+          <p className="mt-2 text-xs font-bold uppercase text-brand">Status: {draft.delivery_status}</p>
+        </div>}
         {!copilot && (intelligence.offer || intelligence.strategy || intelligence.angle || intelligence.expectedReplyRate) && <div className="mt-3 grid gap-2 text-sm">
           {intelligence.angle && <p className="rounded-md bg-white p-2"><span className="font-semibold">Sales angle:</span> {intelligence.angle}</p>}
           {intelligence.offer && <p className="rounded-md bg-white p-2"><span className="font-semibold">Suggested offer:</span> {intelligence.offer}</p>}
@@ -221,8 +229,9 @@ function PremiumLeadCard({ lead, copilot, aiLoading, onReview }: { lead: Lead; c
         </div>}
       </div>
     </div>
-    <div className="grid gap-2 border-t border-slate-100 p-4 min-[430px]:grid-cols-3">
+    <div className="grid gap-2 border-t border-slate-100 p-4 min-[430px]:grid-cols-4">
       <button onClick={onReview} disabled={aiLoading} className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-semibold disabled:opacity-60">{aiLoading ? <Loader2 className="animate-spin" size={16} /> : <Brain size={16} />} Review</button>
+      <button onClick={onGenerateEmail} disabled={draftLoading} className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-3 text-sm font-semibold text-white disabled:opacity-60">{draftLoading ? <Loader2 className="animate-spin" size={16} /> : <Wand2 size={16} />} Generate email</button>
       <Link href="/dashboard/campaigns" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-3 text-sm font-semibold text-white">Add to Campaign</Link>
       <button type="button" className="focus-ring min-h-11 rounded-md border border-slate-300 px-3 text-sm font-semibold text-slate-700">Ignore</button>
     </div>
@@ -311,13 +320,36 @@ function DashboardCelebrations({ milestones }: { milestones: string[] }) {
   </section>;
 }
 
+function DashboardEmptyGuidance() {
+  const { t } = useI18n();
+  const items = [
+    { title: t('No leads yet — Find your first companies.'), copy: t('Start with one country and one industry. OutreachAI will save real companies to your workspace.'), href: '/dashboard/leads', cta: t('dashboard.ctaFindLeads') },
+    { title: t('No campaigns yet — Create your first campaign.'), copy: t('After leads exist, generate outreach drafts and keep every send in review mode until you approve it.'), href: '/dashboard/campaigns', cta: t('dashboard.ctaCreateCampaign') },
+    { title: t('No meetings yet.'), copy: t('Meetings appear after replies are tracked and marked as booked in your pipeline.'), href: '/dashboard/crm', cta: t('Open CRM') },
+    { title: t('No AI work yet.'), copy: t('Ask the AI Sales Employee to analyze a company or prepare outreach after your first lead is saved.'), href: '/dashboard/sales-employees', cta: t('Open AI Employee') }
+  ];
+
+  return <section className="grid gap-4 md:grid-cols-2" aria-label={t('Next dashboard steps')}>
+    {items.map((item) => <article key={item.title} className="rounded-lg border border-dashed border-slate-300 bg-white p-5 shadow-sm">
+      <h2 className="text-lg font-bold text-ink">{item.title}</h2>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{item.copy}</p>
+      <Link href={item.href} className="focus-ring mt-4 inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 px-4 text-sm font-semibold text-ink">
+        {item.cta}
+      </Link>
+    </article>)}
+  </section>;
+}
+
 export function DashboardHome() {
   const { api, ready } = useTokenApi();
   const { t, formatCurrency, formatNumber } = useI18n();
   const [metrics, setMetrics] = useState<DashboardMetrics>(emptyMetrics);
   const [growth, setGrowth] = useState<GrowthEngine | null>(null);
+  const [employees, setEmployees] = useState<AISalesEmployee[]>([]);
+  const [activity, setActivity] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [nonCriticalError, setNonCriticalError] = useState('');
   const [optimisticAction, setOptimisticAction] = useState('');
 
   useEffect(() => {
@@ -326,15 +358,41 @@ export function DashboardHome() {
       .then(() => {
         setLoading(true);
         setError('');
-        return Promise.all([api<DashboardMetrics>('/api/dashboard'), api<GrowthEngine>('/api/growth-engine')]);
+        setNonCriticalError('');
+        return api<DashboardMetrics>('/api/dashboard');
       })
-      .then(([nextMetrics, nextGrowth]) => {
+      .then(async (nextMetrics) => {
         setMetrics(nextMetrics);
-        setGrowth(nextGrowth);
+        const optionalResults = await Promise.allSettled([
+          api<GrowthEngine>('/api/growth-engine'),
+          api<AISalesEmployee[]>('/api/sales-employees'),
+          api<Activity[]>('/api/activity')
+        ]);
+
+        const [growthResult, employeesResult, activityResult] = optionalResults;
+        if (growthResult.status === 'fulfilled') setGrowth(growthResult.value);
+        if (employeesResult.status === 'fulfilled') setEmployees(employeesResult.value);
+        if (activityResult.status === 'fulfilled') setActivity(activityResult.value);
+
+        const failedOptional = optionalResults.filter((result) => result.status === 'rejected') as PromiseRejectedResult[];
+        if (failedOptional.length) {
+          failedOptional.forEach((result) => {
+            console.error('Dashboard supporting data could not be loaded', result.reason);
+            Sentry.captureException(result.reason, {
+              tags: { area: 'dashboard-supporting-data' },
+              extra: { endpoint_group: 'growth-employees-activity' }
+            });
+          });
+          setNonCriticalError(t('Some dashboard recommendations are temporarily unavailable. Core workspace metrics are loaded.'));
+        }
       })
       .catch((nextError) => {
         console.error('Dashboard data could not be loaded', nextError);
-        setError(t('dashboard.loadError'));
+        Sentry.captureException(nextError, {
+          tags: { area: 'dashboard-critical-data' },
+          extra: { endpoint: '/api/dashboard' }
+        });
+        setError(friendlyErrorMessage(nextError, t('Dashboard data could not be loaded.')));
       })
       .finally(() => setLoading(false));
   }, [api, ready, t]);
@@ -344,6 +402,8 @@ export function DashboardHome() {
   const hasEmails = metrics.emails_sent > 0;
   const hasReplies = metrics.replies > 0;
   const hasRevenue = metricNumber(metrics.revenue) > 0;
+  const hasEmployees = employees.length > 0;
+  const hasActivity = activity.length > 0;
   const aiResult = growth?.briefing?.recommended_actions?.[0];
   const hasAiResult = Boolean(aiResult?.title || aiResult?.action || aiResult?.why);
 
@@ -411,6 +471,7 @@ export function DashboardHome() {
 
     {loading ? <DashboardSkeleton /> : <>
       {error && <Notice message={error} kind="warning" />}
+      {nonCriticalError && !error && <Notice message={nonCriticalError} kind="warning" />}
       <FirstMeetingGuide />
 
       <section className="rounded-xl border border-teal-200 bg-teal-50 p-5 shadow-sm sm:p-6" aria-labelledby="dashboard-priority-title">
@@ -432,6 +493,33 @@ export function DashboardHome() {
         <p className="text-sm font-semibold text-brand">{t('dashboard.emptyEyebrow')}</p>
         <h2 id="dashboard-empty-title" className="mt-2 text-xl font-bold text-ink">{t('dashboard.emptyTitle')}</h2>
         <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t('dashboard.emptyCopy')}</p>
+      </section>}
+
+      {!hasLeads && !hasCampaigns && !hasEmails && !hasReplies && !hasRevenue && <DashboardEmptyGuidance />}
+
+      {(hasEmployees || hasActivity) && <section className="grid gap-4 lg:grid-cols-2">
+        {hasEmployees && <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm font-semibold text-brand">{t('AI Employees')}</p>
+          <h2 className="mt-2 text-xl font-bold text-ink">{t('Workspace AI team')}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{t('Active AI employees connected to this workspace.')}</p>
+          <div className="mt-4 space-y-2">
+            {employees.slice(0, 3).map((employee) => <div key={employee.id} className="rounded-md bg-slate-50 p-3 text-sm">
+              <p className="font-semibold text-ink">{employee.name}</p>
+              <p className="text-slate-600">{employee.role} · {employee.status}</p>
+            </div>)}
+          </div>
+        </article>}
+        {hasActivity && <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm font-semibold text-brand">{t('Recent activity')}</p>
+          <h2 className="mt-2 text-xl font-bold text-ink">{t('Latest workspace actions')}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{t('Recent saved leads, campaign changes, replies, and billing events.')}</p>
+          <div className="mt-4 space-y-2">
+            {activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-md bg-slate-50 p-3 text-sm">
+              <p className="font-semibold text-ink">{item.action.replaceAll('.', ' ')}</p>
+              <p className="text-slate-600">{new Date(item.created_at).toLocaleString()}</p>
+            </div>)}
+          </div>
+        </article>}
       </section>}
 
       {hasCampaigns && <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="dashboard-campaign-health-title">
@@ -658,6 +746,7 @@ export function LeadManager() {
   const [audits, setAudits] = useState<Record<string, WebsiteAudit>>({});
   const [meetingPrep, setMeetingPrep] = useState<Record<string, MeetingPrep>>({});
   const [followUps, setFollowUps] = useState<Record<string, FollowUpSequence>>({});
+  const [drafts, setDrafts] = useState<Record<string, Email>>({});
   const [leadAdvancedOpen, setLeadAdvancedOpen] = useState(false);
   const [leadStep, setLeadStep] = useState(1);
   const [leadCountry, setLeadCountry] = useState('');
@@ -718,10 +807,27 @@ export function LeadManager() {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    const lead = await api<Lead>('/api/leads', { method: 'POST', body: JSON.stringify({ company: data.get('company'), website: data.get('website'), industry: data.get('industry'), country: data.get('country'), city: data.get('city'), contact: data.get('contact'), email: data.get('email') || null, campaign_id: data.get('campaign_id') || null }) });
-    setLeads((items) => [lead, ...items.filter((item) => item.id !== lead.id)]);
-    setNotice(`${lead.company} imported and analyzed when a website was available.`);
-    form.reset();
+    setError('');
+    setNotice('');
+    setFindingStep('Saving the company...');
+    setLeadActionLogs(['Saving the company to your workspace.']);
+    try {
+      await delay(120);
+      setFindingStep('Checking verified emails with Hunter...');
+      setLeadActionLogs((items) => [...items, 'Hunter is checking decision-maker emails by domain.']);
+      const lead = await api<Lead>('/api/leads', { method: 'POST', body: JSON.stringify({ company: data.get('company'), website: data.get('website'), industry: data.get('industry'), country: data.get('country'), city: data.get('city'), contact: data.get('contact'), email: data.get('email') || null, campaign_id: data.get('campaign_id') || null }) });
+      setFindingStep('Analyzing the website with AI...');
+      setLeadActionLogs((items) => [...items, 'OpenAI is preparing the company summary, sales angle, offer, and outreach strategy.']);
+      setLeads((items) => [lead, ...items.filter((item) => item.id !== lead.id)]);
+      setFindingStep('Ready for review.');
+      setNotice(lead.hunter_verified ? `${lead.company} is ready. Hunter verified an email and AI prepared outreach intelligence.` : `${lead.company} is ready. No verified email was found yet, but AI analysis and manual email entry are available.`);
+      setLeadActionLogs((items) => [...items, lead.hunter_verified ? 'Verified email found. You can generate an email for review.' : 'No verified email found yet. Add a contact email manually when you have one.', 'Nothing was sent.']);
+      form.reset();
+    } catch (nextError) {
+      setFindingStep('');
+      setError(friendlyErrorMessage(nextError, 'Company could not be added. Check the website and try again.'));
+      setLeadActionLogs((items) => [...items, 'Company import failed. The lead was not sent anywhere.']);
+    }
   }
 
   async function bulkStatus(nextStatus: string) {
@@ -743,25 +849,59 @@ export function LeadManager() {
     } finally { setAiLoading(''); }
   }
 
+  async function draftLeadEmail(lead: Lead) {
+    if (!lead.id) return;
+    setAiLoading(`${lead.id}:draft`);
+    setError('');
+    setNotice('');
+    try {
+      const draft = await api<Email>(`/api/leads/${lead.id}/draft-email`, { method: 'POST' });
+      setDrafts((items) => ({ ...items, [lead.id as string]: draft }));
+      setLeads((items) => items.map((item) => item.id === lead.id ? { ...item, status: 'Qualified' } : item));
+      setNotice(`Draft created for ${lead.company}. Review it before any campaign sends.`);
+    } catch (nextError) {
+      setError(friendlyErrorMessage(nextError, 'Email draft could not be generated. Please try again.'));
+    } finally { setAiLoading(''); }
+  }
+
   if (simpleExperience) {
     return <div className="min-w-0 space-y-6">
       <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-sm font-semibold text-brand">Step 2 of 4</p>
         <h1 className="mt-2 text-2xl font-bold min-[390px]:text-3xl">Find leads</h1>
-        <p className="mt-2 max-w-2xl text-slate-600">Choose who you want to sell to. Apollo finds companies, Hunter verifies decision-maker emails, and OutreachAI analyzes each website for review.</p>
-        <a href="#lead-search-form" className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">Find companies</a>
+        <p className="mt-2 max-w-2xl text-slate-600">Add one company website. Hunter checks for verified emails and OutreachAI analyzes the website so you can prepare a reviewed outreach draft today.</p>
+        <a href="#manual-company-form" className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">Add company website</a>
       </header>
       <section className="grid gap-3 md:grid-cols-4">
         {[
           ['Why this step exists', 'Qualified meetings start with qualified accounts, not a blank CRM.'],
-          ['What happens next', 'Apollo searches companies, Hunter verifies emails, and new records are saved without duplicates.'],
-          ['Expected time', 'Most focused searches finish in 1-2 minutes.'],
-          ['Success criteria', 'You have companies with websites, source badges, confidence, and verified emails where available.'],
+          ['What happens next', 'Hunter verifies emails, AI analyzes the website, and the company is saved without duplicates.'],
+          ['Expected time', 'Most company analyses finish in about one minute.'],
+          ['Success criteria', 'You have one reviewed company with AI summary, fit score, sales angle, and an email draft ready for approval.'],
         ].map(([title, copy]) => <article key={title} className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-slate-600">{t(copy)}</p></article>)}
       </section>
       {error && <Notice message={error} kind="error" />}
       {notice && <Notice message={notice} />}
-      <form id="lead-search-form" onSubmit={find} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <section id="manual-company-form" className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-5"><h2 className="text-xl font-bold text-ink">Add a company website to analyze it and prepare outreach</h2><p className="mt-1 text-sm text-slate-600">This works without Apollo. Enter the company you want to contact; OutreachAI will enrich what it can and prepare the next step for review.</p></div>
+        <form onSubmit={create} className="grid gap-3 md:grid-cols-2">
+          <label className="block"><span className="text-sm font-semibold text-slate-700">Company name</span><input required name="company" placeholder="Berlin Build GmbH" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>
+          <label className="block"><span className="text-sm font-semibold text-slate-700">Website</span><input name="website" placeholder="https://example.de" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>
+          <label className="block"><span className="text-sm font-semibold text-slate-700">Country</span><input name="country" placeholder="Germany" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>
+          <label className="block"><span className="text-sm font-semibold text-slate-700">City</span><input name="city" placeholder="Berlin" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>
+          <label className="block md:col-span-2"><span className="text-sm font-semibold text-slate-700">Industry</span><input name="industry" placeholder="Construction" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>
+          <details className="rounded-md border border-slate-200 bg-slate-50 p-3 md:col-span-2">
+            <summary className="cursor-pointer font-semibold text-ink">I already have a contact email</summary>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <input name="contact" placeholder="Contact name" className="rounded-md border border-slate-300 px-3 py-3" />
+              <input name="email" type="email" placeholder="name@company.com" className="rounded-md border border-slate-300 px-3 py-3" />
+            </div>
+          </details>
+          <input type="hidden" name="campaign_id" />
+          <button className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 font-semibold text-white md:col-span-2"><Plus size={18} /> Analyze company</button>
+        </form>
+      </section>
+      {showApolloLeadSearch ? <form id="lead-search-form" onSubmit={find} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-5"><h2 className="text-xl font-bold text-ink">Who should OutreachAI find?</h2><p className="mt-1 text-sm text-slate-600">Start simple. You can narrow the search after the first results.</p></div>
         <div className="mb-5 grid gap-2 min-[430px]:grid-cols-3">
           {['Country', 'Industry', 'Company size'].map((label, index) => <button key={label} type="button" onClick={() => setLeadStep(index + 1)} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${leadStep === index + 1 ? 'bg-brand text-white' : 'border border-slate-300 text-slate-700'}`}>{index + 1}. {label}</button>)}
@@ -797,19 +937,14 @@ export function LeadManager() {
             <input name="limit" type="number" min="1" max="25" defaultValue="10" className="rounded-md border border-slate-300 px-3 py-2" />
           </div>
         </details>
-      </form>
+      </form> : <Notice message="Apollo company search is unavailable on the current Apollo plan. Add a company website above to analyze it and prepare outreach today." kind="warning" />}
       <ActionLogPanel title="Lead discovery status" logs={leadActionLogs} />
       <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div><h2 className="text-xl font-bold text-ink">Companies to review</h2><p className="mt-1 text-sm text-slate-600">Check each company before adding it to a campaign.</p></div>
           <div className="relative md:w-80"><Search className="absolute left-3 top-3 text-slate-400" size={18} /><input id="lead-search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search companies" className="w-full rounded-md border border-slate-300 py-2 pl-10 pr-3" /></div>
         </div>
-        {loading ? <div className="mt-6"><Skeleton lines={4} /></div> : leads.length ? <div className="mt-5 space-y-4">{leads.map((lead) => <PremiumLeadCard key={lead.id || lead.company} lead={lead} copilot={lead.id ? copilot[lead.id] : undefined} aiLoading={aiLoading === `${lead.id}:copilot`} onReview={() => runLeadAi<SalesCopilot>(lead, 'copilot', (key, value) => setCopilot((items) => ({ ...items, [key]: value })))} />)}</div> : <div className="mt-5"><EmptyState title="No companies yet" copy="Search by country, city, and industry. If no results appear, broaden the city or company-size filter and try again." /></div>}
-      </section>
-      <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-bold text-ink">Add one company manually</h2>
-        <p className="mt-1 text-sm text-slate-600">Use this when you already know a company you want AI to analyze.</p>
-        <form onSubmit={create} className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]"><input required name="company" placeholder="Company name" className="rounded-md border border-slate-300 px-3 py-3" /><input name="website" placeholder="Website" className="rounded-md border border-slate-300 px-3 py-3" /><button className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Add company</button><input type="hidden" name="industry" /><input type="hidden" name="country" /><input type="hidden" name="city" /><input type="hidden" name="contact" /><input type="hidden" name="email" /><input type="hidden" name="campaign_id" /></form>
+        {loading ? <div className="mt-6"><Skeleton lines={4} /></div> : leads.length ? <div className="mt-5 space-y-4">{leads.map((lead) => <PremiumLeadCard key={lead.id || lead.company} lead={lead} copilot={lead.id ? copilot[lead.id] : undefined} draft={lead.id ? drafts[lead.id] : undefined} draftLoading={aiLoading === `${lead.id}:draft`} aiLoading={aiLoading === `${lead.id}:copilot`} onGenerateEmail={() => draftLeadEmail(lead)} onReview={() => runLeadAi<SalesCopilot>(lead, 'copilot', (key, value) => setCopilot((items) => ({ ...items, [key]: value })))} />)}</div> : <div className="mt-5"><EmptyState title="No companies yet" copy="Add one company website. OutreachAI will save it, check Hunter for verified emails, analyze the website, and prepare outreach for review." /></div>}
       </section>
     </div>;
   }
@@ -1349,16 +1484,16 @@ export function SettingsAndProfile() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-ink">Integrations</h2>
-                <p className="mt-1 text-sm text-slate-600">Apollo finds companies for your lead searches.</p>
+                <p className="mt-1 text-sm text-slate-600">Manual company analysis and Hunter enrichment are ready today. Apollo company search requires Custom API Access.</p>
               </div>
-              <span className={`rounded-full px-3 py-1 text-xs font-bold ${apolloStatus?.connected ? 'bg-teal-50 text-brand' : 'bg-slate-100 text-slate-600'}`}>{apolloStatus?.connected ? 'Connected' : 'Not connected'}</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${showApolloLeadSearch && apolloStatus?.connected ? 'bg-teal-50 text-brand' : 'bg-orange-50 text-orange-700'}`}>{showApolloLeadSearch && apolloStatus?.connected ? 'Connected' : 'Requires Custom API Access'}</span>
             </div>
             <dl className="mt-4 grid gap-2 text-sm">
-              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Ready for lead search</dt><dd>{apolloStatus?.connected ? 'Yes' : 'Needs attention'}</dd></div>
+              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Ready for lead search</dt><dd>Manual flow is ready</dd></div>
               <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">Last checked</dt><dd>{apolloStatus?.last_success_at ? new Date(apolloStatus.last_success_at).toLocaleString() : 'Not yet'}</dd></div>
-              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">What to do next</dt><dd>{apolloStatus?.connected ? 'Find companies in Lead Finder.' : 'Ask the owner to reconnect Apollo.'}</dd></div>
+              <div className="rounded-md bg-slate-50 p-3"><dt className="font-semibold text-slate-600">What to do next</dt><dd>Add a company website in Lead Finder. Apollo is unavailable without Custom API Access.</dd></div>
             </dl>
-            <button type="button" onClick={testApollo} disabled={testingApollo} className="focus-ring mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">{testingApollo && <Loader2 className="animate-spin" size={16} />} Test connection</button>
+            {showApolloLeadSearch && <button type="button" onClick={testApollo} disabled={testingApollo} className="focus-ring mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">{testingApollo && <Loader2 className="animate-spin" size={16} />} Test connection</button>}
           </section>
           <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex items-start justify-between gap-3">
@@ -1429,16 +1564,16 @@ export function SettingsAndProfile() {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="font-bold">Integrations</h2>
-              <p className="mt-1 text-sm text-slate-600">Apollo finds companies for your lead searches.</p>
+              <p className="mt-1 text-sm text-slate-600">Manual company analysis is active. Apollo requires Custom API Access before it can search companies.</p>
             </div>
-            <span className={`rounded-full px-3 py-1 text-xs font-bold ${apolloStatus?.connected ? 'bg-teal-50 text-brand' : 'bg-slate-100 text-slate-600'}`}>{apolloStatus?.connected ? 'Connected' : 'Not connected'}</span>
+            <span className={`rounded-full px-3 py-1 text-xs font-bold ${showApolloLeadSearch && apolloStatus?.connected ? 'bg-teal-50 text-brand' : 'bg-orange-50 text-orange-700'}`}>{showApolloLeadSearch && apolloStatus?.connected ? 'Connected' : 'Requires Custom API Access'}</span>
           </div>
           <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
-            <p className="rounded-md bg-slate-50 p-3">Ready: <span className="font-semibold">{apolloStatus?.connected ? 'Yes' : 'Needs attention'}</span></p>
+            <p className="rounded-md bg-slate-50 p-3">Ready: <span className="font-semibold">Manual flow is ready</span></p>
             <p className="rounded-md bg-slate-50 p-3">Last checked: <span className="font-semibold">{apolloStatus?.last_success_at ? new Date(apolloStatus.last_success_at).toLocaleString() : 'Not yet'}</span></p>
-            <p className="rounded-md bg-slate-50 p-3">Next step: <span className="font-semibold">{apolloStatus?.connected ? 'Find leads' : 'Reconnect Apollo'}</span></p>
+            <p className="rounded-md bg-slate-50 p-3">Next step: <span className="font-semibold">Add a company website in Lead Finder.</span></p>
           </div>
-          <button type="button" onClick={testApollo} disabled={testingApollo} className="focus-ring mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold disabled:opacity-60">{testingApollo && <Loader2 className="animate-spin" size={16} />} Test Apollo connection</button>
+          {showApolloLeadSearch && <button type="button" onClick={testApollo} disabled={testingApollo} className="focus-ring mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold disabled:opacity-60">{testingApollo && <Loader2 className="animate-spin" size={16} />} Test Apollo connection</button>}
         </section>
         <section className="rounded-lg border border-slate-200 bg-white p-5">
           <div className="flex items-start justify-between gap-3">

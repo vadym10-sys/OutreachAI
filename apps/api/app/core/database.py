@@ -7,6 +7,7 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
+from app.core.observability import capture_provider_exception
 
 
 class Base(DeclarativeBase):
@@ -29,5 +30,8 @@ def get_db() -> Generator[Session, None, None]:
     db = get_sessionmaker()()
     try:
         yield db
+    except Exception as exc:
+        capture_provider_exception(exc, provider="postgresql", endpoint="database.session")
+        raise
     finally:
         db.close()

@@ -1,5 +1,5 @@
-import { SettingsAndProfile } from '@/components/product-workspace';
+import { SettingsPage as SettingsWorkspacePage } from '@/components/outbound-workspace';
 
 export default function SettingsPage() {
-  return <SettingsAndProfile />;
+  return <SettingsWorkspacePage />;
 }

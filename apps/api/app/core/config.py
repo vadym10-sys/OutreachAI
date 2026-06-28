@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     stripe_price_starter: str = ""
     stripe_price_pro: str = ""
     stripe_price_agency: str = ""
+    sentry_dsn: str = ""
+    debug: bool = False
     encryption_key: str = "replace-with-32-byte-url-safe-key"
     auto_create_tables: bool = False
     cors_origins: str = "http://localhost:3000,https://outreachaiaiai.com,https://outreachaiweb-production.up.railway.app"

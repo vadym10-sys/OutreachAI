@@ -1,5 +1,5 @@
-import { LeadManager } from '@/components/product-workspace';
+import { CrmPipelinePage } from '@/components/outbound-workspace';
 
 export default function CrmPage() {
-  return <LeadManager />;
+  return <CrmPipelinePage />;
 }

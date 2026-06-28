@@ -1,5 +1,5 @@
-import { InboxAndActivity } from '@/components/product-workspace';
+import { InboxPage as InboxWorkspacePage } from '@/components/outbound-workspace';
 
 export default function InboxPage() {
-  return <InboxAndActivity />;
+  return <InboxWorkspacePage />;
 }

@@ -1,5 +1,5 @@
-import { BillingWorkspace } from '@/components/billing-client';
+import { BillingPage as BillingWorkspacePage } from '@/components/outbound-workspace';
 
 export default function BillingPage() {
-  return <BillingWorkspace />;
+  return <BillingWorkspacePage />;
 }

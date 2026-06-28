@@ -5,6 +5,7 @@ from datetime import datetime
 import stripe
 
 from app.core.config import get_settings
+from app.core.observability import capture_provider_exception
 
 PLAN_CATALOG = {
     "Starter": {
@@ -31,6 +32,10 @@ PLAN_CATALOG = {
 }
 
 
+def _capture_stripe_error(exc: BaseException, endpoint: str, *, workspace_id: str = "") -> None:
+    capture_provider_exception(exc, provider="stripe", endpoint=endpoint, workspace_id=workspace_id)
+
+
 def _validate_monthly_price(plan: str, price: object) -> None:
     spec = PLAN_CATALOG[plan]
     if not getattr(price, "recurring", None) or price.recurring.get("interval") != "month":
@@ -52,10 +57,18 @@ def price_for_plan(plan: str) -> str:
     if not settings.stripe_secret_key:
         raise ValueError("STRIPE_SECRET_KEY is required to resolve billing prices")
     if prices[plan]:
-        price = stripe.Price.retrieve(prices[plan])
+        try:
+            price = stripe.Price.retrieve(prices[plan])
+        except stripe.StripeError as exc:
+            _capture_stripe_error(exc, "stripe.price.retrieve")
+            raise
         _validate_monthly_price(plan, price)
         return prices[plan]
-    found = stripe.Price.list(lookup_keys=[PLAN_CATALOG[plan]["lookup_key"]], active=True, limit=1)
+    try:
+        found = stripe.Price.list(lookup_keys=[PLAN_CATALOG[plan]["lookup_key"]], active=True, limit=1)
+    except stripe.StripeError as exc:
+        _capture_stripe_error(exc, "stripe.price.list")
+        raise
     if found.data:
         price = found.data[0]
         _validate_monthly_price(plan, price)
@@ -71,23 +84,31 @@ def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer
     if not settings.stripe_webhook_secret:
         raise ValueError("STRIPE_WEBHOOK_SECRET is required before subscriptions can be activated")
     if not customer_id:
-        customer = stripe.Customer.create(metadata={"user_id": user_id, "workspace_id": workspace_id})
+        try:
+            customer = stripe.Customer.create(metadata={"user_id": user_id, "workspace_id": workspace_id})
+        except stripe.StripeError as exc:
+            _capture_stripe_error(exc, "stripe.customer.create", workspace_id=workspace_id)
+            raise
         customer_id = customer.id
-    session = stripe.checkout.Session.create(
-        mode="subscription",
-        customer=customer_id,
-        line_items=[{"price": price_for_plan(plan), "quantity": 1}],
-        success_url=f"{settings.public_app_url.rstrip('/')}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{settings.public_app_url.rstrip('/')}/pricing",
-        allow_promotion_codes=True,
-        client_reference_id=user_id,
-        subscription_data={"trial_period_days": 14, "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": plan}},
-        metadata={"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "product": f"OutreachAI {plan}"},
-        custom_text={
-            "submit": {"message": "Start your OutreachAI subscription. Your plan renews monthly after the 14-day free trial unless canceled."},
-            "after_submit": {"message": "Your OutreachAI workspace will activate after Stripe confirms your subscription."},
-        },
-    )
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            customer=customer_id,
+            line_items=[{"price": price_for_plan(plan), "quantity": 1}],
+            success_url=f"{settings.public_app_url.rstrip('/')}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{settings.public_app_url.rstrip('/')}/pricing",
+            allow_promotion_codes=True,
+            client_reference_id=user_id,
+            subscription_data={"trial_period_days": 14, "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": plan}},
+            metadata={"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "product": f"OutreachAI {plan}"},
+            custom_text={
+                "submit": {"message": "Start your OutreachAI subscription. Your plan renews monthly after the 14-day free trial unless canceled."},
+                "after_submit": {"message": "Your OutreachAI workspace will activate after Stripe confirms your subscription."},
+            },
+        )
+    except stripe.StripeError as exc:
+        _capture_stripe_error(exc, "stripe.checkout.session.create", workspace_id=workspace_id)
+        raise
     return {"url": session.url, "id": session.id, "customer_id": customer_id}
 
 
@@ -98,7 +119,11 @@ def create_billing_portal_session(customer_id: str, return_url: str) -> dict:
         raise ValueError("STRIPE_SECRET_KEY is required for the billing portal")
     if not customer_id:
         raise ValueError("Stripe customer is not connected yet")
-    session = stripe.billing_portal.Session.create(customer=customer_id, return_url=return_url)
+    try:
+        session = stripe.billing_portal.Session.create(customer=customer_id, return_url=return_url)
+    except stripe.StripeError as exc:
+        _capture_stripe_error(exc, "stripe.billing_portal.session.create")
+        raise
     return {"url": session.url, "id": session.id}
 
 

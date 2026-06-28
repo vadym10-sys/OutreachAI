@@ -68,6 +68,7 @@ export type Lead = {
   email?: string | null;
   phone?: string | null;
   linkedin?: string | null;
+  niche?: string | null;
   status: string;
   campaign_id?: string | null;
   sales_employee_id?: string | null;

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.observability import capture_provider_exception
 from app.models.entities import AppSettings, AuditLog, EmailMessage, Lead, LeadStatus, Subscription, User, Workspace
 from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
@@ -152,7 +153,8 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         user_id = _metadata_value(data.get("metadata"), "user_id")
         try:
             subscription = stripe.Subscription.retrieve(subscription_id) if subscription_id and settings.stripe_secret_key else None
-        except stripe.StripeError:
+        except stripe.StripeError as exc:
+            capture_provider_exception(exc, provider="stripe", endpoint="stripe.subscription.retrieve", workspace_id=workspace_id)
             subscription = None
         payload = subscription_payload(subscription) if subscription else {}
         status = str(payload.get("status") or "active")

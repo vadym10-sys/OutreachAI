@@ -13,10 +13,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import asc, desc, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
+from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
 from app.core.security import CurrentUser, OwnerUser
 from app.models.entities import (
     AISalesEmployee,
@@ -122,7 +124,6 @@ from app.schemas.dto import (
     TeamRouterDecision,
     TeamRouterPlanOut,
     TeamRouterRequest,
-    TeamRouterSubtaskOut,
     UsageOut,
     WebsiteAuditOut,
     WebsiteListImport,
@@ -151,7 +152,7 @@ from app.services.ai import (
 from app.services.audit import log_event
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
-from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError, find_leads
+from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
 from app.services.apollo import (
     ApolloConfigurationError,
     ApolloRequestError,
@@ -207,7 +208,10 @@ def _month_period() -> str:
 def _current_workspace(db: Session, user_id: str) -> Workspace:
     member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active").order_by(WorkspaceMember.created_at.asc()))
     if member:
-        return db.get(Workspace, member.workspace_id)
+        workspace = db.get(Workspace, member.workspace_id)
+        if workspace:
+            set_workspace_context(workspace.id)
+            return workspace
     workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
     if workspace is None:
         workspace = Workspace(owner_user_id=user_id)
@@ -216,6 +220,7 @@ def _current_workspace(db: Session, user_id: str) -> Workspace:
     db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, role=WorkspaceRole.owner, status="active"))
     db.commit()
     db.refresh(workspace)
+    set_workspace_context(workspace.id)
     return workspace
 
 
@@ -518,6 +523,15 @@ def _merge_lead_metadata(lead: Lead, updates: dict[str, Any], readable: list[str
     return "\n".join([header, *body_parts])
 
 
+def _merge_lead_metadata_for_new(metadata: dict[str, Any], source: str) -> str:
+    clean = {
+        key: value
+        for key, value in {**metadata, "source": metadata.get("source") or source}.items()
+        if value is not None and value != "" and value != [] and value != {}
+    }
+    return json.dumps(clean, sort_keys=True)
+
+
 def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, message: str) -> None:
     db.add(Notification(user_id=user_id, kind=kind, title=title, message=message))
 
@@ -619,6 +633,7 @@ def _website_audit_markers(page_text: str, technologies: list[str], load_ms: int
 
 
 def _lead_context(db: Session, workspace: Workspace, user_id: str, lead_id: UUID) -> tuple[Lead, WebsiteAnalysis | None, Campaign | None, list[EmailMessage]]:
+    set_lead_context(lead_id)
     lead = db.scalar(select(Lead).where(Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)))
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
@@ -715,6 +730,7 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
         )
     except Exception as exc:
         logger.exception("lead_finder_trace step=website_or_openai_analysis_failed lead_id=%s company=%s reason=%s", lead.id, lead.company, exc)
+        capture_provider_exception(exc, provider="openai", endpoint="lead.website_analysis", workspace_id=workspace.id, lead_id=lead.id)
         lead.notes = "\n".join(part for part in [lead.notes or "", f"Website analysis pending: {exc}"] if part)
         return
     score = _icp_score(result, lead)
@@ -2014,8 +2030,7 @@ def sales_employee_run(employee_id: UUID, request: Request, user_id: CurrentUser
     return result
 
 
-@router.get("/dashboard", response_model=DashboardMetrics)
-def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardMetrics:
+def _dashboard_metrics(user_id: str, db: Session) -> DashboardMetrics:
     workspace = _current_workspace(db, user_id)
     lead_scope = _workspace_stmt(Lead, workspace, user_id)
     campaign_scope = _workspace_stmt(Campaign, workspace, user_id)
@@ -2075,6 +2090,15 @@ def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardM
     )
 
 
+@router.get("/dashboard", response_model=DashboardMetrics)
+def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardMetrics:
+    try:
+        return _dashboard_metrics(user_id, db)
+    except SQLAlchemyError as exc:
+        capture_provider_exception(exc, provider="postgresql", endpoint="/api/dashboard")
+        raise HTTPException(status_code=503, detail="Database unavailable. Dashboard metrics could not be loaded.") from exc
+
+
 def _growth_goal(settings: AppSettings, meetings: int) -> GrowthGoalOut:
     saved = (settings.general or {}).get("growthGoal") or {}
     goal = str(saved.get("goal") or "I want 20 meetings this month.")
@@ -2119,7 +2143,7 @@ def _opportunity_score(lead: Lead) -> int:
 def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> GrowthEngineOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
-    metrics = dashboard(user_id, db)
+    metrics = _dashboard_metrics(user_id, db)
     lead_scope = _workspace_stmt(Lead, workspace, user_id)
     campaign_scope = _workspace_stmt(Campaign, workspace, user_id)
     email_scope = _workspace_stmt(EmailMessage, workspace, user_id)
@@ -2704,12 +2728,74 @@ def duplicate_campaign(campaign_id: UUID, request: Request, user_id: CurrentUser
 def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> LeadOut:
     workspace = _current_workspace(db, user_id)
     _enforce_usage(db, user_id, workspace, "leads")
-    lead = Lead(user_id=user_id, workspace_id=workspace.id, **payload.model_dump(exclude={"status"}), status=_status(payload.status), niche=payload.industry)
+    candidate = LeadOut(
+        company=payload.company,
+        website=payload.website,
+        industry=payload.industry,
+        country=payload.country,
+        city=payload.city,
+        contact=payload.contact,
+        email=payload.email,
+        phone=payload.phone,
+        linkedin=payload.linkedin,
+        status=payload.status,
+        campaign_id=payload.campaign_id,
+        source="manual",
+    )
+    if _lead_duplicate_exists(db, workspace, user_id, candidate):
+        duplicate_criteria = [Lead.company == payload.company]
+        if payload.website:
+            duplicate_criteria.append(Lead.website == payload.website)
+        if payload.email:
+            duplicate_criteria.append(Lead.email == str(payload.email))
+        existing = db.scalar(
+            select(Lead)
+            .where(
+                _workspace_stmt(Lead, workspace, user_id),
+                or_(*duplicate_criteria),
+            )
+            .order_by(Lead.created_at.desc())
+        )
+        if existing:
+            existing.campaign_id = payload.campaign_id or existing.campaign_id
+            existing.status = _status(payload.status)
+            existing.contact = payload.contact or existing.contact
+            existing.email = str(payload.email) if payload.email else existing.email
+            existing.industry = payload.industry or existing.industry
+            existing.country = payload.country or existing.country
+            existing.city = payload.city or existing.city
+            existing.website = payload.website or existing.website
+            log_event(db, request, user_id, "lead.duplicate_reused", {"company": existing.company, "source": "manual"})
+            db.commit()
+            db.refresh(existing)
+            return _lead_out(existing)
+    enriched = candidate if candidate.email else _hunter_enriched_leads(db, request, user_id, workspace, [candidate])[0]
+    metadata = _lead_metadata(enriched)
+    lead = Lead(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        company=enriched.company,
+        website=enriched.website,
+        industry=enriched.industry,
+        country=enriched.country,
+        city=enriched.city,
+        contact=enriched.contact,
+        email=str(enriched.email) if enriched.email else None,
+        phone=enriched.phone,
+        linkedin=enriched.linkedin,
+        campaign_id=enriched.campaign_id,
+        notes=_merge_lead_metadata_for_new(metadata, "manual"),
+        status=_status(enriched.status),
+        niche=enriched.industry,
+    )
     db.add(lead)
     db.flush()
     _analyze_lead_if_possible(db, user_id, workspace, lead)
-    log_event(db, request, user_id, "lead.imported", {"company": lead.company})
-    _notify(db, user_id, NotificationKind.success, "Lead imported", f"{lead.company} was added to your pipeline.")
+    log_event(db, request, user_id, "lead.imported", {"company": lead.company, "source": "manual", "hunter_verified": bool(enriched.hunter_verified)})
+    if enriched.hunter_verified:
+        _notify(db, user_id, NotificationKind.success, "Company analyzed", f"{lead.company} was saved, Hunter verified an email, and AI prepared the company summary.")
+    else:
+        _notify(db, user_id, NotificationKind.info, "Company analyzed", f"{lead.company} was saved and analyzed. No verified email was found yet.")
     db.commit()
     db.refresh(lead)
     return _lead_out(lead)
@@ -3122,6 +3208,71 @@ def ai_reply_assistant(payload: ReplyAssistantRequest, request: Request, user_id
     return result
 
 
+@router.post("/leads/{lead_id}/draft-email", response_model=EmailOut)
+def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    _enforce_usage(db, user_id, workspace, "ai_generations")
+    lead = db.scalar(select(Lead).where(Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)))
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    analysis = db.scalar(
+        select(WebsiteAnalysis)
+        .where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == lead.id)
+        .order_by(WebsiteAnalysis.created_at.desc())
+    )
+    intelligence = _lead_metadata(lead)
+    website_summary = "\n".join(
+        part
+        for part in [
+            analysis.summary if analysis else "",
+            str(intelligence.get("ai_summary") or ""),
+            f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
+            f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
+            f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
+            f"Hunter verified email: {lead.email}" if intelligence.get("hunter_verified") and lead.email else "",
+        ]
+        if part
+    ) or " ".join(part for part in [lead.website, lead.industry, lead.country, lead.city] if part) or lead.company
+    ai_payload = PersonalizeRequest(
+        company=lead.company,
+        niche=lead.industry or lead.niche or "B2B",
+        website_summary=website_summary,
+        offer=str(intelligence.get("suggested_offer") or "a practical growth improvement based on their website"),
+        cta=str(intelligence.get("recommended_cta") or "Would it be useful to compare ideas for 10 minutes?"),
+        tone=str(intelligence.get("recommended_tone") or "Professional"),
+        language=workspace.language or str(intelligence.get("detected_language") or "English"),
+        signature="",
+    )
+    try:
+        generated = personalize_email(ai_payload)
+    except Exception as exc:
+        raise _provider_error(exc) from exc
+    follow_ups = generated.follow_ups[:2]
+    message = EmailMessage(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        campaign_id=lead.campaign_id,
+        lead_id=lead.id,
+        subject=generated.subject,
+        preview=generated.preview,
+        body=generated.full_email,
+        cta=generated.cta,
+        follow_up_1=follow_ups[0] if len(follow_ups) > 0 else "",
+        follow_up_2=follow_ups[1] if len(follow_ups) > 1 else "",
+        direction="outbound",
+        delivery_status="draft",
+        tags={"requires_approval": True, "source": "manual_lead_flow"},
+    )
+    lead.status = LeadStatus.qualified
+    db.add(message)
+    log_event(db, request, user_id, "email.generated", {"lead_id": str(lead.id), "source": "manual_lead_flow"})
+    _notify(db, user_id, NotificationKind.success, "Draft ready for review", f"A personalized email for {lead.company} is ready. Nothing was sent.")
+    db.commit()
+    db.refresh(message)
+    return message
+
+
 @router.post("/emails/generate", response_model=EmailOut)
 def generate_email(payload: GenerateEmailRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
@@ -3146,7 +3297,7 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
             f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
             f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
             f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
-            f"Verified email source: Hunter" if intelligence.get("hunter_verified") else "",
+            "Verified email source: Hunter" if intelligence.get("hunter_verified") else "",
         ] if part
     )
     ai_payload = PersonalizeRequest(

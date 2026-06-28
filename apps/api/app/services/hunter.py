@@ -11,6 +11,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import get_settings
+from app.core.observability import capture_provider_exception
 from app.schemas.dto import LeadOut
 
 logger = logging.getLogger("outreachai.hunter")
@@ -199,10 +200,12 @@ def _hunter_get(path: str, params: dict[str, Any], operation: str) -> dict[str, 
         except httpx.TimeoutException as exc:
             last_error = exc
             logger.warning("%s timeout attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
+            capture_provider_exception(exc, provider="hunter", endpoint=operation, extra={"attempt": attempt, "duration_ms": _duration_ms(started)})
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             detail = _safe_response_detail(exc.response)
             logger.warning("%s failed status=%s attempt=%s duration_ms=%s response=%s", operation, status, attempt, _duration_ms(started), detail)
+            capture_provider_exception(exc, provider="hunter", endpoint=operation, extra={"attempt": attempt, "status": status, "duration_ms": _duration_ms(started), "detail": detail[:1000]})
             if status in {401, 403}:
                 raise HunterRequestError(f"Hunter rejected the backend API key or account access. Hunter status={status}. Detail: {detail}") from exc
             if status == 429 or 500 <= status < 600:
@@ -212,6 +215,7 @@ def _hunter_get(path: str, params: dict[str, Any], operation: str) -> dict[str, 
         except (httpx.HTTPError, ValueError) as exc:
             last_error = exc
             logger.warning("%s request_error attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
+            capture_provider_exception(exc, provider="hunter", endpoint=operation, extra={"attempt": attempt, "duration_ms": _duration_ms(started)})
         if attempt < 3:
             time.sleep(0.35 * attempt)
     raise HunterRequestError(f"Hunter is temporarily unavailable after retries. Apollo leads were saved without verified Hunter emails. Last error: {last_error}") from last_error

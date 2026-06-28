@@ -1,191 +1,288 @@
-import { CheckCircle2, Globe2, Mail, Search, ShieldCheck, TrendingUp, Users } from "lucide-react";
-import { SecondaryLink } from "@/components/button";
+import Link from "next/link";
+import { ArrowRight, BarChart3, Building2, CheckCircle2, ClipboardCheck, Globe2, Inbox, Mail, Search, Target, UserRoundSearch, Workflow } from "lucide-react";
 import { PricingCheckoutButton } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
 
-const features = [
-  { title: "Lead Finder", copy: "Find companies by niche, country, and city with verified enrichment fields.", Icon: Search },
-  { title: "AI Website Analyzer", copy: "Detect services, strengths, weak points, and outreach angles from prospect websites.", Icon: Globe2 },
-  { title: "Personalization Engine", copy: "Generate cold emails, follow-ups, and A/B variants using company context.", Icon: Mail },
-  { title: "Campaign Manager", copy: "Prepare, approve, schedule, and monitor outbound sequences with clear safety controls.", Icon: TrendingUp },
-  { title: "CRM", copy: "Track every lead from New to Closed with notes, filters, and search.", Icon: Users },
-  { title: "Trust and control", copy: "Your team approves every external action, with safe access controls and protected customer data.", Icon: ShieldCheck }
+const tools = [
+  {
+    title: "Lead Finder",
+    copy: "Find companies by industry, country, city, size, website, niche and business type.",
+    Icon: Search
+  },
+  {
+    title: "Decision Maker Finder",
+    copy: "Find CEOs, founders, owners, sales managers, marketing managers and other key contacts.",
+    Icon: UserRoundSearch
+  },
+  {
+    title: "AI Website Analyzer",
+    copy: "Analyze every prospect website and detect services, weak points, offers, competitors and personalization angles.",
+    Icon: Globe2
+  },
+  {
+    title: "AI Email Generator",
+    copy: "Generate personal cold emails and follow-ups based on real company research.",
+    Icon: Mail
+  },
+  {
+    title: "Campaign Manager",
+    copy: "Create outreach sequences, approve emails, schedule sending and track performance.",
+    Icon: Workflow
+  },
+  {
+    title: "CRM Pipeline",
+    copy: "Manage leads from New to Researched to Contacted to Replied to Meeting to Client.",
+    Icon: ClipboardCheck
+  }
 ];
 
-const pricing = [
+const workflow = [
+  "Describe your offer",
+  "Choose target market",
+  "Find companies",
+  "Analyze websites",
+  "Generate personalized emails",
+  "Approve and launch campaign",
+  "Track replies and meetings"
+];
+
+const painSolutions = [
+  ["Manual prospecting is slow", "OutreachAI finds companies automatically"],
+  ["Generic emails get ignored", "AI writes personal messages based on website research"],
+  ["Replies are lost", "Inbox and CRM keep everything in one place"],
+  ["Sales teams use too many tools", "OutreachAI combines lead search, AI research, email, CRM and analytics"]
+];
+
+const previewItems = [
+  ["Found leads", "248 qualified companies", "Berlin construction market"],
+  ["Website analyzed", "Strong fit, weak CTA, clear services", "AI score 87%"],
+  ["Email prepared", "Personalized opening + offer", "Ready for approval"],
+  ["Reply detected", "Interested: asked for pricing", "AI suggested next step"],
+  ["Meeting booked", "Thursday 10:30", "Pipeline updated"]
+];
+
+const plans = [
   {
     name: "Starter",
     price: "€49",
-    desc: "Best for freelancers, consultants and small businesses.",
-    cta: "Start Starter Trial",
-    items: ["1 AI Sales Employee", "500 leads/month", "1,000 AI emails/month", "AI Website Analysis", "AI Email Generator", "AI Follow-up Generator", "Lead Finder", "CRM", "Inbox", "Campaigns", "Basic Analytics", "1 Workspace", "Review Mode only", "14-day free trial"]
+    audience: "For freelancers and small businesses",
+    cta: "Start free trial",
+    items: ["500 leads/month", "1,000 AI emails/month", "Lead Finder", "Website Analyzer", "CRM", "Review mode"]
   },
   {
     name: "Pro",
     price: "€149",
-    desc: "Best for growing companies and sales teams.",
-    cta: "Start Pro Trial",
-    items: ["Everything in Starter", "3 AI Sales Employees", "5,000 leads/month", "10,000 AI emails/month", "AI Reply Assistant", "Semi-Automatic Campaigns", "AI Campaign Optimization", "Full AI Website Audit", "AI Sales Copilot", "AI Meeting Preparation", "AI Follow-up Optimization", "Advanced Analytics", "Revenue Dashboard", "Multiple Campaigns", "3 Workspaces", "Priority Processing", "14-day free trial"]
+    audience: "For sales teams",
+    cta: "Start Pro trial",
+    featured: true,
+    items: ["5,000 leads/month", "10,000 AI emails/month", "AI Reply Assistant", "Campaign Manager", "Advanced Analytics", "Multiple campaigns"]
   },
   {
     name: "Agency",
     price: "€499",
-    desc: "Best for agencies, SaaS companies and larger teams.",
-    cta: "Start Agency Trial",
-    items: ["Everything in Pro", "10 AI Sales Employees", "50,000 leads/month", "100,000 AI emails/month", "Approval-gated automation", "AI Lead Qualification", "AI Reply Automation", "AI Meeting Booking", "AI Sales Forecasting", "Unlimited Campaigns", "Unlimited Workspaces", "Team Members", "Agency-ready controls", "Priority Support", "14-day free trial"]
+    audience: "For agencies and SaaS companies",
+    cta: "Start Agency trial",
+    items: ["50,000 leads/month", "100,000 AI emails/month", "Client workspaces", "Team members", "AI Lead Qualification", "Meeting booking", "Agency controls"]
   }
 ] as const;
-
-const everyPlanIncludes = ["Secure billing", "Cancel anytime", "Automatic monthly billing", "Protected data", "GDPR-ready", "Email tracking", "Open tracking", "Reply tracking", "Reliable production hosting", "Continuous updates", "Automatic backups", "AI improvements"];
 
 export default function Home() {
   const schema = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: "OutreachAI",
-    applicationCategory: "BusinessApplication",
-    offers: pricing.map(({ name, price }) => ({ "@type": "Offer", name, price: price.replace("€", ""), priceCurrency: "EUR" }))
+    applicationCategory: "SalesApplication",
+    description: "AI Sales Workspace for B2B lead generation, website analysis, personalized outreach, email campaigns and CRM.",
+    offers: plans.map((plan) => ({ "@type": "Offer", name: `OutreachAI ${plan.name}`, price: plan.price.replace("€", ""), priceCurrency: "EUR" }))
   };
 
   return (
-    <main className="min-w-0 overflow-x-hidden bg-slate-50 text-ink">
+    <main className="min-w-0 overflow-x-hidden bg-white text-ink">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }} />
-      <section className="border-b border-slate-200 bg-white">
-        <nav className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-4 min-[360px]:px-5 min-[360px]:py-5">
-          <span className="min-w-0 text-lg font-bold min-[360px]:text-xl">OutreachAI</span>
-          <div className="hidden items-center gap-6 text-sm font-medium text-slate-600 md:flex">
-            <a className="inline-flex min-h-11 min-w-8 items-center" href="#features">Features</a>
-            <a className="inline-flex min-h-11 min-w-8 items-center" href="#pricing">Pricing</a>
-            <a className="inline-flex min-h-11 min-w-8 items-center" href="#faq">FAQ</a>
+      <section className="relative border-b border-slate-200 bg-[radial-gradient(circle_at_top_left,#e6fffb_0,#ffffff_34rem)]">
+        <nav className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-5 min-[360px]:px-5">
+          <Link href="/" className="text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
+          <div className="hidden items-center gap-7 text-sm font-semibold text-slate-600 md:flex">
+            <a href="#tools" className="hover:text-ink">Tools</a>
+            <a href="#workflow" className="hover:text-ink">Workflow</a>
+            <a href="#pricing" className="hover:text-ink">Pricing</a>
           </div>
-          <div className="flex w-auto shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <LanguageSwitcher compact />
-            <SecondaryLink href="/sign-in">Login</SecondaryLink>
+            <Link href="/sign-in" className="hidden min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 min-[430px]:inline-flex">Login</Link>
+            <Link href="/sign-up" className="inline-flex min-h-11 items-center rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-soft hover:bg-slate-800">Start free trial</Link>
           </div>
         </nav>
-        <div className="mx-auto grid max-w-7xl gap-8 px-4 pb-12 pt-8 min-[360px]:px-5 sm:gap-10 sm:pb-16 sm:pt-10 lg:grid-cols-[1.05fr_0.95fr] lg:pb-20 lg:pt-16">
+
+        <div className="mx-auto grid max-w-7xl items-center gap-10 px-4 pb-14 pt-8 min-[360px]:px-5 sm:pb-20 sm:pt-12 lg:grid-cols-[1.02fr_0.98fr]">
           <div className="min-w-0">
-            <p className="mb-4 inline-flex max-w-full rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold text-brand min-[360px]:text-sm">AI outbound system for B2B revenue teams</p>
-            <h1 className="max-w-4xl text-4xl font-bold tracking-normal text-ink min-[360px]:text-5xl md:text-7xl">OutreachAI</h1>
-            <p className="mt-5 max-w-2xl text-base leading-7 text-slate-600 min-[390px]:text-lg sm:mt-6 sm:text-xl sm:leading-8">Find qualified companies, analyze their websites, generate personal outreach, run campaigns, and manage replies from one production-ready CRM.</p>
-            <div className="mt-8 flex flex-col gap-3 min-[360px]:flex-row min-[360px]:flex-wrap">
-              <PricingCheckoutButton plan="Starter">Start Starter</PricingCheckoutButton>
-              <SecondaryLink href="/dashboard">View dashboard</SecondaryLink>
+            <p className="inline-flex rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-sm font-bold text-brand">AI Sales Workspace for outbound growth</p>
+            <h1 className="mt-5 max-w-4xl text-4xl font-bold tracking-normal text-ink min-[390px]:text-5xl md:text-6xl lg:text-7xl">AI Sales Employee for B2B Lead Generation</h1>
+            <p className="mt-6 max-w-2xl text-base leading-7 text-slate-600 min-[390px]:text-lg sm:text-xl sm:leading-8">
+              Find qualified companies, analyze their websites, generate personalized outreach, launch campaigns, and turn replies into meetings — from one workspace.
+            </p>
+            <div className="mt-8 flex flex-col gap-3 min-[390px]:flex-row">
+              <Link href="/sign-up" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-brand px-5 text-sm font-bold text-white shadow-soft hover:bg-teal-700">
+                Start free trial <ArrowRight size={18} aria-hidden="true" />
+              </Link>
+              <Link href="/dashboard" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-bold text-ink hover:border-slate-400">View demo dashboard</Link>
             </div>
-          </div>
-          <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-900 p-4 text-white shadow-soft min-[360px]:p-5">
-            <p className="text-sm font-semibold text-teal-200">First campaign workflow</p>
-            <div className="mt-4 space-y-3">
-              {["Describe your offer and ideal customer", "Import or discover qualified companies", "Review AI research and prepared emails", "Approve every external action before sending"].map((label, index) => (
-                <div key={label} className="flex gap-3 rounded-md bg-white/10 p-4">
-                  <span className="grid size-7 shrink-0 place-items-center rounded-full bg-white text-sm font-bold text-ink">{index + 1}</span>
-                  <p className="text-sm leading-6 text-slate-100">{label}</p>
-                </div>
+            <div className="mt-8 grid gap-3 text-sm text-slate-600 sm:grid-cols-3">
+              {["Replace 5-6 sales tools", "Review before send", "Built for meetings"].map((item) => (
+                <span key={item} className="inline-flex items-center gap-2"><CheckCircle2 size={17} className="text-brand" />{item}</span>
               ))}
             </div>
-            <div className="mt-4 rounded-md bg-white p-4 text-ink">
-              <p className="text-sm font-semibold text-brand">Safety-first automation</p>
-              <p className="mt-2 text-sm text-slate-600">OutreachAI prepares the work. You approve campaigns, CRM changes, and email sends before anything leaves the workspace.</p>
-            </div>
           </div>
-        </div>
-      </section>
 
-      <section className="mx-auto max-w-7xl px-4 py-12 min-[360px]:px-5 sm:py-16">
-        <div className="grid gap-8 md:grid-cols-3">
-          {["Manual prospecting is slow", "Generic emails get ignored", "Replies are scattered"].map((title) => (
-            <div key={title} className="min-w-0">
-              <h2 className="text-xl font-bold min-[360px]:text-2xl">{title}</h2>
-              <p className="mt-3 text-slate-600">Teams lose hours switching between scraping tools, spreadsheets, AI prompts, inboxes, and CRMs.</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="bg-white py-12 sm:py-16">
-        <div className="mx-auto max-w-7xl px-4 min-[360px]:px-5">
-          <h2 className="text-3xl font-bold min-[390px]:text-4xl">A complete outbound operating system</h2>
-          <p className="mt-4 max-w-2xl text-slate-600">OutreachAI combines data, AI, email operations, analytics, billing, and administration into a single SaaS workflow.</p>
-          <div id="features" className="mt-10 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {features.map(({ title, copy, Icon }) => (
-              <div key={title} className="min-w-0 rounded-lg border border-slate-200 p-5">
-                <Icon className="text-brand" size={24} aria-hidden="true" />
-                <h3 className="mt-4 text-lg font-bold">{title}</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-600">{copy}</p>
+          <div className="min-w-0 rounded-[1.75rem] border border-slate-200 bg-slate-950 p-3 shadow-2xl">
+            <div className="rounded-[1.25rem] bg-white p-4 min-[390px]:p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-bold text-brand">Live campaign workspace</p>
+                  <h2 className="mt-1 text-xl font-bold text-ink">German Builders Outreach</h2>
+                </div>
+                <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">Review mode</span>
               </div>
-            ))}
+              <div className="mt-5 grid gap-3">
+                {previewItems.map(([title, value, detail]) => (
+                  <article key={title} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{title}</p>
+                        <p className="mt-1 text-sm font-bold text-ink min-[390px]:text-base">{value}</p>
+                        <p className="mt-1 text-sm text-slate-600">{detail}</p>
+                      </div>
+                      <span className="grid size-8 shrink-0 place-items-center rounded-full bg-white text-brand shadow-sm"><CheckCircle2 size={18} /></span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      <section className="mx-auto max-w-7xl px-4 py-12 min-[360px]:px-5 sm:py-16">
-        <h2 className="text-3xl font-bold min-[390px]:text-4xl">Built for review-first outbound</h2>
-        <div className="mt-8 grid gap-4 md:grid-cols-3">
-          {[
-            ["No mystery sends", "Prepared emails stay inside OutreachAI until a user approves them."],
-            ["No spreadsheet chaos", "Leads, research, campaigns, replies, and billing live in one workspace."],
-            ["No empty dashboard", "New accounts see guided next steps instead of blank metrics."]
-          ].map(([title, copy]) => (
-            <article key={title} className="min-w-0 rounded-lg border border-slate-200 bg-white p-5">
-              <h3 className="font-bold">{title}</h3>
+      <section id="tools" className="mx-auto max-w-7xl px-4 py-14 min-[360px]:px-5 sm:py-20">
+        <div className="max-w-3xl">
+          <p className="text-sm font-bold uppercase tracking-wide text-brand">What OutreachAI does</p>
+          <h2 className="mt-3 text-3xl font-bold text-ink min-[390px]:text-4xl">One AI workspace for lead search, research, outreach and CRM.</h2>
+        </div>
+        <div className="mt-10 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {tools.map(({ title, copy, Icon }) => (
+            <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-soft">
+              <div className="grid size-11 place-items-center rounded-xl bg-teal-50 text-brand"><Icon size={22} /></div>
+              <h3 className="mt-5 text-lg font-bold text-ink">{title}</h3>
               <p className="mt-2 text-sm leading-6 text-slate-600">{copy}</p>
             </article>
           ))}
         </div>
       </section>
 
-      <section id="pricing" className="bg-white py-12 sm:py-16">
+      <section id="workflow" className="bg-slate-50 py-14 sm:py-20">
         <div className="mx-auto max-w-7xl px-4 min-[360px]:px-5">
-          <h2 className="text-3xl font-bold min-[390px]:text-4xl">Pricing</h2>
-          <p className="mt-3 text-slate-600">All plans include secure Stripe billing, automatic monthly renewal, cancel anytime, and a 14-day free trial.</p>
-          <div className="mt-8 grid gap-4 lg:grid-cols-3">
-            {pricing.map(({ name, price, desc, cta, items }) => (
-              <div key={name} className="min-w-0 rounded-lg border border-slate-200 p-5 min-[360px]:p-6">
-                <h3 className="text-xl font-bold">{name}</h3>
-                <p className="mt-3 text-3xl font-bold min-[360px]:text-4xl">{price}<span className="text-base font-medium text-slate-500">/mo</span></p>
-                <p className="mt-2 text-slate-600">{desc}</p>
-                <p className="mt-3 rounded-md bg-teal-50 px-3 py-2 text-sm font-semibold text-brand">14-day free trial included</p>
-                <ul className="mt-5 space-y-3 text-sm text-slate-700">
-                  {items.map((item) => (
-                    <li key={item} className="flex gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-brand" size={18} />{item}</li>
-                  ))}
-                </ul>
-                <div className="mt-6"><PricingCheckoutButton plan={name}>{cta}</PricingCheckoutButton></div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-8 rounded-lg border border-slate-200 bg-slate-50 p-5">
-            <h3 className="text-lg font-bold">Every plan includes</h3>
-            <div className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-2 lg:grid-cols-4">
-              {everyPlanIncludes.map((item) => <span key={item} className="inline-flex gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-brand" size={16} />{item}</span>)}
+          <div className="grid gap-8 lg:grid-cols-[0.85fr_1.15fr]">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-wide text-brand">Workflow</p>
+              <h2 className="mt-3 text-3xl font-bold text-ink min-[390px]:text-4xl">From market idea to approved campaign in minutes.</h2>
+              <p className="mt-4 text-slate-600">The product always guides the user to the next action: find companies, research them, review AI work, approve, and measure results.</p>
             </div>
+            <ol className="grid gap-3 sm:grid-cols-2">
+              {workflow.map((step, index) => (
+                <li key={step} className="flex gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-ink text-sm font-bold text-white">{index + 1}</span>
+                  <span className="pt-1 font-semibold text-ink">{step}</span>
+                </li>
+              ))}
+            </ol>
           </div>
         </div>
       </section>
 
-      <section id="faq" className="mx-auto max-w-4xl px-4 py-12 min-[360px]:px-5 sm:py-16">
-        <h2 className="text-3xl font-bold min-[390px]:text-4xl">FAQ</h2>
-        {["Can I cancel anytime?", "Does it support Google login?", "Can agencies manage clients?", "Is billing handled by Stripe?"].map((q) => (
-          <details key={q} className="mt-4 rounded-lg border border-slate-200 bg-white p-5">
-            <summary className="cursor-pointer font-semibold">{q}</summary>
-            <p className="mt-3 text-slate-600">Yes. OutreachAI is built with production SaaS defaults for global customers, subscriptions, and secure access control.</p>
-          </details>
-        ))}
-      </section>
-
-      <section className="bg-ink px-4 py-12 text-white min-[360px]:px-5 sm:py-16">
-        <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-6 md:flex-row md:items-center">
-          <div className="min-w-0">
-            <h2 className="text-3xl font-bold min-[390px]:text-4xl">Turn prospecting into pipeline.</h2>
-            <p className="mt-3 text-slate-300">Launch outbound campaigns with AI research, personalization, inbox tracking, and CRM control.</p>
-          </div>
-          <PricingCheckoutButton plan="Starter">Start Starter</PricingCheckoutButton>
+      <section className="mx-auto max-w-7xl px-4 py-14 min-[360px]:px-5 sm:py-20">
+        <div className="max-w-3xl">
+          <p className="text-sm font-bold uppercase tracking-wide text-brand">Pain to solution</p>
+          <h2 className="mt-3 text-3xl font-bold text-ink min-[390px]:text-4xl">Stop stitching together spreadsheets, inboxes and AI prompts.</h2>
+        </div>
+        <div className="mt-10 grid gap-4 lg:grid-cols-2">
+          {painSolutions.map(([pain, solution]) => (
+            <article key={pain} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-xl bg-red-50 p-4">
+                  <p className="text-xs font-bold uppercase text-red-600">Pain</p>
+                  <p className="mt-2 font-bold text-ink">{pain}</p>
+                </div>
+                <div className="rounded-xl bg-teal-50 p-4">
+                  <p className="text-xs font-bold uppercase text-brand">Solution</p>
+                  <p className="mt-2 font-bold text-ink">{solution}</p>
+                </div>
+              </div>
+            </article>
+          ))}
         </div>
       </section>
-      <footer className="bg-white px-4 py-8 text-sm text-slate-500 min-[360px]:px-5">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 min-[360px]:flex-row min-[360px]:justify-between">
-          <span>OutreachAI</span>
-          <span>Privacy | Terms | Security</span>
+
+      <section className="bg-slate-950 py-14 text-white sm:py-20">
+        <div className="mx-auto grid max-w-7xl gap-6 px-4 min-[360px]:px-5 lg:grid-cols-4">
+          {[
+            [Building2, "Companies", "248 found"],
+            [Globe2, "Websites analyzed", "193 researched"],
+            [Inbox, "Replies", "27 classified"],
+            [BarChart3, "Meetings", "8 booked"]
+          ].map(([Icon, label, value]) => {
+            const MetricIcon = Icon as typeof Building2;
+            return (
+              <article key={label as string} className="rounded-2xl border border-white/10 bg-white/5 p-5">
+                <MetricIcon size={22} className="text-teal-200" />
+                <p className="mt-5 text-sm text-slate-300">{label as string}</p>
+                <p className="mt-1 text-2xl font-bold">{value as string}</p>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      <section id="pricing" className="mx-auto max-w-7xl px-4 py-14 min-[360px]:px-5 sm:py-20">
+        <div className="max-w-3xl">
+          <p className="text-sm font-bold uppercase tracking-wide text-brand">Pricing</p>
+          <h2 className="mt-3 text-3xl font-bold text-ink min-[390px]:text-4xl">Simple plans for teams that want more qualified meetings.</h2>
+        </div>
+        <div className="mt-10 grid gap-5 lg:grid-cols-3">
+          {plans.map((plan) => {
+            const featured = "featured" in plan && plan.featured;
+            return (
+            <article key={plan.name} className={`rounded-2xl border p-6 shadow-sm ${featured ? "border-brand bg-teal-50" : "border-slate-200 bg-white"}`}>
+              {featured && <p className="mb-4 w-fit rounded-full bg-brand px-3 py-1 text-xs font-bold text-white">Most popular</p>}
+              <h3 className="text-2xl font-bold text-ink">{plan.name}</h3>
+              <p className="mt-2 text-sm text-slate-600">{plan.audience}</p>
+              <p className="mt-5 text-4xl font-bold text-ink">{plan.price}<span className="text-base font-semibold text-slate-500">/month</span></p>
+              <p className="mt-2 text-sm font-bold text-brand">14-day free trial</p>
+              <ul className="mt-6 space-y-3 text-sm text-slate-700">
+                {plan.items.map((item) => <li key={item} className="flex gap-2"><CheckCircle2 size={18} className="mt-0.5 shrink-0 text-brand" />{item}</li>)}
+              </ul>
+              <div className="mt-7">
+                <PricingCheckoutButton plan={plan.name}>{plan.cta}</PricingCheckoutButton>
+              </div>
+            </article>
+          );})}
+        </div>
+      </section>
+
+      <section className="bg-ink px-4 py-14 text-white min-[360px]:px-5 sm:py-20">
+        <div className="mx-auto flex max-w-7xl flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="text-3xl font-bold min-[390px]:text-4xl">Find customers faster than manual outbound.</h2>
+            <p className="mt-3 max-w-2xl text-slate-300">Start with a target market. OutreachAI prepares leads, research, emails and campaign review from one workspace.</p>
+          </div>
+          <Link href="/sign-up" className="inline-flex min-h-12 w-fit items-center justify-center gap-2 rounded-md bg-white px-5 text-sm font-bold text-ink hover:bg-slate-100">
+            Start free trial <ArrowRight size={18} />
+          </Link>
+        </div>
+      </section>
+
+      <footer className="border-t border-slate-200 bg-white px-4 py-8 text-sm text-slate-500 min-[360px]:px-5">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="font-semibold text-ink">OutreachAI</p>
+          <p>Lead generation, AI research, outbound campaigns and CRM in one workspace.</p>
         </div>
       </footer>
     </main>

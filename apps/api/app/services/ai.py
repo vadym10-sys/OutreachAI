@@ -11,6 +11,7 @@ from typing import Any, Optional
 from openai import OpenAI, OpenAIError
 
 from app.core.config import get_settings
+from app.core.observability import capture_provider_exception
 from app.schemas.dto import (
     AnalysisOut,
     CampaignAnalyticsOut,
@@ -78,12 +79,14 @@ def _json_completion(system: str, payload: dict[str, Any]) -> dict[str, Any]:
         )
     except OpenAIError as exc:
         logger.exception("OpenAI request failed")
+        capture_provider_exception(exc, provider="openai", endpoint="openai.chat_completion", extra={"model": settings.openai_model})
         raise ProviderRequestError(str(exc)) from exc
 
     content = response.choices[0].message.content or "{}"
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
+        capture_provider_exception(exc, provider="openai", endpoint="openai.chat_completion", extra={"model": settings.openai_model, "reason": "invalid_json"})
         raise ProviderRequestError("OpenAI returned invalid JSON.") from exc
     if not isinstance(parsed, dict):
         raise ProviderRequestError("OpenAI returned an unexpected response shape.")
@@ -381,6 +384,7 @@ def stream_email_generation(payload: PersonalizeRequest) -> Iterator[str]:
                 yield chunk
     except OpenAIError as exc:
         logger.exception("OpenAI streaming request failed")
+        capture_provider_exception(exc, provider="openai", endpoint="openai.streaming_completion", extra={"model": settings.openai_model})
         raise ProviderRequestError(str(exc)) from exc
 
 

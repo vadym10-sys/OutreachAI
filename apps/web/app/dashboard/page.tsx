@@ -1,4 +1,4 @@
-import { DashboardHome } from '@/components/product-workspace';
+import { DashboardHome } from '@/components/outbound-workspace';
 
 export default function DashboardPage() {
   return <DashboardHome />;

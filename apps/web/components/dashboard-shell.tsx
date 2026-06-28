@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useUser } from "@clerk/nextjs";
-import { BarChart3, Bot, CreditCard, Crown, Inbox, LayoutDashboard, Megaphone, Menu, Search, Settings, Shield, Users } from "lucide-react";
+import * as Sentry from "@sentry/nextjs";
+import { BarChart3, Bot, Building2, CreditCard, Crown, Globe2, Inbox, LayoutDashboard, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
 import { e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -12,12 +13,15 @@ import { useI18n } from "@/lib/i18n/provider";
 
 const nav = [
   { href: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/sales-employees", labelKey: "nav.aiEmployees", icon: Bot },
-  { href: "/dashboard/leads", labelKey: "nav.leads", icon: Search },
+  { href: "/dashboard/leads", labelKey: "Lead Finder", icon: Search },
+  { href: "/dashboard/companies", labelKey: "Companies", icon: Building2 },
+  { href: "/dashboard/website-analyzer", labelKey: "Website Analyzer", icon: Globe2 },
+  { href: "/dashboard/contacts", labelKey: "Contacts", icon: UserRoundSearch },
   { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
-  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Users, featureFlag: "NEXT_PUBLIC_SHOW_CRM_NAV" },
-  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, featureFlag: "NEXT_PUBLIC_SHOW_INBOX_NAV" },
-  { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3, featureFlag: "NEXT_PUBLIC_SHOW_ANALYTICS_NAV" },
+  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
+  { href: "/dashboard/crm", labelKey: "CRM Pipeline", icon: Users },
+  { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3 },
+  { href: "/dashboard/sales-employees", labelKey: "AI Sales Employee", icon: Bot },
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
   { href: "/dashboard/owner", labelKey: "nav.owner", icon: Crown, ownerOnly: true },
@@ -41,7 +45,7 @@ function currentE2EUserEmail() {
   }
 }
 
-function useOwnerAccess() {
+function useDashboardIdentity() {
   const [testEmail, setTestEmail] = useState(e2eUserEmail);
 
   useEffect(() => {
@@ -53,23 +57,47 @@ function useOwnerAccess() {
   }, []);
 
   if (!hasClerkPublishableKey || isClerkE2EBypass) {
-    return testEmail.trim().toLowerCase() === ownerEmail;
+    return {
+      isOwner: testEmail.trim().toLowerCase() === ownerEmail,
+      userId: testEmail ? `e2e:${testEmail}` : "e2e-user",
+      email: testEmail,
+      workspaceId: "e2e-workspace"
+    };
   }
 
   // The no-Clerk branch is required for local/E2E builds where ClerkProvider is intentionally not mounted.
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const { user } = useUser();
   const currentEmail = user?.primaryEmailAddress?.emailAddress || user?.emailAddresses?.[0]?.emailAddress || "";
-  return currentEmail.trim().toLowerCase() === ownerEmail;
+  const publicMetadata = user?.publicMetadata as { workspace_id?: unknown; workspaceId?: unknown } | undefined;
+  return {
+    isOwner: currentEmail.trim().toLowerCase() === ownerEmail,
+    userId: user?.id || "unknown-user",
+    email: currentEmail,
+    workspaceId: String(publicMetadata?.workspace_id || publicMetadata?.workspaceId || "unknown-workspace")
+  };
 }
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
-  const isOwner = useOwnerAccess();
+  const { isOwner, userId, email, workspaceId } = useDashboardIdentity();
   const visibleNav = nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner));
   const primaryMobileNav = visibleNav.slice(0, 4);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  useEffect(() => {
+    Sentry.setUser({ id: userId, email: email || undefined });
+    Sentry.setTag("current_route", pathname);
+    Sentry.setTag("workspace_id", workspaceId);
+    Sentry.setTag("release", process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0");
+    Sentry.setTag("environment", process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development");
+    Sentry.setContext("outreachai", {
+      workspace_id: workspaceId,
+      user_id: userId,
+      current_route: pathname
+    });
+  }, [email, pathname, userId, workspaceId]);
 
   return (
     <div className="min-h-screen min-w-0 overflow-x-hidden bg-slate-50">
@@ -111,7 +139,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 })}
               </div>}
             </div>
-            <span className="truncate text-sm font-semibold text-slate-600">{t("shell.workspace")}</span>
+            <span className="truncate text-sm font-semibold text-slate-600">AI Sales Workspace</span>
           </div>
           <LanguageSwitcher compact />
           {hasClerkPublishableKey && !isClerkE2EBypass ? (

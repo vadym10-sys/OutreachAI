@@ -1,5 +1,5 @@
-import { AISalesEmployees } from '@/components/product-workspace';
+import { AiEmployeesPage } from '@/components/outbound-workspace';
 
 export default function SalesEmployeesPage() {
-  return <AISalesEmployees />;
+  return <AiEmployeesPage />;
 }
