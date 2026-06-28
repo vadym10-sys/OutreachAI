@@ -197,12 +197,6 @@ export function identifyPostHogUser({
   });
 }
 
-export function resetPostHogUser() {
-  void bootPostHog().then((ready) => {
-    if (ready) posthog.reset();
-  });
-}
-
 export function trackEvent(name: string, properties: Properties = {}) {
   void bootPostHog().then((ready) => {
     if (!ready) return;
