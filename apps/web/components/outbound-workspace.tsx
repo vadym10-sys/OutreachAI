@@ -438,7 +438,7 @@ export function LeadFinderPage() {
   const [hasSearched, setHasSearched] = useState(false);
   const [message, setMessage] = useState("");
   const [searching, setSearching] = useState(false);
-  const visibleMessage = message.includes("real companies saved") ? "" : message;
+  const visibleMessage = message.includes("real companies saved") || message.startsWith("No companies found") || (!searching && message === "Connecting to Google Maps...") ? "" : message;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
