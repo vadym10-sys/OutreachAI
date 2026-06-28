@@ -74,6 +74,36 @@ a[aria-label="Clerk logo"] {
   align-items: center;
 }
 
+.signup-auth-card .cl-rootBox,
+.signup-auth-card .cl-cardBox,
+.signup-auth-card .cl-card,
+.signup-auth-card .cl-main,
+.signup-auth-card .cl-form {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
+.signup-auth-card .cl-cardBox,
+.signup-auth-card .cl-card,
+.signup-auth-card .cl-main {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.signup-auth-card .cl-card,
+.signup-auth-card .cl-main {
+  padding: 0 !important;
+}
+
+.signup-auth-card .cl-formFieldInput,
+.signup-auth-card .cl-formButtonPrimary {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
 .focus-ring {
   @apply focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2;
 }

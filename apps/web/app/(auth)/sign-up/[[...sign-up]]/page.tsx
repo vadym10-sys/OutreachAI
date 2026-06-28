@@ -17,7 +17,7 @@ export default function Page() {
   return (
     <main className="flex min-h-screen items-center justify-center overflow-x-hidden bg-slate-50 px-4 py-6 min-[360px]:px-5">
       {hasClerkPublishableKey ? (
-        <div className="w-full max-w-[min(100%,28rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-soft sm:p-6">
+        <div className="signup-auth-card w-full max-w-[min(100%,28rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-soft sm:p-6">
           <div className="mb-6 text-center">
             <h1 className="text-2xl font-bold tracking-tight text-ink">Create your account</h1>
             <p className="mt-2 text-sm leading-6 text-slate-600">Start with Google, Apple, or your work email.</p>
