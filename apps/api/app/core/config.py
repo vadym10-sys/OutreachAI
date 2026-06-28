@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""
     debug: bool = False
     encryption_key: str = "replace-with-32-byte-url-safe-key"
-    auto_create_tables: bool = False
+    auto_create_tables: bool = True
     cors_origins: str = "http://localhost:3000,https://outreachaiaiai.com,https://outreachaiweb-production.up.railway.app"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
