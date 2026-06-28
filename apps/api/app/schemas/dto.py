@@ -143,6 +143,9 @@ class LeadOut(BaseModel):
     confidence: Optional[str] = None
     apollo_company_id: Optional[str] = None
     apollo_contact_id: Optional[str] = None
+    hunter_contact_id: Optional[str] = None
+    hunter_verified: bool = False
+    hunter_status: Optional[str] = None
     source: Optional[str] = None
 
     class Config:
@@ -222,6 +225,7 @@ class AutomationRunOut(BaseModel):
 
 class IntegrationStatusOut(BaseModel):
     apollo: bool
+    hunter: bool
     clay: bool
     openai: bool
     resend: bool
@@ -237,6 +241,21 @@ class ApolloIntegrationStatusOut(BaseModel):
 
 
 class ApolloConnectionTestOut(BaseModel):
+    configured: bool
+    connected: bool
+    duration_ms: int = 0
+    last_success_at: Optional[datetime] = None
+    last_error: str = ""
+
+
+class HunterIntegrationStatusOut(BaseModel):
+    configured: bool
+    connected: bool = False
+    last_success_at: Optional[datetime] = None
+    last_error: str = ""
+
+
+class HunterConnectionTestOut(BaseModel):
     configured: bool
     connected: bool
     duration_ms: int = 0

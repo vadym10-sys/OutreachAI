@@ -80,15 +80,21 @@ export type Lead = {
   confidence?: string | null;
   apollo_company_id?: string | null;
   apollo_contact_id?: string | null;
+  hunter_contact_id?: string | null;
+  hunter_verified?: boolean;
+  hunter_status?: string | null;
   source?: string | null;
 };
 
-export type ApolloIntegrationStatus = {
+export type IntegrationConnectionStatus = {
   configured: boolean;
   connected: boolean;
   last_success_at?: string | null;
   last_error: string;
 };
+
+export type ApolloIntegrationStatus = IntegrationConnectionStatus;
+export type HunterIntegrationStatus = IntegrationConnectionStatus;
 
 export type AISalesEmployee = {
   id: string;

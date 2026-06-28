@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     resend_reply_to: str = ""
     resend_webhook_secret: str = ""
     apollo_api_key: str = ""
+    hunter_api_key: str = ""
     clay_api_key: str = ""
     clay_workspace_id: str = ""
     crm_sync_webhook_url: str = ""
@@ -81,6 +82,8 @@ class Settings(BaseSettings):
             missing.append("RESEND_API_KEY")
         if not self.apollo_api_key:
             missing.append("APOLLO_API_KEY")
+        if not self.hunter_api_key:
+            missing.append("HUNTER_API_KEY")
         if not self.clay_api_key:
             missing.append("CLAY_API_KEY")
         if not self.stripe_secret_key:

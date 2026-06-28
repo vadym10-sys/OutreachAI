@@ -82,6 +82,8 @@ from app.schemas.dto import (
     GrowthEngineOut,
     GrowthGoalIn,
     GrowthGoalOut,
+    HunterConnectionTestOut,
+    HunterIntegrationStatusOut,
     IntegrationStatusOut,
     LeadCreate,
     LeadFinderRequest,
@@ -157,6 +159,13 @@ from app.services.apollo import (
     search_apollo_companies,
     search_apollo_contacts,
     test_apollo_connection,
+)
+from app.services.hunter import (
+    HunterConfigurationError,
+    HunterRequestError,
+    enrich_leads_with_hunter,
+    hunter_key_loaded,
+    test_hunter_connection,
 )
 from app.services.website import WebsiteFetchError, collect_website
 
@@ -468,6 +477,9 @@ def _lead_out(lead: Lead) -> LeadOut:
         confidence=str(metadata.get("confidence") or "") or None,
         apollo_company_id=str(metadata.get("apollo_company_id") or "") or None,
         apollo_contact_id=str(metadata.get("apollo_contact_id") or "") or None,
+        hunter_contact_id=str(metadata.get("hunter_contact_id") or "") or None,
+        hunter_verified=bool(metadata.get("hunter_verified")),
+        hunter_status=str(metadata.get("hunter_status") or "") or None,
         source=str(metadata.get("source") or "") or None,
     )
 
@@ -490,9 +502,9 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
 
 
 def _provider_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError)):
+    if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError, HunterConfigurationError)):
         return HTTPException(status_code=503, detail=str(exc))
-    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError)):
+    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError)):
         return HTTPException(status_code=502, detail=str(exc))
     return HTTPException(status_code=500, detail="Provider request failed.")
 
@@ -657,16 +669,32 @@ def _default_settings() -> dict:
 
 
 def _apollo_settings_state(settings: AppSettings) -> dict[str, Any]:
+    return _integration_settings_state(settings, "apollo")
+
+
+def _hunter_settings_state(settings: AppSettings) -> dict[str, Any]:
+    return _integration_settings_state(settings, "hunter")
+
+
+def _integration_settings_state(settings: AppSettings, integration: str) -> dict[str, Any]:
     api_settings = settings.api if isinstance(settings.api, dict) else {}
-    state = api_settings.get("apollo") if isinstance(api_settings.get("apollo"), dict) else {}
+    state = api_settings.get(integration) if isinstance(api_settings.get(integration), dict) else {}
     return state
 
 
 def _save_apollo_settings_state(db: Session, settings: AppSettings, **updates: Any) -> None:
+    _save_integration_settings_state(db, settings, "apollo", **updates)
+
+
+def _save_hunter_settings_state(db: Session, settings: AppSettings, **updates: Any) -> None:
+    _save_integration_settings_state(db, settings, "hunter", **updates)
+
+
+def _save_integration_settings_state(db: Session, settings: AppSettings, integration: str, **updates: Any) -> None:
     api_settings = settings.api if isinstance(settings.api, dict) else {}
-    current = api_settings.get("apollo") if isinstance(api_settings.get("apollo"), dict) else {}
+    current = api_settings.get(integration) if isinstance(api_settings.get(integration), dict) else {}
     serializable_updates = {key: value.isoformat() if isinstance(value, datetime) else value for key, value in updates.items()}
-    settings.api = {**api_settings, "apollo": {**current, **serializable_updates}}
+    settings.api = {**api_settings, integration: {**current, **serializable_updates}}
     db.add(settings)
 
 
@@ -692,6 +720,7 @@ def integrations_status(user_id: CurrentUser) -> IntegrationStatusOut:
     settings = get_app_settings()
     return IntegrationStatusOut(
         apollo=bool(settings.apollo_api_key),
+        hunter=bool(settings.hunter_api_key),
         clay=bool(settings.clay_api_key),
         openai=bool(settings.openai_api_key),
         resend=bool(settings.resend_api_key and settings.resend_from_email),
@@ -733,6 +762,41 @@ def apollo_test_connection(request: Request, user_id: CurrentUser, db: Session =
     log_event(db, request, user_id, "apollo.connection_tested", {"records": result.get("records", 0), "duration_ms": result.get("duration_ms", 0)})
     db.commit()
     return ApolloConnectionTestOut(configured=True, connected=True, duration_ms=int(result.get("duration_ms", 0)), last_success_at=now)
+
+
+@router.get("/integrations/hunter/status", response_model=HunterIntegrationStatusOut)
+def hunter_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> HunterIntegrationStatusOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    state = _hunter_settings_state(settings)
+    return HunterIntegrationStatusOut(
+        configured=hunter_key_loaded(),
+        connected=bool(state.get("connected")),
+        last_success_at=_datetime_or_none(state.get("last_success_at")),
+        last_error=str(state.get("last_error") or ""),
+    )
+
+
+@router.post("/integrations/hunter/test", response_model=HunterConnectionTestOut)
+def hunter_test_connection(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> HunterConnectionTestOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    if not hunter_key_loaded():
+        _save_hunter_settings_state(db, settings, connected=False, last_error="Hunter is not connected on the backend.")
+        return HunterConnectionTestOut(configured=False, connected=False, last_error="Hunter is not connected on the backend.")
+    try:
+        result = test_hunter_connection()
+    except Exception as exc:
+        friendly = _provider_error(exc).detail
+        _save_hunter_settings_state(db, settings, connected=False, last_error=str(friendly))
+        log_event(db, request, user_id, "hunter.connection_failed", {"reason": str(friendly)})
+        db.commit()
+        return HunterConnectionTestOut(configured=True, connected=False, last_error=str(friendly))
+    now = datetime.utcnow()
+    _save_hunter_settings_state(db, settings, connected=True, last_success_at=now, last_error="")
+    log_event(db, request, user_id, "hunter.connection_tested", {"records": result.get("records", 0), "duration_ms": result.get("duration_ms", 0)})
+    db.commit()
+    return HunterConnectionTestOut(configured=True, connected=True, duration_ms=int(result.get("duration_ms", 0)), last_success_at=now)
 
 
 @router.post("/automation/run", response_model=AutomationRunOut)
@@ -2561,7 +2625,8 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
     except Exception as exc:
         raise _provider_error(exc) from exc
     _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
-    saved = _save_provider_leads(db, request, user_id, workspace, result.leads, payload, source="apollo", action="apollo.company_search")
+    leads = _hunter_enriched_leads(db, request, user_id, workspace, result.leads)
+    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="apollo_hunter", action="apollo.company_search")
     return [_lead_out(lead) for lead in saved]
 
 
@@ -2574,7 +2639,8 @@ def apollo_search_companies(payload: LeadFinderRequest, request: Request, user_i
     except Exception as exc:
         raise _provider_error(exc) from exc
     _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
-    saved = _save_provider_leads(db, request, user_id, workspace, result.leads, payload, source="apollo", action="apollo.company_search")
+    leads = _hunter_enriched_leads(db, request, user_id, workspace, result.leads)
+    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="apollo_hunter", action="apollo.company_search")
     return [_lead_out(lead) for lead in saved]
 
 
@@ -2587,8 +2653,27 @@ def apollo_search_contacts(payload: LeadFinderRequest, request: Request, user_id
     except Exception as exc:
         raise _provider_error(exc) from exc
     _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
-    saved = _save_provider_leads(db, request, user_id, workspace, result.leads, payload, source="apollo", action="apollo.contact_search")
+    leads = _hunter_enriched_leads(db, request, user_id, workspace, result.leads)
+    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="apollo_hunter", action="apollo.contact_search")
     return [_lead_out(lead) for lead in saved]
+
+
+def _hunter_enriched_leads(db: Session, request: Request, user_id: str, workspace: Workspace, leads: list[LeadOut]) -> list[LeadOut]:
+    if not hunter_key_loaded() or not leads:
+        return leads
+    settings = _settings_for_workspace(db, user_id, workspace)
+    try:
+        enriched = enrich_leads_with_hunter(leads)
+    except Exception as exc:
+        friendly = _provider_error(exc).detail
+        _save_hunter_settings_state(db, settings, connected=False, last_error=str(friendly))
+        log_event(db, request, user_id, "hunter.enrichment_failed", {"reason": str(friendly)})
+        return leads
+    verified = sum(1 for lead in enriched if lead.hunter_verified)
+    now = datetime.utcnow()
+    _save_hunter_settings_state(db, settings, connected=True, last_success_at=now, last_error="")
+    log_event(db, request, user_id, "hunter.enrichment_completed", {"verified": verified, "checked": len(enriched)})
+    return enriched
 
 
 def _save_provider_leads(db: Session, request: Request, user_id: str, workspace: Workspace, found: list[LeadOut], payload: LeadFinderRequest, source: str, action: str) -> list[Lead]:
@@ -2620,12 +2705,14 @@ def _save_provider_leads(db: Session, request: Request, user_id: str, workspace:
         _analyze_lead_if_possible(db, user_id, workspace, lead)
         saved.append(lead)
     log_event(db, request, user_id, action, {"source": source, "saved": len(saved), "duplicates_skipped": skipped, **payload.model_dump()})
+    verified = sum(1 for item in found if item.hunter_verified)
     if saved:
-        _notify(db, user_id, NotificationKind.success, "Apollo leads imported", f"{len(saved)} Apollo companies were added to your workspace.")
+        suffix = f" Hunter verified {verified} email{'s' if verified != 1 else ''}." if verified else ""
+        _notify(db, user_id, NotificationKind.success, "Leads imported", f"{len(saved)} companies were added to your workspace.{suffix}")
     elif found:
-        _notify(db, user_id, NotificationKind.info, "Apollo search finished", "All matching Apollo results were already in your workspace.")
+        _notify(db, user_id, NotificationKind.info, "Lead search finished", "All matching results were already in your workspace.")
     else:
-        _notify(db, user_id, NotificationKind.info, "Apollo search finished", "Apollo did not find matching companies for those filters.")
+        _notify(db, user_id, NotificationKind.info, "Lead search finished", "No matching companies were found for those filters.")
     db.commit()
     return saved
 
@@ -2634,6 +2721,7 @@ def _lead_duplicate_exists(db: Session, workspace: Workspace, user_id: str, item
     metadata = _lead_metadata(item)
     apollo_company_id = str(metadata.get("apollo_company_id") or item.apollo_company_id or "")
     apollo_contact_id = str(metadata.get("apollo_contact_id") or item.apollo_contact_id or "")
+    hunter_contact_id = str(metadata.get("hunter_contact_id") or item.hunter_contact_id or "")
     domain = str(metadata.get("domain") or item.domain or "")
     criteria = []
     if item.email:
@@ -2644,6 +2732,8 @@ def _lead_duplicate_exists(db: Session, workspace: Workspace, user_id: str, item
         criteria.append(Lead.notes.ilike(f"%{apollo_company_id}%"))
     if apollo_contact_id:
         criteria.append(Lead.notes.ilike(f"%{apollo_contact_id}%"))
+    if hunter_contact_id:
+        criteria.append(Lead.notes.ilike(f"%{hunter_contact_id}%"))
     if domain:
         criteria.append(Lead.website.ilike(f"%{domain}%"))
         criteria.append(Lead.notes.ilike(f"%{domain}%"))

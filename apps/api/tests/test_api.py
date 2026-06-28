@@ -28,6 +28,7 @@ os.environ["STRIPE_AGENCY_PRICE_ID"] = "price_agency_test"
 os.environ["NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY"] = "pk_test"
 os.environ["AUTOMATION_SECRET"] = "automation_test"
 os.environ["APOLLO_API_KEY"] = "apollo_test"
+os.environ["HUNTER_API_KEY"] = "hunter_test"
 os.environ["OPENAI_API_KEY"] = "openai_test"
 os.environ["RESEND_API_KEY"] = "resend_test"
 os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
@@ -38,6 +39,7 @@ from app.core import security  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
 from app.schemas.dto import CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
+from app.services.hunter import HunterRequestError  # noqa: E402
 from app.main import app  # noqa: E402
 
 Base.metadata.create_all(bind=get_engine())
@@ -213,6 +215,7 @@ def test_production_auth_rejects_expired_clerk_jwt(monkeypatch) -> None:
 
 
 def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
     monkeypatch.setattr(
         "app.api.routes.search_apollo_companies",
         lambda payload: ApolloSearchResult(
@@ -280,6 +283,97 @@ def test_apollo_invalid_key_reports_safe_error(monkeypatch) -> None:
     get_settings.cache_clear()
 
 
+def test_hunter_status_and_missing_key(monkeypatch) -> None:
+    monkeypatch.setenv("HUNTER_API_KEY", "")
+    get_settings.cache_clear()
+    status = client.get("/api/integrations/hunter/status", headers=AUTH)
+    assert status.status_code == 200
+    assert status.json()["configured"] is False
+
+    test = client.post("/api/integrations/hunter/test", headers=AUTH)
+    assert test.status_code == 200
+    assert test.json()["configured"] is False
+    assert test.json()["connected"] is False
+    get_settings.cache_clear()
+
+
+def test_hunter_invalid_key_reports_safe_error(monkeypatch) -> None:
+    monkeypatch.setenv("HUNTER_API_KEY", "invalid")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.api.routes.test_hunter_connection", lambda: (_ for _ in ()).throw(HunterRequestError("Hunter rejected the backend API key. Verify the live Hunter key and account access.")))
+    response = client.post("/api/integrations/hunter/test", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json()["connected"] is False
+    assert "Hunter rejected" in response.json()["last_error"]
+    get_settings.cache_clear()
+
+
+def test_apollo_company_search_enriches_with_hunter(monkeypatch) -> None:
+    apollo_lead = LeadOut(
+        company="Hunter Verified Build GmbH",
+        website="https://hunter-verified.example",
+        industry="Construction",
+        country="Germany",
+        city="Berlin",
+        notes='{"source":"apollo","domain":"hunter-verified.example","apollo_company_id":"apollo_hunter_1"}',
+        domain="hunter-verified.example",
+        apollo_company_id="apollo_hunter_1",
+        source="apollo",
+    )
+    hunter_lead = apollo_lead.model_copy(
+        update={
+            "contact": "Ada Founder",
+            "email": "ada@hunter-verified.example",
+            "title": "Founder",
+            "confidence": "98",
+            "hunter_contact_id": "ada@hunter-verified.example",
+            "hunter_verified": True,
+            "hunter_status": "verified",
+            "source": "hunter",
+            "notes": '{"source":"hunter","domain":"hunter-verified.example","apollo_company_id":"apollo_hunter_1","hunter_contact_id":"ada@hunter-verified.example","hunter_verified":true,"hunter_status":"verified","confidence":98,"title":"Founder"}',
+        }
+    )
+    monkeypatch.setattr("app.api.routes.search_apollo_companies", lambda payload: ApolloSearchResult(leads=[apollo_lead], raw_count=1, duration_ms=5))
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: [hunter_lead])
+    response = client.post("/api/apollo/search-companies", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 200
+    saved = response.json()[0]
+    assert saved["source"] == "hunter"
+    assert saved["hunter_verified"] is True
+    assert saved["hunter_status"] == "verified"
+    assert saved["email"] == "ada@hunter-verified.example"
+    assert saved["confidence"] == "98"
+
+
+def test_hunter_no_verified_email_is_friendly(monkeypatch) -> None:
+    apollo_lead = LeadOut(
+        company="No Email Build GmbH",
+        website="https://no-email-build.example",
+        industry="Construction",
+        country="Germany",
+        city="Berlin",
+        notes='{"source":"apollo","domain":"no-email-build.example","apollo_company_id":"apollo_no_email"}',
+        domain="no-email-build.example",
+        apollo_company_id="apollo_no_email",
+        source="apollo",
+    )
+    enriched = apollo_lead.model_copy(
+        update={
+            "hunter_verified": False,
+            "hunter_status": "no_verified_email",
+            "notes": '{"source":"apollo","domain":"no-email-build.example","apollo_company_id":"apollo_no_email","hunter_status":"no_verified_email"}',
+        }
+    )
+    monkeypatch.setattr("app.api.routes.search_apollo_companies", lambda payload: ApolloSearchResult(leads=[apollo_lead], raw_count=1, duration_ms=5))
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: [enriched])
+    response = client.post("/api/apollo/search-companies", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 200
+    saved = response.json()[0]
+    assert saved["hunter_verified"] is False
+    assert saved["hunter_status"] == "no_verified_email"
+    assert saved["email"] is None
+
+
 def test_apollo_timeout_returns_user_safe_error(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes.search_apollo_companies", lambda payload: (_ for _ in ()).throw(ApolloRequestError("Apollo is temporarily unavailable. Please try again in a few minutes.")))
     response = client.post("/api/apollo/search-companies", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
@@ -295,6 +389,7 @@ def test_apollo_empty_results_are_safe(monkeypatch) -> None:
 
 
 def test_apollo_duplicate_prevention(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
     lead = LeadOut(
         company="Duplicate Apollo GmbH",
         website="https://duplicate-apollo.example",
@@ -318,6 +413,7 @@ def test_apollo_duplicate_prevention(monkeypatch) -> None:
 
 
 def test_apollo_contact_search_saves_to_db(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
     monkeypatch.setattr(
         "app.api.routes.search_apollo_contacts",
         lambda payload: ApolloSearchResult(
