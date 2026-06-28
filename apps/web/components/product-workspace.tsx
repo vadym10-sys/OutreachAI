@@ -63,6 +63,52 @@ function Notice({ message, kind = 'success' }: { message: string; kind?: 'succes
   return <div className={`mt-4 rounded-md border px-4 py-3 text-sm ${color}`}>{message}</div>;
 }
 
+function FirstMeetingGuide({ compact = false }: { compact?: boolean }) {
+  const { t } = useI18n();
+  const steps = [
+    ['1', 'Set up workspace', 'Why: AI needs your company context.', 'Next: connect lead sources.', 'Time: 1 minute', 'Success: workspace is ready.'],
+    ['2', 'Find companies', 'Why: meetings start with the right accounts.', 'Next: Apollo finds companies and Hunter verifies emails.', 'Time: 1-2 minutes', 'Success: qualified companies appear.'],
+    ['3', 'Review outreach', 'Why: every message should sound human.', 'Next: AI analyzes the company and writes a draft.', 'Time: 2 minutes', 'Success: email is in review.'],
+    ['4', 'Approve campaign', 'Why: nothing external happens without approval.', 'Next: launch, track replies, book meetings.', 'Time: 1 minute', 'Success: replies and meetings update the dashboard.'],
+  ];
+  return <section className={`rounded-xl border border-slate-200 bg-white shadow-sm ${compact ? 'p-4' : 'p-5 sm:p-6'}`} aria-label={t('First qualified meeting workflow')}>
+    <div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between">
+      <div>
+        <p className="text-sm font-semibold text-brand">{t('First customer success path')}</p>
+        <h2 className="mt-1 text-xl font-bold text-ink">{t('Get to the first qualified meeting')}</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t('Follow one guided workflow. OutreachAI handles research and drafting; you approve every external action.')}</p>
+      </div>
+      <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t('Goal: meeting booked')}</span>
+    </div>
+    <div className={`mt-4 grid gap-3 ${compact ? 'md:grid-cols-2' : 'lg:grid-cols-4'}`}>
+      {steps.map(([number, title, why, next, time, success]) => <article key={title} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+        <p className="flex size-8 items-center justify-center rounded-full bg-ink text-sm font-bold text-white">{number}</p>
+        <h3 className="mt-3 font-bold text-ink">{t(title)}</h3>
+        <p className="mt-2 text-slate-600">{t(why)}</p>
+        <p className="mt-1 text-slate-600">{t(next)}</p>
+        <p className="mt-1 text-slate-600">{t(time)}</p>
+        <p className="mt-2 font-semibold text-brand">{t(success)}</p>
+      </article>)}
+    </div>
+  </section>;
+}
+
+function ActionLogPanel({ title, logs, onRetry }: { title: string; logs: string[]; onRetry?: () => void }) {
+  const { t } = useI18n();
+  return <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm" aria-live="polite">
+    <div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center min-[430px]:justify-between">
+      <div>
+        <h2 className="font-bold text-ink">{t(title)}</h2>
+        <p className="mt-1 text-sm text-slate-600">{t('Running, completed, failed, retry, and logs stay visible so you always know what happened.')}</p>
+      </div>
+      {onRetry && <button type="button" onClick={onRetry} className="min-h-11 rounded-md border border-slate-300 px-4 text-sm font-semibold">{t('Retry')}</button>}
+    </div>
+    {logs.length ? <ol className="mt-4 space-y-2 text-sm">
+      {logs.map((item, index) => <li key={`${item}-${index}`} className="flex gap-2 rounded-md bg-slate-50 p-3"><CheckCircle2 size={16} className="mt-0.5 shrink-0 text-brand" /><span>{item}</span></li>)}
+    </ol> : <p className="mt-4 rounded-md bg-slate-50 p-3 text-sm text-slate-600">{t('No AI action has started yet. Run the next step to see live progress here.')}</p>}
+  </section>;
+}
+
 function LeadSourceBadges({ lead }: { lead: Lead }) {
   return <div className="flex flex-wrap items-center gap-2">
     {(lead.source === 'apollo' || lead.source === 'hunter') && <span className="rounded-full bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700">Apollo</span>}
@@ -239,9 +285,9 @@ export function DashboardHome() {
     <header className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
         <div className="max-w-3xl">
-          <p className="text-sm font-semibold text-brand">{t('dashboard.eyebrow')}</p>
-          <h1 className="mt-2 text-3xl font-bold tracking-normal text-ink min-[430px]:text-4xl">{t('dashboard.title')}</h1>
-          <p className="mt-3 text-base leading-7 text-slate-600">{t('dashboard.v2Subtitle')}</p>
+          <p className="text-sm font-semibold text-brand">{t('First customer success')}</p>
+          <h1 className="mt-2 text-3xl font-bold tracking-normal text-ink min-[430px]:text-4xl">{t('What should I do today?')}</h1>
+          <p className="mt-3 text-base leading-7 text-slate-600">{t('Your fastest path is one focused campaign: find qualified companies, verify emails, review the AI draft, approve outreach, and track replies until a meeting is booked.')}</p>
         </div>
         <Link href={primaryAction.href} onClick={() => setOptimisticAction(primaryAction.label)} className="focus-ring inline-flex min-h-11 w-full items-center justify-center rounded-md bg-ink px-5 py-3 text-sm font-bold text-white sm:w-auto" aria-describedby="dashboard-primary-help">
           {primaryAction.label}
@@ -253,6 +299,7 @@ export function DashboardHome() {
 
     {loading ? <DashboardSkeleton /> : <>
       {error && <Notice message={error} kind="warning" />}
+      <FirstMeetingGuide />
 
       <section className="rounded-xl border border-teal-200 bg-teal-50 p-5 shadow-sm sm:p-6" aria-labelledby="dashboard-priority-title">
         <p className="text-sm font-semibold text-brand">{t('dashboard.priorityEyebrow')}</p>
@@ -298,7 +345,7 @@ export function DashboardHome() {
 
 export function CampaignBuilder() {
   const { api, ready } = useTokenApi();
-  const { aiLanguage } = useI18n();
+  const { aiLanguage, t } = useI18n();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selectedCampaign, setSelectedCampaign] = useState('');
@@ -311,6 +358,7 @@ export function CampaignBuilder() {
   const [analyticsLoading, setAnalyticsLoading] = useState('');
   const [campaignStep, setCampaignStep] = useState(1);
   const [showCampaignAdvanced, setShowCampaignAdvanced] = useState(false);
+  const [emailActionLogs, setEmailActionLogs] = useState<string[]>([]);
 
   const load = useCallback(() => {
     if (!ready) return;
@@ -360,10 +408,17 @@ export function CampaignBuilder() {
   async function generateEmail() {
     if (!selectedCampaign || !selectedLead) { setNotice('Select a campaign and lead before generating an email.'); return; }
     setGenerating(true);
+    setEmailActionLogs(['Running: AI is reading the selected company, website analysis, and verified contact data.']);
     try {
+      setEmailActionLogs((items) => [...items, 'Running: generating a personalized subject, body, CTA, and follow-ups.']);
       const created = await api<Email>('/api/emails/generate', { method: 'POST', body: JSON.stringify({ campaign_id: selectedCampaign, lead_id: selectedLead }) });
       setEmail(created);
-      setNotice('AI email generated and saved.');
+      setEmailActionLogs((items) => [...items, 'Completed: AI email is saved in review and ready for approval.']);
+      setNotice('AI email generated and saved for review.');
+    } catch (nextError) {
+      const message = friendlyErrorMessage(nextError, 'AI email generation could not be completed. Check the lead and try again.');
+      setEmailActionLogs((items) => [...items, `Failed: ${message}`, 'Retry: choose a lead with a website or verified contact, then generate again.']);
+      setNotice(message);
     } finally { setGenerating(false); }
   }
 
@@ -371,13 +426,15 @@ export function CampaignBuilder() {
     if (!email) return;
     const saved = await api<Email>(`/api/emails/${email.id}`, { method: 'PATCH', body: JSON.stringify({ subject: email.subject, preview: email.preview, body: email.body, cta: email.cta, follow_up_1: email.follow_up_1, follow_up_2: email.follow_up_2 }) });
     setEmail(saved);
-    setNotice('Email changes saved.');
+    setEmailActionLogs((items) => [...items, 'Completed: edited email saved to the review queue.']);
+    setNotice('Email saved to review queue.');
   }
 
   async function sendEmail() {
     if (!email) return;
     const sent = await api<Email>(`/api/emails/${email.id}/send`, { method: 'POST' });
     setEmail(sent);
+    setEmailActionLogs((items) => [...items, `Completed: email status changed to ${sent.delivery_status}.`]);
     setNotice(`Email ${sent.delivery_status}.`);
   }
 
@@ -404,6 +461,14 @@ export function CampaignBuilder() {
         <p className="mt-2 max-w-2xl text-slate-600">Tell OutreachAI who you want to contact and what you want them to do. AI prepares the email; you approve it before sending.</p>
         <a href="#campaign-wizard" className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">Start campaign</a>
       </header>
+      <section className="grid gap-3 md:grid-cols-4">
+        {[
+          ['Why this step exists', 'A campaign turns verified leads into one reviewable outreach sequence.'],
+          ['What happens next', 'AI analyzes the selected company and writes a personalized email for approval.'],
+          ['Expected time', 'A simple campaign and first draft should take about 2 minutes.'],
+          ['Success criteria', 'One draft is saved in review, the campaign is ready, and no email is sent without approval.'],
+        ].map(([title, copy]) => <article key={title} className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-slate-600">{t(copy)}</p></article>)}
+      </section>
       {notice && <Notice message={notice} kind={notice.startsWith('Select') ? 'warning' : 'success'} />}
       {loading ? <Skeleton lines={4} /> : <div className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
         <form id="campaign-wizard" onSubmit={submit} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -445,9 +510,10 @@ export function CampaignBuilder() {
         <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-xl font-bold text-ink">Review AI email</h2>
           <p className="mt-2 text-sm text-slate-600">After you have one campaign and one lead, generate the first email here. You can edit it before sending.</p>
-          {campaigns.length && leads.length ? <div className="mt-4 space-y-3"><select value={selectedCampaign} onChange={(event) => setSelectedCampaign(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-3">{campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select><select value={selectedLead} onChange={(event) => setSelectedLead(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-3">{leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.company}</option>)}</select><button onClick={generateEmail} disabled={generating} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">{generating ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />} Generate email for review</button>{email && <div className="space-y-3 rounded-md bg-slate-50 p-3"><input value={email.subject} onChange={(e) => setEmail({ ...email, subject: e.target.value })} className="w-full rounded-md border border-slate-300 px-3 py-2 font-semibold" /><textarea value={email.body} onChange={(e) => setEmail({ ...email, body: e.target.value })} className="min-h-48 w-full rounded-md border border-slate-300 p-3" /><div className="grid gap-2 min-[430px]:grid-cols-2"><button onClick={saveEmail} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Save draft</button><button onClick={sendEmail} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">Approve & send</button></div></div>}</div> : <EmptyState title="Add one lead first" copy="Find or add a company before generating an email." />}
+          {campaigns.length && leads.length ? <div className="mt-4 space-y-3"><select value={selectedCampaign} onChange={(event) => setSelectedCampaign(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-3">{campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select><select value={selectedLead} onChange={(event) => setSelectedLead(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-3">{leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.company}</option>)}</select><button onClick={generateEmail} disabled={generating} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">{generating ? <Loader2 className="animate-spin" size={18} /> : <Wand2 size={18} />} Generate email for review</button>{email && <div className="space-y-3 rounded-md bg-slate-50 p-3"><div className="rounded-md bg-white px-3 py-2 text-sm text-slate-600">Review status: <span className="font-semibold text-ink">{email.delivery_status}</span></div><input value={email.subject} onChange={(e) => setEmail({ ...email, subject: e.target.value })} className="w-full rounded-md border border-slate-300 px-3 py-2 font-semibold" /><textarea value={email.body} onChange={(e) => setEmail({ ...email, body: e.target.value })} className="min-h-48 w-full rounded-md border border-slate-300 p-3" /><div className="grid gap-2 min-[430px]:grid-cols-2"><button onClick={saveEmail} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Save to review queue</button><button onClick={sendEmail} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">Approve & start outreach</button></div></div>}</div> : <EmptyState title="Add one lead first" copy="Find or add a company before generating an email. Example: Germany, Construction, 11-50 employees." />}
         </section>
       </div>}
+      <ActionLogPanel title="AI email status" logs={emailActionLogs} onRetry={campaigns.length && leads.length ? generateEmail : undefined} />
       <section className="grid gap-4 lg:grid-cols-3">{campaigns.map((campaign) => <article key={campaign.id} className="rounded-lg border border-slate-200 bg-white p-4"><h2 className="font-bold">{campaign.name}</h2><p className="mt-1 text-sm text-slate-500">{campaign.industry || 'Industry not set'} · {campaign.status}</p><div className="mt-4 grid grid-cols-3 gap-2 text-sm"><div><p className="text-slate-500">Leads</p><p className="font-bold">{campaign.leads}</p></div><div><p className="text-slate-500">Sent</p><p className="font-bold">{campaign.sent}</p></div><div><p className="text-slate-500">Replies</p><p className="font-bold">{campaign.replies}</p></div></div><details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-brand">Advanced actions</summary><div className="mt-3 flex flex-wrap gap-2">{['launch', 'pause', 'resume', 'duplicate'].map((action) => <button key={action} onClick={() => campaignAction(campaign.id, action as 'launch' | 'pause' | 'resume' | 'duplicate')} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm font-semibold capitalize">{action}</button>)}</div></details></article>)}</section>
       {!campaigns.length && !loading && <EmptyState title="No campaigns yet" copy="Use the three-step campaign builder above. Start with one small audience and one clear offer." />}
     </div>;
@@ -458,6 +524,7 @@ export function CampaignBuilder() {
 
 export function LeadManager() {
   const { api, ready } = useTokenApi();
+  const { t } = useI18n();
   const [leads, setLeads] = useState<Lead[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
@@ -478,6 +545,7 @@ export function LeadManager() {
   const [leadCountry, setLeadCountry] = useState('');
   const [leadCity, setLeadCity] = useState('');
   const [leadIndustry, setLeadIndustry] = useState('');
+  const [leadActionLogs, setLeadActionLogs] = useState<string[]>([]);
 
   const load = useCallback(() => {
     if (!ready) return;
@@ -505,20 +573,26 @@ export function LeadManager() {
     const data = new FormData(event.currentTarget);
     setFinding(true);
     setFindingStep('Connecting to Apollo and Hunter...');
+    setLeadActionLogs(['Running: connecting to Apollo and Hunter.']);
     setNotice('');
     setError('');
     try {
       await delay(120);
       setFindingStep('Searching companies...');
+      setLeadActionLogs((items) => [...items, 'Running: Apollo is searching companies that match the country, industry, and size.']);
       const found = await api<Lead[]>('/api/leads/find', { method: 'POST', body: JSON.stringify({ industry: data.get('industry'), niche: data.get('industry'), country: data.get('country'), city: data.get('city'), employee_count: data.get('employee_count'), revenue: data.get('revenue'), technologies: splitList(String(data.get('technologies') || '')), keywords: splitList(String(data.get('keywords') || '')), limit: Number(data.get('limit') || 10) }) });
       setFindingStep('Saving verified results...');
+      setLeadActionLogs((items) => [...items, 'Running: Hunter is checking decision-maker emails and confidence.', 'Running: saving new companies without duplicates.']);
       setLeads((items) => [...found, ...items.filter((item) => !found.some((lead) => lead.id === item.id))]);
       setFindingStep('Done.');
       const verified = found.filter((lead) => lead.hunter_verified).length;
       setNotice(found.length ? `Imported ${found.length} companies. Hunter verified ${verified} email${verified === 1 ? '' : 's'} and queued website analysis where possible.` : 'No matching companies were found. Try a broader industry, larger company size, or remove city filters.');
+      setLeadActionLogs((items) => [...items, `Completed: imported ${found.length} companies and verified ${verified} email${verified === 1 ? '' : 's'}.`]);
     } catch (nextError) {
       setFindingStep('');
-      setError(friendlyErrorMessage(nextError, 'Lead discovery could not be completed. Please adjust the filters and try again.'));
+      const message = friendlyErrorMessage(nextError, 'Lead discovery could not be completed. Please adjust the filters and try again.');
+      setError(message);
+      setLeadActionLogs((items) => [...items, `Failed: ${message}`, 'Retry: broaden the location or company size, then run the search again.']);
     } finally { setFinding(false); }
   }
 
@@ -556,9 +630,17 @@ export function LeadManager() {
       <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-sm font-semibold text-brand">Step 2 of 4</p>
         <h1 className="mt-2 text-2xl font-bold min-[390px]:text-3xl">Find leads</h1>
-        <p className="mt-2 max-w-2xl text-slate-600">Choose who you want to sell to. OutreachAI finds companies and prepares them for review.</p>
+        <p className="mt-2 max-w-2xl text-slate-600">Choose who you want to sell to. Apollo finds companies, Hunter verifies decision-maker emails, and OutreachAI analyzes each website for review.</p>
         <a href="#lead-search-form" className="focus-ring mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-2 text-sm font-semibold text-white">Find companies</a>
       </header>
+      <section className="grid gap-3 md:grid-cols-4">
+        {[
+          ['Why this step exists', 'Qualified meetings start with qualified accounts, not a blank CRM.'],
+          ['What happens next', 'Apollo searches companies, Hunter verifies emails, and new records are saved without duplicates.'],
+          ['Expected time', 'Most focused searches finish in 1-2 minutes.'],
+          ['Success criteria', 'You have companies with websites, source badges, confidence, and verified emails where available.'],
+        ].map(([title, copy]) => <article key={title} className="rounded-lg border border-slate-200 bg-white p-4 text-sm shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-slate-600">{t(copy)}</p></article>)}
+      </section>
       {error && <Notice message={error} kind="error" />}
       {notice && <Notice message={notice} />}
       <form id="lead-search-form" onSubmit={find} className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -598,6 +680,7 @@ export function LeadManager() {
           </div>
         </details>
       </form>
+      <ActionLogPanel title="Lead discovery status" logs={leadActionLogs} />
       <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div><h2 className="text-xl font-bold text-ink">Companies to review</h2><p className="mt-1 text-sm text-slate-600">Check each company before adding it to a campaign.</p></div>
@@ -1269,6 +1352,7 @@ export function AdminPanel() {
 
 export function OnboardingFlow() {
   const { api, ready } = useTokenApi();
+  const { t } = useI18n();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ company: '', industry: '', target_country: '', target_customer: '', connect_openai: false, launch_first_campaign: false });
@@ -1293,12 +1377,12 @@ export function OnboardingFlow() {
   if (!workspace) return <div className="mx-auto max-w-3xl p-4"><Skeleton lines={5} /></div>;
 
   const steps = [
-    { title: 'Company website', why: 'AI needs to understand what you sell before it can find the right customers.', next: 'OutreachAI will use your company context when preparing leads and emails.', time: 'About 30 seconds' },
-    { title: 'Industry', why: 'This helps OutreachAI choose relevant sales angles and avoid generic outreach.', next: 'Your lead search will start from businesses that match this market.', time: 'About 20 seconds' },
-    { title: 'Target country', why: 'A focused market gives cleaner lead results and easier campaign review.', next: 'Lead Finder will use this country as the default search area.', time: 'About 15 seconds' },
-    { title: 'Target customer', why: 'AI writes better emails when it knows who the buyer is.', next: 'Campaign Builder will turn this into the first outreach angle.', time: 'About 30 seconds' },
-    { title: 'AI connection', why: 'Production AI powers analysis, outreach drafts, and recommendations.', next: 'You can continue now and manage AI settings later if needed.', time: 'Optional' },
-    { title: 'First campaign', why: 'The fastest path to value is one reviewed campaign with one focused audience.', next: 'After setup, create a campaign and approve the first email draft.', time: 'About 2 minutes' }
+    { title: 'Company website', why: 'AI needs to understand what you sell before it can find the right customers.', next: 'OutreachAI will use your company context when preparing leads and emails.', time: 'About 30 seconds', success: 'Your workspace knows the company it represents.' },
+    { title: 'Industry', why: 'This helps OutreachAI choose relevant sales angles and avoid generic outreach.', next: 'Your lead search will start from businesses that match this market.', time: 'About 20 seconds', success: 'Lead Finder has a clear market to search.' },
+    { title: 'Target country', why: 'A focused market gives cleaner lead results and easier campaign review.', next: 'Lead Finder will use this country as the default search area.', time: 'About 15 seconds', success: 'Your first search is focused enough to review quickly.' },
+    { title: 'Target customer', why: 'AI writes better emails when it knows who the buyer is.', next: 'Campaign Builder will turn this into the first outreach angle.', time: 'About 30 seconds', success: 'AI has a buyer profile for personalization.' },
+    { title: 'AI connection', why: 'Production AI powers analysis, outreach drafts, and recommendations.', next: 'You can continue now and manage AI settings later if needed.', time: 'Optional', success: 'AI actions remain safe and review-first.' },
+    { title: 'First campaign', why: 'The fastest path to value is one reviewed campaign with one focused audience.', next: 'After setup, create a campaign and approve the first email draft.', time: 'About 2 minutes', success: 'You are ready to find leads and generate the first reviewed email.' }
   ];
   const current = steps[step - 1] || steps[0];
 
@@ -1309,25 +1393,26 @@ export function OnboardingFlow() {
     {notice && <Notice message={notice} /> }
     <section className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-5 grid gap-2 min-[430px]:grid-cols-3">
-        {steps.map((item, index) => <button key={item.title} onClick={() => setStep(index + 1)} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${step === index + 1 ? 'bg-brand text-white' : 'border border-slate-300 text-slate-700'}`}>{index + 1}. {item.title}</button>)}
+        {steps.map((item, index) => <button key={item.title} onClick={() => setStep(index + 1)} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${step === index + 1 ? 'bg-brand text-white' : 'border border-slate-300 text-slate-700'}`}>{index + 1}. {t(item.title)}</button>)}
       </div>
       <div className="rounded-lg bg-slate-50 p-4">
-        <h2 className="text-xl font-bold text-ink">{current.title}</h2>
-        <dl className="mt-4 grid gap-3 text-sm md:grid-cols-3">
-          <div><dt className="font-semibold text-slate-700">Why</dt><dd className="mt-1 text-slate-600">{current.why}</dd></div>
-          <div><dt className="font-semibold text-slate-700">What happens next</dt><dd className="mt-1 text-slate-600">{current.next}</dd></div>
-          <div><dt className="font-semibold text-slate-700">Expected time</dt><dd className="mt-1 text-slate-600">{current.time}</dd></div>
+        <h2 className="text-xl font-bold text-ink">{t(current.title)}</h2>
+        <dl className="mt-4 grid gap-3 text-sm md:grid-cols-4">
+          <div><dt className="font-semibold text-slate-700">{t('Why')}</dt><dd className="mt-1 text-slate-600">{t(current.why)}</dd></div>
+          <div><dt className="font-semibold text-slate-700">{t('What happens next')}</dt><dd className="mt-1 text-slate-600">{t(current.next)}</dd></div>
+          <div><dt className="font-semibold text-slate-700">{t('Expected time')}</dt><dd className="mt-1 text-slate-600">{t(current.time)}</dd></div>
+          <div><dt className="font-semibold text-slate-700">{t('Success criteria')}</dt><dd className="mt-1 text-slate-600">{t(current.success)}</dd></div>
         </dl>
       </div>
       <div className="mt-5">
-        {step === 1 && <label className="block"><span className="font-semibold">Company website or name</span><input value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} placeholder="outreachaiaiai.com" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
-        {step === 2 && <label className="block"><span className="font-semibold">Industry</span><input value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} placeholder="Construction, real estate, consulting..." className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
-        {step === 3 && <label className="block"><span className="font-semibold">Target country</span><input value={form.target_country} onChange={(e) => setForm({ ...form, target_country: e.target.value })} placeholder="Germany" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
-        {step === 4 && <label className="block"><span className="font-semibold">Target customer</span><input value={form.target_customer} onChange={(e) => setForm({ ...form, target_customer: e.target.value })} placeholder="Construction company owners with 10-50 employees" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
-        {step === 5 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.connect_openai} onChange={(e) => setForm({ ...form, connect_openai: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">Use workspace AI settings</span><span className="mt-1 block text-sm text-slate-600">You can manage provider settings later. No customer action is sent automatically.</span></span></label>}
-        {step === 6 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.launch_first_campaign} onChange={(e) => setForm({ ...form, launch_first_campaign: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">Prepare my first campaign</span><span className="mt-1 block text-sm text-slate-600">OutreachAI will guide you to Campaigns after setup. You still approve every email.</span></span></label>}
+        {step === 1 && <label className="block"><span className="font-semibold">{t('Company website or name')}</span><input value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} placeholder="outreachaiaiai.com" className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
+        {step === 2 && <label className="block"><span className="font-semibold">{t('Industry')}</span><input value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} placeholder={t('Construction, real estate, consulting...')} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
+        {step === 3 && <label className="block"><span className="font-semibold">{t('Target country')}</span><input value={form.target_country} onChange={(e) => setForm({ ...form, target_country: e.target.value })} placeholder={t('Germany')} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
+        {step === 4 && <label className="block"><span className="font-semibold">{t('Target customer')}</span><input value={form.target_customer} onChange={(e) => setForm({ ...form, target_customer: e.target.value })} placeholder={t('Construction company owners with 10-50 employees')} className="mt-2 w-full rounded-md border border-slate-300 px-3 py-3" /></label>}
+        {step === 5 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.connect_openai} onChange={(e) => setForm({ ...form, connect_openai: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">{t('Use workspace AI settings')}</span><span className="mt-1 block text-sm text-slate-600">{t('You can manage provider settings later. No customer action is sent automatically.')}</span></span></label>}
+        {step === 6 && <label className="flex min-h-11 items-start gap-3 rounded-md border border-slate-200 p-4"><input type="checkbox" checked={form.launch_first_campaign} onChange={(e) => setForm({ ...form, launch_first_campaign: e.target.checked })} className="mt-1 size-5" /><span><span className="font-semibold">{t('Prepare my first campaign')}</span><span className="mt-1 block text-sm text-slate-600">{t('OutreachAI will guide you to Campaigns after setup. You still approve every email.')}</span></span></label>}
       </div>
-      <div className="mt-6 grid gap-3 min-[430px]:grid-cols-2"><button onClick={() => save(Math.max(1, step - 1))} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">Back</button><button onClick={() => save(Math.min(6, step + 1))} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">{step === 6 ? 'Finish setup' : 'Continue'}</button></div>
+      <div className="mt-6 grid gap-3 min-[430px]:grid-cols-2"><button onClick={() => save(Math.max(1, step - 1))} className="min-h-11 rounded-md border border-slate-300 px-4 font-semibold">{t('Back')}</button><button onClick={() => save(Math.min(6, step + 1))} className="min-h-11 rounded-md bg-brand px-4 font-semibold text-white">{step === 6 ? t('Finish setup') : t('Continue')}</button></div>
     </section>
   </main>;
 }

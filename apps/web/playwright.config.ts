@@ -5,7 +5,7 @@ export default defineConfig({
   workers: 1,
   retries: 1,
   webServer: {
-    command: "npm run dev",
+    command: "npm run dev -- --webpack",
     url: "http://127.0.0.1:3000",
     reuseExistingServer: false,
     env: {

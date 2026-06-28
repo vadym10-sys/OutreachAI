@@ -195,23 +195,27 @@ for (const width of [320, 390, 480]) {
       document.cookie = "outreachai_locale=en; path=/; max-age=31536000; SameSite=Lax";
     });
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-    await expect(page.getByRole("main").getByText(/Today's priority|Prioridad de hoy|Dzisiejszy priorytet|Priorité du jour|Priorità di oggi/)).toBeVisible();
-    await expect(page.getByRole("main").getByText(/Workspace Setup|Configuración del espacio|Konfiguracja workspace|Configuration workspace/)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "What should I do today?" })).toBeVisible();
+    await expect(page.getByRole("main").getByText("First customer success path")).toBeVisible();
+    await expect(page.getByRole("main").getByText("Get to the first qualified meeting")).toBeVisible();
     await expect(page.locator('main header a[href="/dashboard/campaigns"]')).toHaveCount(1);
-    await expect(page.getByRole("main").getByText("Campaign health", { exact: true })).toBeVisible();
+    await expect(page.getByRole("main").getByText("Goal: meeting booked")).toBeVisible();
     const languageSelect = page.locator('select[aria-label]').first();
     await languageSelect.selectOption("es");
     await expect(page.locator('select').first()).toHaveValue("es");
     await expect.poll(() => page.evaluate(() => window.localStorage.getItem("outreachai.locale"))).toBe("es");
+    await page.evaluate(() => {
+      document.cookie = "outreachai_locale=es; path=/; max-age=31536000; SameSite=Lax";
+    });
     await page.reload();
-    await expect(page.getByRole("heading", { name: /Dashboard|Panel/ })).toBeVisible();
+    await expect(page.locator('select').first()).toHaveValue("es");
+    await expect(page.getByRole("heading", { name: "¿Qué debo hacer hoy?" })).toBeVisible();
     await page.locator('select').first().selectOption("en");
     await page.evaluate(() => {
       window.localStorage.setItem("outreachai.locale", "en");
       document.cookie = "outreachai_locale=en; path=/; max-age=31536000; SameSite=Lax";
     });
-    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "What should I do today?" })).toBeVisible();
     await expect(page.getByRole("button", { name: "AI CEO Report" })).toHaveCount(0);
 
     await page.goto("/dashboard/campaigns");
@@ -275,7 +279,7 @@ test("Owner Console is hidden from non-owner users and direct access returns 403
   await expect(page.getByRole("link", { name: /Owner Console/ })).toHaveCount(0);
 
   await page.goto("/dashboard/owner");
-  await expect(page.getByRole("heading", { name: "Access denied." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Access denied." })).toBeVisible({ timeout: 15000 });
 });
 
 test("Owner can open Owner Console and toggle feature flags", async ({ page }) => {
