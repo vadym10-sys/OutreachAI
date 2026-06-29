@@ -83,8 +83,10 @@ from app.schemas.dto import (
     CrmCompanyOut,
     CrmContactOut,
     CrmDealOut,
+    CrmNoteCreate,
     CrmNoteOut,
     CrmPipelineOut,
+    CrmStageUpdate,
     CRM_STAGES,
     DashboardMetrics,
     EmailOut,
@@ -522,9 +524,11 @@ def _lead_out(lead: Lead) -> LeadOut:
         sales_angle=str(metadata.get("sales_angle") or "") or None,
         expected_reply_rate=str(metadata.get("expected_reply_rate") or "") or None,
         found_at=lead.created_at,
+        saved_to_crm_at=metadata.get("saved_to_crm_at"),
         website_analyzed_at=metadata.get("website_analyzed_at"),
         contact_found_at=metadata.get("contact_found_at"),
         email_generated_at=metadata.get("email_generated_at"),
+        email_approved_at=metadata.get("email_approved_at"),
         email_sent_at=metadata.get("email_sent_at"),
         delivered_at=metadata.get("delivered_at"),
         opened_at=metadata.get("opened_at"),
@@ -555,10 +559,10 @@ def _crm_stage_for_lead(lead: Lead) -> str:
         return "Lost"
     if _display_status(lead.status) == "Interested":
         return "Replied"
-    if _display_status(lead.status) == "Contacted":
-        return "Sent"
     if metadata.get("email_status") == "Approved":
         return "Approved"
+    if _display_status(lead.status) == "Contacted":
+        return "Sent"
     if metadata.get("email_status") in {"Draft Ready", "draft"}:
         return "Email Draft Ready"
     if lead.email or metadata.get("hunter_verified"):
@@ -808,15 +812,17 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     activity = list(db.scalars(select(AuditLog).where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id), _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
     lead = db.get(Lead, company.lead_id) if company.lead_id else None
     found_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"lead.found", "lead.imported", "google_maps.company_search", "apollo.company_search", "apollo.contact_search"}) or (lead.created_at if lead else company.created_at)
+    saved_to_crm_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"lead.saved_to_crm"}) or company.created_at
     website_analyzed_at = db.scalar(select(WebsiteAnalysis.created_at).where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == company.lead_id).order_by(WebsiteAnalysis.created_at.desc()).limit(1)) if company.lead_id else None
     contact_found_at = min([contact.created_at for contact in contacts], default=None)
     email_generated_at = min([email.created_at for email in emails], default=None)
+    email_approved_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"email.approved"})
     email_sent_at = max([email.sent_at for email in emails if email.sent_at], default=None)
     delivered_at = max([email.delivered_at for email in emails if email.delivered_at], default=None)
     opened_at = max([email.opened_at for email in emails if email.opened_at], default=None)
     replied_at = max([email.replied_at for email in emails if email.replied_at], default=None)
     latest_activity_at = _latest_audit_time(db, workspace, user_id, company.lead_id)
-    last_activity_at = max([value for value in [company.updated_at, found_at, website_analyzed_at, contact_found_at, email_generated_at, email_sent_at, delivered_at, opened_at, replied_at, latest_activity_at] if value], default=company.updated_at)
+    last_activity_at = max([value for value in [company.updated_at, found_at, saved_to_crm_at, website_analyzed_at, contact_found_at, email_generated_at, email_approved_at, email_sent_at, delivered_at, opened_at, replied_at, latest_activity_at] if value], default=company.updated_at)
     return CrmCompanyOut(
         id=company.id,
         lead_id=company.lead_id,
@@ -847,9 +853,11 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         created_at=company.created_at,
         updated_at=company.updated_at,
         found_at=found_at,
+        saved_to_crm_at=saved_to_crm_at,
         website_analyzed_at=website_analyzed_at,
         contact_found_at=contact_found_at,
         email_generated_at=email_generated_at,
+        email_approved_at=email_approved_at,
         email_sent_at=email_sent_at,
         delivered_at=delivered_at,
         opened_at=opened_at,
@@ -3207,7 +3215,7 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
             db.refresh(existing)
             return _lead_out(existing)
     enriched = candidate if candidate.email else _hunter_enriched_leads(db, request, user_id, workspace, [candidate])[0]
-    metadata = _lead_metadata(enriched)
+    metadata = {**_lead_metadata(enriched), "saved_to_crm_at": datetime.utcnow().isoformat()}
     lead = Lead(
         user_id=user_id,
         workspace_id=workspace.id,
@@ -3365,7 +3373,7 @@ def _save_provider_leads(
             niche=item.niche,
             country=item.country,
             city=item.city,
-            notes=item.notes,
+            notes=_merge_lead_metadata(item, {"saved_to_crm_at": datetime.utcnow().isoformat()}),
             revenue=item.revenue,
         )
         db.add(lead)
@@ -3502,6 +3510,68 @@ def crm_pipeline(user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmPipe
         companies=[_crm_company_out(db, workspace, user_id, company) for company in companies],
         deals=[_crm_deal_out(deal, company_names.get(deal.company_id, "")) for deal in deals],
     )
+
+
+@router.patch("/crm/companies/{company_id}/stage", response_model=CrmCompanyOut)
+def update_crm_company_stage(company_id: UUID, payload: CrmStageUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmCompanyOut:
+    workspace = _current_workspace(db, user_id)
+    stage = payload.stage.strip()
+    if stage not in CRM_STAGES:
+        raise HTTPException(status_code=400, detail="Choose a valid CRM stage.")
+    company = db.scalar(select(Company).where(Company.id == company_id, _workspace_stmt(Company, workspace, user_id)))
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    now = datetime.utcnow()
+    company.crm_stage = stage
+    company.updated_at = now
+    lead = db.get(Lead, company.lead_id) if company.lead_id else None
+    if lead:
+        status_map = {
+            "Qualified": LeadStatus.qualified,
+            "Contact Found": LeadStatus.qualified,
+            "Email Draft Ready": LeadStatus.qualified,
+            "Approved": LeadStatus.contacted,
+            "Sent": LeadStatus.contacted,
+            "Replied": LeadStatus.replied,
+            "Meeting Scheduled": LeadStatus.meeting,
+            "Won": LeadStatus.won,
+            "Lost": LeadStatus.lost,
+        }
+        if stage in status_map:
+            lead.status = status_map[stage]
+        metadata_update = {"crm_stage": stage, "stage_changed_at": now.isoformat()}
+        if stage == "Approved":
+            metadata_update["email_status"] = "Approved"
+            metadata_update["email_approved_at"] = now.isoformat()
+        lead.notes = _merge_lead_metadata(lead, metadata_update)
+        _add_lead_activity(db, request, user_id, workspace, "crm.stage_changed", lead, {"crm_stage": stage})
+    deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id)).all())
+    for deal in deals:
+        deal.stage = stage
+        deal.updated_at = now
+    db.commit()
+    db.refresh(company)
+    return _crm_company_out(db, workspace, user_id, company)
+
+
+@router.post("/crm/companies/{company_id}/notes", response_model=CrmNoteOut)
+def add_crm_company_note(company_id: UUID, payload: CrmNoteCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> Note:
+    workspace = _current_workspace(db, user_id)
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=400, detail="Write a note before saving.")
+    company = db.scalar(select(Company).where(Company.id == company_id, _workspace_stmt(Company, workspace, user_id)))
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    note = Note(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=company.lead_id, body=body, kind="note")
+    db.add(note)
+    company.updated_at = datetime.utcnow()
+    lead = db.get(Lead, company.lead_id) if company.lead_id else None
+    if lead:
+        _add_lead_activity(db, request, user_id, workspace, "note.added", lead, {"company_id": str(company.id)})
+    db.commit()
+    db.refresh(note)
+    return note
 
 
 @router.patch("/leads/{lead_id}", response_model=LeadOut)
@@ -3910,6 +3980,29 @@ def update_email(email_id: UUID, payload: EmailUpdate, request: Request, user_id
     return message
 
 
+@router.post("/emails/{email_id}/approve", response_model=EmailOut)
+def approve_email(email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+    workspace = _current_workspace(db, user_id)
+    message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
+    if message is None:
+        raise HTTPException(status_code=404, detail="Email not found")
+    lead = db.get(Lead, message.lead_id) if message.lead_id else None
+    if lead is None:
+        raise HTTPException(status_code=400, detail="Lead is required before approving an email.")
+    now = datetime.utcnow()
+    message.delivery_status = "approved"
+    tags = message.tags if isinstance(message.tags, dict) else {}
+    message.tags = {**tags, "approved": True, "approved_at": now.isoformat()}
+    lead.status = LeadStatus.contacted
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Approved", "email_approved_at": now.isoformat()})
+    _sync_lead_to_crm(db, user_id, workspace, lead)
+    _add_lead_activity(db, request, user_id, workspace, "email.approved", lead, {"email_id": str(message.id)})
+    _notify(db, user_id, NotificationKind.success, "Email approved", f"{message.subject} is approved and ready to send.")
+    db.commit()
+    db.refresh(message)
+    return message
+
+
 @router.post("/emails/{email_id}/send", response_model=EmailOut)
 def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
@@ -3918,6 +4011,10 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
     if message is None:
         raise HTTPException(status_code=404, detail="Email not found")
+    if message.delivery_status == "sent":
+        raise HTTPException(status_code=400, detail="This email was already sent.")
+    if message.delivery_status != "approved":
+        raise HTTPException(status_code=400, detail="Approve the email before sending.")
     lead = db.get(Lead, message.lead_id) if message.lead_id else None
     if lead is None or not lead.email:
         raise HTTPException(status_code=400, detail="Lead email is required before sending.")

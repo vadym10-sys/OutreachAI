@@ -68,6 +68,20 @@ const emptyMetrics: DashboardMetrics = {
 
 const unavailable = "Unavailable until provider data is collected.";
 
+const crmStages = [
+  "New Lead",
+  "Qualified",
+  "Website Analyzed",
+  "Contact Found",
+  "Email Draft Ready",
+  "Approved",
+  "Sent",
+  "Replied",
+  "Meeting Scheduled",
+  "Won",
+  "Lost"
+];
+
 function formatDateTime(value?: string | null) {
   if (!value) return "Not recorded yet";
   const date = new Date(value);
@@ -445,8 +459,15 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
     }
     setSending(true);
     setError("");
-    setStatus("Sending approved email through Resend...");
+    setStatus("Approving email...");
     try {
+      const approved = await withTimeout(
+        api<Email>(`/api/emails/${draft.id}/approve`, { method: "POST" }),
+        15000,
+        "Email approval timed out. Please try again before sending."
+      );
+      setDraft(approved);
+      setStatus("Sending approved email through Resend...");
       const sent = await withTimeout(
         api<Email>(`/api/emails/${draft.id}/send`, { method: "POST" }),
         30000,
@@ -455,7 +476,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       setDraft(sent);
       setReadyToSend(false);
       setStatus("Approved email was sent. CRM stage updated to Contacted.");
-      onLeadUpdated?.({ ...lead, status: "Contacted" });
+      onLeadUpdated?.({ ...lead, status: "Contacted", email_approved_at: new Date().toISOString(), email_sent_at: sent.sent_at || new Date().toISOString() });
       trackEvent("approved_email_sent", {
         lead_id: lead.id,
         email_id: draft.id,
@@ -506,8 +527,10 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
         {[
           ["Found", lead.found_at || lead.created_at],
+          ["Saved to CRM", lead.saved_to_crm_at],
           ["Analyzed", lead.website_analyzed_at],
           ["Email generated", lead.email_generated_at],
+          ["Email approved", lead.email_approved_at],
           ["Last activity", lead.last_activity_at || lead.stage_changed_at],
         ].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-200 bg-white p-3">
           <p className="font-semibold text-slate-700">{label}</p>
@@ -737,38 +760,103 @@ function CrmFilters({ filters, setFilters }: { filters: Record<string, string>; 
 }
 
 function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
-  const lead = leadFromCrmCompany(company);
+  const [current, setCurrent] = useState(company);
+  const [stageValue, setStageValue] = useState(company.crm_stage);
+  const [noteBody, setNoteBody] = useState("");
+  const [actionBusy, setActionBusy] = useState("");
+  const [actionNotice, setActionNotice] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [notesOpen, setNotesOpen] = useState(false);
+  const lead = leadFromCrmCompany(current);
   const lifecycle = [
-    ["Lead found", company.found_at],
-    ["Saved to CRM", company.created_at],
-    ["Website analyzed", company.website_analyzed_at],
-    ["Contact found", company.contact_found_at],
-    ["Email generated", company.email_generated_at],
-    ["Email sent", company.email_sent_at],
-    ["Delivered", company.delivered_at],
-    ["Opened", company.opened_at],
-    ["Replied", company.replied_at],
-    ["Stage changed", company.stage_changed_at],
-    ["Last activity", company.last_activity_at],
+    ["Lead found", current.found_at],
+    ["Saved to CRM", current.saved_to_crm_at || current.created_at],
+    ["Website analyzed", current.website_analyzed_at],
+    ["Contact found", current.contact_found_at],
+    ["Email generated", current.email_generated_at],
+    ["Email approved", current.email_approved_at],
+    ["Email sent", current.email_sent_at],
+    ["Delivered", current.delivered_at],
+    ["Opened", current.opened_at],
+    ["Replied", current.replied_at],
+    ["Stage changed", current.stage_changed_at],
+    ["Last activity", current.last_activity_at],
   ];
+  async function moveStage() {
+    setActionBusy("stage");
+    setActionError("");
+    setActionNotice("");
+    try {
+      const updated = await api<CrmCompany>(`/api/crm/companies/${current.id}/stage`, { method: "PATCH", body: JSON.stringify({ stage: stageValue }) });
+      setCurrent(updated);
+      setActionNotice(`CRM stage moved to ${updated.crm_stage}.`);
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, "CRM stage could not be updated. Check your session and try again."));
+    } finally {
+      setActionBusy("");
+    }
+  }
+  async function addNote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const body = noteBody.trim();
+    if (!body) {
+      setActionError("Write a note before saving.");
+      return;
+    }
+    setActionBusy("note");
+    setActionError("");
+    setActionNotice("");
+    try {
+      const note = await api<CrmCompany["notes"][number]>(`/api/crm/companies/${current.id}/notes`, { method: "POST", body: JSON.stringify({ body }) });
+      setCurrent({ ...current, notes: [note, ...current.notes] });
+      setNoteBody("");
+      setNotesOpen(true);
+      setActionNotice("Note saved to the activity history.");
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, "Note could not be saved. Check your session and try again."));
+    } finally {
+      setActionBusy("");
+    }
+  }
   return <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
     <div className="flex flex-col gap-4 min-[520px]:flex-row min-[520px]:items-start min-[520px]:justify-between">
       <div>
-        <p className="text-xs font-bold uppercase text-brand">{company.crm_stage}</p>
-        <h2 className="mt-1 text-xl font-bold text-ink">{company.name}</h2>
-        <p className="mt-1 break-all text-sm text-slate-500">{company.website || company.domain || "Website not found"}</p>
-        <p className="mt-2 text-sm text-slate-600">{[company.industry, company.city, company.country].filter(Boolean).join(" · ") || "Company details pending"}</p>
+        <p className="text-xs font-bold uppercase text-brand">{current.crm_stage}</p>
+        <h2 className="mt-1 text-xl font-bold text-ink">{current.name}</h2>
+        <p className="mt-1 break-all text-sm text-slate-500">{current.website || current.domain || "Website not found"}</p>
+        <p className="mt-2 text-sm text-slate-600">{[current.industry, current.city, current.country].filter(Boolean).join(" · ") || "Company details pending"}</p>
       </div>
       <div className="flex flex-wrap gap-2">
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">Source: {company.source}</span>
-        <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{company.email_status}</span>
+        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">Source: {current.source}</span>
+        <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{current.email_status}</span>
       </div>
     </div>
     <div className="mt-5 grid gap-3 lg:grid-cols-3">
-      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Company data</p><p className="mt-2 text-slate-600">{company.address || "Address not found"}</p><p className="text-slate-600">{company.phone || "Phone not found"}</p><p className="text-slate-600">{company.google_rating ? `Google rating ${company.google_rating}` : "Rating unavailable"}</p></div>
-      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Contacts</p>{company.contacts.length ? company.contacts.slice(0, 2).map((contact) => <p key={contact.id} className="mt-2 text-slate-600">{contact.name || "Decision maker"} · {contact.email || "No email"} · {contact.source}</p>) : <p className="mt-2 text-slate-600">No verified contact yet.</p>}</div>
-      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Email status</p><p className="mt-2 text-slate-600">{company.generated_emails[0]?.subject || "No generated email yet"}</p><p className="text-slate-600">{company.generated_emails[0]?.delivery_status || company.email_status}</p></div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Company data</p><p className="mt-2 text-slate-600">{current.address || "Address not found"}</p><p className="text-slate-600">{current.phone || "Phone not found"}</p><p className="text-slate-600">{current.google_rating ? `Google rating ${current.google_rating}` : "Rating unavailable"}</p></div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Contacts</p>{current.contacts.length ? current.contacts.slice(0, 2).map((contact) => <p key={contact.id} className="mt-2 text-slate-600">{contact.name || "Decision maker"} · {contact.email || "No email"} · {contact.source}</p>) : <p className="mt-2 text-slate-600">No verified contact yet.</p>}</div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Email status</p><p className="mt-2 text-slate-600">{current.generated_emails[0]?.subject || "No generated email yet"}</p><p className="text-slate-600">{current.generated_emails[0]?.delivery_status || current.email_status}</p></div>
     </div>
+    <section className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 lg:grid-cols-[1fr_1.2fr]">
+      <div>
+        <p className="text-sm font-bold text-ink">Move CRM stage</p>
+        <p className="mt-1 text-sm text-slate-600">Keep the pipeline accurate after each sales action.</p>
+        <div className="mt-3 grid gap-2 min-[430px]:grid-cols-[1fr_auto]">
+          <select value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
+            {crmStages.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
+          </select>
+          <button type="button" onClick={moveStage} disabled={actionBusy === "stage" || stageValue === current.crm_stage} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" && <Loader2 className="animate-spin" size={16} />} Move stage</button>
+        </div>
+      </div>
+      <form onSubmit={addNote}>
+        <label className="text-sm font-bold text-ink" htmlFor={`note-${current.id}`}>Add note</label>
+        <div className="mt-3 grid gap-2 min-[430px]:grid-cols-[1fr_auto]">
+          <input id={`note-${current.id}`} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder="Example: Asked to follow up next week" className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm" />
+          <button type="submit" disabled={actionBusy === "note" || !noteBody.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "note" && <Loader2 className="animate-spin" size={16} />} Add note</button>
+        </div>
+      </form>
+      {actionNotice && <p className="rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand lg:col-span-2">{actionNotice}</p>}
+      {actionError && <p className="rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-700 lg:col-span-2">{actionError}</p>}
+    </section>
     <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
       <p className="text-sm font-bold text-ink">Activity history</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -783,14 +871,14 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
       <p className="mt-2 leading-6 text-slate-700">{company.ai_summary || "Run AI research to create a company summary, sales angle and suggested offer."}</p>
       {company.suggested_offer && <p className="mt-2 font-semibold text-slate-800">Offer: {company.suggested_offer}</p>}
     </div>
-    <details className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+    <details open={notesOpen} onToggle={(event) => setNotesOpen(event.currentTarget.open)} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
       <summary className="cursor-pointer text-sm font-bold text-ink">Notes and activity timeline</summary>
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
-        <div>{company.notes.length ? company.notes.slice(0, 4).map((note) => <p key={note.id} className="mb-2 rounded-lg bg-white p-3 text-sm text-slate-600">{note.body}</p>) : <p className="rounded-lg bg-white p-3 text-sm text-slate-600">No notes yet.</p>}</div>
-        <div>{company.activity.length ? company.activity.slice(0, 4).map((item) => <p key={item.id} className="mb-2 rounded-lg bg-white p-3 text-sm text-slate-600">{item.action.replaceAll(".", " ")} · {new Date(item.created_at).toLocaleString()}</p>) : <p className="rounded-lg bg-white p-3 text-sm text-slate-600">Activity will appear after lead search, AI generation or email events.</p>}</div>
+        <div>{current.notes.length ? current.notes.slice(0, 4).map((note) => <p key={note.id} className="mb-2 rounded-lg bg-white p-3 text-sm text-slate-600">{note.body}</p>) : <p className="rounded-lg bg-white p-3 text-sm text-slate-600">No notes yet.</p>}</div>
+        <div>{current.activity.length ? current.activity.slice(0, 4).map((item) => <p key={item.id} className="mb-2 rounded-lg bg-white p-3 text-sm text-slate-600">{item.action.replaceAll(".", " ")} · {new Date(item.created_at).toLocaleString()}</p>) : <p className="rounded-lg bg-white p-3 text-sm text-slate-600">Activity will appear after lead search, AI generation or email events.</p>}</div>
       </div>
     </details>
-    {company.lead_id ? <div className="mt-5"><OpportunityCard lead={lead} api={api} /></div> : <p className="mt-4 rounded-xl bg-orange-50 p-3 text-sm font-semibold text-orange-700">This CRM company is missing its lead link. Re-import or update the company before generating outreach.</p>}
+    {current.lead_id ? <div className="mt-5"><OpportunityCard lead={lead} api={api} /></div> : <p className="mt-4 rounded-xl bg-orange-50 p-3 text-sm font-semibold text-orange-700">This CRM company is missing its lead link. Re-import or update the company before generating outreach.</p>}
   </article>;
 }
 

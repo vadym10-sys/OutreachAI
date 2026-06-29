@@ -902,7 +902,7 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
     lead_response = client.post(
         "/api/leads",
         headers=AUTH,
-        json={"company": "Manual Draft Build", "website": "https://manual-draft.example", "industry": "Construction"},
+        json={"company": "Manual Draft Build", "website": "https://manual-draft.example", "industry": "Construction", "email": "founder@manual-draft.example"},
     )
     assert lead_response.status_code == 200
     lead = lead_response.json()
@@ -921,6 +921,32 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
     company = crm_response.json()[0]
     assert company["crm_stage"] == "Email Draft Ready"
     assert company["generated_emails"][0]["delivery_status"] == "draft"
+    assert company["email_generated_at"]
+    assert company["saved_to_crm_at"]
+
+    send_before_approval = client.post(f"/api/emails/{draft['id']}/send", headers=AUTH)
+    assert send_before_approval.status_code == 400
+    assert "Approve the email" in send_before_approval.json()["detail"]
+
+    approved_response = client.post(f"/api/emails/{draft['id']}/approve", headers=AUTH)
+    assert approved_response.status_code == 200
+    approved = approved_response.json()
+    assert approved["delivery_status"] == "approved"
+
+    crm_after_approval = client.get("/api/crm/companies?search=Manual%20Draft", headers=AUTH).json()[0]
+    assert crm_after_approval["crm_stage"] == "Approved"
+    assert crm_after_approval["email_approved_at"]
+    assert any(item["action"] == "email.approved" for item in crm_after_approval["activity"])
+
+    monkeypatch.setattr("app.api.routes.send_email", lambda **kwargs: {"id": "resend-approved-manual-draft"})
+    sent_response = client.post(f"/api/emails/{draft['id']}/send", headers=AUTH)
+    assert sent_response.status_code == 200
+    assert sent_response.json()["delivery_status"] == "sent"
+
+    crm_after_send = client.get("/api/crm/companies?search=Manual%20Draft", headers=AUTH).json()[0]
+    assert crm_after_send["crm_stage"] == "Sent"
+    assert crm_after_send["email_sent_at"]
+    assert any(item["action"] == "email.sent" for item in crm_after_send["activity"])
 
 
 def test_crm_duplicate_prevention_reuses_manual_company(monkeypatch) -> None:
@@ -938,6 +964,33 @@ def test_crm_duplicate_prevention_reuses_manual_company(monkeypatch) -> None:
     companies = crm_response.json()
     assert len(companies) == 1
     assert companies[0]["website"] == "https://crm-duplicate.example"
+
+
+def test_crm_stage_move_and_note_are_persisted(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    lead_response = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "CRM Action Build", "website": "https://crm-action.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert lead_response.status_code == 200
+    company = client.get("/api/crm/companies?search=CRM%20Action", headers=AUTH).json()[0]
+
+    moved = client.patch(f"/api/crm/companies/{company['id']}/stage", headers=AUTH, json={"stage": "Meeting Scheduled"})
+    assert moved.status_code == 200
+    assert moved.json()["crm_stage"] == "Meeting Scheduled"
+    assert moved.json()["stage_changed_at"]
+
+    note = client.post(f"/api/crm/companies/{company['id']}/notes", headers=AUTH, json={"body": "Customer asked to review next week."})
+    assert note.status_code == 200
+    assert note.json()["body"] == "Customer asked to review next week."
+
+    refreshed = client.get("/api/crm/companies?search=CRM%20Action", headers=AUTH).json()[0]
+    assert refreshed["crm_stage"] == "Meeting Scheduled"
+    assert refreshed["notes"][0]["body"] == "Customer asked to review next week."
+    assert any(item["action"] == "crm.stage_changed" for item in refreshed["activity"])
+    assert any(item["action"] == "note.added" for item in refreshed["activity"])
 
 
 def test_crm_pipeline_activity_query_uses_postgres_json_key_extraction() -> None:

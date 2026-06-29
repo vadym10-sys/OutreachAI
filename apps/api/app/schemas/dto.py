@@ -134,6 +134,14 @@ class BulkLeadAction(BaseModel):
     delete: bool = False
 
 
+class CrmStageUpdate(BaseModel):
+    stage: str = Field(max_length=80)
+
+
+class CrmNoteCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
 class LeadOut(BaseModel):
     id: Optional[UUID] = None
     company: str
@@ -176,9 +184,11 @@ class LeadOut(BaseModel):
     sales_angle: Optional[str] = None
     expected_reply_rate: Optional[str] = None
     found_at: Optional[datetime] = None
+    saved_to_crm_at: Optional[datetime] = None
     website_analyzed_at: Optional[datetime] = None
     contact_found_at: Optional[datetime] = None
     email_generated_at: Optional[datetime] = None
+    email_approved_at: Optional[datetime] = None
     email_sent_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     opened_at: Optional[datetime] = None
@@ -268,9 +278,11 @@ class CrmCompanyOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     found_at: Optional[datetime] = None
+    saved_to_crm_at: Optional[datetime] = None
     website_analyzed_at: Optional[datetime] = None
     contact_found_at: Optional[datetime] = None
     email_generated_at: Optional[datetime] = None
+    email_approved_at: Optional[datetime] = None
     email_sent_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     opened_at: Optional[datetime] = None

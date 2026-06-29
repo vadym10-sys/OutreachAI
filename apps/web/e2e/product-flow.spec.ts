@@ -102,7 +102,19 @@ const crmCompany = {
   activity: [{ id: "88888888-8888-8888-8888-888888888888", action: "google_maps.company_search", metadata_json: {}, created_at: new Date().toISOString() }],
   generated_emails: [{ id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "draft" }],
   created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString()
+  updated_at: new Date().toISOString(),
+  found_at: new Date().toISOString(),
+  saved_to_crm_at: new Date().toISOString(),
+  website_analyzed_at: new Date().toISOString(),
+  contact_found_at: new Date().toISOString(),
+  email_generated_at: new Date().toISOString(),
+  email_approved_at: null,
+  email_sent_at: null,
+  delivered_at: null,
+  opened_at: null,
+  replied_at: null,
+  last_activity_at: new Date().toISOString(),
+  stage_changed_at: new Date().toISOString()
 };
 
 const qualityDashboard = {
@@ -139,6 +151,10 @@ test.beforeEach(async ({ page }) => {
       body = { items: [lead], total: 1, page: 1, page_size: 100 };
     } else if (url.pathname === "/api/crm/companies") {
       body = [crmCompany];
+    } else if (url.pathname === `/api/crm/companies/${crmCompany.id}/stage`) {
+      body = { ...crmCompany, crm_stage: "Meeting Scheduled", stage_changed_at: new Date().toISOString(), activity: [{ id: "99999999-9999-9999-9999-999999999990", action: "crm.stage_changed", metadata_json: {}, created_at: new Date().toISOString() }, ...crmCompany.activity] };
+    } else if (url.pathname === `/api/crm/companies/${crmCompany.id}/notes`) {
+      body = { id: "99999999-9999-9999-9999-999999999991", company_id: crmCompany.id, lead_id: lead.id, body: "Customer asked to review next week.", kind: "note", created_at: new Date().toISOString() };
     } else if (url.pathname === "/api/crm/contacts") {
       body = crmCompany.contacts;
     } else if (url.pathname === "/api/crm/deals") {
@@ -171,6 +187,8 @@ test.beforeEach(async ({ page }) => {
       body = { no_open: ["Worth a quick look?"], opened: ["I noticed you opened the idea."], clicked: ["Happy to send the audit outline."], replied: ["Thanks for replying."] };
     } else if (url.pathname.endsWith("/draft-email")) {
       body = { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "draft" };
+    } else if (url.pathname === "/api/emails/33333333-3333-3333-3333-333333333333/approve") {
+      body = { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "approved" };
     } else if (url.pathname === "/api/emails/33333333-3333-3333-3333-333333333333/send") {
       body = { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "sent" };
     } else if (url.pathname === "/api/ai/analyze") {
@@ -224,6 +242,17 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.getByLabel("Campaign name").fill("First customer campaign");
     await page.getByRole("button", { name: /Create campaign/ }).click();
     await expect(page.getByText("Campaign created. Your first opportunity was added for review; no email was sent.")).toBeVisible();
+  });
+
+  test("crm company stage move and note actions show reliable feedback", async ({ page }) => {
+    await page.goto("/dashboard/companies");
+    await page.getByRole("main").getByRole("combobox").selectOption("Meeting Scheduled");
+    await page.getByRole("button", { name: /Move stage/ }).click();
+    await expect(page.getByText("CRM stage moved to Meeting Scheduled.")).toBeVisible();
+    await page.getByLabel("Add note").fill("Customer asked to review next week.");
+    await page.getByRole("button", { name: /Add note/ }).click();
+    await expect(page.getByText("Note saved to the activity history.")).toBeVisible();
+    await expect(page.getByText("Customer asked to review next week.").first()).toBeVisible();
   });
 
   test("dashboard keeps metrics when optional recommendations fail", async ({ page }) => {

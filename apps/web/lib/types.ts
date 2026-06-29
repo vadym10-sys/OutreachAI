@@ -98,9 +98,11 @@ export type Lead = {
   expected_reply_rate?: string | null;
   created_at?: string | null;
   found_at?: string | null;
+  saved_to_crm_at?: string | null;
   website_analyzed_at?: string | null;
   contact_found_at?: string | null;
   email_generated_at?: string | null;
+  email_approved_at?: string | null;
   email_sent_at?: string | null;
   delivered_at?: string | null;
   opened_at?: string | null;
@@ -178,9 +180,11 @@ export type CrmCompany = {
   created_at: string;
   updated_at: string;
   found_at?: string | null;
+  saved_to_crm_at?: string | null;
   website_analyzed_at?: string | null;
   contact_found_at?: string | null;
   email_generated_at?: string | null;
+  email_approved_at?: string | null;
   email_sent_at?: string | null;
   delivered_at?: string | null;
   opened_at?: string | null;
