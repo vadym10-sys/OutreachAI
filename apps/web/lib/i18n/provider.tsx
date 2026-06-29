@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { isLocale, localeLanguageNames, type Locale, translate, translateVisibleText, type TranslationKey } from '@/lib/i18n/translations';
+import { isLocale, localeLanguageNames, type Locale, translate, type TranslationKey } from '@/lib/i18n/translations';
 
 const storageKey = 'outreachai.locale';
 const cookieKey = 'outreachai_locale';
@@ -50,48 +50,6 @@ function persistLocale(locale: Locale) {
   }
 }
 
-const textNodeOriginals = new WeakMap<Text, string>();
-const attrOriginals = new WeakMap<Element, Map<string, string>>();
-
-function translateDom(locale: Locale) {
-  if (typeof document === 'undefined') return;
-  const blocked = new Set(['SCRIPT', 'STYLE', 'TEXTAREA', 'CODE', 'PRE']);
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (!parent || blocked.has(parent.tagName) || parent.closest('[data-i18n-skip="true"]')) return NodeFilter.FILTER_REJECT;
-      return node.textContent?.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
-    },
-  });
-  const nodes: Text[] = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
-  for (const node of nodes) {
-    const current = node.textContent || '';
-    const cachedOriginal = textNodeOriginals.get(node);
-    const cachedTranslated = cachedOriginal ? translateVisibleText(cachedOriginal, locale) : '';
-    const original = cachedOriginal && (current === cachedOriginal || current === cachedTranslated) ? cachedOriginal : current;
-    textNodeOriginals.set(node, original);
-    node.textContent = translateVisibleText(original, locale);
-  }
-
-  const attrNames = ['placeholder', 'aria-label', 'title'] as const;
-  for (const attr of attrNames) {
-    document.querySelectorAll<HTMLElement>(`[${attr}]`).forEach((element) => {
-      let originals = attrOriginals.get(element);
-      if (!originals) {
-        originals = new Map<string, string>();
-        attrOriginals.set(element, originals);
-      }
-      const current = element.getAttribute(attr) || '';
-      const cachedOriginal = originals.get(attr);
-      const cachedTranslated = cachedOriginal ? translateVisibleText(cachedOriginal, locale) : '';
-      const original = cachedOriginal && (current === cachedOriginal || current === cachedTranslated) ? cachedOriginal : current;
-      originals.set(attr, original);
-      element.setAttribute(attr, translateVisibleText(original, locale));
-    });
-  }
-}
-
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>('en');
   const [loaded, setLoaded] = useState(false);
@@ -110,25 +68,6 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     if (!loaded) return;
     persistLocale(locale);
   }, [loaded, locale]);
-
-  useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
-    let id: number | null = null;
-    const schedule = () => {
-      if (id) window.clearTimeout(id);
-      id = window.setTimeout(() => {
-        translateDom(locale);
-        id = null;
-      }, 0);
-    };
-    schedule();
-    const observer = new MutationObserver(schedule);
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => {
-      if (id) window.clearTimeout(id);
-      observer.disconnect();
-    };
-  }, [locale]);
 
   const setLocale = useCallback((next: Locale) => {
     setLocaleState(next);

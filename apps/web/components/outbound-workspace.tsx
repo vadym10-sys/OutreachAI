@@ -254,14 +254,28 @@ function useSalesData() {
     setLoading(true);
     setError("");
     try {
-      const [leadPage, campaignList, dashboard] = await Promise.all([
+      const results = await Promise.allSettled([
         api<PaginatedLeads>("/api/leads?page_size=100"),
         api<Campaign[]>("/api/campaigns"),
         api<DashboardMetrics>("/api/dashboard")
       ]);
-      setLeads(leadPage.items || []);
-      setCampaigns(campaignList || []);
-      setMetrics({ ...emptyMetrics, ...dashboard });
+      const [leadResult, campaignResult, dashboardResult] = results;
+      if (leadResult.status === "fulfilled") setLeads(leadResult.value.items || []);
+      if (campaignResult.status === "fulfilled") setCampaigns(campaignResult.value || []);
+      if (dashboardResult.status === "fulfilled") setMetrics({ ...emptyMetrics, ...dashboardResult.value });
+
+      const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
+      if (failed.length) {
+        failed.forEach((result) => {
+          Sentry.captureException(result.reason, {
+            tags: { area: "sales-workspace-loader" },
+            extra: { endpoint_group: "leads-campaigns-dashboard" }
+          });
+        });
+        if (leadResult.status === "rejected" && campaignResult.status === "rejected" && dashboardResult.status === "rejected") {
+          setError(friendlyErrorMessage(leadResult.reason, "Workspace data could not be loaded. Please try again."));
+        }
+      }
     } catch (err) {
       setError(friendlyErrorMessage(err, "Could not load sales workspace data. Please refresh or sign in again."));
     } finally {
@@ -302,16 +316,30 @@ function useCrmData() {
     setError("");
     try {
       const suffix = queryString ? `?${queryString}` : "";
-      const [companyList, contactList, dealList, pipelineData] = await Promise.all([
+      const results = await Promise.allSettled([
         api<CrmCompany[]>(`/api/crm/companies${suffix}`),
         api<CrmContact[]>(`/api/crm/contacts${suffix}`),
         api<CrmDeal[]>(`/api/crm/deals${suffix}`),
         api<CrmPipeline>("/api/crm/pipeline")
       ]);
-      setCompanies(safeArray(companyList));
-      setContacts(safeArray(contactList));
-      setDeals(safeArray(dealList));
-      setPipeline(normalizePipeline(pipelineData));
+      const [companyResult, contactResult, dealResult, pipelineResult] = results;
+      if (companyResult.status === "fulfilled") setCompanies(safeArray(companyResult.value));
+      if (contactResult.status === "fulfilled") setContacts(safeArray(contactResult.value));
+      if (dealResult.status === "fulfilled") setDeals(safeArray(dealResult.value));
+      if (pipelineResult.status === "fulfilled") setPipeline(normalizePipeline(pipelineResult.value));
+
+      const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
+      if (failed.length) {
+        failed.forEach((result) => {
+          Sentry.captureException(result.reason, {
+            tags: { area: "crm-workspace-loader" },
+            extra: { endpoint_group: "companies-contacts-deals-pipeline" }
+          });
+        });
+        if (companyResult.status === "rejected" && contactResult.status === "rejected" && dealResult.status === "rejected" && pipelineResult.status === "rejected") {
+          setError(friendlyErrorMessage(companyResult.reason, "CRM data could not be loaded. Please try again."));
+        }
+      }
     } catch (err) {
       setError(friendlyErrorMessage(err, "CRM data could not be loaded. Please refresh or sign in again."));
     } finally {

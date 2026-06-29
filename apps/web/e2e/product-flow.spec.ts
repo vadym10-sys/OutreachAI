@@ -217,7 +217,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.setViewportSize({ width: 390, height: 900 });
     await page.goto("/dashboard/leads");
     await page.getByRole("button", { name: "Find leads" }).first().click();
-    await expect(page.getByRole("heading", { name: "Hill Country Build Co" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
     await expect(page.getByText("jane@example.com · verified email")).toBeVisible();
     await page.getByRole("button", { name: /Complete sales research/ }).click();
     await expect(page.getByText("Review this draft before sending. No email has been sent yet.")).toBeVisible({ timeout: 15000 });
@@ -273,5 +273,45 @@ test.describe("redesigned B2B outbound workspace", () => {
     await expect(main.getByText("Leads found")).toBeVisible();
     await expect(main.getByText("Campaigns", { exact: true })).toBeVisible();
     await expect(main).not.toContainText("Dashboard data is temporarily unavailable");
+  });
+
+  test("dashboard does not crash when locale is Russian and widgets refresh", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.goto("/dashboard");
+    await page.evaluate(() => {
+      window.localStorage.setItem("outreachai.locale", "ru");
+      document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
+    });
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.getByRole("main")).not.toContainText("Что-то пошло не так");
+    await expect(page.getByRole("main")).not.toContainText("Something went wrong");
+    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("lead finder still shows saved leads when secondary workspace data fails", async ({ page }) => {
+    await page.route("**/api/backend/api/campaigns", async (route) => {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Campaigns unavailable" }) });
+    });
+    await page.route("**/api/backend/api/dashboard", async (route) => {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Dashboard unavailable" }) });
+    });
+    await page.goto("/dashboard/leads");
+    await expect(page.getByRole("heading", { name: "Find real companies and turn each into a sales opportunity." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
+    await expect(page.getByRole("main")).not.toContainText("Something went wrong");
+    await expect(page.getByRole("main")).not.toContainText("Lead data unavailable");
+  });
+
+  test("companies workspace still loads companies when pipeline details fail", async ({ page }) => {
+    await page.route("**/api/backend/api/crm/pipeline", async (route) => {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Pipeline unavailable" }) });
+    });
+    await page.goto("/dashboard/companies");
+    await expect(page.getByRole("heading", { name: "Every company is saved in your CRM." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
+    await expect(page.getByRole("main")).not.toContainText("Something went wrong");
+    await expect(page.getByRole("main")).not.toContainText("CRM data could not be loaded");
   });
 });
