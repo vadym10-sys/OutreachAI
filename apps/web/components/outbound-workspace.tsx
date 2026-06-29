@@ -410,12 +410,13 @@ function priorityScore(copilot?: SalesCopilot) {
 }
 
 function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action?: React.ReactNode }) {
+  const { t } = useI18n();
   return (
     <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
       <div className="max-w-3xl">
-        <p className="text-sm font-bold uppercase tracking-wide text-brand">{eyebrow}</p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-ink min-[390px]:text-4xl">{title}</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-600 min-[390px]:text-base">{copy}</p>
+        <p className="text-sm font-bold uppercase tracking-wide text-brand">{t(eyebrow)}</p>
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-ink min-[390px]:text-4xl">{t(title)}</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-600 min-[390px]:text-base">{t(copy)}</p>
       </div>
       {action}
     </header>
@@ -431,7 +432,8 @@ function SecondaryButton({ children, onClick, disabled = false }: { children: Re
 }
 
 function EmptyState({ title, copy, action }: { title: string; copy: string; action?: React.ReactNode }) {
-  return <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center shadow-sm"><h2 className="text-lg font-bold text-ink">{title}</h2><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">{copy}</p>{action && <div className="mt-5 flex justify-center">{action}</div>}</section>;
+  const { t } = useI18n();
+  return <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center shadow-sm"><h2 className="text-lg font-bold text-ink">{t(title)}</h2><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">{t(copy)}</p>{action && <div className="mt-5 flex justify-center">{action}</div>}</section>;
 }
 
 function WidgetErrorCard({ title, copy = "This section could not update. The rest of your workspace is still available.", onRetry }: { title: string; copy?: string; onRetry?: () => void }) {
@@ -576,12 +578,20 @@ function useSalesData() {
 
       const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
       if (failed.length) {
+        if (failed.some((result) => isSessionExpiredError(result.reason))) {
+          redirectToSignIn();
+          return;
+        }
         failed.forEach((result) => reportWidgetFailure(result.reason, "sales-workspace-loader", { endpoint_group: "leads-campaigns-dashboard" }));
         if (leadResult.status === "rejected" && campaignResult.status === "rejected" && dashboardResult.status === "rejected") {
           setError(friendlyErrorMessage(leadResult.reason, "Workspace data could not be loaded. Please try again."));
         }
       }
     } catch (err) {
+        if (isSessionExpiredError(err)) {
+          redirectToSignIn();
+          return;
+        }
         reportWidgetFailure(err, "sales-workspace-loader", { endpoint_group: "leads-campaigns-dashboard" });
         setError(friendlyErrorMessage(err, "Could not load sales workspace data. Please try again."));
     } finally {
@@ -636,12 +646,20 @@ function useCrmData() {
 
       const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
       if (failed.length) {
+        if (failed.some((result) => isSessionExpiredError(result.reason))) {
+          redirectToSignIn();
+          return;
+        }
         failed.forEach((result) => reportWidgetFailure(result.reason, "crm-workspace-loader", { endpoint_group: "companies-contacts-deals-pipeline" }));
         if (companyResult.status === "rejected" && contactResult.status === "rejected" && dealResult.status === "rejected" && pipelineResult.status === "rejected") {
           setError(friendlyErrorMessage(companyResult.reason, "CRM data could not be loaded. Please try again."));
         }
       }
     } catch (err) {
+        if (isSessionExpiredError(err)) {
+          redirectToSignIn();
+          return;
+        }
         reportWidgetFailure(err, "crm-workspace-loader", { endpoint_group: "companies-contacts-deals-pipeline" });
         setError(friendlyErrorMessage(err, "CRM data could not be loaded. Please try again."));
     } finally {
@@ -749,6 +767,7 @@ function useDashboardData() {
 }
 
 function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn; onLeadUpdated?: (lead: Lead) => void }) {
+  const { t } = useI18n();
   const [copilot, setCopilot] = useState<SalesCopilot | undefined>();
   const [audit, setAudit] = useState<WebsiteAudit | undefined>();
   const [followUps, setFollowUps] = useState<FollowUpSequence | undefined>();
@@ -766,7 +785,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
 
   async function completeResearch() {
     if (!lead.id) {
-      setError("Save this lead before running AI research.");
+      setError(t("Save this lead before running AI research."));
       return;
     }
     setBusy(true);
@@ -780,7 +799,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
     });
     try {
       if (lead.website || lead.domain) {
-        setStatus("Analyzing website...");
+        setStatus(t("Analyzing website..."));
         const analysis = await api<AnalysisResult>("/api/ai/analyze", {
           method: "POST",
           body: JSON.stringify({ lead_id: lead.id, website: leadWebsite(lead), company: lead.company, niche: lead.industry || lead.niche || "" })
@@ -788,17 +807,17 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         const safeAnalysis = normalizeAnalysis(analysis);
         onLeadUpdated?.({ ...lead, ai_summary: safeAnalysis.summary, suggested_offer: safeAnalysis.suggested_offer, outreach_strategy: safeAnalysis.outreach_strategy, sales_angle: safeAnalysis.sales_angle, expected_reply_rate: safeAnalysis.expected_reply_rate, industry: lead.industry || safeAnalysis.industry || undefined });
       }
-      setStatus("Running AI opportunity analysis...");
+      setStatus(t("Running AI opportunity analysis..."));
       setCopilot(await api<SalesCopilot>(`/api/leads/${lead.id}/copilot`, { method: "POST" }));
       if (lead.website || lead.domain) {
-        setStatus("Auditing website pain points...");
+        setStatus(t("Auditing website pain points..."));
         setAudit(await api<WebsiteAudit>(`/api/leads/${lead.id}/website-audit`, { method: "POST" }));
       }
-      setStatus("Generating follow-up sequence...");
+      setStatus(t("Generating follow-up sequence..."));
       setFollowUps(await api<FollowUpSequence>(`/api/leads/${lead.id}/follow-ups`, { method: "POST" }));
-      setStatus("Preparing personalized first email...");
+      setStatus(t("Preparing personalized first email..."));
       const nextDraft = await api<Email>(`/api/leads/${lead.id}/draft-email`, { method: "POST" });
-      setStatus("Email draft is ready. Review it below, then approve the send when you are ready.");
+      setStatus(t("Email draft is ready. Review it below, then approve the send when you are ready."));
       setDraft(nextDraft);
       setReadyToSend(true);
       trackEvent("sales_research_completed", {
@@ -822,12 +841,12 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
 
   async function approveAndSend() {
     if (!draft?.id) {
-      setError("Generate and review the email before approving a send.");
+      setError(t("Generate and review the email before approving a send."));
       return;
     }
     setSending(true);
     setError("");
-    setStatus("Approving email...");
+    setStatus(t("Approving email..."));
     try {
       const approved = await withTimeout(
         api<Email>(`/api/emails/${draft.id}/approve`, { method: "POST" }),
@@ -835,7 +854,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         "Email approval timed out. Please try again before sending."
       );
       setDraft(approved);
-      setStatus("Sending approved email...");
+      setStatus(t("Sending approved email..."));
       const sent = await withTimeout(
         api<Email>(`/api/emails/${draft.id}/send`, { method: "POST" }),
         30000,
@@ -843,7 +862,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       );
       setDraft(sent);
       setReadyToSend(false);
-      setStatus("Approved email was sent. CRM stage updated to Contacted.");
+      setStatus(t("Approved email was sent. CRM stage updated to Contacted."));
       onLeadUpdated?.({ ...lead, status: "Contacted", email_approved_at: new Date().toISOString(), email_sent_at: sent.sent_at || new Date().toISOString() });
       trackEvent("approved_email_sent", {
         lead_id: lead.id,
@@ -874,8 +893,8 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
           <p className="mt-2 text-sm text-slate-600">{profile.industry} · {profile.location} · {profile.size}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{completed}/12 complete</span>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">Data: {sourceLabel(profile.source)}</span>
+          <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t("Completion count").replace("{count}", String(completed))}</span>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Data")}: {t(sourceLabel(profile.source))}</span>
         </div>
       </div>
 
@@ -888,9 +907,9 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
           ["AI opportunity analysis", safeArray(copilot?.reasoning).join(" ") || profile.opportunityAnalysis],
           ["Personalized offer", profile.offer],
           ["Expected reply rate", copilot ? `${copilot.probability_to_reply}%` : profile.expectedReplyRate],
-          ["Confidence score", copilot ? `${copilot.probability_to_buy}% purchase probability` : unavailable],
+          ["Confidence score", copilot ? t("Purchase probability").replace("{count}", String(copilot.probability_to_buy)) : unavailable],
           ["Priority score", priority === null ? unavailable : `${priority}/100`]
-        ].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{label}</p><p className="mt-1 text-sm font-semibold text-slate-800">{value}</p></div>)}
+        ].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t(label)}</p><p className="mt-1 text-sm font-semibold text-slate-800">{t(value)}</p></div>)}
       </div>
       <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
         {[
@@ -900,32 +919,32 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
           ["Email generated", lead.email_generated_at],
           ["Email approved", lead.email_approved_at],
           ["Last activity", lead.last_activity_at || lead.stage_changed_at],
-        ].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-200 bg-white p-3">
-          <p className="font-semibold text-slate-700">{label}</p>
-          <p className="mt-1 text-slate-500">{formatDateTime(value)}</p>
+        ].map(([label, value]) => <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3">
+          <p className="font-semibold text-slate-700">{t(String(label || ""))}</p>
+          <p className="mt-1 text-slate-500">{t(formatDateTime(value))}</p>
         </div>)}
       </div>
 
       <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        {coverage.map(([label, done]) => <span key={label} className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold ${done ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-500"}`}><CheckCircle2 size={15} />{label}</span>)}
+        {coverage.map(([label, done]) => <span key={label} className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold ${done ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-500"}`}><CheckCircle2 size={15} />{t(label)}</span>)}
       </div>
 
       {draft && (readyToSend || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
-        <p className="text-xs font-bold uppercase text-slate-500">Personalized first email</p>
-        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? "Approved email was sent. CRM stage updated to Contacted." : "Review this draft before sending. No email has been sent yet."}</p>
+        <p className="text-xs font-bold uppercase text-slate-500">{t("Personalized first email")}</p>
+        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Contacted.") : t("Review this draft before sending. No email has been sent yet.")}</p>
         <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
         <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{draft.body}</p>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <div className="rounded-lg bg-white p-3 text-sm"><span className="font-bold">Follow-up 1:</span> {draft.follow_up_1 || followUps?.no_open?.[0] || unavailable}</div>
-          <div className="rounded-lg bg-white p-3 text-sm"><span className="font-bold">Follow-up 2:</span> {draft.follow_up_2 || followUps?.opened?.[0] || unavailable}</div>
+          <div className="rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 1")}:</span> {draft.follow_up_1 || followUps?.no_open?.[0] || t(unavailable)}</div>
+          <div className="rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 2")}:</span> {draft.follow_up_2 || followUps?.opened?.[0] || t(unavailable)}</div>
         </div>
       </section>}
 
       {visibleStatus && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
-        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Complete sales research</PrimaryButton>
-        <SecondaryButton onClick={approveAndSend} disabled={!readyToSend || busy || !draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? "Sent" : "Approve & send"}</SecondaryButton>
+        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Complete sales research")}</PrimaryButton>
+        <SecondaryButton onClick={approveAndSend} disabled={!readyToSend || busy || !draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Approve & send")}</SecondaryButton>
       </div>
     </article>
   );
@@ -1007,13 +1026,13 @@ export function LeadFinderPage() {
       status: "New"
     };
     if (!payload.company) {
-      setMessage("Add the company name before saving.");
+      setMessage(t("Add the company name before saving."));
       return;
     }
     setManualBusy(true);
     setHasSearched(false);
-    setMessage("Saving company to CRM...");
-    setSearchSteps(["Saving company to CRM..."]);
+    setMessage(t("Saving company to CRM..."));
+    setSearchSteps([t("Saving company to CRM...")]);
     try {
       const saved = await withTimeout(
         api<Lead>("/api/leads", { method: "POST", body: JSON.stringify(payload) }),
@@ -1022,8 +1041,8 @@ export function LeadFinderPage() {
       );
       setLeads((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
       setSearchResults((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
-      setMessage(`${saved.company} was saved to CRM. Next: complete sales research.`);
-      setSearchSteps(["Saved to CRM", "Ready for company research"]);
+      setMessage(t("Company saved to CRM. Next: complete sales research.").replace("{company}", saved.company));
+      setSearchSteps([t("Saved to CRM"), t("Ready for company research")]);
       form.reset();
       trackEvent("manual_lead_created", {
         has_website: Boolean(saved.website || saved.domain),
@@ -1033,7 +1052,7 @@ export function LeadFinderPage() {
     } catch (err) {
       const reason = friendlyErrorMessage(err, "Company could not be saved. Check the details and try again.");
       setMessage(reason);
-      setSearchSteps(["Save stopped"]);
+      setSearchSteps([t("Save stopped")]);
       trackEvent("manual_lead_create_failed", { reason });
     } finally {
       setManualBusy(false);
@@ -1058,8 +1077,8 @@ export function LeadFinderPage() {
     setSearching(true);
     setHasSearched(true);
     setSearchResults([]);
-    setSearchSteps(["Connecting to lead sources..."]);
-    setMessage("Searching companies...");
+    setSearchSteps([t("Connecting to lead sources...")]);
+    setMessage(t("Searching companies..."));
     trackEvent("lead_finder_search_started", {
       country: payload.country,
       city: payload.city,
@@ -1077,10 +1096,10 @@ export function LeadFinderPage() {
         45000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
-      setSearchSteps((items) => [...items, `Found ${found.length} companies`, "Saved to CRM"]);
+      setSearchSteps((items) => [...items, t("Found companies count").replace("{count}", String(found.length)), t("Saved to CRM")]);
       setLeads(found);
       setSearchResults(found);
-      setMessage(found.length ? `Found ${found.length} companies. Saved to CRM.` : "No results. Try a broader city, industry, radius, or fewer filters.");
+      setMessage(found.length ? t("Found companies saved to CRM").replace("{count}", String(found.length)) : t("No results. Try a broader city, industry, radius, or fewer filters."));
       trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
         country: payload.country,
         city: payload.city,
@@ -1091,7 +1110,7 @@ export function LeadFinderPage() {
     } catch (err) {
       const reason = friendlyErrorMessage(err, "Lead search could not be completed.");
       setSearchResults([]);
-      setSearchSteps((items) => [...items, "Search stopped"]);
+      setSearchSteps((items) => [...items, t("Search stopped")]);
       setMessage(reason);
       trackEvent("lead_finder_search_failed", {
         country: payload.country,
@@ -1109,31 +1128,31 @@ export function LeadFinderPage() {
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
       <form aria-label="Lead search" onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">
-          <p className="text-sm font-bold text-brand">Step 1 of 3 · Choose a focused market</p>
-          <p className="mt-1 text-sm leading-6 text-slate-700">Use one country, one city and one industry. A narrower search creates better opportunities faster.</p>
+          <p className="text-sm font-bold text-brand">{t("Step 1 of 3 · Choose a focused market")}</p>
+          <p className="mt-1 text-sm leading-6 text-slate-700">{t("Use one country, one city and one industry. A narrower search creates better opportunities faster.")}</p>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <label className="text-sm font-semibold text-slate-700">Country<input name="country" required placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">City<input name="city" required placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Industry<input name="industry" required placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Company size<input name="company_size" placeholder="11-50" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Number of leads<input name="limit" type="number" min="1" max="25" defaultValue="10" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" required placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" required placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" required placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Company size")}<input name="company_size" placeholder="11-50" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Number of leads")}<input name="limit" type="number" min="1" max="25" defaultValue="10" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
         </div>
         <details className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <summary className="cursor-pointer text-sm font-bold text-ink">Advanced settings</summary>
-          <p className="mt-2 text-sm text-slate-600">Use these only when the first search is too broad or too narrow.</p>
+          <summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary>
+          <p className="mt-2 text-sm text-slate-600">{t("Use these only when the first search is too broad or too narrow.")}</p>
           <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <label className="text-sm font-semibold text-slate-700">Business category<input name="category" placeholder="Construction company" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">Keyword<input name="keyword" placeholder="renovation, contractor" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">Extra keywords<input name="keywords" placeholder="commercial, builders" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">Technology<input name="technology" placeholder="WordPress, Shopify" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">Contact role<input name="contact_role" placeholder="Owner, Founder, CEO" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">Radius meters<input name="radius" type="number" defaultValue="10000" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">{t("Business category")}<input name="category" placeholder="Construction company" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">{t("Keyword")}<input name="keyword" placeholder="renovation, contractor" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">{t("Extra keywords")}<input name="keywords" placeholder="commercial, builders" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">{t("Technology")}<input name="technology" placeholder="WordPress, Shopify" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">{t("Contact role")}<input name="contact_role" placeholder="Owner, Founder, CEO" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">{t("Radius meters")}<input name="radius" type="number" defaultValue="10000" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
           </div>
         </details>
         <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
           <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
-          <p className="text-sm text-slate-600">Expected time: 30-60 seconds. Saved companies will stay after refresh.</p>
+          <p className="text-sm text-slate-600">{t("Expected time: 30-60 seconds. Saved companies will stay after refresh.")}</p>
         </div>
         {visibleMessage && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{visibleMessage}</p>}
         {searchSteps.length > 0 && <ol className="mt-4 grid gap-2 text-sm sm:grid-cols-3" aria-label="Lead search progress">
@@ -1143,23 +1162,23 @@ export function LeadFinderPage() {
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="text-sm font-bold uppercase text-brand">Fast fallback</p>
-            <h2 className="mt-1 text-xl font-bold text-ink">Already know a company?</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">Add it once. OutreachAI saves it to CRM, keeps it after refresh, and lets you run research and outreach review from the same opportunity card.</p>
+            <p className="text-sm font-bold uppercase text-brand">{t("Fast fallback")}</p>
+            <h2 className="mt-1 text-xl font-bold text-ink">{t("Already know a company?")}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{t("Add it once. OutreachAI saves it to CRM, keeps it after refresh, and lets you run research and outreach review from the same opportunity card.")}</p>
           </div>
-          <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">Takes 20 seconds</span>
+          <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Takes 20 seconds")}</span>
         </div>
         <form aria-label="Manual company entry" onSubmit={addManualLead} className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <label className="text-sm font-semibold text-slate-700">Company name<input name="company" required placeholder="Acme Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Website<input name="website" placeholder="https://company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Country<input name="country" placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">City<input name="city" placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Industry<input name="industry" placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Decision maker<input name="contact" placeholder="Owner or founder" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Email<input name="email" type="email" placeholder="name@company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">Phone<input name="phone" placeholder="+49..." className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Company name")}<input name="company" required placeholder="Acme Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Website")}<input name="website" placeholder="https://company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Decision maker")}<input name="contact" placeholder="Owner or founder" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Email")}<input name="email" type="email" placeholder="name@company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Phone")}<input name="phone" placeholder="+49..." className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
           <div className="md:col-span-2 xl:col-span-4">
-            <PrimaryButton disabled={manualBusy}>{manualBusy ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} Save company to CRM</PrimaryButton>
+            <PrimaryButton disabled={manualBusy}>{manualBusy ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Save company to CRM")}</PrimaryButton>
           </div>
         </form>
       </section>
@@ -1199,16 +1218,17 @@ function leadFromCrmCompany(company: CrmCompany): Lead {
 }
 
 function CrmFilters({ filters, setFilters }: { filters: Record<string, string>; setFilters: (filters: { search: string; city: string; country: string; industry: string; stage: string; email_status: string; source: string }) => void }) {
+  const { t } = useI18n();
   const update = (key: string, value: string) => setFilters({ search: "", city: "", country: "", industry: "", stage: "", email_status: "", source: "", ...filters, [key]: value });
   return <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-    <p className="text-sm font-bold text-ink">Search and filter CRM</p>
+    <p className="text-sm font-bold text-ink">{t("Search and filter CRM")}</p>
     <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-      <input value={filters.search} onChange={(event) => update("search", event.target.value)} placeholder="Company or website" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
-      <input value={filters.city} onChange={(event) => update("city", event.target.value)} placeholder="City" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
-      <input value={filters.country} onChange={(event) => update("country", event.target.value)} placeholder="Country" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
-      <input value={filters.industry} onChange={(event) => update("industry", event.target.value)} placeholder="Industry" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
-      <input value={filters.stage} onChange={(event) => update("stage", event.target.value)} placeholder="Stage" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
-      <input value={filters.source} onChange={(event) => update("source", event.target.value)} placeholder="Data type" className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.search} onChange={(event) => update("search", event.target.value)} placeholder={t("Company or website")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.city} onChange={(event) => update("city", event.target.value)} placeholder={t("City")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.country} onChange={(event) => update("country", event.target.value)} placeholder={t("Country")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.industry} onChange={(event) => update("industry", event.target.value)} placeholder={t("Industry")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.stage} onChange={(event) => update("stage", event.target.value)} placeholder={t("Stage")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+      <input value={filters.source} onChange={(event) => update("source", event.target.value)} placeholder={t("Data type")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
     </div>
   </section>;
 }
@@ -1599,11 +1619,13 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
 
 export function CompaniesPage() {
   const { api, companies, loading, error, filters, setFilters } = useCrmData();
-  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." /> <CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : companies.length ? <div className="grid gap-5">{companies.map((company) => <WidgetBoundary key={company.id} name={`Company workspace: ${company.name}`}><CrmCompanyCard company={company} api={api} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
+  const { t } = useI18n();
+  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." /> <CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : companies.length ? <div className="grid gap-5">{companies.map((company) => <WidgetBoundary key={company.id} name={`Company workspace: ${company.name}`}><CrmCompanyCard company={company} api={api} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
 }
 
 export function WebsiteAnalyzerPage() {
   const { api } = useTokenApi();
+  const { t } = useI18n();
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1621,7 +1643,7 @@ export function WebsiteAnalyzerPage() {
       setLoading(false);
     }
   }
-  return <div className="space-y-6"><PageHeader eyebrow="Website Analyzer" title="Analyze a real prospect website." copy="OutreachAI reads the website and extracts ICP, pain points, offer and outreach strategy." /><form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="grid gap-4 md:grid-cols-3"><input required name="website" placeholder="https://company.com" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="company" placeholder="Company name" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="niche" placeholder="Industry or niche" className="min-h-11 rounded-md border border-slate-300 px-3" /></div><div className="mt-4"><PrimaryButton disabled={loading}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Analyze website</PrimaryButton></div>{error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}</form>{analysis ? <WidgetBoundary name="Website analysis results"><section className="grid gap-4 lg:grid-cols-2">{[["Business summary", analysis.company_summary || analysis.summary], ["Services", safeArray(analysis.services).join(", ") || unavailable], ["Target customers", analysis.niche || unavailable], ["Weak points", safeArray(analysis.weaknesses).join(", ") || unavailable], ["Possible outreach angle", analysis.sales_angle || unavailable], ["Suggested offer", analysis.suggested_offer || unavailable], ["Personalization facts", safeArray(analysis.strengths).join(", ") || unavailable], ["Recommended cold email", analysis.outreach_strategy || unavailable]].map(([label, value]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{label}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{value}</p></article>)}</section></WidgetBoundary> : <EmptyState title="No website analyzed yet" copy="Enter a real domain. OutreachAI will not show sample analysis." />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Website Analyzer" title="Analyze a real prospect website." copy="OutreachAI reads the website and extracts ICP, pain points, offer and outreach strategy." /><form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="grid gap-4 md:grid-cols-3"><input required name="website" placeholder="https://company.com" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="company" placeholder={t("Company name")} className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="niche" placeholder={t("Industry or niche")} className="min-h-11 rounded-md border border-slate-300 px-3" /></div><div className="mt-4"><PrimaryButton disabled={loading}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Analyze website")}</PrimaryButton></div>{error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}</form>{analysis ? <WidgetBoundary name="Website analysis results"><section className="grid gap-4 lg:grid-cols-2">{[["Business summary", analysis.company_summary || analysis.summary], ["Services", safeArray(analysis.services).join(", ") || unavailable], ["Target customers", analysis.niche || unavailable], ["Weak points", safeArray(analysis.weaknesses).join(", ") || unavailable], ["Possible outreach angle", analysis.sales_angle || unavailable], ["Suggested offer", analysis.suggested_offer || unavailable], ["Personalization facts", safeArray(analysis.strengths).join(", ") || unavailable], ["Recommended cold email", analysis.outreach_strategy || unavailable]].map(([label, value]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(label)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(value)}</p></article>)}</section></WidgetBoundary> : <EmptyState title="No website analyzed yet" copy="Enter a real domain. OutreachAI will not show sample analysis." />}</div>;
 }
 
 export function ContactsPage() {
@@ -1633,6 +1655,7 @@ export function CampaignsPage() {
   const { api, campaigns, leads, loading, error, refresh } = useSalesData();
   const [notice, setNotice] = useState("");
   const [actionBusy, setActionBusy] = useState("");
+  const { t } = useI18n();
 
   async function createCampaign(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1718,7 +1741,7 @@ export function CampaignsPage() {
       </div>
       <div className="mt-5"><PrimaryButton disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} Create campaign</PrimaryButton></div>
     </form>}
-    {loading ? <EmptyState title="Loading campaigns" copy="Reading saved campaigns." /> : error ? <EmptyState title="Campaign data unavailable" copy={error} /> : campaigns.length ? <section className="grid gap-4 lg:grid-cols-2">{campaigns.map((campaign) => <article key={campaign.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{campaign.name}</h2><p className="mt-2 text-sm text-slate-600">{campaign.leads} leads · {campaign.sent} sent · {campaign.replies} replies · {campaign.status}</p><div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `Email ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || "Subject unavailable until AI draft is reviewed"}</p><p className="mt-1 text-xs font-semibold text-slate-500">Delay: {step.delay_days} days</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No sequence saved yet.</p>}</div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">Review before send: enabled</p><div className="mt-4 grid gap-2 min-[430px]:grid-cols-2"><SecondaryButton onClick={() => campaignAction(campaign.id, "pause")} disabled={actionBusy === `${campaign.id}:pause`}><Pause size={17} /> Pause</SecondaryButton><PrimaryButton onClick={() => campaignAction(campaign.id, campaign.status === "Paused" ? "resume" : "launch")} disabled={actionBusy === `${campaign.id}:launch` || actionBusy === `${campaign.id}:resume`}>{actionBusy.startsWith(campaign.id) ? <Loader2 className="animate-spin" size={17} /> : <Play size={17} />} {campaign.status === "Paused" ? "Resume" : "Launch after approval"}</PrimaryButton></div></article>)}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} action={leads.length ? undefined : <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find leads</Link>} />}
+    {loading ? <EmptyState title="Loading campaigns" copy="Reading saved campaigns." /> : error ? <EmptyState title="Campaign data unavailable" copy={error} /> : campaigns.length ? <section className="grid gap-4 lg:grid-cols-2">{campaigns.map((campaign) => <article key={campaign.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{campaign.name}</h2><p className="mt-2 text-sm text-slate-600">{campaign.leads} {t("leads")} · {campaign.sent} {t("sent")} · {campaign.replies} {t("replies")} · {t(campaign.status)}</p><div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `${t("Email")} ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || t("Subject unavailable until AI draft is reviewed")}</p><p className="mt-1 text-xs font-semibold text-slate-500">{t("Delay")}: {step.delay_days} {t("days")}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No sequence saved yet.")}</p>}</div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("Review before send: enabled")}</p><div className="mt-4 grid gap-2 min-[430px]:grid-cols-2"><SecondaryButton onClick={() => campaignAction(campaign.id, "pause")} disabled={actionBusy === `${campaign.id}:pause`}><Pause size={17} /> {t("Pause")}</SecondaryButton><PrimaryButton onClick={() => campaignAction(campaign.id, campaign.status === "Paused" ? "resume" : "launch")} disabled={actionBusy === `${campaign.id}:launch` || actionBusy === `${campaign.id}:resume`}>{actionBusy.startsWith(campaign.id) ? <Loader2 className="animate-spin" size={17} /> : <Play size={17} />} {campaign.status === "Paused" ? t("Resume") : t("Launch after approval")}</PrimaryButton></div></article>)}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} action={leads.length ? undefined : <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}
   </div>;
 }
 
@@ -1728,7 +1751,8 @@ export function InboxPage() {
 
 export function CrmPipelinePage() {
   const { pipeline, loading, error } = useCrmData();
-  return <div className="space-y-6"><PageHeader eyebrow="CRM Pipeline" title="Move real leads from research to revenue." copy="Pipeline stages update from saved companies, AI research, email drafts and customer replies." action={<Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">Review companies</Link>} />{loading ? <EmptyState title="Loading pipeline" copy="Reading CRM stages." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : <section className="grid gap-4 xl:grid-cols-3 2xl:grid-cols-4">{pipeline.stages.map((stage) => { const items = pipeline.companies.filter((company) => company.crm_stage === stage); return <article key={stage} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-3"><h2 className="font-bold text-ink">{stage}</h2><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{items.length}</span></div><div className="mt-4 space-y-3">{items.length ? items.map((company) => <div key={company.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-semibold text-slate-800">{company.name}</p><p className="mt-1 text-slate-600">{company.email_status} · {sourceLabel(company.source)}</p><p className="mt-2 text-xs font-semibold text-brand">{companyNextAction(company)}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No companies in this stage. Move a company here when the sales situation changes.</p>}</div></article>; })}</section>}</div>;
+  const { t } = useI18n();
+  return <div className="space-y-6"><PageHeader eyebrow="CRM Pipeline" title="Move real leads from research to revenue." copy="Pipeline stages update from saved companies, AI research, email drafts and customer replies." action={<Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Review companies")}</Link>} />{loading ? <EmptyState title="Loading pipeline" copy="Reading CRM stages." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : <section className="grid gap-4 xl:grid-cols-3 2xl:grid-cols-4">{pipeline.stages.map((stage) => { const items = pipeline.companies.filter((company) => company.crm_stage === stage); return <article key={stage} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-3"><h2 className="font-bold text-ink">{t(stage)}</h2><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{items.length}</span></div><div className="mt-4 space-y-3">{items.length ? items.map((company) => <div key={company.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-semibold text-slate-800">{company.name}</p><p className="mt-1 text-slate-600">{t(company.email_status)} · {sourceLabel(company.source)}</p><p className="mt-2 text-xs font-semibold text-brand">{t(companyNextAction(company))}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">{t("No companies in this stage. Move a company here when the sales situation changes.")}</p>}</div></article>; })}</section>}</div>;
 }
 
 export function DealsPage() {
@@ -1743,18 +1767,20 @@ export function AnalyticsPage() {
 }
 
 export function SettingsPage() {
+  const { t } = useI18n();
   const readiness = [
     ["Company setup", "Tell OutreachAI what you sell so lead research and emails match your offer.", "Complete this before your first campaign."],
     ["Lead readiness", "Find or add companies, then save each valid opportunity into CRM.", "Missing data is shown clearly instead of guessed."],
     ["Outreach safety", "Every email stays in review until a person approves the send.", "Nothing external happens automatically."],
     ["Plan and limits", "Your plan controls how many leads, emails and workspaces can be used this month.", "Upgrade only when you hit a real limit."]
   ];
-  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find leads</Link>} /><section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{title}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{copy}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{status}</p></article>)}</section><details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer text-sm font-bold text-ink">Advanced settings</summary><p className="mt-3 text-sm leading-6 text-slate-600">Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["Billing", "Security", "Team access", "Sending preferences"].map((item) => <Link key={item} href={item === "Billing" ? "/dashboard/billing" : "/dashboard/settings"} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{item}</Link>)}</div></details></div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} /><section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(copy)}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t(status)}</p></article>)}</section><details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary><p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.")}</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["Billing", "Security", "Team access", "Sending preferences"].map((item) => <Link key={item} href={item === "Billing" ? "/dashboard/billing" : "/dashboard/settings"} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t(item)}</Link>)}</div></details></div>;
 }
 
 export function BillingPage() {
   const { metrics, loading, error } = useSalesData();
-  return <div className="space-y-6"><PageHeader eyebrow="Billing" title="Subscription and usage." copy="Plan, usage and limits come from billing state. No fake usage is displayed." action={<Link href="/pricing" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">Manage plan</Link>} />{loading ? <EmptyState title="Loading billing" copy="Reading subscription usage." /> : error ? <EmptyState title="Billing unavailable" copy={error} /> : <section className="grid gap-4 lg:grid-cols-4"><MetricCard label="Current plan" value={metrics.plan || "Unavailable"} help="From billing status" /><MetricCard label="Leads" value={String((metrics.usage?.leads as number | undefined) || metrics.leads || 0)} help="Current period usage" /><MetricCard label="Emails sent" value={String(metrics.emails_sent)} help="Approved sends" /><MetricCard label="MRR" value={`€${Math.round(metrics.mrr || 0).toLocaleString()}`} help="Subscription revenue" /></section>}</div>;
+  const { t } = useI18n();
+  return <div className="space-y-6"><PageHeader eyebrow="Billing" title="Subscription and usage." copy="Plan, usage and limits come from billing state. No fake usage is displayed." action={<Link href="/pricing" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Manage plan")}</Link>} />{loading ? <EmptyState title="Loading billing" copy="Reading subscription usage." /> : error ? <EmptyState title="Billing unavailable" copy={error} /> : <section className="grid gap-4 lg:grid-cols-4"><MetricCard label="Current plan" value={t(metrics.plan || "Unavailable")} help="From billing status" /><MetricCard label="Leads" value={String((metrics.usage?.leads as number | undefined) || metrics.leads || 0)} help="Current period usage" /><MetricCard label="Emails sent" value={String(metrics.emails_sent)} help="Approved sends" /><MetricCard label="MRR" value={`€${Math.round(metrics.mrr || 0).toLocaleString()}`} help="Subscription revenue" /></section>}</div>;
 }
 
 export function AiEmployeesPage() {

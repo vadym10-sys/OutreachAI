@@ -84,6 +84,33 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("Russian mobile workspace pages do not show the English lead/settings copy", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/dashboard");
+    await page.evaluate(() => {
+      window.localStorage.setItem("outreachai.locale", "ru");
+      document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
+    });
+
+    for (const route of ["/dashboard/leads", "/dashboard/companies", "/dashboard/crm", "/dashboard/billing", "/dashboard/settings"]) {
+      await page.goto(route, { waitUntil: "networkidle" });
+      const body = page.locator("body");
+      await expect(body).not.toContainText("Lead Finder");
+      await expect(body).not.toContainText("Save company to CRM");
+      await expect(body).not.toContainText("Fast fallback");
+      await expect(body).not.toContainText("Every company is saved in your CRM.");
+      await expect(body).not.toContainText("Move real leads from research to revenue.");
+      await expect(body).not.toContainText("Subscription and usage.");
+      await expect(body).not.toContainText("Make the workspace ready for your first campaign.");
+      await expect(body).not.toContainText("Your session has expired. Please sign in again.");
+      await expect(page.getByRole("main")).not.toContainText("Something went wrong");
+      await expectNoHorizontalOverflow(page);
+    }
+
+    await guards.assertClean();
+  });
+
   for (const [route, heading] of customerRoutes) {
     test(`${route} loads as a stable customer page`, async ({ page }, testInfo) => {
       const guards = installQaGuards(page, testInfo);
