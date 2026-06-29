@@ -121,7 +121,13 @@ test.beforeEach(async ({ page }) => {
     } else if (url.pathname === "/api/leads/find") {
       body = [lead];
     } else if (url.pathname === "/api/campaigns") {
-      body = [campaign];
+      body = route.request().method() === "POST" ? campaign : [campaign];
+    } else if (url.pathname === `/api/campaigns/${campaign.id}/launch`) {
+      body = { ...campaign, status: "Running" };
+    } else if (url.pathname === `/api/campaigns/${campaign.id}/pause`) {
+      body = { ...campaign, status: "Paused" };
+    } else if (url.pathname === `/api/leads/${lead.id}`) {
+      body = { ...lead, campaign_id: campaign.id, status: "Qualified" };
     } else if (url.pathname === "/api/dashboard") {
       body = { leads: 1, campaigns: 1, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: "Starter", usage: { leads: 1, email_sends: 0 } };
     } else if (url.pathname.endsWith("/copilot")) {
@@ -132,6 +138,8 @@ test.beforeEach(async ({ page }) => {
       body = { no_open: ["Worth a quick look?"], opened: ["I noticed you opened the idea."], clicked: ["Happy to send the audit outline."], replied: ["Thanks for replying."] };
     } else if (url.pathname.endsWith("/draft-email")) {
       body = { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "draft" };
+    } else if (url.pathname === "/api/emails/33333333-3333-3333-3333-333333333333/send") {
+      body = { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "sent" };
     } else if (url.pathname === "/api/ai/analyze") {
       body = { company: "Hill Country Build Co", website: "https://example.com", description: "Commercial renovation company.", industry: "Construction", location: "Austin", niche: "Construction", products_services: ["Renovation"], services: ["Commercial renovation"], technologies: [], strengths: ["Clear service pages"], weaknesses: ["Weak CTA"], icp_score: 87, summary: "Strong fit for outbound.", company_summary: "Commercial renovation company.", suggested_offer: "Booked-meeting system", outreach_strategy: "Lead with website-specific conversion idea.", sales_angle: "Turn visitors into booked calls.", expected_reply_rate: "8-12%", recommended_cta: "Book a growth audit" };
     }
@@ -160,14 +168,29 @@ test.describe("redesigned B2B outbound workspace", () => {
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" })).toBeVisible();
     await expect(page.getByText("jane@example.com · verified by Hunter")).toBeVisible();
     await page.getByRole("button", { name: /Complete sales research/ }).click();
-    await expect(page.getByText("Complete sales opportunity is ready for review. No email was sent.")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("Email draft is ready. Review it below, then approve the send when you are ready.").first()).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Quick idea for Hill Country Build Co")).toBeVisible();
+    const approveButton = page.getByRole("button", { name: /Approve & send/ });
+    await expect(approveButton).toBeEnabled({ timeout: 15000 });
+    await approveButton.click();
+    await expect(page.getByText("Approved email was sent. CRM stage updated to Contacted.").first()).toBeVisible();
   });
 
   test("campaign review never sends without approval", async ({ page }) => {
     await page.goto("/dashboard/campaigns");
     await expect(page.getByText("Review before send: enabled")).toBeVisible();
     await expect(page.getByText("Austin Builders Outreach")).toBeVisible();
+    await page.getByRole("button", { name: /Launch after approval/ }).click();
+    await expect(page.getByText("Austin Builders Outreach is now Running. Emails still require approved drafts before sending.")).toBeVisible();
+    await page.getByRole("button", { name: /Pause/ }).click();
+    await expect(page.getByText("Austin Builders Outreach is now Paused. Emails still require approved drafts before sending.")).toBeVisible();
+  });
+
+  test("campaign creation connects saved leads to review workflow", async ({ page }) => {
+    await page.goto("/dashboard/campaigns");
+    await page.getByLabel("Campaign name").fill("First customer campaign");
+    await page.getByRole("button", { name: /Create campaign/ }).click();
+    await expect(page.getByText("Campaign created. Your first opportunity was added for review; no email was sent.")).toBeVisible();
   });
 
   test("dashboard keeps metrics when optional recommendations fail", async ({ page }) => {

@@ -365,13 +365,14 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
   const [followUps, setFollowUps] = useState<FollowUpSequence | undefined>();
   const [draft, setDraft] = useState<Email | undefined>();
   const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
   const priority = priorityScore(copilot);
-  const visibleStatus = draft ? "" : status;
+  const visibleStatus = status;
 
   async function completeResearch() {
     if (!lead.id) {
@@ -404,7 +405,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       setFollowUps(await api<FollowUpSequence>(`/api/leads/${lead.id}/follow-ups`, { method: "POST" }));
       setStatus("Preparing personalized first email...");
       setDraft(await api<Email>(`/api/leads/${lead.id}/draft-email`, { method: "POST" }));
-      setStatus("Complete sales opportunity is ready for review. No email was sent.");
+      setStatus("Email draft is ready. Review it below, then approve the send when you are ready.");
       trackEvent("sales_research_completed", {
         lead_id: lead.id,
         company: lead.company,
@@ -420,6 +421,43 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       });
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function approveAndSend() {
+    if (!draft?.id) {
+      setError("Generate and review the email before approving a send.");
+      return;
+    }
+    setSending(true);
+    setError("");
+    setStatus("Sending approved email through Resend...");
+    try {
+      const sent = await withTimeout(
+        api<Email>(`/api/emails/${draft.id}/send`, { method: "POST" }),
+        30000,
+        "Email sending timed out. Please try again before approving another send."
+      );
+      setDraft(sent);
+      setStatus("Approved email was sent. CRM stage updated to Contacted.");
+      onLeadUpdated?.({ ...lead, status: "Contacted" });
+      trackEvent("approved_email_sent", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company
+      });
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, "Email could not be sent. Check Resend, recipient email, subscription and sending limits.");
+      setError(reason);
+      setStatus("");
+      trackEvent("approved_email_send_failed", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company,
+        reason
+      });
+    } finally {
+      setSending(false);
     }
   }
 
@@ -457,7 +495,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
 
       {draft && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">Personalized first email</p>
-        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">Complete sales opportunity is ready for review. No email was sent.</p>
+        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? "Approved email was sent. CRM stage updated to Contacted." : "Email draft is ready. Review it below, then approve the send when you are ready."}</p>
         <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
         <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{draft.body}</p>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -470,7 +508,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Complete sales research</PrimaryButton>
-        <SecondaryButton disabled={!draft}><Send size={17} /> Approve later</SecondaryButton>
+        <SecondaryButton onClick={approveAndSend} disabled={!draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? "Sent" : "Approve & send"}</SecondaryButton>
       </div>
     </article>
   );
@@ -731,8 +769,96 @@ export function ContactsPage() {
 }
 
 export function CampaignsPage() {
-  const { campaigns, leads, loading, error } = useSalesData();
-  return <div className="space-y-6"><PageHeader eyebrow="Campaigns" title="Review real outreach before anything is sent." copy="Campaigns and sequences come from your workspace. OutreachAI keeps generated emails in review mode." />{loading ? <EmptyState title="Loading campaigns" copy="Reading saved campaigns." /> : error ? <EmptyState title="Campaign data unavailable" copy={error} /> : campaigns.length ? <section className="grid gap-4 lg:grid-cols-2">{campaigns.map((campaign) => <article key={campaign.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{campaign.name}</h2><p className="mt-2 text-sm text-slate-600">{campaign.leads} leads · {campaign.sent} sent · {campaign.replies} replies · {campaign.status}</p><div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `Email ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || "Subject unavailable"}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No sequence saved yet.</p>}</div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">Review before send: enabled</p><div className="mt-4 flex gap-2"><SecondaryButton><Pause size={17} /> Pause</SecondaryButton><PrimaryButton><Play size={17} /> Launch after approval</PrimaryButton></div></article>)}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} />}</div>;
+  const { api, campaigns, leads, loading, error, refresh } = useSalesData();
+  const [notice, setNotice] = useState("");
+  const [actionBusy, setActionBusy] = useState("");
+
+  async function createCampaign(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(event.currentTarget);
+    const lead = leads[0];
+    const payload = {
+      name: String(data.get("name") || `${lead?.industry || "Outbound"} campaign`),
+      industry: String(data.get("industry") || lead?.industry || ""),
+      countries: splitList(String(data.get("country") || lead?.country || "")),
+      cities: splitList(String(data.get("city") || lead?.city || "")),
+      company_size: String(data.get("company_size") || ""),
+      keywords: splitList(String(data.get("keywords") || "")),
+      language: "English",
+      offer: String(data.get("offer") || lead?.suggested_offer || "A practical sales growth improvement based on real company research."),
+      cta: String(data.get("cta") || "Open to a quick review?"),
+      email_tone: "Professional",
+      signature: String(data.get("signature") || ""),
+      daily_send_limit: 25,
+      working_hours: "09:00-17:00",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      follow_up_days: 3,
+      sequence: [
+        { step_order: 1, name: "Email #1", subject: "", body: "", delay_days: 0 },
+        { step_order: 2, name: "Follow-up #1", subject: "", body: "", delay_days: 3 },
+        { step_order: 3, name: "Follow-up #2", subject: "", body: "", delay_days: 7 },
+        { step_order: 4, name: "Follow-up #3", subject: "", body: "", delay_days: 14 }
+      ]
+    };
+    setActionBusy("create");
+    setNotice("");
+    try {
+      const campaign = await api<Campaign>("/api/campaigns", { method: "POST", body: JSON.stringify(payload) });
+      if (lead?.id) {
+        await api<Lead>(`/api/leads/${lead.id}`, { method: "PATCH", body: JSON.stringify({ campaign_id: campaign.id, status: "Qualified" }) });
+      }
+      setNotice("Campaign created. Your first opportunity was added for review; no email was sent.");
+      trackEvent("campaign_created_from_workspace", { campaign_id: campaign.id, first_lead_id: lead?.id || "" });
+      form.reset();
+      await refresh();
+    } catch (err) {
+      setNotice(friendlyErrorMessage(err, "Campaign could not be created. Check your plan limits and try again."));
+    } finally {
+      setActionBusy("");
+    }
+  }
+
+  async function campaignAction(campaignId: string, action: "launch" | "pause" | "resume") {
+    setActionBusy(`${campaignId}:${action}`);
+    setNotice("");
+    try {
+      const updated = await api<Campaign>(`/api/campaigns/${campaignId}/${action}`, { method: "POST" });
+      setNotice(`${updated.name} is now ${updated.status}. Emails still require approved drafts before sending.`);
+      trackEvent("campaign_status_updated", { campaign_id: campaignId, action, status: updated.status });
+      await refresh();
+    } catch (err) {
+      setNotice(friendlyErrorMessage(err, "Campaign status could not be updated."));
+    } finally {
+      setActionBusy("");
+    }
+  }
+
+  return <div className="space-y-6">
+    <PageHeader eyebrow="Campaigns" title="Review real outreach before anything is sent." copy="Create a simple sequence from saved opportunities. OutreachAI keeps generated emails in review mode until you approve a send." />
+    {notice && <p role="status" className="rounded-2xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-700 shadow-sm">{notice}</p>}
+    {!loading && !error && leads.length > 0 && <form onSubmit={createCampaign} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-bold uppercase text-brand">Next step</p>
+          <h2 className="mt-1 text-xl font-bold text-ink">Create a campaign from saved leads</h2>
+          <p className="mt-2 text-sm text-slate-600">Expected time: 1 minute. You can review every email before anything is sent.</p>
+        </div>
+        <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">Review before send</span>
+      </div>
+      <div className="mt-5 grid gap-4 md:grid-cols-2">
+        <label className="text-sm font-semibold text-slate-700">Campaign name<input name="name" required placeholder={`${leads[0]?.industry || "Outbound"} campaign`} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">Industry<input name="industry" defaultValue={leads[0]?.industry || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">Country<input name="country" defaultValue={leads[0]?.country || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">City<input name="city" defaultValue={leads[0]?.city || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700 md:col-span-2">Offer<textarea name="offer" defaultValue={leads[0]?.suggested_offer || ""} placeholder="What should the email offer?" className="mt-2 min-h-24 w-full rounded-md border border-slate-300 p-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">CTA<input name="cta" placeholder="Open to a quick review?" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">Signature<input name="signature" placeholder="Your name" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+      </div>
+      <div className="mt-5"><PrimaryButton disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} Create campaign</PrimaryButton></div>
+    </form>}
+    {loading ? <EmptyState title="Loading campaigns" copy="Reading saved campaigns." /> : error ? <EmptyState title="Campaign data unavailable" copy={error} /> : campaigns.length ? <section className="grid gap-4 lg:grid-cols-2">{campaigns.map((campaign) => <article key={campaign.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{campaign.name}</h2><p className="mt-2 text-sm text-slate-600">{campaign.leads} leads · {campaign.sent} sent · {campaign.replies} replies · {campaign.status}</p><div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `Email ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || "Subject unavailable until AI draft is reviewed"}</p><p className="mt-1 text-xs font-semibold text-slate-500">Delay: {step.delay_days} days</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No sequence saved yet.</p>}</div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">Review before send: enabled</p><div className="mt-4 grid gap-2 min-[430px]:grid-cols-2"><SecondaryButton onClick={() => campaignAction(campaign.id, "pause")} disabled={actionBusy === `${campaign.id}:pause`}><Pause size={17} /> Pause</SecondaryButton><PrimaryButton onClick={() => campaignAction(campaign.id, campaign.status === "Paused" ? "resume" : "launch")} disabled={actionBusy === `${campaign.id}:launch` || actionBusy === `${campaign.id}:resume`}>{actionBusy.startsWith(campaign.id) ? <Loader2 className="animate-spin" size={17} /> : <Play size={17} />} {campaign.status === "Paused" ? "Resume" : "Launch after approval"}</PrimaryButton></div></article>)}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} action={leads.length ? undefined : <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find leads</Link>} />}
+  </div>;
 }
 
 export function InboxPage() {
