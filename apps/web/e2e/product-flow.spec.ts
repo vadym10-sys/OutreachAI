@@ -11,7 +11,7 @@ const pages = [
   ["/dashboard/crm", "Move real leads from research to revenue."],
   ["/dashboard/deals", "Revenue opportunities from saved companies."],
   ["/dashboard/analytics", "Measure real outbound performance."],
-  ["/dashboard/settings", "Configure the workflow before relying on automation."],
+  ["/dashboard/settings", "Make the workspace ready for your first campaign."],
   ["/dashboard/billing", "Subscription and usage."],
   ["/dashboard/sales-employees", "One click should replace hours of manual sales research."],
   ["/dashboard/admin/quality", "AI Quality & Self-Healing"]
@@ -130,7 +130,7 @@ const qualityDashboard = {
     playwright_e2e: "required"
   },
   checks: [
-    { name: "Production integration monitor", module: "AI Integration Monitor", status: "healthy", severity: "medium", summary: "All critical providers are configured.", evidence: { google_maps: true }, suggested_fix: "Keep provider checks running before every deploy." },
+    { name: "Production readiness monitor", module: "AI Integration Monitor", status: "healthy", severity: "medium", summary: "All critical customer flows are ready.", evidence: { lead_search: true }, suggested_fix: "Keep readiness checks running before every deploy." },
     { name: "CRM data consistency", module: "AI Data Consistency Checker", status: "healthy", severity: "medium", summary: "CRM records are linked.", evidence: {}, suggested_fix: "Keep duplicate prevention covered." }
   ],
   open_bugs: [],
