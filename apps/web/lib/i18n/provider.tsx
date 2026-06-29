@@ -30,10 +30,9 @@ function initialLocale(): Locale {
     if (isLocale(browser)) return browser;
     const base = browser.split('-')[0];
     if (isLocale(base)) return base;
-  } catch (error) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.error('Locale read failed', error);
-    }
+  } catch {
+    // Some mobile in-app browsers and private sessions block storage access.
+    // Falling back to English is expected and should not create customer-visible noise.
   }
   return 'en';
 }
@@ -43,10 +42,8 @@ function persistLocale(locale: Locale) {
     window.localStorage.setItem(storageKey, locale);
     document.cookie = `${cookieKey}=${locale}; path=/; max-age=31536000; SameSite=Lax`;
     document.documentElement.lang = locale;
-  } catch (error) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.error('Locale persistence failed', error);
-    }
+  } catch {
+    // Locale persistence is best-effort; blocked storage must never affect rendering.
   }
 }
 
@@ -82,7 +79,13 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       t: (key) => translate(key, locale),
       formatDate: (value, options = { dateStyle: 'medium', timeStyle: 'short' }) => {
         if (!value) return translate('common.notScheduled', locale);
-        return new Intl.DateTimeFormat(intlLocale, options).format(new Date(value));
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return translate('common.notScheduled', locale);
+        try {
+          return new Intl.DateTimeFormat(intlLocale, options).format(date);
+        } catch {
+          return translate('common.notScheduled', locale);
+        }
       },
       formatNumber: (value) => new Intl.NumberFormat(intlLocale).format(value),
       formatCurrency: (value, currency = 'EUR') => new Intl.NumberFormat(intlLocale, { style: 'currency', currency }).format(value),
@@ -101,7 +104,16 @@ export function useI18n() {
       locale: 'en' as Locale,
       setLocale: () => undefined,
       t: (key: TranslationKey | string) => translate(key, 'en'),
-      formatDate: (value: string | Date | null | undefined) => value ? new Intl.DateTimeFormat('en').format(new Date(value)) : translate('common.notScheduled', 'en'),
+      formatDate: (value: string | Date | null | undefined) => {
+        if (!value) return translate('common.notScheduled', 'en');
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return translate('common.notScheduled', 'en');
+        try {
+          return new Intl.DateTimeFormat('en').format(date);
+        } catch {
+          return translate('common.notScheduled', 'en');
+        }
+      },
       formatNumber: (value: number) => new Intl.NumberFormat('en').format(value),
       formatCurrency: (value: number, currency = 'EUR') => new Intl.NumberFormat('en', { style: 'currency', currency }).format(value),
       formatPercent: (value: number) => new Intl.NumberFormat('en', { style: 'percent', maximumFractionDigits: 1 }).format(value / 100),

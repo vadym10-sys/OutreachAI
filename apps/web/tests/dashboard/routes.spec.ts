@@ -21,6 +21,48 @@ test.describe("customer workspace routes", () => {
     await mockWorkspaceApi(page);
   });
 
+  test("Telegram-sized mobile dashboard route never shows the route error page", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+
+    await page.goto("/dashboard");
+    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("Something went wrong");
+    await expect(page.locator("body")).not.toContainText("The page failed to render");
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
+  test("mobile landing survives missing client config and blocked browser storage", async ({ browser }, testInfo) => {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        get() {
+          throw new Error("Storage unavailable");
+        }
+      });
+    });
+    const page = await context.newPage();
+    const guards = installQaGuards(page, testInfo);
+    await page.route("**/api/client-config", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({}) });
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "AI Sales Employee for B2B Lead Generation" })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("Something went wrong");
+    await expect(page.locator("body")).not.toContainText("The page failed to render");
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+    await context.close();
+  });
+
   for (const [route, heading] of customerRoutes) {
     test(`${route} loads as a stable customer page`, async ({ page }, testInfo) => {
       const guards = installQaGuards(page, testInfo);

@@ -18,3 +18,11 @@ test("runtime diagnostics endpoint does not leak secret values", async ({ page }
   expect(text).not.toMatch(/sk_live_|sk_test_|DATABASE_URL|OPENAI_API_KEY|RESEND_API_KEY|HUNTER_API_KEY/i);
   await guards.assertClean();
 });
+
+test("customer route HTML is not cached as stale app state", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  const response = await page.request.get("/");
+  expect(response.ok()).toBe(true);
+  expect(response.headers()["cache-control"] || "").not.toMatch(/s-maxage=31536000/);
+  await guards.assertClean();
+});

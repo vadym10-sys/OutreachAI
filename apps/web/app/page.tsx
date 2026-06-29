@@ -3,6 +3,9 @@ import { ArrowRight, BarChart3, Building2, CheckCircle2, ClipboardCheck, Globe2,
 import { PricingCheckoutButton } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const tools = [
   {
     title: "Lead Finder",

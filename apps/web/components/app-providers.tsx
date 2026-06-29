@@ -70,6 +70,41 @@ class ClientErrorBoundary extends Component<{ children: ReactNode }, { failed: b
   }
 }
 
+class SilentIntegrationBoundary extends Component<{ area: string; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("OutreachAI integration failed", this.props.area, error, info);
+    }
+    Sentry.captureException(error, {
+      tags: { area: "integration-boundary", integration: this.props.area },
+      extra: { componentStack: info.componentStack }
+    });
+    captureLogRocketException(error, {
+      area: "integration-boundary",
+      integration: this.props.area
+    });
+    capturePostHogException(error, {
+      area: "integration-boundary",
+      integration: this.props.area,
+      component_stack: info.componentStack
+    });
+  }
+
+  render() {
+    if (this.state.failed) {
+      return null;
+    }
+
+    return this.props.children;
+  }
+}
+
 function SentryPageContext() {
   const pathname = usePathname();
 
@@ -251,19 +286,36 @@ export function AppProviders({
   clerkEnabled: boolean;
 }) {
   if (!clerkEnabled || !clerkPublishableKey) {
-    return <ClientErrorBoundary><SentryPageContext /><PostHogPageContext /><LogRocketPageContext /><I18nProvider>{children}</I18nProvider></ClientErrorBoundary>;
+    return (
+      <>
+        <SilentIntegrationBoundary area="sentry-page-context"><SentryPageContext /></SilentIntegrationBoundary>
+        <SilentIntegrationBoundary area="posthog-page-context"><PostHogPageContext /></SilentIntegrationBoundary>
+        <SilentIntegrationBoundary area="logrocket-page-context"><LogRocketPageContext /></SilentIntegrationBoundary>
+        <ClientErrorBoundary>
+          <I18nProvider>{children}</I18nProvider>
+        </ClientErrorBoundary>
+      </>
+    );
   }
 
   return (
     <ClerkProvider publishableKey={clerkPublishableKey}>
-      <ClientErrorBoundary>
+      <SilentIntegrationBoundary area="sentry-page-context">
         <SentryPageContext />
+      </SilentIntegrationBoundary>
+      <SilentIntegrationBoundary area="posthog-page-context">
         <PostHogPageContext />
+      </SilentIntegrationBoundary>
+      <SilentIntegrationBoundary area="logrocket-page-context">
         <LogRocketPageContext />
+      </SilentIntegrationBoundary>
+      <SilentIntegrationBoundary area="posthog-identity-context">
         <PostHogIdentityContext />
-        <ClerkFailed>
-          <StabilityFallback title="Authentication could not load. Please refresh or sign in again." />
-        </ClerkFailed>
+      </SilentIntegrationBoundary>
+      <ClerkFailed>
+        <StabilityFallback title="Authentication could not load. Please refresh or sign in again." />
+      </ClerkFailed>
+      <ClientErrorBoundary>
         <I18nProvider>{children}</I18nProvider>
       </ClientErrorBoundary>
     </ClerkProvider>
