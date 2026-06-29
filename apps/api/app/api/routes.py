@@ -693,12 +693,16 @@ def _crm_note_out(note: Note) -> CrmNoteOut:
     return CrmNoteOut(id=note.id, company_id=note.company_id, lead_id=note.lead_id, body=note.body, kind=note.kind, created_at=note.created_at)
 
 
+def _audit_log_lead_id_clause(lead_id: UUID):
+    return AuditLog.metadata_json["lead_id"].as_string() == str(lead_id)
+
+
 def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: Company) -> CrmCompanyOut:
     contacts = list(db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id).order_by(Contact.created_at.desc())).all())
     deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc())).all())
     notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc()).limit(20)).all())
     emails = list(db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc()).limit(10)).all()) if company.lead_id else []
-    activity = list(db.scalars(select(AuditLog).where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id), AuditLog.metadata_json.contains({"lead_id": str(company.lead_id)})).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
+    activity = list(db.scalars(select(AuditLog).where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id), _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
     return CrmCompanyOut(
         id=company.id,
         lead_id=company.lead_id,

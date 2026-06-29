@@ -15,6 +15,8 @@ from fastapi import HTTPException
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
+from sqlalchemy import select
+from sqlalchemy.dialects import postgresql
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
 if db_path.exists():
@@ -38,7 +40,8 @@ os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core import security  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
+from app.api.routes import _audit_log_lead_id_clause  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -872,6 +875,40 @@ def test_crm_duplicate_prevention_reuses_manual_company(monkeypatch) -> None:
     companies = crm_response.json()
     assert len(companies) == 1
     assert companies[0]["website"] == "https://crm-duplicate.example"
+
+
+def test_crm_pipeline_activity_query_uses_postgres_json_key_extraction() -> None:
+    compiled = str(select(AuditLog.id).where(_audit_log_lead_id_clause(UUID("00000000-0000-0000-0000-000000000001"))).compile(dialect=postgresql.dialect()))
+
+    assert "LIKE" not in compiled.upper()
+    assert "->>" in compiled
+
+
+def test_crm_pipeline_returns_company_cards_with_activity_timeline(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    lead_response = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Pipeline Activity Build", "website": "https://pipeline-activity.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert lead_response.status_code == 200
+    lead = lead_response.json()
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+
+    db = get_sessionmaker()()
+    try:
+        db.add(AuditLog(user_id="dev_user", workspace_id=UUID(workspace["id"]), action="lead.pipeline_activity_test", metadata_json={"lead_id": lead["id"], "source": "test"}))
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/crm/pipeline", headers=AUTH)
+
+    assert response.status_code == 200
+    company = next(item for item in response.json()["companies"] if item["lead_id"] == lead["id"])
+    assert company["name"] == "Pipeline Activity Build"
+    assert any(item["action"] == "lead.pipeline_activity_test" for item in company["activity"])
 
 
 def test_ai_sales_copilot_endpoints(monkeypatch) -> None:
