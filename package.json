@@ -6,8 +6,10 @@
     "dev": "npm --prefix apps/web run dev",
     "build": "npm --prefix apps/web run build",
     "lint": "npm --prefix apps/web run lint",
+    "typecheck": "npm --prefix apps/web run typecheck",
     "test": "npm --prefix apps/web run test",
     "e2e": "npm --prefix apps/web run e2e",
+    "qa": "npm --prefix apps/web run qa",
     "api:dev": "PYTHONPATH=apps/api uvicorn app.main:app --reload --app-dir apps/api",
     "api:test": "PYTHONPATH=apps/api pytest apps/api/tests"
   },

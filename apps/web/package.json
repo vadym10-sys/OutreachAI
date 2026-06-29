@@ -7,8 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:report": "playwright show-report",
+    "qa:diagnose": "node scripts/qa-diagnose.mjs",
+    "qa": "npm run lint && npm run typecheck && npm test -- --run && npm run build && npm run e2e"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.5.8",

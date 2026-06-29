@@ -4,9 +4,18 @@ import { FormEvent, useState } from 'react';
 import { useSignIn } from '@clerk/nextjs/legacy';
 import Link from 'next/link';
 import { CheckCircle2, Loader2, Mail, ShieldCheck } from 'lucide-react';
+import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
 
 type Step = 'request' | 'reset' | 'success';
 export function PasswordResetClient() {
+  if (!hasClerkPublishableKey || isClerkE2EBypass) {
+    return <PasswordResetUnavailable />;
+  }
+
+  return <LivePasswordResetClient />;
+}
+
+function LivePasswordResetClient() {
   const { isLoaded, signIn, setActive } = useSignIn();
   const [step, setStep] = useState<Step>('request');
   const [email, setEmail] = useState('');
@@ -139,6 +148,21 @@ export function PasswordResetClient() {
       <div className="mt-6 text-center text-sm text-slate-600">
         Remembered your password? <Link href="/sign-in" className="font-semibold text-brand">Back to sign in</Link>
       </div>
+    </div>
+  );
+}
+
+function PasswordResetUnavailable() {
+  return (
+    <div className="w-full max-w-[min(100%,28rem)] rounded-lg border border-slate-200 bg-white p-5 shadow-soft min-[360px]:p-6">
+      <div className="mb-6">
+        <p className="inline-flex rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">Secure account recovery</p>
+        <h1 className="mt-4 text-2xl font-bold text-ink">Reset your password</h1>
+        <p className="mt-2 text-sm leading-6 text-slate-600">Secure password recovery is temporarily unavailable in this environment.</p>
+      </div>
+      <Link href="/sign-in" className="focus-ring inline-flex min-h-11 w-full items-center justify-center rounded-md bg-ink px-4 py-2 font-semibold text-white">
+        Back to sign in
+      </Link>
     </div>
   );
 }

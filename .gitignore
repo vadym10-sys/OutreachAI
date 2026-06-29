@@ -10,5 +10,8 @@ dist
 coverage
 playwright-report
 test-results
+test-artifacts
+artifacts
+*.tsbuildinfo
 postgres_data
 outreachai.db
