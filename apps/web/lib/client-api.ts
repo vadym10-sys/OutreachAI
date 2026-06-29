@@ -1,5 +1,6 @@
 import { apiUrl } from '@/lib/env';
 import * as Sentry from '@sentry/nextjs';
+import { captureLogRocketException, trackLogRocketApiFailure } from '@/lib/logrocket';
 import { trackEvent } from '@/lib/posthog';
 
 const technicalErrorPattern = /api error|load failed|failed to fetch|networkerror|unexpected token|json|traceback|stack|500|502|503|504/i;
@@ -46,6 +47,7 @@ async function logApiFailure(path: string, response: Response) {
       response_detail: detail.slice(0, 1000)
     }
   });
+  trackLogRocketApiFailure(path, response.status, detail);
   trackEvent('api_request_failed', {
     endpoint: path,
     status: response.status,
@@ -109,6 +111,11 @@ export async function clientApi<T>(path: string, token: string | null, init: Req
     Sentry.captureException(error, {
       tags: { area: 'api-client', api_status: 'network-error' },
       extra: { path }
+    });
+    captureLogRocketException(error, {
+      area: 'api-client',
+      endpoint: path,
+      api_status: 'network-error'
     });
     trackEvent('api_network_error', {
       endpoint: path,

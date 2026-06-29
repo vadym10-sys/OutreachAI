@@ -6,6 +6,7 @@ import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { I18nProvider } from "@/lib/i18n/provider";
+import { bootLogRocket, captureLogRocketException, identifyLogRocketUser, trackLogRocketEvent, trackLogRocketPage } from "@/lib/logrocket";
 import { bootPostHog, capturePostHogException, identifyPostHogUser, trackPageView } from "@/lib/posthog";
 
 function StabilityFallback({ title = "Something went wrong. Please refresh or sign in again." }: { title?: string }) {
@@ -48,6 +49,9 @@ class ClientErrorBoundary extends Component<{ children: ReactNode }, { failed: b
     Sentry.captureException(error, {
       tags: { area: "react-error-boundary" },
       extra: { componentStack: info.componentStack }
+    });
+    captureLogRocketException(error, {
+      area: "react-error-boundary"
     });
     capturePostHogException(error, {
       area: "react-error-boundary",
@@ -115,6 +119,98 @@ function PostHogPageContext() {
   return null;
 }
 
+function LogRocketPageContext() {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    void bootLogRocket();
+  }, []);
+
+  useEffect(() => {
+    trackLogRocketPage(pathname);
+  }, [pathname]);
+
+  useEffect(() => {
+    const startedAt = performance.now();
+    const timer = window.setTimeout(() => {
+      const elapsed = Math.round(performance.now() - startedAt);
+      if (elapsed > 2500) {
+        trackLogRocketEvent("slow_loading_state", {
+          duration_ms: elapsed,
+          current_route: pathname
+        });
+      }
+    }, 2600);
+    return () => window.clearTimeout(timer);
+  }, [pathname]);
+
+  useEffect(() => {
+    function reportMobileOverflow() {
+      const overflow = Math.max(0, document.documentElement.scrollWidth - window.innerWidth);
+      if (window.innerWidth <= 768 && overflow > 4) {
+        trackLogRocketEvent("mobile_horizontal_overflow", {
+          viewport_width: window.innerWidth,
+          scroll_width: document.documentElement.scrollWidth,
+          overflow_px: overflow,
+          current_route: window.location.pathname
+        });
+      }
+    }
+
+    const timer = window.setTimeout(reportMobileOverflow, 500);
+    window.addEventListener("resize", reportMobileOverflow);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", reportMobileOverflow);
+    };
+  }, [pathname]);
+
+  useEffect(() => {
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target instanceof Element ? event.target.closest("button,a") : null;
+      if (!target) return;
+      if (target instanceof HTMLButtonElement && target.disabled) {
+        trackLogRocketEvent("disabled_button_tapped", {
+          label: target.textContent?.trim().slice(0, 120) || target.getAttribute("aria-label") || "button",
+          current_route: window.location.pathname
+        });
+      }
+      if (target instanceof HTMLAnchorElement && !target.getAttribute("href")) {
+        trackLogRocketEvent("broken_link_tapped", {
+          label: target.textContent?.trim().slice(0, 120) || target.getAttribute("aria-label") || "link",
+          current_route: window.location.pathname
+        });
+      }
+    }
+
+    function handleError(event: ErrorEvent) {
+      captureLogRocketException(event.error || event.message, {
+        area: "window-error",
+        filename: event.filename,
+        line: event.lineno,
+        column: event.colno
+      });
+    }
+
+    function handleUnhandledRejection(event: PromiseRejectionEvent) {
+      captureLogRocketException(event.reason, {
+        area: "unhandled-promise-rejection"
+      });
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
+
+  return null;
+}
+
 function PostHogIdentityContext() {
   const { isLoaded, isSignedIn, user } = useUser();
   const workspaceMetadata = user?.publicMetadata as { workspace_id?: unknown; workspaceId?: unknown } | undefined;
@@ -129,6 +225,11 @@ function PostHogIdentityContext() {
     }
 
     identifyPostHogUser({
+      userId: user.id,
+      email: user.primaryEmailAddress?.emailAddress || user.emailAddresses?.[0]?.emailAddress,
+      workspaceId: String(workspaceMetadata?.workspace_id || workspaceMetadata?.workspaceId || "unknown-workspace")
+    });
+    identifyLogRocketUser({
       userId: user.id,
       email: user.primaryEmailAddress?.emailAddress || user.emailAddresses?.[0]?.emailAddress,
       workspaceId: String(workspaceMetadata?.workspace_id || workspaceMetadata?.workspaceId || "unknown-workspace")
@@ -148,7 +249,7 @@ export function AppProviders({
   clerkEnabled: boolean;
 }) {
   if (!clerkEnabled || !clerkPublishableKey) {
-    return <ClientErrorBoundary><SentryPageContext /><PostHogPageContext /><I18nProvider>{children}</I18nProvider></ClientErrorBoundary>;
+    return <ClientErrorBoundary><SentryPageContext /><PostHogPageContext /><LogRocketPageContext /><I18nProvider>{children}</I18nProvider></ClientErrorBoundary>;
   }
 
   return (
@@ -156,6 +257,7 @@ export function AppProviders({
       <ClientErrorBoundary>
         <SentryPageContext />
         <PostHogPageContext />
+        <LogRocketPageContext />
         <PostHogIdentityContext />
         <ClerkFailed>
           <StabilityFallback title="Authentication could not load. Please refresh or sign in again." />

@@ -201,7 +201,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" })).toBeVisible();
     await expect(page.getByText("jane@example.com · verified by Hunter")).toBeVisible();
     await page.getByRole("button", { name: /Complete sales research/ }).click();
-    await expect(page.getByText("Email draft is ready. Review it below, then approve the send when you are ready.")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("Review this draft before sending. No email has been sent yet.")).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Quick idea for Hill Country Build Co")).toBeVisible();
     const approveButton = page.getByRole("button", { name: /Approve & send/ });
     await expect(approveButton).toBeEnabled({ timeout: 15000 });
