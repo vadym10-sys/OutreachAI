@@ -18,8 +18,9 @@ test("customer UI does not expose provider, server, or secret details", async ({
 test("form input is rendered as text and not executed as markup", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/leads");
-  await page.getByLabel("Country").fill("<img src=x onerror=alert(1)>");
-  await expect(page.getByLabel("Country")).toHaveValue("<img src=x onerror=alert(1)>");
+  const leadSearch = page.getByRole("form", { name: "Lead search" });
+  await leadSearch.getByLabel("Country").fill("<img src=x onerror=alert(1)>");
+  await expect(leadSearch.getByLabel("Country")).toHaveValue("<img src=x onerror=alert(1)>");
   const injectedImageCount = await page.locator("img[src='x']").count();
   expect(injectedImageCount).toBe(0);
   await guards.assertClean();

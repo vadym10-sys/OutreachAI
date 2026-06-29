@@ -12,6 +12,10 @@ const customerRoutes = [
   ["/dashboard/settings", "Make the workspace ready for your first campaign."]
 ] as const;
 
+const setupRoutes = [
+  ["/onboarding", "Set up OutreachAI"]
+] as const;
+
 test.describe("customer workspace routes", () => {
   test.beforeEach(async ({ page }) => {
     await mockWorkspaceApi(page);
@@ -27,6 +31,17 @@ test.describe("customer workspace routes", () => {
       await expectNoHorizontalOverflow(page);
       await expectNoBrokenImages(page);
       await expectNoSensitiveCustomerText(page);
+      await guards.assertClean();
+    });
+  }
+
+  for (const [route, heading] of setupRoutes) {
+    test(`${route} loads without the global error page`, async ({ page }, testInfo) => {
+      const guards = installQaGuards(page, testInfo);
+      await page.goto(route);
+      await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+      await expect(page.locator("body")).not.toContainText("Something went wrong");
+      await expect(page.locator("body")).not.toContainText("The page failed to render");
       await guards.assertClean();
     });
   }

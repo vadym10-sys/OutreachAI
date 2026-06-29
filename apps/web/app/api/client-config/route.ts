@@ -29,10 +29,6 @@ export function GET() {
     logrocket: {
       enabled: Boolean(logRocketAppId),
       app_id: logRocketAppId
-    },
-    app: {
-      environment: process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || 'development',
-      release: process.env.NEXT_PUBLIC_RELEASE || 'outreachai-web@1.0.0'
     }
   });
 }
