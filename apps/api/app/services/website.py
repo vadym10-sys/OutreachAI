@@ -4,12 +4,19 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from html import unescape
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
 
+WEBSITE_UNREACHABLE_MESSAGE = "Website could not be reached. The lead was saved, but AI website analysis was skipped."
+
+
 class WebsiteFetchError(RuntimeError):
+    pass
+
+
+class WebsiteValidationError(WebsiteFetchError):
     pass
 
 
@@ -24,16 +31,19 @@ class WebsiteSnapshot:
 
 @lru_cache(maxsize=256)
 def collect_website(url: str) -> WebsiteSnapshot:
+    normalized_url = normalize_website_url(url)
     headers = {
         "User-Agent": "OutreachAI/1.0 website analyzer (+https://outreachaiaiai.com)",
         "Accept": "text/html,application/xhtml+xml",
     }
     try:
         with httpx.Client(timeout=12, follow_redirects=True, headers=headers) as client:
-            response = client.get(url)
+            response = client.get(normalized_url)
             response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise WebsiteFetchError(f"{WEBSITE_UNREACHABLE_MESSAGE} HTTP status: {exc.response.status_code}.") from exc
     except httpx.HTTPError as exc:
-        raise WebsiteFetchError(f"Could not fetch website: {exc}") from exc
+        raise WebsiteFetchError(WEBSITE_UNREACHABLE_MESSAGE) from exc
 
     content_type = response.headers.get("content-type", "")
     if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
@@ -47,6 +57,38 @@ def collect_website(url: str) -> WebsiteSnapshot:
         text=_visible_text(html),
         technologies=_detect_technologies(html, response.headers, str(response.url)),
     )
+
+
+def normalize_website_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        raise WebsiteValidationError("Website URL is required.")
+    if any(char.isspace() for char in raw):
+        raise WebsiteValidationError("Website URL cannot contain spaces.")
+    if "://" not in raw:
+        raw = f"https://{raw}"
+
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"}:
+        raise WebsiteValidationError("Website URL must start with http:// or https://.")
+
+    hostname = (parsed.hostname or "").strip(".").lower()
+    if not _is_valid_domain(hostname):
+        raise WebsiteValidationError("Website URL must contain a valid domain.")
+
+    netloc = hostname
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    path = parsed.path or ""
+    return urlunparse((parsed.scheme, netloc, path, "", parsed.query, ""))
+
+
+def _is_valid_domain(hostname: str) -> bool:
+    if not hostname or len(hostname) > 253 or "." not in hostname:
+        return False
+    labels = hostname.split(".")
+    domain_label = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+    return all(domain_label.match(label) for label in labels)
 
 
 def _first_match(pattern: str, html: str) -> str:

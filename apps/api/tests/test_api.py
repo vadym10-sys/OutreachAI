@@ -43,6 +43,7 @@ from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, 
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
+from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteValidationError, normalize_website_url  # noqa: E402
 from app.main import app  # noqa: E402
 
 Base.metadata.create_all(bind=get_engine())
@@ -65,6 +66,17 @@ def test_sentry_debug_endpoint_throws_only_when_debug_enabled(monkeypatch) -> No
     monkeypatch.setattr(main_module.settings, "debug", True)
     with pytest.raises(RuntimeError, match="OutreachAI backend development Sentry test error"):
         client.get("/api/debug/sentry-error")
+
+
+def test_website_url_normalization_adds_https_and_rejects_invalid_domains() -> None:
+    assert normalize_website_url("example.com") == "https://example.com"
+    assert normalize_website_url("https://Example.COM/path?q=1") == "https://example.com/path?q=1"
+
+    with pytest.raises(WebsiteValidationError):
+        normalize_website_url("not a website")
+
+    with pytest.raises(WebsiteValidationError):
+        normalize_website_url("localhost")
 
 
 def stripe_signature(payload: dict) -> tuple[str, str]:
@@ -771,6 +783,40 @@ def test_manual_lead_creation_survives_hunter_no_email(monkeypatch) -> None:
     assert lead["hunter_verified"] is False
     assert lead["hunter_status"] == "no_verified_email"
     assert lead["source"] == "manual"
+
+
+def test_ai_analyze_skips_unreachable_website_without_failing_saved_lead(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+
+    lead_response = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Unreachable Build", "website": "unreachable-build.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert lead_response.status_code == 200
+    lead = lead_response.json()
+
+    def fail_fetch(url: str):
+        raise WebsiteFetchError(WEBSITE_UNREACHABLE_MESSAGE)
+
+    monkeypatch.setattr("app.api.routes.collect_website", fail_fetch)
+    response = client.post(
+        "/api/ai/analyze",
+        headers=AUTH,
+        json={"lead_id": lead["id"], "company": "Unreachable Build", "website": "unreachable-build.example", "niche": "Construction"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == WEBSITE_UNREACHABLE_MESSAGE
+    assert body["website"] == "unreachable-build.example"
+
+    crm_response = client.get("/api/crm/companies?search=Unreachable%20Build", headers=AUTH)
+    assert crm_response.status_code == 200
+    company = crm_response.json()[0]
+    assert company["ai_summary"] == WEBSITE_UNREACHABLE_MESSAGE
+    assert company["crm_stage"] != "Website Analyzed"
 
 
 def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:

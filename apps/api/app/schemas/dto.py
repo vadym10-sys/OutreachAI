@@ -388,7 +388,7 @@ class PaginatedLeads(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     lead_id: Optional[UUID] = None
-    website: HttpUrl
+    website: str = Field(min_length=1, max_length=2048)
     company: str = ""
     niche: Optional[str] = None
 

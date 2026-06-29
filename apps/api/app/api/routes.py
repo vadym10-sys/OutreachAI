@@ -184,7 +184,7 @@ from app.services.google_maps import (
     google_maps_key_loaded,
     search_google_places,
 )
-from app.services.website import WebsiteFetchError, collect_website
+from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, collect_website, normalize_website_url
 
 router = APIRouter()
 logger = logging.getLogger("outreachai.api.routes")
@@ -545,7 +545,7 @@ def _crm_stage_for_lead(lead: Lead) -> str:
         return "Email Draft Ready"
     if lead.email or metadata.get("hunter_verified"):
         return "Contact Found"
-    if metadata.get("ai_summary") or metadata.get("suggested_offer") or metadata.get("outreach_strategy"):
+    if metadata.get("website_analysis_status") != "skipped" and (metadata.get("ai_summary") or metadata.get("suggested_offer") or metadata.get("outreach_strategy")):
         return "Website Analyzed"
     if _display_status(lead.status) == "Qualified":
         return "Qualified"
@@ -799,6 +799,28 @@ def _provider_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail="Provider request failed.")
 
 
+def _skipped_website_analysis(company: str, website: str, niche: str | None = None) -> AnalysisOut:
+    return AnalysisOut(
+        company=company,
+        website=website,
+        description="",
+        industry=None,
+        location=None,
+        niche=niche or "",
+        products_services=[],
+        services=[],
+        technologies=[],
+        strengths=[],
+        weaknesses=[WEBSITE_UNREACHABLE_MESSAGE],
+        icp_score=0,
+        summary=WEBSITE_UNREACHABLE_MESSAGE,
+        company_summary=WEBSITE_UNREACHABLE_MESSAGE,
+        outreach_strategy="Add or correct the website URL, then retry AI website analysis.",
+        follow_up_strategy="Retry analysis after the website is reachable.",
+        expected_reply_rate="Unavailable until website analysis completes.",
+    )
+
+
 def _lead_trace(request_id: str, step: str, **data: Any) -> None:
     safe = {key: value for key, value in data.items() if key not in {"api_key", "secret", "token"}}
     logger.info("lead_finder_trace request_id=%s step=%s data=%s", request_id, step, json.dumps(safe, default=str, ensure_ascii=False, sort_keys=True)[:4000])
@@ -971,8 +993,10 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
         logger.info("lead_finder_trace step=website_analysis_skipped data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "reason": "no_website"}, sort_keys=True))
         return
     try:
-        logger.info("lead_finder_trace step=website_fetch_started data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "website": lead.website}, sort_keys=True))
-        snapshot = collect_website(lead.website)
+        normalized_website = normalize_website_url(lead.website)
+        lead.website = normalized_website
+        logger.info("lead_finder_trace step=website_fetch_started data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "website": normalized_website}, sort_keys=True))
+        snapshot = collect_website(normalized_website)
         logger.info("lead_finder_trace step=openai_analysis_started data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "website": snapshot.url}, sort_keys=True))
         result = analyze_company_website(
             company=lead.company,
@@ -983,6 +1007,34 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
             page_text=snapshot.text,
             technologies=snapshot.technologies,
         )
+    except WebsiteFetchError as exc:
+        logger.warning(
+            "lead_finder_trace step=website_analysis_skipped lead_id=%s company=%s website=%s reason=%s",
+            lead.id,
+            lead.company,
+            lead.website,
+            exc,
+        )
+        capture_provider_exception(
+            exc,
+            provider="website",
+            endpoint="lead.website_analysis.fetch",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            extra={"company": lead.company, "website": lead.website, "message": WEBSITE_UNREACHABLE_MESSAGE},
+        )
+        lead.notes = _merge_lead_metadata(
+            lead,
+            {
+                "website_analysis_status": "skipped",
+                "website_analysis_error": str(exc),
+                "website_analysis_message": WEBSITE_UNREACHABLE_MESSAGE,
+                "ai_summary": WEBSITE_UNREACHABLE_MESSAGE,
+            },
+            [WEBSITE_UNREACHABLE_MESSAGE],
+        )
+        _sync_lead_to_crm(db, user_id, workspace, lead)
+        return
     except Exception as exc:
         logger.exception("lead_finder_trace step=website_or_openai_analysis_failed lead_id=%s company=%s reason=%s", lead.id, lead.company, exc)
         capture_provider_exception(exc, provider="openai", endpoint="lead.website_analysis", workspace_id=workspace.id, lead_id=lead.id)
@@ -3465,8 +3517,16 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id))) if payload.lead_id else None
     company = payload.company or (lead.company if lead else "")
+    website = str(payload.website)
     try:
-        snapshot = collect_website(str(payload.website))
+        normalized_website = normalize_website_url(website)
+        if lead:
+            lead.website = normalized_website
+        logger.info(
+            "ai_analyze_trace step=website_fetch_started data=%s",
+            json.dumps({"lead_id": str(lead.id) if lead else None, "company": company, "website": normalized_website}, sort_keys=True),
+        )
+        snapshot = collect_website(normalized_website)
         result = analyze_company_website(
             company=company,
             website=snapshot.url,
@@ -3476,6 +3536,38 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
             page_text=snapshot.text,
             technologies=snapshot.technologies,
         )
+    except WebsiteFetchError as exc:
+        logger.warning(
+            "ai_analyze_trace step=website_analysis_skipped lead_id=%s company=%s website=%s reason=%s",
+            lead.id if lead else None,
+            company,
+            website,
+            exc,
+        )
+        capture_provider_exception(
+            exc,
+            provider="website",
+            endpoint="ai_analyze.fetch_website",
+            workspace_id=workspace.id,
+            lead_id=lead.id if lead else None,
+            extra={"company": company, "website": website, "message": WEBSITE_UNREACHABLE_MESSAGE},
+        )
+        result = _skipped_website_analysis(company=company, website=website, niche=payload.niche or (lead.industry if lead else None))
+        if lead:
+            lead.notes = _merge_lead_metadata(
+                lead,
+                {
+                    "website_analysis_status": "skipped",
+                    "website_analysis_error": str(exc),
+                    "website_analysis_message": WEBSITE_UNREACHABLE_MESSAGE,
+                    "ai_summary": WEBSITE_UNREACHABLE_MESSAGE,
+                },
+                [WEBSITE_UNREACHABLE_MESSAGE],
+            )
+            _sync_lead_to_crm(db, user_id, workspace, lead)
+        log_event(db, request, user_id, "website.analysis_skipped", {"company": company, "website": website, "lead_id": str(lead.id) if lead else None})
+        db.commit()
+        return result
     except Exception as exc:
         raise _provider_error(exc) from exc
     analysis = WebsiteAnalysis(
