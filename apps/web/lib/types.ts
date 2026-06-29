@@ -509,3 +509,57 @@ export type BillingStatus = {
 };
 export type Usage = { plan: string; period: string; limits: PlanLimits; usage: Record<string, number> };
 export type AdminSummary = { users: number; workspaces: number; subscriptions: number; revenue: number; usage: Record<string, number>; system_health: Record<string, string> };
+
+export type QualityCheck = {
+  name: string;
+  module: string;
+  status: "healthy" | "degraded" | "broken" | "blocked" | string;
+  severity: "critical" | "high" | "medium" | "low" | string;
+  summary: string;
+  evidence: Record<string, unknown>;
+  suggested_fix: string;
+};
+
+export type QualityIssue = {
+  id: string;
+  fingerprint: string;
+  title: string;
+  module: string;
+  severity: string;
+  status: string;
+  affected_area: string;
+  root_cause: string;
+  suggested_fix: string;
+  evidence_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type QualityRepairTask = {
+  id: string;
+  issue_id?: string | null;
+  title: string;
+  priority: string;
+  status: string;
+  diagnosis: string;
+  suggested_fix: string;
+  required_tests: string[];
+  approval_required: boolean;
+  created_at: string;
+};
+
+export type QualityDashboard = {
+  health_score: number;
+  status: string;
+  summary: string;
+  deployment_gate: Record<string, unknown>;
+  checks: QualityCheck[];
+  open_bugs: QualityIssue[];
+  repair_tasks: QualityRepairTask[];
+  sentry_issues: Record<string, unknown>[];
+  failed_integrations: QualityCheck[];
+  failed_tests: QualityCheck[];
+  broken_flows: QualityCheck[];
+  suggested_fixes: string[];
+  last_run_at?: string | null;
+};

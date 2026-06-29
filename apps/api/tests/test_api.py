@@ -150,6 +150,27 @@ def test_owner_can_update_feature_flags() -> None:
     assert data["analytics_nav"] is True
 
 
+def test_quality_console_requires_owner_and_creates_repair_tasks() -> None:
+    denied = client.get("/api/admin/quality", headers=NON_OWNER_AUTH)
+    assert denied.status_code == 403
+
+    response = client.post("/api/admin/quality/run", headers=OWNER_AUTH)
+    assert response.status_code == 200
+    data = response.json()
+    assert "health_score" in data
+    assert data["deployment_gate"]["backend_tests"] == "required"
+    assert any(check["module"] == "AI Data Consistency Checker" for check in data["checks"])
+
+    open_bugs = data["open_bugs"]
+    assert open_bugs
+    task = client.post("/api/admin/quality/tasks", headers=OWNER_AUTH, json={"fingerprint": open_bugs[0]["fingerprint"]})
+    assert task.status_code == 200
+    task_data = task.json()
+    assert task_data["approval_required"] is True
+    assert task_data["status"] == "needs_approval"
+    assert any("Playwright" in item for item in task_data["required_tests"])
+
+
 def test_production_auth_rejects_unsigned_clerk_token(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("CLERK_JWT_ISSUER", "https://clerk.test")

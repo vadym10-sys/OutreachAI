@@ -13,7 +13,8 @@ const pages = [
   ["/dashboard/analytics", "Measure real outbound performance."],
   ["/dashboard/settings", "Configure real providers before relying on automation."],
   ["/dashboard/billing", "Subscription and usage."],
-  ["/dashboard/sales-employees", "One click should replace hours of manual sales research."]
+  ["/dashboard/sales-employees", "One click should replace hours of manual sales research."],
+  ["/dashboard/admin/quality", "AI Quality & Self-Healing"]
 ] as const;
 
 const lead = {
@@ -104,6 +105,32 @@ const crmCompany = {
   updated_at: new Date().toISOString()
 };
 
+const qualityDashboard = {
+  health_score: 92,
+  status: "healthy",
+  summary: "Quality system is healthy.",
+  deployment_gate: {
+    backend_lint: "required",
+    backend_tests: "required",
+    frontend_lint: "required",
+    frontend_tests: "required",
+    production_build: "required",
+    playwright_e2e: "required"
+  },
+  checks: [
+    { name: "Production integration monitor", module: "AI Integration Monitor", status: "healthy", severity: "medium", summary: "All critical providers are configured.", evidence: { google_maps: true }, suggested_fix: "Keep provider checks running before every deploy." },
+    { name: "CRM data consistency", module: "AI Data Consistency Checker", status: "healthy", severity: "medium", summary: "CRM records are linked.", evidence: {}, suggested_fix: "Keep duplicate prevention covered." }
+  ],
+  open_bugs: [],
+  repair_tasks: [],
+  sentry_issues: [],
+  failed_integrations: [],
+  failed_tests: [],
+  broken_flows: [],
+  suggested_fixes: [],
+  last_run_at: new Date().toISOString()
+};
+
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -118,6 +145,12 @@ test.beforeEach(async ({ page }) => {
       body = crmCompany.deals;
     } else if (url.pathname === "/api/crm/pipeline") {
       body = { stages: ["New Lead", "Qualified", "Website Analyzed", "Contact Found", "Email Draft Ready", "Approved", "Sent", "Replied", "Meeting Scheduled", "Won", "Lost"], companies: [crmCompany], deals: crmCompany.deals };
+    } else if (url.pathname === "/api/admin/quality") {
+      body = qualityDashboard;
+    } else if (url.pathname === "/api/admin/quality/run") {
+      body = qualityDashboard;
+    } else if (url.pathname === "/api/admin/quality/tasks") {
+      body = { id: "99999999-9999-9999-9999-999999999999", issue_id: null, title: "Repair: test issue", priority: "medium", status: "needs_approval", diagnosis: "Regression task", suggested_fix: "Add tests", required_tests: ["Playwright E2E test"], approval_required: true, created_at: new Date().toISOString() };
     } else if (url.pathname === "/api/leads/find") {
       body = [lead];
     } else if (url.pathname === "/api/campaigns") {
@@ -168,7 +201,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" })).toBeVisible();
     await expect(page.getByText("jane@example.com · verified by Hunter")).toBeVisible();
     await page.getByRole("button", { name: /Complete sales research/ }).click();
-    await expect(page.getByText("Email draft is ready. Review it below, then approve the send when you are ready.").first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("Email draft is ready. Review it below, then approve the send when you are ready.")).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Quick idea for Hill Country Build Co")).toBeVisible();
     const approveButton = page.getByRole("button", { name: /Approve & send/ });
     await expect(approveButton).toBeEnabled({ timeout: 15000 });

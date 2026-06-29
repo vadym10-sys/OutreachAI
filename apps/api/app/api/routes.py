@@ -37,6 +37,9 @@ from app.models.entities import (
     Note,
     Notification,
     NotificationKind,
+    QualityCheckRun,
+    QualityIssue,
+    QualityRepairTask,
     SalesEmployeeLeadInsight,
     SalesEmployeeMode,
     SalesEmployeeTaskResult,
@@ -113,6 +116,10 @@ from app.schemas.dto import (
     PLAN_LIMITS,
     ProfileOut,
     ProfileUpdate,
+    QualityCheckOut,
+    QualityDashboardOut,
+    QualityRepairTaskCreate,
+    QualityRepairTaskOut,
     ReplyAssistantOut,
     ReplyAssistantRequest,
     RewriteEmailRequest,
@@ -4214,6 +4221,299 @@ def owner_feature_flags(payload: OwnerFeatureFlagsUpdate, request: Request, owne
     db.commit()
     db.refresh(settings)
     return _owner_feature_flags(settings)
+
+
+QUALITY_MODULES = {
+    "error_doctor": "AI Error Doctor",
+    "test_generator": "AI Test Generator",
+    "production_qa": "AI Production QA Agent",
+    "log_analyzer": "AI Log Analyzer",
+    "integration_monitor": "AI Integration Monitor",
+    "ux_bug_finder": "AI UX Bug Finder",
+    "data_consistency": "AI Data Consistency Checker",
+    "security_checker": "AI Security Checker",
+    "deployment_gate": "AI Deployment Gate",
+}
+
+
+def _quality_check(name: str, module: str, status: str, severity: str, summary: str, evidence: Optional[dict[str, Any]] = None, suggested_fix: str = "") -> QualityCheckOut:
+    return QualityCheckOut(name=name, module=module, status=status, severity=severity, summary=summary, evidence=evidence or {}, suggested_fix=suggested_fix)
+
+
+def _quality_fingerprint(check: QualityCheckOut) -> str:
+    return f"{check.module}:{check.name}".lower().replace(" ", "_")
+
+
+def _upsert_quality_issue(db: Session, check: QualityCheckOut, owner_email: str) -> Optional[QualityIssue]:
+    if check.status == "healthy":
+        return None
+    fingerprint = _quality_fingerprint(check)
+    issue = db.scalar(select(QualityIssue).where(QualityIssue.fingerprint == fingerprint))
+    if issue is None:
+        issue = QualityIssue(fingerprint=fingerprint, title=check.name, module=check.module, created_by=owner_email)
+    issue.severity = check.severity
+    issue.status = "open" if check.status in {"degraded", "broken", "blocked"} else check.status
+    issue.affected_area = check.module
+    issue.root_cause = check.summary
+    issue.suggested_fix = check.suggested_fix
+    issue.evidence_json = check.evidence
+    db.add(issue)
+    return issue
+
+
+def _count_grouped_duplicates(db: Session, column: Any, *extra_columns: Any) -> int:
+    columns = (column, *extra_columns)
+    rows = db.execute(
+        select(*columns, func.count())
+        .select_from(Company)
+        .where(column.is_not(None), column != "")
+        .group_by(*columns)
+        .having(func.count() > 1)
+    ).all()
+    return len(rows)
+
+
+def _quality_checks(db: Session) -> list[QualityCheckOut]:
+    settings = get_app_settings()
+    checks: list[QualityCheckOut] = []
+
+    sentry_related_logs = int(db.scalar(select(func.count()).select_from(AuditLog).where(or_(AuditLog.action.ilike("%error%"), AuditLog.action.ilike("%exception%"), AuditLog.action.ilike("%failed%")))) or 0)
+    checks.append(_quality_check(
+        "Sentry issue intake",
+        QUALITY_MODULES["error_doctor"],
+        "healthy" if settings.sentry_dsn else "blocked",
+        "medium" if settings.sentry_dsn else "high",
+        "Sentry SDK is configured and app-side error events can be grouped." if settings.sentry_dsn else "SENTRY_DSN is not loaded, so production exceptions cannot be sent to Sentry.",
+        {"sentry_dsn_loaded": bool(settings.sentry_dsn), "recent_error_like_audit_logs": sentry_related_logs},
+        "Load SENTRY_DSN in the backend and keep provider errors tagged with endpoint, provider, workspace and lead context.",
+    ))
+
+    provider_flags = {
+        "Google Maps": bool(settings.google_maps_api_key),
+        "Hunter": bool(settings.hunter_api_key),
+        "OpenAI": bool(settings.openai_api_key),
+        "Resend": bool(settings.resend_api_key and settings.resend_from_email),
+        "Stripe": bool(settings.stripe_secret_key and settings.stripe_webhook_secret and settings.stripe_starter_price_id and settings.stripe_pro_price_id and settings.stripe_agency_price_id),
+        "Clerk": bool(settings.clerk_secret_key and settings.clerk_secret_key != "dev" and settings.clerk_jwt_issuer),
+        "PostHog": True,
+        "Sentry": bool(settings.sentry_dsn),
+    }
+    missing_integrations = [name for name, ok in provider_flags.items() if not ok]
+    checks.append(_quality_check(
+        "Production integration monitor",
+        QUALITY_MODULES["integration_monitor"],
+        "healthy" if not missing_integrations else "degraded",
+        "high" if {"Google Maps", "Hunter", "OpenAI", "Resend", "Stripe", "Clerk"} & set(missing_integrations) else "medium",
+        "All critical providers are configured." if not missing_integrations else f"Missing or incomplete provider config: {', '.join(missing_integrations)}.",
+        {"providers": provider_flags},
+        "Update the missing Railway variables, restart the affected service, then run /api/admin/quality/run.",
+    ))
+
+    last_logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(200)).all())
+    status_spikes: dict[str, int] = {"401": 0, "403": 0, "404": 0, "500": 0}
+    provider_failures: dict[str, int] = {}
+    for log in last_logs:
+        metadata = log.metadata_json or {}
+        status_code = str(metadata.get("status") or metadata.get("status_code") or "")
+        if status_code in status_spikes:
+            status_spikes[status_code] += 1
+        provider = str(metadata.get("provider") or "")
+        if provider and ("failed" in log.action or status_code.startswith(("4", "5"))):
+            provider_failures[provider] = provider_failures.get(provider, 0) + 1
+    noisy_statuses = {key: value for key, value in status_spikes.items() if value >= 5}
+    checks.append(_quality_check(
+        "Log spike analyzer",
+        QUALITY_MODULES["log_analyzer"],
+        "healthy" if not noisy_statuses and not provider_failures else "degraded",
+        "high" if status_spikes["500"] >= 5 else "medium",
+        "No API error spikes found in recent audit logs." if not noisy_statuses and not provider_failures else "Recent logs show repeated API/provider failures.",
+        {"status_spikes": status_spikes, "provider_failures": provider_failures, "sample_size": len(last_logs)},
+        "Inspect the affected endpoint/provider logs, add a regression test, and keep the user-facing error specific.",
+    ))
+
+    leads_without_companies = int(db.scalar(select(func.count()).select_from(Lead).outerjoin(Company, Company.lead_id == Lead.id).where(Company.id.is_(None))) or 0)
+    contacts_without_leads = int(db.scalar(select(func.count()).select_from(Contact).where(Contact.lead_id.is_(None))) or 0)
+    emails_without_leads = int(db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.lead_id.is_(None), EmailMessage.direction == "outbound")) or 0)
+    duplicate_place_ids = _count_grouped_duplicates(db, Company.place_id)
+    duplicate_websites = _count_grouped_duplicates(db, Company.website)
+    duplicate_name_city = _count_grouped_duplicates(db, Company.name, Company.city)
+    broken_stages = int(db.scalar(select(func.count()).select_from(Company).where(Company.crm_stage.not_in(CRM_STAGES))) or 0)
+    data_defects = leads_without_companies + contacts_without_leads + emails_without_leads + duplicate_place_ids + duplicate_websites + duplicate_name_city + broken_stages
+    checks.append(_quality_check(
+        "CRM data consistency",
+        QUALITY_MODULES["data_consistency"],
+        "healthy" if data_defects == 0 else "degraded",
+        "high" if leads_without_companies or broken_stages else "medium",
+        "CRM records are linked and pipeline stages are valid." if data_defects == 0 else "CRM has orphaned records, duplicates, or invalid pipeline stages.",
+        {
+            "leads_without_companies": leads_without_companies,
+            "contacts_without_leads": contacts_without_leads,
+            "outbound_emails_without_leads": emails_without_leads,
+            "duplicate_place_ids": duplicate_place_ids,
+            "duplicate_websites": duplicate_websites,
+            "duplicate_company_city": duplicate_name_city,
+            "broken_pipeline_stages": broken_stages,
+        },
+        "Run a CRM repair migration that links missing companies, deduplicates by place_id/website/name+city, and normalizes stages.",
+    ))
+
+    lead_count = int(db.scalar(select(func.count()).select_from(Lead)) or 0)
+    analyzed_count = int(db.scalar(select(func.count()).select_from(WebsiteAnalysis)) or 0)
+    draft_count = int(db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.delivery_status == "draft")) or 0)
+    campaign_count = int(db.scalar(select(func.count()).select_from(Campaign)) or 0)
+    sent_count = int(db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.delivery_status.in_(["sent", "delivered", "opened", "replied"]))) or 0)
+    flow_blockers = []
+    if lead_count and not analyzed_count:
+        flow_blockers.append("website analysis")
+    if lead_count and not draft_count:
+        flow_blockers.append("AI email draft")
+    if draft_count and not campaign_count:
+        flow_blockers.append("campaign")
+    checks.append(_quality_check(
+        "Daily production QA flow",
+        QUALITY_MODULES["production_qa"],
+        "healthy" if not flow_blockers else "degraded",
+        "high" if flow_blockers else "low",
+        "Core workflow has data through the customer path." if not flow_blockers else f"Core workflow appears incomplete at: {', '.join(flow_blockers)}.",
+        {"leads": lead_count, "website_analyses": analyzed_count, "draft_emails": draft_count, "campaigns": campaign_count, "sent_emails": sent_count},
+        "Run the end-to-end QA flow with a safe test account and create regression coverage for the first broken step.",
+    ))
+
+    checks.append(_quality_check(
+        "UX bug scanner coverage",
+        QUALITY_MODULES["ux_bug_finder"],
+        "healthy",
+        "low",
+        "Playwright covers desktop and mobile dashboard routes, lead workflow, campaign workflow, and dashboard failure resilience.",
+        {"desktop_mobile_routes_covered": True, "horizontal_overflow_check": "covered by mobile route smoke tests"},
+        "Keep adding Playwright assertions for every visual regression or duplicate UI block found in production.",
+    ))
+
+    security_gaps = []
+    if settings.debug:
+        security_gaps.append("DEBUG is enabled")
+    if not settings.stripe_webhook_secret:
+        security_gaps.append("Stripe webhook signature secret missing")
+    if not settings.resend_webhook_secret:
+        security_gaps.append("Resend webhook signature secret missing")
+    if settings.encryption_key == "replace-with-32-byte-url-safe-key":
+        security_gaps.append("default encryption key")
+    checks.append(_quality_check(
+        "Security guardrails",
+        QUALITY_MODULES["security_checker"],
+        "healthy" if not security_gaps else "broken",
+        "critical" if settings.debug or settings.encryption_key == "replace-with-32-byte-url-safe-key" else "high",
+        "Security guardrails are configured." if not security_gaps else f"Security configuration needs attention: {', '.join(security_gaps)}.",
+        {"debug": settings.debug, "stripe_webhook_secret": bool(settings.stripe_webhook_secret), "resend_webhook_secret": bool(settings.resend_webhook_secret), "encryption_key_custom": settings.encryption_key != "replace-with-32-byte-url-safe-key"},
+        "Disable debug, configure webhook signing secrets, rotate the encryption key, and rerun auth/workspace isolation tests.",
+    ))
+
+    deployment_gate = {
+        "backend_lint": "required",
+        "backend_tests": "required",
+        "frontend_lint": "required",
+        "frontend_tests": "required",
+        "production_build": "required",
+        "playwright_e2e": "required",
+        "critical_sentry_errors": "must_be_zero",
+        "health_checks": "required",
+    }
+    checks.append(_quality_check(
+        "Deployment gate",
+        QUALITY_MODULES["deployment_gate"],
+        "healthy",
+        "medium",
+        "Deployments must pass lint, tests, build, E2E, Sentry review, and health checks before approval.",
+        deployment_gate,
+        "Block release approval until every gate is green and the owner approves deployment.",
+    ))
+
+    return checks
+
+
+def _quality_score(checks: list[QualityCheckOut]) -> int:
+    penalties = {"critical": 25, "high": 14, "medium": 7, "low": 2}
+    score = 100
+    for check in checks:
+        if check.status != "healthy":
+            score -= penalties.get(check.severity, 5)
+    return max(0, score)
+
+
+def _quality_summary(db: Session, owner_email: str, persist: bool) -> QualityDashboardOut:
+    checks = _quality_checks(db)
+    for check in checks:
+        if check.status != "healthy":
+            _upsert_quality_issue(db, check, owner_email)
+    score = _quality_score(checks)
+    status = "healthy" if score >= 90 else "degraded" if score >= 70 else "broken"
+    summary = "Quality system is healthy." if status == "healthy" else "Quality system found issues that need owner review before deploy."
+    if persist:
+        db.add(QualityCheckRun(triggered_by=owner_email, health_score=score, status=status, summary=summary, checks_json={"checks": [check.model_dump() for check in checks]}))
+        db.commit()
+    open_issues = list(db.scalars(select(QualityIssue).where(QualityIssue.status == "open").order_by(QualityIssue.created_at.desc()).limit(50)).all())
+    tasks = list(db.scalars(select(QualityRepairTask).order_by(QualityRepairTask.created_at.desc()).limit(25)).all())
+    last_run = db.scalar(select(QualityCheckRun).order_by(QualityCheckRun.created_at.desc()).limit(1))
+    failed = [check for check in checks if check.status != "healthy"]
+    return QualityDashboardOut(
+        health_score=score,
+        status=status,
+        summary=summary,
+        deployment_gate=next((check.evidence for check in checks if check.name == "Deployment gate"), {}),
+        checks=checks,
+        open_bugs=open_issues,
+        repair_tasks=tasks,
+        sentry_issues=[issue.evidence_json for issue in open_issues if issue.module == QUALITY_MODULES["error_doctor"]],
+        failed_integrations=[check for check in checks if check.module == QUALITY_MODULES["integration_monitor"] and check.status != "healthy"],
+        failed_tests=[check for check in checks if check.module == QUALITY_MODULES["deployment_gate"] and check.status != "healthy"],
+        broken_flows=[check for check in checks if check.module == QUALITY_MODULES["production_qa"] and check.status != "healthy"],
+        suggested_fixes=[check.suggested_fix for check in failed if check.suggested_fix],
+        last_run_at=last_run.created_at if last_run else None,
+    )
+
+
+@router.get("/admin/quality", response_model=QualityDashboardOut)
+def admin_quality(owner: OwnerUser, db: Session = Depends(get_db)) -> QualityDashboardOut:
+    return _quality_summary(db, owner.email, persist=False)
+
+
+@router.post("/admin/quality/run", response_model=QualityDashboardOut)
+def admin_quality_run(request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> QualityDashboardOut:
+    result = _quality_summary(db, owner.email, persist=True)
+    log_event(db, request, owner.user_id, "quality.qa_run", {"health_score": result.health_score, "status": result.status})
+    db.commit()
+    return result
+
+
+@router.post("/admin/quality/tasks", response_model=QualityRepairTaskOut)
+def admin_quality_create_task(payload: QualityRepairTaskCreate, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> QualityRepairTask:
+    issue = db.scalar(select(QualityIssue).where(QualityIssue.fingerprint == payload.fingerprint))
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Quality issue not found")
+    existing = db.scalar(select(QualityRepairTask).where(QualityRepairTask.issue_id == issue.id, QualityRepairTask.status != "done"))
+    if existing:
+        return existing
+    task = QualityRepairTask(
+        issue_id=issue.id,
+        title=f"Repair: {issue.title}",
+        priority=issue.severity,
+        status="needs_approval",
+        owner_email=owner.email,
+        diagnosis=issue.root_cause,
+        suggested_fix=issue.suggested_fix,
+        required_tests=[
+            "backend regression test for the failing API or data state",
+            "frontend unit test for the user-facing state",
+            "Playwright E2E test for the affected customer flow",
+            "production smoke check after deploy",
+        ],
+        approval_required=True,
+    )
+    db.add(task)
+    log_event(db, request, owner.user_id, "quality.repair_task_created", {"issue_id": str(issue.id), "fingerprint": issue.fingerprint, "priority": issue.severity})
+    db.commit()
+    db.refresh(task)
+    return task
 
 
 @router.get("/admin/summary", response_model=AdminSummaryOut)

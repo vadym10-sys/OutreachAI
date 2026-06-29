@@ -1043,6 +1043,70 @@ class OwnerConsoleOut(BaseModel):
     audit_logs: list[ActivityOut]
 
 
+class QualityCheckOut(BaseModel):
+    name: str
+    module: str
+    status: str
+    severity: str
+    summary: str
+    evidence: dict[str, Any] = {}
+    suggested_fix: str = ""
+
+
+class QualityIssueOut(BaseModel):
+    id: UUID
+    fingerprint: str
+    title: str
+    module: str
+    severity: str
+    status: str
+    affected_area: str
+    root_cause: str
+    suggested_fix: str
+    evidence_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class QualityRepairTaskOut(BaseModel):
+    id: UUID
+    issue_id: Optional[UUID]
+    title: str
+    priority: str
+    status: str
+    diagnosis: str
+    suggested_fix: str
+    required_tests: list[str]
+    approval_required: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class QualityDashboardOut(BaseModel):
+    health_score: int
+    status: str
+    summary: str
+    deployment_gate: dict[str, Any]
+    checks: list[QualityCheckOut]
+    open_bugs: list[QualityIssueOut]
+    repair_tasks: list[QualityRepairTaskOut]
+    sentry_issues: list[dict[str, Any]]
+    failed_integrations: list[QualityCheckOut]
+    failed_tests: list[QualityCheckOut]
+    broken_flows: list[QualityCheckOut]
+    suggested_fixes: list[str]
+    last_run_at: Optional[datetime] = None
+
+
+class QualityRepairTaskCreate(BaseModel):
+    fingerprint: str
+
+
 class NotificationOut(BaseModel):
     id: UUID
     kind: str

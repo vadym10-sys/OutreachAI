@@ -495,7 +495,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
 
       {draft && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">Personalized first email</p>
-        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? "Approved email was sent. CRM stage updated to Contacted." : "Email draft is ready. Review it below, then approve the send when you are ready."}</p>
+        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? "Approved email was sent. CRM stage updated to Contacted." : "Review this draft before sending. No email has been sent yet."}</p>
         <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
         <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{draft.body}</p>
         <div className="mt-4 grid gap-3 md:grid-cols-2">

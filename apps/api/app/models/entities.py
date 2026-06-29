@@ -459,6 +459,55 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class QualityIssue(Base):
+    __tablename__ = "quality_issues"
+    __table_args__ = (UniqueConstraint("fingerprint", name="uq_quality_issue_fingerprint"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    fingerprint: Mapped[str] = mapped_column(String(180), index=True)
+    title: Mapped[str] = mapped_column(String(240))
+    module: Mapped[str] = mapped_column(String(80), index=True)
+    severity: Mapped[str] = mapped_column(String(24), default="medium", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    affected_area: Mapped[str] = mapped_column(String(220), default="")
+    root_cause: Mapped[str] = mapped_column(Text, default="")
+    suggested_fix: Mapped[str] = mapped_column(Text, default="")
+    evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str] = mapped_column(String(128), default="quality-system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class QualityRepairTask(Base):
+    __tablename__ = "quality_repair_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    issue_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("quality_issues.id", ondelete="SET NULL"), index=True)
+    title: Mapped[str] = mapped_column(String(240))
+    priority: Mapped[str] = mapped_column(String(24), default="medium", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="needs_approval", index=True)
+    owner_email: Mapped[str] = mapped_column(String(320), default="")
+    diagnosis: Mapped[str] = mapped_column(Text, default="")
+    suggested_fix: Mapped[str] = mapped_column(Text, default="")
+    required_tests: Mapped[list[str]] = mapped_column(JSON, default=list)
+    approval_required: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    issue: Mapped[Optional[QualityIssue]] = relationship()
+
+
+class QualityCheckRun(Base):
+    __tablename__ = "quality_check_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    triggered_by: Mapped[str] = mapped_column(String(128), default="")
+    health_score: Mapped[int] = mapped_column(Integer, default=100)
+    status: Mapped[str] = mapped_column(String(32), default="healthy", index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    checks_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class WorkspaceProfile(Base):
     __tablename__ = "workspace_profiles"
 
