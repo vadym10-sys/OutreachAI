@@ -62,7 +62,10 @@ function translateDom(locale: Locale) {
   const nodes: Text[] = [];
   while (walker.nextNode()) nodes.push(walker.currentNode as Text);
   for (const node of nodes) {
-    const original = textNodeOriginals.get(node) || node.textContent || '';
+    const current = node.textContent || '';
+    const cachedOriginal = textNodeOriginals.get(node);
+    const cachedTranslated = cachedOriginal ? translateVisibleText(cachedOriginal, locale) : '';
+    const original = cachedOriginal && (current === cachedOriginal || current === cachedTranslated) ? cachedOriginal : current;
     textNodeOriginals.set(node, original);
     node.textContent = translateVisibleText(original, locale);
   }
@@ -76,8 +79,10 @@ function translateDom(locale: Locale) {
         attrOriginals.set(element, originals);
       }
       const current = element.getAttribute(attr) || '';
-      const original = originals.get(attr) || current;
-      if (!originals.has(attr)) originals.set(attr, current);
+      const cachedOriginal = originals.get(attr);
+      const cachedTranslated = cachedOriginal ? translateVisibleText(cachedOriginal, locale) : '';
+      const original = cachedOriginal && (current === cachedOriginal || current === cachedTranslated) ? cachedOriginal : current;
+      originals.set(attr, original);
       element.setAttribute(attr, translateVisibleText(original, locale));
     });
   }

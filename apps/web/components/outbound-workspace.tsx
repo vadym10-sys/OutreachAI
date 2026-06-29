@@ -8,6 +8,7 @@ import { ArrowRight, BarChart3, CheckCircle2, Clock3, Download, Globe2, Inbox, L
 import { clientApi, friendlyErrorMessage, splitList } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { trackEvent } from "@/lib/posthog";
+import { useI18n } from "@/lib/i18n/provider";
 import type { Activity, AISalesEmployee, Campaign, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
 
 type ApiFn = <T>(path: string, init?: RequestInit) => Promise<T>;
@@ -66,6 +67,13 @@ const emptyMetrics: DashboardMetrics = {
 };
 
 const unavailable = "Unavailable until provider data is collected.";
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "Not recorded yet";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not recorded yet";
+  return date.toLocaleString();
+}
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -364,6 +372,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
   const [audit, setAudit] = useState<WebsiteAudit | undefined>();
   const [followUps, setFollowUps] = useState<FollowUpSequence | undefined>();
   const [draft, setDraft] = useState<Email | undefined>();
+  const [readyToSend, setReadyToSend] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [status, setStatus] = useState("");
@@ -380,6 +389,8 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       return;
     }
     setBusy(true);
+    setReadyToSend(false);
+    setDraft(undefined);
     setError("");
     trackEvent("sales_research_started", {
       lead_id: lead.id,
@@ -404,8 +415,10 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       setStatus("Generating follow-up sequence...");
       setFollowUps(await api<FollowUpSequence>(`/api/leads/${lead.id}/follow-ups`, { method: "POST" }));
       setStatus("Preparing personalized first email...");
-      setDraft(await api<Email>(`/api/leads/${lead.id}/draft-email`, { method: "POST" }));
+      const nextDraft = await api<Email>(`/api/leads/${lead.id}/draft-email`, { method: "POST" });
       setStatus("Email draft is ready. Review it below, then approve the send when you are ready.");
+      setDraft(nextDraft);
+      setReadyToSend(true);
       trackEvent("sales_research_completed", {
         lead_id: lead.id,
         company: lead.company,
@@ -413,6 +426,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       });
     } catch (err) {
       const reason = friendlyErrorMessage(err, "Research could not be completed. Check subscription, OpenAI, Hunter, website access, or provider limits.");
+      setReadyToSend(false);
       setError(reason);
       trackEvent("sales_research_failed", {
         lead_id: lead.id,
@@ -439,6 +453,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         "Email sending timed out. Please try again before approving another send."
       );
       setDraft(sent);
+      setReadyToSend(false);
       setStatus("Approved email was sent. CRM stage updated to Contacted.");
       onLeadUpdated?.({ ...lead, status: "Contacted" });
       trackEvent("approved_email_sent", {
@@ -488,12 +503,23 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
           ["Priority score", priority === null ? unavailable : `${priority}/100`]
         ].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{label}</p><p className="mt-1 text-sm font-semibold text-slate-800">{value}</p></div>)}
       </div>
+      <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ["Found", lead.found_at || lead.created_at],
+          ["Analyzed", lead.website_analyzed_at],
+          ["Email generated", lead.email_generated_at],
+          ["Last activity", lead.last_activity_at || lead.stage_changed_at],
+        ].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-200 bg-white p-3">
+          <p className="font-semibold text-slate-700">{label}</p>
+          <p className="mt-1 text-slate-500">{formatDateTime(value)}</p>
+        </div>)}
+      </div>
 
       <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {coverage.map(([label, done]) => <span key={label} className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold ${done ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-500"}`}><CheckCircle2 size={15} />{label}</span>)}
       </div>
 
-      {draft && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+      {draft && (readyToSend || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">Personalized first email</p>
         <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? "Approved email was sent. CRM stage updated to Contacted." : "Review this draft before sending. No email has been sent yet."}</p>
         <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
@@ -508,7 +534,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Complete sales research</PrimaryButton>
-        <SecondaryButton onClick={approveAndSend} disabled={!draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? "Sent" : "Approve & send"}</SecondaryButton>
+        <SecondaryButton onClick={approveAndSend} disabled={!readyToSend || busy || !draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? "Sent" : "Approve & send"}</SecondaryButton>
       </div>
     </article>
   );
@@ -556,8 +582,10 @@ export function LeadFinderPage() {
   const [searchResults, setSearchResults] = useState<Lead[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [message, setMessage] = useState("");
+  const [searchSteps, setSearchSteps] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
-  const visibleMessage = message.includes("real companies saved") || message.startsWith("No companies found") || (!searching && message === "Connecting to Google Maps...") ? "" : message;
+  const { t } = useI18n();
+  const visibleMessage = message;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -571,12 +599,13 @@ export function LeadFinderPage() {
       keywords: splitList(String(data.get("keywords") || "")),
       technologies: splitList(String(data.get("technology") || "")),
       radius: Number(data.get("radius") || 10000),
-      limit: 10
+      limit: Number(data.get("limit") || 10)
     };
     setSearching(true);
     setHasSearched(true);
     setSearchResults([]);
-    setMessage("Connecting to Google Maps...");
+    setSearchSteps(["Connecting to Google Maps..."]);
+    setMessage("Searching companies...");
     trackEvent("lead_finder_search_started", {
       country: payload.country,
       city: payload.city,
@@ -594,9 +623,10 @@ export function LeadFinderPage() {
         45000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
+      setSearchSteps((items) => [...items, `Found ${found.length} companies`, "Saved to CRM"]);
       setLeads(found);
       setSearchResults(found);
-      setMessage(found.length ? `${found.length} real companies saved from Google Maps.` : "No companies found. Broaden filters or add a company manually.");
+      setMessage(found.length ? `Found ${found.length} companies. Saved to CRM.` : "No results. Try a broader city, industry, radius, or fewer filters.");
       trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
         country: payload.country,
         city: payload.city,
@@ -607,6 +637,7 @@ export function LeadFinderPage() {
     } catch (err) {
       const reason = friendlyErrorMessage(err, "Google Maps lead search could not be completed.");
       setSearchResults([]);
+      setSearchSteps((items) => [...items, "Search stopped"]);
       setMessage(reason);
       trackEvent("lead_finder_search_failed", {
         country: payload.country,
@@ -632,6 +663,7 @@ export function LeadFinderPage() {
           <label className="text-sm font-semibold text-slate-700">City<input name="city" required placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
           <label className="text-sm font-semibold text-slate-700">Industry<input name="industry" required placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
           <label className="text-sm font-semibold text-slate-700">Company size<input name="company_size" placeholder="11-50" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Number of leads<input name="limit" type="number" min="1" max="25" defaultValue="10" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
         </div>
         <details className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
           <summary className="cursor-pointer text-sm font-bold text-ink">Advanced settings</summary>
@@ -646,10 +678,13 @@ export function LeadFinderPage() {
           </div>
         </details>
         <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
-          <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} Find leads</PrimaryButton>
+          <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
           <p className="text-sm text-slate-600">Expected time: 30-60 seconds. Saved companies will stay after refresh.</p>
         </div>
         {visibleMessage && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{visibleMessage}</p>}
+        {searchSteps.length > 0 && <ol className="mt-4 grid gap-2 text-sm sm:grid-cols-3" aria-label="Lead search progress">
+          {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
+        </ol>}
       </form>
       {loading && !hasSearched ? <EmptyState title="Loading leads" copy="Reading saved companies from PostgreSQL." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
         setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
@@ -703,6 +738,19 @@ function CrmFilters({ filters, setFilters }: { filters: Record<string, string>; 
 
 function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
   const lead = leadFromCrmCompany(company);
+  const lifecycle = [
+    ["Lead found", company.found_at],
+    ["Saved to CRM", company.created_at],
+    ["Website analyzed", company.website_analyzed_at],
+    ["Contact found", company.contact_found_at],
+    ["Email generated", company.email_generated_at],
+    ["Email sent", company.email_sent_at],
+    ["Delivered", company.delivered_at],
+    ["Opened", company.opened_at],
+    ["Replied", company.replied_at],
+    ["Stage changed", company.stage_changed_at],
+    ["Last activity", company.last_activity_at],
+  ];
   return <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
     <div className="flex flex-col gap-4 min-[520px]:flex-row min-[520px]:items-start min-[520px]:justify-between">
       <div>
@@ -721,6 +769,15 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
       <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Contacts</p>{company.contacts.length ? company.contacts.slice(0, 2).map((contact) => <p key={contact.id} className="mt-2 text-slate-600">{contact.name || "Decision maker"} · {contact.email || "No email"} · {contact.source}</p>) : <p className="mt-2 text-slate-600">No verified contact yet.</p>}</div>
       <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Email status</p><p className="mt-2 text-slate-600">{company.generated_emails[0]?.subject || "No generated email yet"}</p><p className="text-slate-600">{company.generated_emails[0]?.delivery_status || company.email_status}</p></div>
     </div>
+    <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+      <p className="text-sm font-bold text-ink">Activity history</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {lifecycle.map(([label, value]) => <div key={label} className="rounded-lg bg-slate-50 p-3 text-sm">
+          <p className="font-semibold text-slate-700">{label}</p>
+          <p className="mt-1 text-slate-500">{formatDateTime(value)}</p>
+        </div>)}
+      </div>
+    </section>
     <div className="mt-4 rounded-xl bg-teal-50 p-4 text-sm">
       <p className="font-bold text-brand">AI summary</p>
       <p className="mt-2 leading-6 text-slate-700">{company.ai_summary || "Run AI research to create a company summary, sales angle and suggested offer."}</p>

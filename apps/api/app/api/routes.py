@@ -479,6 +479,7 @@ def _campaign_out(db: Session, campaign: Campaign) -> CampaignOut:
 
 def _lead_out(lead: Lead) -> LeadOut:
     metadata = _lead_metadata(lead)
+    last_activity_at = max([value for value in [lead.updated_at, lead.created_at] if value], default=None)
     return LeadOut(
         id=lead.id,
         company=lead.company,
@@ -520,6 +521,16 @@ def _lead_out(lead: Lead) -> LeadOut:
         outreach_strategy=str(metadata.get("outreach_strategy") or "") or None,
         sales_angle=str(metadata.get("sales_angle") or "") or None,
         expected_reply_rate=str(metadata.get("expected_reply_rate") or "") or None,
+        found_at=lead.created_at,
+        website_analyzed_at=metadata.get("website_analyzed_at"),
+        contact_found_at=metadata.get("contact_found_at"),
+        email_generated_at=metadata.get("email_generated_at"),
+        email_sent_at=metadata.get("email_sent_at"),
+        delivered_at=metadata.get("delivered_at"),
+        opened_at=metadata.get("opened_at"),
+        replied_at=metadata.get("replied_at"),
+        last_activity_at=last_activity_at,
+        stage_changed_at=lead.updated_at,
     )
 
 
@@ -662,6 +673,38 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
     return company
 
 
+def _existing_duplicate_lead(db: Session, workspace: Workspace, user_id: str, item: LeadOut) -> Lead | None:
+    metadata = _lead_metadata(item)
+    place_id = str(metadata.get("place_id") or item.place_id or "")
+    apollo_company_id = str(metadata.get("apollo_company_id") or item.apollo_company_id or "")
+    apollo_contact_id = str(metadata.get("apollo_contact_id") or item.apollo_contact_id or "")
+    hunter_contact_id = str(metadata.get("hunter_contact_id") or item.hunter_contact_id or "")
+    domain = str(metadata.get("domain") or item.domain or "")
+    criteria = []
+    if item.email:
+        criteria.append(Lead.email == str(item.email))
+    if item.website:
+        criteria.append(Lead.website == item.website)
+    if place_id:
+        criteria.append(Lead.notes.ilike(f"%{place_id}%"))
+    if apollo_company_id:
+        criteria.append(Lead.notes.ilike(f"%{apollo_company_id}%"))
+    if apollo_contact_id:
+        criteria.append(Lead.notes.ilike(f"%{apollo_contact_id}%"))
+    if hunter_contact_id:
+        criteria.append(Lead.notes.ilike(f"%{hunter_contact_id}%"))
+    if domain:
+        criteria.append(Lead.website.ilike(f"%{domain}%"))
+        criteria.append(Lead.notes.ilike(f"%{domain}%"))
+    if item.company and item.city:
+        criteria.append((Lead.company == item.company) & (Lead.city == item.city))
+    elif not criteria and item.company:
+        criteria.append(Lead.company == item.company)
+    if not criteria:
+        return None
+    return db.scalar(select(Lead).where(_workspace_stmt(Lead, workspace, user_id), or_(*criteria)).order_by(Lead.updated_at.desc()).limit(1))
+
+
 def _crm_contact_out(contact: Contact, company_name: str = "") -> CrmContactOut:
     return CrmContactOut(
         id=contact.id,
@@ -704,12 +747,76 @@ def _audit_log_lead_id_clause(lead_id: UUID):
     return AuditLog.metadata_json["lead_id"].as_string() == str(lead_id)
 
 
+def _add_lead_activity(
+    db: Session,
+    request: Request,
+    user_id: str,
+    workspace: Workspace,
+    action: str,
+    lead: Lead,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0] or (request.client.host if request.client else None)
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            action=action,
+            ip_address=ip,
+            metadata_json={
+                "lead_id": str(lead.id),
+                "company": lead.company,
+                "website": lead.website or "",
+                "stage": _crm_stage_for_lead(lead),
+                **(extra or {}),
+            },
+        )
+    )
+
+
+def _first_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id: UUID | None, actions: set[str]) -> datetime | None:
+    if not lead_id:
+        return None
+    return db.scalar(
+        select(AuditLog.created_at)
+        .where(
+            or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id),
+            _audit_log_lead_id_clause(lead_id),
+            AuditLog.action.in_(actions),
+        )
+        .order_by(AuditLog.created_at.asc())
+        .limit(1)
+    )
+
+
+def _latest_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id: UUID | None) -> datetime | None:
+    if not lead_id:
+        return None
+    return db.scalar(
+        select(AuditLog.created_at)
+        .where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id), _audit_log_lead_id_clause(lead_id))
+        .order_by(AuditLog.created_at.desc())
+        .limit(1)
+    )
+
+
 def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: Company) -> CrmCompanyOut:
     contacts = list(db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id).order_by(Contact.created_at.desc())).all())
     deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc())).all())
     notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc()).limit(20)).all())
     emails = list(db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc()).limit(10)).all()) if company.lead_id else []
     activity = list(db.scalars(select(AuditLog).where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id), _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
+    lead = db.get(Lead, company.lead_id) if company.lead_id else None
+    found_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"lead.found", "lead.imported", "google_maps.company_search", "apollo.company_search", "apollo.contact_search"}) or (lead.created_at if lead else company.created_at)
+    website_analyzed_at = db.scalar(select(WebsiteAnalysis.created_at).where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == company.lead_id).order_by(WebsiteAnalysis.created_at.desc()).limit(1)) if company.lead_id else None
+    contact_found_at = min([contact.created_at for contact in contacts], default=None)
+    email_generated_at = min([email.created_at for email in emails], default=None)
+    email_sent_at = max([email.sent_at for email in emails if email.sent_at], default=None)
+    delivered_at = max([email.delivered_at for email in emails if email.delivered_at], default=None)
+    opened_at = max([email.opened_at for email in emails if email.opened_at], default=None)
+    replied_at = max([email.replied_at for email in emails if email.replied_at], default=None)
+    latest_activity_at = _latest_audit_time(db, workspace, user_id, company.lead_id)
+    last_activity_at = max([value for value in [company.updated_at, found_at, website_analyzed_at, contact_found_at, email_generated_at, email_sent_at, delivered_at, opened_at, replied_at, latest_activity_at] if value], default=company.updated_at)
     return CrmCompanyOut(
         id=company.id,
         lead_id=company.lead_id,
@@ -739,6 +846,16 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         generated_emails=[EmailOut.model_validate(item, from_attributes=True) for item in emails],
         created_at=company.created_at,
         updated_at=company.updated_at,
+        found_at=found_at,
+        website_analyzed_at=website_analyzed_at,
+        contact_found_at=contact_found_at,
+        email_generated_at=email_generated_at,
+        email_sent_at=email_sent_at,
+        delivered_at=delivered_at,
+        opened_at=opened_at,
+        replied_at=replied_at,
+        last_activity_at=last_activity_at,
+        stage_changed_at=company.updated_at,
     )
 
 
@@ -1073,7 +1190,7 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
     db.add(analysis)
     lead.industry = lead.industry or result.industry
     lead.niche = lead.niche or result.niche
-    lead.notes = _merge_lead_metadata(lead, _analysis_metadata(result, score, audit), _analysis_readable_notes(result, score, audit))
+    lead.notes = _merge_lead_metadata(lead, {**_analysis_metadata(result, score, audit), "website_analyzed_at": datetime.utcnow().isoformat()}, _analysis_readable_notes(result, score, audit))
     _sync_lead_to_crm(db, user_id, workspace, lead)
     logger.info("lead_finder_trace step=openai_analysis_completed data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "icp_score": score}, sort_keys=True))
 
@@ -3213,17 +3330,23 @@ def _save_provider_leads(
     request_id: str = "",
 ) -> list[Lead]:
     saved: list[Lead] = []
+    reused: list[Lead] = []
     skipped = 0
     _lead_trace(request_id or str(uuid4()), "database_save_started", found=len(found))
     for item in found:
-        if _lead_duplicate_exists(db, workspace, user_id, item):
+        existing = _existing_duplicate_lead(db, workspace, user_id, item)
+        if existing:
             skipped += 1
+            existing.updated_at = datetime.utcnow()
+            _sync_lead_to_crm(db, user_id, workspace, existing)
+            reused.append(existing)
             _lead_trace(
                 request_id or str(uuid4()),
-                "database_duplicate_skipped",
-                company=item.company,
-                email=str(item.email or ""),
-                website=item.website or "",
+                "database_duplicate_reused",
+                lead_id=str(existing.id),
+                company=existing.company,
+                email=str(existing.email or item.email or ""),
+                website=existing.website or item.website or "",
                 place_id=item.place_id,
                 apollo_company_id=item.apollo_company_id,
             )
@@ -3247,9 +3370,15 @@ def _save_provider_leads(
         )
         db.add(lead)
         db.flush()
+        _add_lead_activity(db, request, user_id, workspace, "lead.found", lead, {"source": source})
         _lead_trace(request_id or str(uuid4()), "database_lead_inserted", lead_id=str(lead.id), company=lead.company, website=lead.website or "", email=lead.email or "")
         _analyze_lead_if_possible(db, user_id, workspace, lead)
         _sync_lead_to_crm(db, user_id, workspace, lead)
+        _add_lead_activity(db, request, user_id, workspace, "lead.saved_to_crm", lead, {"source": source, "crm_stage": _crm_stage_for_lead(lead)})
+        if _lead_metadata(lead).get("website_analyzed_at"):
+            _add_lead_activity(db, request, user_id, workspace, "website.analyzed", lead, {"source": source})
+        if lead.email:
+            _add_lead_activity(db, request, user_id, workspace, "contact.found", lead, {"email_status": _email_status_for_lead(lead), "source": source})
         saved.append(lead)
     log_event(db, request, user_id, action, {"source": source, "saved": len(saved), "duplicates_skipped": skipped, **payload.model_dump()})
     verified = sum(1 for item in found if item.hunter_verified)
@@ -3262,37 +3391,11 @@ def _save_provider_leads(
         _notify(db, user_id, NotificationKind.info, "Lead search finished", "No matching companies were found for those filters.")
     db.commit()
     _lead_trace(request_id or str(uuid4()), "database_save_committed", saved=len(saved), duplicates_skipped=skipped)
-    return saved
+    return saved + reused
 
 
 def _lead_duplicate_exists(db: Session, workspace: Workspace, user_id: str, item: LeadOut) -> bool:
-    metadata = _lead_metadata(item)
-    place_id = str(metadata.get("place_id") or item.place_id or "")
-    apollo_company_id = str(metadata.get("apollo_company_id") or item.apollo_company_id or "")
-    apollo_contact_id = str(metadata.get("apollo_contact_id") or item.apollo_contact_id or "")
-    hunter_contact_id = str(metadata.get("hunter_contact_id") or item.hunter_contact_id or "")
-    domain = str(metadata.get("domain") or item.domain or "")
-    criteria = []
-    if item.email:
-        criteria.append(Lead.email == str(item.email))
-    if item.website:
-        criteria.append(Lead.website == item.website)
-    if place_id:
-        criteria.append(Lead.notes.ilike(f"%{place_id}%"))
-    if apollo_company_id:
-        criteria.append(Lead.notes.ilike(f"%{apollo_company_id}%"))
-    if apollo_contact_id:
-        criteria.append(Lead.notes.ilike(f"%{apollo_contact_id}%"))
-    if hunter_contact_id:
-        criteria.append(Lead.notes.ilike(f"%{hunter_contact_id}%"))
-    if domain:
-        criteria.append(Lead.website.ilike(f"%{domain}%"))
-        criteria.append(Lead.notes.ilike(f"%{domain}%"))
-    if not criteria and item.company:
-        criteria.append(Lead.company == item.company)
-    if not criteria:
-        return False
-    return bool(db.scalar(select(Lead.id).where(_workspace_stmt(Lead, workspace, user_id), or_(*criteria)).limit(1)))
+    return _existing_duplicate_lead(db, workspace, user_id, item) is not None
 
 
 @router.get("/leads", response_model=PaginatedLeads)
@@ -3716,10 +3819,10 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
         tags={"requires_approval": True, "source": "manual_lead_flow"},
     )
     lead.status = LeadStatus.qualified
-    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready"})
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
     db.add(message)
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    log_event(db, request, user_id, "email.generated", {"lead_id": str(lead.id), "source": "manual_lead_flow"})
+    _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"email_id": str(message.id), "source": "manual_lead_flow"})
     _notify(db, user_id, NotificationKind.success, "Draft ready for review", f"A personalized email for {lead.company} is ready. Nothing was sent.")
     db.commit()
     db.refresh(message)
@@ -3783,10 +3886,10 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
         delivery_status="draft",
     )
     lead.status = LeadStatus.qualified
-    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready"})
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
     db.add(message)
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    log_event(db, request, user_id, "email.generated", {"campaign_id": str(campaign.id), "lead_id": str(lead.id)})
+    _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"campaign_id": str(campaign.id), "email_id": str(message.id)})
     _notify(db, user_id, NotificationKind.success, "Email generated", f"A personalized email for {lead.company} is ready to edit.")
     db.commit()
     db.refresh(message)
@@ -3823,7 +3926,8 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     except Exception as exc:
         message.delivery_status = "failed"
         db.add(message)
-        log_event(db, request, user_id, "email.send_failed", {"email_id": str(message.id), "reason": str(exc)})
+        if lead:
+            _add_lead_activity(db, request, user_id, workspace, "email.send_failed", lead, {"email_id": str(message.id), "reason": str(exc)})
         _notify(db, user_id, NotificationKind.error, "Email send failed", str(exc))
         db.commit()
         raise _provider_error(exc) from exc
@@ -3831,9 +3935,9 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     message.provider_message_id = str(provider_response.get("id"))
     message.delivery_status = "sent"
     lead.status = LeadStatus.contacted
-    lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent"})
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": message.sent_at.isoformat()})
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    log_event(db, request, user_id, "email.sent", {"email_id": str(message.id), "provider_message_id": message.provider_message_id})
+    _add_lead_activity(db, request, user_id, workspace, "email.sent", lead, {"email_id": str(message.id), "provider_message_id": message.provider_message_id})
     _notify(db, user_id, NotificationKind.info, "Email sent", message.subject)
     db.commit()
     db.refresh(message)

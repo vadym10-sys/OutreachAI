@@ -24,4 +24,22 @@ describe("i18n", () => {
     expect(translateVisibleText("Continue with Google", "fr")).toBe("Continuer avec Google");
     expect(translateVisibleText("New leads found: 12", "pl")).toBe("Nowe leady znalezione: 12");
   });
+
+  it("keeps main workflow pages from mixing English labels into Russian UI", () => {
+    const phrases = [
+      "Find real companies and turn each into a sales opportunity.",
+      "Step 1 of 3 · Choose a focused market",
+      "Number of leads",
+      "Expected time: 30-60 seconds. Saved companies will stay after refresh.",
+      "Saved to CRM",
+      "Activity history",
+      "Website analyzed",
+      "Email generated",
+      "Last activity",
+    ];
+
+    for (const phrase of phrases) {
+      expect(translateVisibleText(phrase, "ru")).not.toBe(phrase);
+    }
+  });
 });

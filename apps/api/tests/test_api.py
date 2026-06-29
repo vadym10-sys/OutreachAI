@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
@@ -448,7 +448,46 @@ def test_google_maps_duplicate_prevention_by_place_id(monkeypatch) -> None:
     assert first.status_code == 200
     assert len(first.json()) == 1
     assert second.status_code == 200
-    assert second.json() == []
+    assert len(second.json()) == 1
+    with get_sessionmaker()() as db:
+        count = db.scalar(select(func.count()).select_from(Lead).where(Lead.company == "Duplicate Google Maps GmbH"))
+    assert count == 1
+
+
+def test_crm_company_exposes_persistent_activity_dates(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
+    monkeypatch.setattr(
+        "app.api.routes.search_google_places",
+        lambda payload: GooglePlacesSearchResult(
+            leads=[
+                LeadOut(
+                    company="Timeline Build GmbH",
+                    website="https://timeline-build.example",
+                    industry="Construction",
+                    country="Germany",
+                    city="Berlin",
+                    email="owner@timeline-build.example",
+                    notes='{"source":"google_maps","domain":"timeline-build.example","place_id":"google_timeline_place","hunter_verified":true}',
+                    domain="timeline-build.example",
+                    place_id="google_timeline_place",
+                    hunter_verified=True,
+                    source="google_maps",
+                )
+            ],
+            raw_count=1,
+            duration_ms=5,
+        ),
+    )
+    response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
+    assert response.status_code == 200
+
+    companies = client.get("/api/crm/companies", headers=AUTH).json()
+    company = next(item for item in companies if item["name"] == "Timeline Build GmbH")
+    assert company["found_at"]
+    assert company["contact_found_at"]
+    assert company["last_activity_at"]
+    assert company["stage_changed_at"]
+    assert any(item["action"] == "lead.saved_to_crm" for item in company["activity"])
 
 
 def test_apollo_status_and_missing_key(monkeypatch) -> None:
@@ -602,7 +641,10 @@ def test_apollo_duplicate_prevention(monkeypatch) -> None:
     assert first.status_code == 200
     assert len(first.json()) == 1
     assert second.status_code == 200
-    assert second.json() == []
+    assert len(second.json()) == 1
+    with get_sessionmaker()() as db:
+        count = db.scalar(select(func.count()).select_from(Lead).where(Lead.company == "Duplicate Apollo GmbH"))
+    assert count == 1
 
 
 def test_apollo_contact_search_saves_to_db(monkeypatch) -> None:

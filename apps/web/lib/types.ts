@@ -96,6 +96,17 @@ export type Lead = {
   outreach_strategy?: string | null;
   sales_angle?: string | null;
   expected_reply_rate?: string | null;
+  created_at?: string | null;
+  found_at?: string | null;
+  website_analyzed_at?: string | null;
+  contact_found_at?: string | null;
+  email_generated_at?: string | null;
+  email_sent_at?: string | null;
+  delivered_at?: string | null;
+  opened_at?: string | null;
+  replied_at?: string | null;
+  last_activity_at?: string | null;
+  stage_changed_at?: string | null;
 };
 
 export type CrmContact = {
@@ -166,6 +177,16 @@ export type CrmCompany = {
   generated_emails: Email[];
   created_at: string;
   updated_at: string;
+  found_at?: string | null;
+  website_analyzed_at?: string | null;
+  contact_found_at?: string | null;
+  email_generated_at?: string | null;
+  email_sent_at?: string | null;
+  delivered_at?: string | null;
+  opened_at?: string | null;
+  replied_at?: string | null;
+  last_activity_at?: string | null;
+  stage_changed_at?: string | null;
 };
 
 export type CrmPipeline = {

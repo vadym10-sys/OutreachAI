@@ -175,6 +175,16 @@ class LeadOut(BaseModel):
     outreach_strategy: Optional[str] = None
     sales_angle: Optional[str] = None
     expected_reply_rate: Optional[str] = None
+    found_at: Optional[datetime] = None
+    website_analyzed_at: Optional[datetime] = None
+    contact_found_at: Optional[datetime] = None
+    email_generated_at: Optional[datetime] = None
+    email_sent_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    opened_at: Optional[datetime] = None
+    replied_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None
+    stage_changed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -257,6 +267,16 @@ class CrmCompanyOut(BaseModel):
     generated_emails: list["EmailOut"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    found_at: Optional[datetime] = None
+    website_analyzed_at: Optional[datetime] = None
+    contact_found_at: Optional[datetime] = None
+    email_generated_at: Optional[datetime] = None
+    email_sent_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    opened_at: Optional[datetime] = None
+    replied_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None
+    stage_changed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
