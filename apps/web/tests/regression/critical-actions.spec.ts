@@ -9,12 +9,29 @@ test.beforeEach(async ({ page }) => {
 test("lead search has loading, success, saved CRM result, and no global crash", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/leads");
-  await page.getByLabel("Country").fill("Germany");
-  await page.getByLabel("City").fill("Berlin");
-  await page.getByLabel("Industry").fill("Construction");
-  await page.getByRole("button", { name: "Find leads" }).click();
+  const leadSearch = page.getByRole("form", { name: "Lead search" });
+  await leadSearch.getByLabel("Country").fill("Germany");
+  await leadSearch.getByLabel("City").fill("Berlin");
+  await leadSearch.getByLabel("Industry").fill("Construction");
+  await leadSearch.getByRole("button", { name: "Find leads" }).click();
   await expect(page.getByLabel("Lead search progress").getByText("Saved to CRM")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
+  await guards.assertClean();
+});
+
+test("manual company entry saves to CRM and becomes a research opportunity", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.goto("/dashboard/leads");
+  const manualEntry = page.getByRole("form", { name: "Manual company entry" });
+  await manualEntry.getByLabel("Company name").fill("Berlin Roof Systems");
+  await manualEntry.getByLabel("Website").fill("https://berlin-roof.example");
+  await manualEntry.getByLabel("Country").fill("Germany");
+  await manualEntry.getByLabel("City").fill("Berlin");
+  await manualEntry.getByLabel("Industry").fill("Construction");
+  await manualEntry.getByRole("button", { name: /Save company to CRM/ }).click();
+  await expect(page.getByText("Berlin Roof Systems was saved to CRM. Next: complete sales research.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Berlin Roof Systems" })).toBeVisible();
+  await expect(page.getByText("Ready for company research")).toBeVisible();
   await guards.assertClean();
 });
 

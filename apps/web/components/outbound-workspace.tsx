@@ -84,6 +84,19 @@ const crmStages = [
 
 const emptyPipeline: CrmPipeline = { stages: crmStages, companies: [], deals: [] };
 
+const salesWorkflow = [
+  "Lead Search",
+  "CRM",
+  "Company Research",
+  "Contact Discovery",
+  "AI Email",
+  "Approval",
+  "Send",
+  "Reply Tracking",
+  "Meeting",
+  "Won/Lost"
+];
+
 function safeArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [];
 }
@@ -239,6 +252,98 @@ function EmptyState({ title, copy, action }: { title: string; copy: string; acti
 
 function MetricCard({ label, value, help }: { label: string; value: string; help: string }) {
   return <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">{label}</p><p className="mt-2 text-3xl font-bold text-ink">{value}</p><p className="mt-2 text-sm text-slate-600">{help}</p></article>;
+}
+
+function WorkflowTracker({ activeStep, completedSteps }: { activeStep: string; completedSteps: string[] }) {
+  return (
+    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-sm font-bold uppercase text-brand">Sales workflow</p>
+          <h2 className="mt-1 text-xl font-bold text-ink">One path from prospect to customer.</h2>
+        </div>
+        <p className="text-sm font-semibold text-slate-600">Current step: {activeStep}</p>
+      </div>
+      <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+        {salesWorkflow.map((step) => {
+          const done = completedSteps.includes(step);
+          const active = activeStep === step;
+          return (
+            <div key={step} className={`rounded-xl border p-3 text-sm ${active ? "border-teal-300 bg-teal-50 text-brand" : done ? "border-slate-200 bg-slate-50 text-slate-700" : "border-slate-200 bg-white text-slate-500"}`}>
+              <div className="flex items-center gap-2">
+                <CheckCircle2 size={16} className={done || active ? "text-brand" : "text-slate-300"} />
+                <span className="font-bold">{step}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function dashboardNextStep(metrics: DashboardMetrics, leads: Lead[], campaigns: Campaign[]) {
+  if (!leads.length && metrics.leads === 0) {
+    return {
+      step: "Lead Search",
+      title: "Find your first qualified companies",
+      copy: "Start with one narrow market. OutreachAI will save real companies to CRM and prepare the next sales step.",
+      href: "/dashboard/leads",
+      label: "Find leads"
+    };
+  }
+  const leadNeedingResearch = leads.find((lead) => !lead.ai_summary || !lead.email_generated_at) || leads[0];
+  if (leadNeedingResearch) {
+    return {
+      step: leadNeedingResearch.ai_summary ? "AI Email" : "Company Research",
+      title: `Complete research for ${leadNeedingResearch.company}`,
+      copy: "Turn the saved company into a complete opportunity: research, contacts, AI email, follow-ups and approval.",
+      href: "/dashboard/companies",
+      label: "Review opportunity"
+    };
+  }
+  if (!campaigns.length && metrics.campaigns === 0) {
+    return {
+      step: "Approval",
+      title: "Create a campaign from approved opportunities",
+      copy: "Build a short sequence, review each message, and keep sending blocked until you approve it.",
+      href: "/dashboard/campaigns",
+      label: "Create campaign"
+    };
+  }
+  if (metrics.replies > 0 || metrics.meetings > 0) {
+    return {
+      step: metrics.meetings > 0 ? "Meeting" : "Reply Tracking",
+      title: metrics.meetings > 0 ? "Work the meetings created by outreach" : "Review replies and move opportunities forward",
+      copy: "Keep CRM stages current so the dashboard reflects what needs attention today.",
+      href: "/dashboard/crm",
+      label: "Open CRM"
+    };
+  }
+  return {
+    step: "Approval",
+    title: "Review the next approved action",
+    copy: "Check saved opportunities and approve only the outreach that is ready for a real prospect.",
+    href: "/dashboard/companies",
+    label: "Review opportunities"
+  };
+}
+
+function completedWorkflowSteps(metrics: DashboardMetrics, leads: Lead[], campaigns: Campaign[]) {
+  const steps = new Set<string>();
+  if (metrics.leads > 0 || leads.length > 0) {
+    steps.add("Lead Search");
+    steps.add("CRM");
+  }
+  if (leads.some((lead) => lead.ai_summary || lead.website_analyzed_at)) steps.add("Company Research");
+  if (leads.some((lead) => lead.email || lead.contact || lead.contact_found_at)) steps.add("Contact Discovery");
+  if (leads.some((lead) => lead.email_generated_at) || campaigns.some((campaign) => campaign.sequence.length > 0)) steps.add("AI Email");
+  if (leads.some((lead) => lead.email_approved_at)) steps.add("Approval");
+  if (metrics.emails_sent > 0 || leads.some((lead) => lead.email_sent_at)) steps.add("Send");
+  if (metrics.replies > 0 || leads.some((lead) => lead.replied_at)) steps.add("Reply Tracking");
+  if (metrics.meetings > 0) steps.add("Meeting");
+  if (metrics.conversion_rate > 0) steps.add("Won/Lost");
+  return Array.from(steps);
 }
 
 function useSalesData() {
@@ -613,8 +718,9 @@ export function DashboardHome() {
   const { metrics, leads, campaigns, employees, activity, loading, error, supportingError } = useDashboardData();
   if (loading) return <EmptyState title="Loading your sales workspace" copy="Collecting real leads, campaigns and metrics from your workspace." />;
   if (error) return <EmptyState title="Workspace data unavailable" copy={error} />;
-  const nextLead = leads[0];
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
+  const nextStep = dashboardNextStep(metrics, leads, campaigns);
+  const completedSteps = completedWorkflowSteps(metrics, leads, campaigns);
   const activeSignals = [
     { label: "Leads found", value: String(metrics.leads || leads.length), help: "Real workspace leads", show: metrics.leads > 0 || leads.length > 0 },
     { label: "Campaigns", value: String(metrics.campaigns || campaigns.length), help: "Saved campaigns", show: metrics.campaigns > 0 || campaigns.length > 0 },
@@ -623,9 +729,15 @@ export function DashboardHome() {
   ].filter((signal) => signal.show);
   return (
     <div className="space-y-6">
-      <PageHeader eyebrow="Today" title="What should I do now?" copy="Turn the next real company in your workspace into a complete sales opportunity." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">Find leads <ArrowRight size={17} /></Link>} />
+      <PageHeader eyebrow="Today" title="What should I do now?" copy="OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system." action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{nextStep.label} <ArrowRight size={17} /></Link>} />
       {supportingError && <p role="status" className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm font-semibold text-orange-700">{supportingError}</p>}
-      {nextLead ? <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6"><h2 className="text-2xl font-bold text-ink">Complete research for {nextLead.company}</h2><p className="mt-3 text-sm leading-6 text-slate-600">One click can analyze the website, score the opportunity, prepare the first email and create follow-ups. If verified data is unavailable, OutreachAI will explain what to do next.</p><Link href="/dashboard/companies" className="mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">Review opportunities</Link></section> : <EmptyState title="No real companies yet" copy="Add or search for companies in Lead Finder. OutreachAI will not show fake pipeline data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find real leads</Link>} />}
+      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <p className="text-sm font-bold uppercase text-brand">{nextStep.step}</p>
+        <h2 className="mt-2 text-2xl font-bold text-ink">{nextStep.title}</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-600">{nextStep.copy}</p>
+        <Link href={nextStep.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white">{nextStep.label}<ArrowRight size={17} /></Link>
+      </section>
+      <WorkflowTracker activeStep={nextStep.step} completedSteps={completedSteps} />
       {activeSignals.length > 0 && <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {activeSignals.map((signal) => <MetricCard key={signal.label} label={signal.label} value={signal.value} help={signal.help} />)}
       </section>}
@@ -653,8 +765,59 @@ export function LeadFinderPage() {
   const [message, setMessage] = useState("");
   const [searchSteps, setSearchSteps] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
+  const [manualBusy, setManualBusy] = useState(false);
   const { t } = useI18n();
   const visibleMessage = message;
+
+  async function addManualLead(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const payload = {
+      company: String(data.get("company") || "").trim(),
+      website: String(data.get("website") || "").trim(),
+      country: String(data.get("country") || "").trim(),
+      city: String(data.get("city") || "").trim(),
+      industry: String(data.get("industry") || "").trim(),
+      contact: String(data.get("contact") || "").trim(),
+      email: String(data.get("email") || "").trim(),
+      phone: String(data.get("phone") || "").trim(),
+      status: "New"
+    };
+    if (!payload.company) {
+      setMessage("Add the company name before saving.");
+      return;
+    }
+    setManualBusy(true);
+    setHasSearched(false);
+    setMessage("Saving company to CRM...");
+    setSearchSteps(["Saving company to CRM..."]);
+    try {
+      const saved = await withTimeout(
+        api<Lead>("/api/leads", { method: "POST", body: JSON.stringify(payload) }),
+        30000,
+        "Company save timed out. Please try again."
+      );
+      setLeads((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
+      setSearchResults((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
+      setMessage(`${saved.company} was saved to CRM. Next: complete sales research.`);
+      setSearchSteps(["Saved to CRM", "Ready for company research"]);
+      form.reset();
+      trackEvent("manual_lead_created", {
+        has_website: Boolean(saved.website || saved.domain),
+        has_email: Boolean(saved.email),
+        source: "manual"
+      });
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, "Company could not be saved. Check the details and try again.");
+      setMessage(reason);
+      setSearchSteps(["Save stopped"]);
+      trackEvent("manual_lead_create_failed", { reason });
+    } finally {
+      setManualBusy(false);
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -722,7 +885,7 @@ export function LeadFinderPage() {
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
-      <form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <form aria-label="Lead search" onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">
           <p className="text-sm font-bold text-brand">Step 1 of 3 · Choose a focused market</p>
           <p className="mt-1 text-sm leading-6 text-slate-700">Use one country, one city and one industry. A narrower search creates better opportunities faster.</p>
@@ -755,6 +918,29 @@ export function LeadFinderPage() {
           {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
         </ol>}
       </form>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-sm font-bold uppercase text-brand">Fast fallback</p>
+            <h2 className="mt-1 text-xl font-bold text-ink">Already know a company?</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">Add it once. OutreachAI saves it to CRM, keeps it after refresh, and lets you run research and outreach review from the same opportunity card.</p>
+          </div>
+          <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">Takes 20 seconds</span>
+        </div>
+        <form aria-label="Manual company entry" onSubmit={addManualLead} className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <label className="text-sm font-semibold text-slate-700">Company name<input name="company" required placeholder="Acme Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Website<input name="website" placeholder="https://company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Country<input name="country" placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">City<input name="city" placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Industry<input name="industry" placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Decision maker<input name="contact" placeholder="Owner or founder" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Email<input name="email" type="email" placeholder="name@company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">Phone<input name="phone" placeholder="+49..." className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <div className="md:col-span-2 xl:col-span-4">
+            <PrimaryButton disabled={manualBusy}>{manualBusy ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} Save company to CRM</PrimaryButton>
+          </div>
+        </form>
+      </section>
       {loading && !hasSearched ? <EmptyState title="Loading leads" copy="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
         setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
         setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
@@ -1103,8 +1289,8 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
             <p className="mt-2 text-sm leading-6 text-slate-600">Use the outreach research action to find or add a verified contact. Emails are never invented.</p>
           </div>}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><UserRoundSearch size={17} /> Find or verify contacts</a>
-            <a href={`#notes-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Plus size={17} /> Add manually</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><UserRoundSearch size={17} /> Review outreach workflow</a>
+            <a href={`#notes-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Plus size={17} /> Add contact note</a>
           </div>
         </WorkspaceSection>
 
@@ -1147,10 +1333,10 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
           <p className="text-sm font-bold text-ink">Quick Actions</p>
           <p className="mt-1 text-xs leading-5 text-slate-500">Important actions stay within reach. Nothing is sent without approval.</p>
           <div className="mt-4 grid gap-2">
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Sparkles size={17} /> Analyze website</a>
-            <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> Find contacts</a>
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> Generate email</a>
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Send size={17} /> Approve or send</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Sparkles size={17} /> Review AI research</a>
+            <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> Review contacts</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> Review email draft</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Send size={17} /> Review approval path</a>
             <button type="button" onClick={() => moveStage("Meeting Scheduled")} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} Book meeting</button>
           </div>
         </section>

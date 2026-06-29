@@ -152,6 +152,38 @@ export async function mockWorkspaceApi(page: Page) {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
+    if (apiPath === "/api/leads" && route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as Partial<typeof qaLead>;
+      return fulfillJson(route, {
+        ...qaLead,
+        id: "22222222-2222-2222-2222-222222222223",
+        company: body.company || "Manual Company",
+        website: body.website || null,
+        country: body.country || null,
+        city: body.city || null,
+        industry: body.industry || null,
+        contact: body.contact || null,
+        email: body.email || null,
+        phone: body.phone || null,
+        source: "manual",
+        hunter_verified: false,
+        hunter_status: body.email ? "manual_email" : "no_verified_email",
+        ai_summary: null,
+        suggested_offer: null,
+        outreach_strategy: null,
+        sales_angle: null,
+        expected_reply_rate: null,
+        status: "New",
+        created_at: now,
+        found_at: now,
+        saved_to_crm_at: now,
+        website_analyzed_at: null,
+        contact_found_at: body.email ? now : null,
+        email_generated_at: null,
+        last_activity_at: now,
+        stage_changed_at: now
+      });
+    }
     if (apiPath === "/api/leads") return fulfillJson(route, { items: [qaLead], total: 1, page: 1, page_size: 100 });
     if (apiPath === "/api/leads/find") return fulfillJson(route, [qaLead]);
     if (apiPath === "/api/dashboard") return fulfillJson(route, { leads: 1, campaigns: 1, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: "Starter", usage: { leads: 1, email_sends: 0 } });
