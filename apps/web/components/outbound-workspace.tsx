@@ -286,6 +286,16 @@ function formatDateTime(value?: string | null) {
   return date.toLocaleString();
 }
 
+function isSessionExpiredError(error: unknown) {
+  return error instanceof Error && /sign in again|session has expired/i.test(error.message);
+}
+
+function redirectToSignIn() {
+  if (typeof window === "undefined" || !hasClerkPublishableKey || isClerkE2EBypass) return;
+  const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+  window.location.assign(`/sign-in?redirect_url=${redirectUrl}`);
+}
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -425,16 +435,17 @@ function EmptyState({ title, copy, action }: { title: string; copy: string; acti
 }
 
 function WidgetErrorCard({ title, copy = "This section could not update. The rest of your workspace is still available.", onRetry }: { title: string; copy?: string; onRetry?: () => void }) {
+  const { t } = useI18n();
   return (
     <section role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-sm font-bold text-amber-950">{title}</p>
-          <p className="mt-1 text-sm leading-6 text-amber-800">{copy}</p>
+          <p className="text-sm font-bold text-amber-950">{t(title)}</p>
+          <p className="mt-1 text-sm leading-6 text-amber-800">{t(copy)}</p>
         </div>
         {onRetry && (
           <button type="button" onClick={onRetry} className="inline-flex min-h-11 items-center justify-center rounded-md bg-white px-4 text-sm font-bold text-amber-950 shadow-sm">
-            Retry
+            {t("Retry")}
           </button>
         )}
       </div>
@@ -443,18 +454,20 @@ function WidgetErrorCard({ title, copy = "This section could not update. The res
 }
 
 function MetricCard({ label, value, help }: { label: string; value: string; help: string }) {
-  return <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">{label}</p><p className="mt-2 text-3xl font-bold text-ink">{value}</p><p className="mt-2 text-sm text-slate-600">{help}</p></article>;
+  const { t } = useI18n();
+  return <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">{t(label)}</p><p className="mt-2 text-3xl font-bold text-ink">{value}</p><p className="mt-2 text-sm text-slate-600">{t(help)}</p></article>;
 }
 
 function WorkflowTracker({ activeStep, completedSteps }: { activeStep: string; completedSteps: string[] }) {
+  const { t } = useI18n();
   return (
     <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-sm font-bold uppercase text-brand">Sales workflow</p>
-          <h2 className="mt-1 text-xl font-bold text-ink">One path from prospect to customer.</h2>
+          <p className="text-sm font-bold uppercase text-brand">{t("Sales workflow")}</p>
+          <h2 className="mt-1 text-xl font-bold text-ink">{t("One path from prospect to customer.")}</h2>
         </div>
-        <p className="text-sm font-semibold text-slate-600">Current step: {activeStep}</p>
+        <p className="text-sm font-semibold text-slate-600">{t("Current step")}: {t(activeStep)}</p>
       </div>
       <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
         {salesWorkflow.map((step) => {
@@ -464,7 +477,7 @@ function WorkflowTracker({ activeStep, completedSteps }: { activeStep: string; c
             <div key={step} className={`rounded-xl border p-3 text-sm ${active ? "border-teal-300 bg-teal-50 text-brand" : done ? "border-slate-200 bg-slate-50 text-slate-700" : "border-slate-200 bg-white text-slate-500"}`}>
               <div className="flex items-center gap-2">
                 <CheckCircle2 size={16} className={done || active ? "text-brand" : "text-slate-300"} />
-                <span className="font-bold">{step}</span>
+                <span className="font-bold">{t(step)}</span>
               </div>
             </div>
           );
@@ -715,6 +728,10 @@ function useDashboardData() {
         }
       } catch (err) {
         reportWidgetFailure(err, "dashboard-critical-data", { endpoint: "/api/dashboard" });
+        if (isSessionExpiredError(err)) {
+          redirectToSignIn();
+          return;
+        }
         if (!cached && !cancelled) {
           setSupportingError(friendlyErrorMessage(err, "Dashboard is temporarily unavailable. You can still use Lead Finder, CRM, Campaigns, Billing and Settings."));
         }
@@ -916,7 +933,8 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
 
 export function DashboardHome() {
   const { metrics, leads, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
-  if (loading) return <EmptyState title="Loading your sales workspace" copy="Collecting real leads, campaigns and metrics from your workspace." />;
+  const { t } = useI18n();
+  if (loading) return <EmptyState title={t("Loading your sales workspace")} copy={t("Collecting real leads, campaigns and metrics from your workspace.")} />;
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
   const nextStep = dashboardNextStep(metrics, leads, campaigns);
   const completedSteps = completedWorkflowSteps(metrics, leads, campaigns);
@@ -928,15 +946,15 @@ export function DashboardHome() {
   ].filter((signal) => signal.show);
   return (
     <div className="space-y-6">
-      <PageHeader eyebrow="Today" title="What should I do now?" copy="OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system." action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{nextStep.label} <ArrowRight size={17} /></Link>} />
+      <PageHeader eyebrow={t("Today")} title={t("What should I do now?")} copy={t("OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system.")} action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={17} /></Link>} />
       {supportingError && <WidgetErrorCard title={cachedAt ? "Updating workspace data" : "Dashboard details are temporarily unavailable"} copy={supportingError} />}
       {error && <WidgetErrorCard title="Dashboard metrics could not update" copy={error} />}
       <WidgetBoundary name="Today’s priority">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <p className="text-sm font-bold uppercase text-brand">{nextStep.step}</p>
-          <h2 className="mt-2 text-2xl font-bold text-ink">{nextStep.title}</h2>
-          <p className="mt-3 text-sm leading-6 text-slate-600">{nextStep.copy}</p>
-          <Link href={nextStep.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white">{nextStep.label}<ArrowRight size={17} /></Link>
+          <p className="text-sm font-bold uppercase text-brand">{t(nextStep.step)}</p>
+          <h2 className="mt-2 text-2xl font-bold text-ink">{t(nextStep.title)}</h2>
+          <p className="mt-3 text-sm leading-6 text-slate-600">{t(nextStep.copy)}</p>
+          <Link href={nextStep.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white">{t(nextStep.label)}<ArrowRight size={17} /></Link>
         </section>
       </WidgetBoundary>
       <WidgetBoundary name="Sales workflow">
@@ -945,16 +963,16 @@ export function DashboardHome() {
       {activeSignals.length > 0 && <WidgetBoundary name="Workspace metrics"><section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {activeSignals.map((signal) => <MetricCard key={signal.label} label={signal.label} value={signal.value} help={signal.help} />)}
       </section></WidgetBoundary>}
-      {!hasAnyData && <WidgetBoundary name="Dashboard onboarding"><EmptyState title="Start with one focused lead search." copy="Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after verified data exists." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} /></WidgetBoundary>}
+      {!hasAnyData && <WidgetBoundary name="Dashboard onboarding"><EmptyState title={t("Start with one focused lead search.")} copy={t("Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after verified data exists.")} action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} /></WidgetBoundary>}
       {(employees.length > 0 || activity.length > 0) && <WidgetBoundary name="Latest workspace activity"><section className="grid gap-4 lg:grid-cols-2">
         {employees.length > 0 && <WidgetBoundary name="AI employee summary"><article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-ink">AI Employees</h2>
-          <p className="mt-2 text-sm text-slate-600">Active AI workers connected to this workspace.</p>
+          <h2 className="text-lg font-bold text-ink">{t("AI Employees")}</h2>
+          <p className="mt-2 text-sm text-slate-600">{t("Active AI workers connected to this workspace.")}</p>
           <div className="mt-4 space-y-2">{employees.slice(0, 3).map((employee) => <div key={employee.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{employee.name}</p><p className="text-slate-600">{employee.role} · {employee.status}</p></div>)}</div>
         </article></WidgetBoundary>}
         {activity.length > 0 && <WidgetBoundary name="Recent activity"><article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-ink">Recent activity</h2>
-          <p className="mt-2 text-sm text-slate-600">Latest workspace actions from real saved events.</p>
+          <h2 className="text-lg font-bold text-ink">{t("Recent activity")}</h2>
+          <p className="mt-2 text-sm text-slate-600">{t("Latest workspace actions from real saved events.")}</p>
           <div className="mt-4 space-y-2">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{item.action.replaceAll(".", " ")}</p><p className="text-slate-600">{new Date(item.created_at).toLocaleString()}</p></div>)}</div>
         </article></WidgetBoundary>}
       </section></WidgetBoundary>}

@@ -63,6 +63,27 @@ test.describe("customer workspace routes", () => {
     await context.close();
   });
 
+  test("Russian mobile dashboard does not mix in English dashboard copy", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/dashboard");
+    await page.evaluate(() => {
+      window.localStorage.setItem("outreachai.locale", "ru");
+      document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
+    });
+    await page.reload({ waitUntil: "networkidle" });
+
+    await expect(page.getByRole("heading", { name: "Что мне делать сейчас?" })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("What should I do now?");
+    await expect(page.locator("body")).not.toContainText("Dashboard details are temporarily unavailable");
+    await expect(page.locator("body")).not.toContainText("Find your first qualified companies");
+    await expect(page.locator("body")).not.toContainText("Sales workflow");
+    await expect(page.locator("body")).not.toContainText("Current step");
+    await expect(page.locator("body")).not.toContainText("OutreachAI keeps one obvious next action");
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
   for (const [route, heading] of customerRoutes) {
     test(`${route} loads as a stable customer page`, async ({ page }, testInfo) => {
       const guards = installQaGuards(page, testInfo);
