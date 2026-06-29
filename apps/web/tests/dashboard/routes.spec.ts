@@ -30,4 +30,49 @@ test.describe("customer workspace routes", () => {
       await guards.assertClean();
     });
   }
+
+  test("dashboard metrics failure stays inside the dashboard and never shows the global error page", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.route("**/api/backend/api/dashboard", async (route) => {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Dashboard unavailable" }) });
+    });
+
+    await page.goto("/dashboard");
+    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Dashboard details are temporarily unavailable");
+    await expect(page.getByRole("main")).not.toContainText("Something went wrong");
+    await expect(page.getByRole("main")).not.toContainText("The page failed to render");
+    expect(pageErrors).toEqual([]);
+  });
+
+  test("malformed company data is normalized and cannot crash the companies page", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.route("**/api/backend/api/crm/companies", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([{
+          id: "broken-company",
+          name: "Partial Company",
+          source: "workspace",
+          crm_stage: "New Lead",
+          contacts: null,
+          deals: null,
+          notes: null,
+          activity: null,
+          generated_emails: null
+        }])
+      });
+    });
+
+    await page.goto("/dashboard/companies");
+    await expect(page.getByRole("heading", { name: "Every company is saved in your CRM." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Partial Company" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Not available");
+    await expect(page.getByRole("main")).not.toContainText("Something went wrong");
+    await expect(page.getByRole("main")).not.toContainText("The page failed to render");
+    expect(pageErrors).toEqual([]);
+  });
 });

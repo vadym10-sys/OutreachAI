@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useUser } from "@clerk/nextjs";
@@ -10,6 +10,8 @@ import { e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } fr
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useI18n } from "@/lib/i18n/provider";
+import { captureLogRocketException } from "@/lib/logrocket";
+import { capturePostHogException, trackEvent } from "@/lib/posthog";
 
 const nav = [
   { href: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
@@ -77,6 +79,55 @@ function useDashboardIdentity() {
     email: currentEmail,
     workspaceId: String(publicMetadata?.workspace_id || publicMetadata?.workspaceId || "unknown-workspace")
   };
+}
+
+class DashboardContentBoundary extends Component<{ children: ReactNode; pathname: string }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidUpdate(previous: { pathname: string }) {
+    if (previous.pathname !== this.props.pathname && this.state.failed) {
+      this.setState({ failed: false });
+    }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    Sentry.captureException(error, {
+      tags: { area: "dashboard-content-boundary" },
+      extra: { current_route: this.props.pathname, component_stack: info.componentStack }
+    });
+    captureLogRocketException(error, {
+      area: "dashboard-content-boundary",
+      current_route: this.props.pathname
+    });
+    capturePostHogException(error, {
+      area: "dashboard-content-boundary",
+      current_route: this.props.pathname,
+      component_stack: info.componentStack
+    });
+    trackEvent("dashboard_content_failure", {
+      current_route: this.props.pathname
+    });
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <section role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+          <p className="text-lg font-bold text-amber-950">This workspace section is temporarily unavailable.</p>
+          <p className="mt-2 text-sm leading-6 text-amber-800">Use the navigation to continue working, or retry this section. Your saved CRM data is not affected.</p>
+          <button type="button" onClick={() => this.setState({ failed: false })} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-white px-4 text-sm font-bold text-amber-950 shadow-sm">
+            Retry section
+          </button>
+        </section>
+      );
+    }
+
+    return this.props.children;
+  }
 }
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
@@ -151,7 +202,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </div>
           )}
         </header>
-        <main className="min-w-0 px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">{children}</main>
+        <main className="min-w-0 px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
+          <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
+        </main>
       </div>
       <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-6px_20px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
         {primaryMobileNav.map((item) => {

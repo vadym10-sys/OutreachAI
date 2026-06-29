@@ -2,12 +2,13 @@
 
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState, type ErrorInfo } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { clientApi, friendlyErrorMessage, splitList } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
-import { trackEvent } from "@/lib/posthog";
+import { captureLogRocketException } from "@/lib/logrocket";
+import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Activity, AISalesEmployee, Campaign, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
 
@@ -83,6 +84,7 @@ const crmStages = [
 ];
 
 const emptyPipeline: CrmPipeline = { stages: crmStages, companies: [], deals: [] };
+const dashboardCacheKey = "outreachai.dashboard.lastSuccessfulData";
 
 const salesWorkflow = [
   "Lead Search",
@@ -101,12 +103,180 @@ function safeArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [];
 }
 
+function safeCampaign(value: Campaign): Campaign {
+  return {
+    ...value,
+    countries: safeArray(value.countries),
+    cities: safeArray(value.cities),
+    keywords: safeArray(value.keywords),
+    website_filters: safeArray(value.website_filters),
+    sequence: safeArray(value.sequence)
+  };
+}
+
+function safeDashboardMetrics(value: Partial<DashboardMetrics> | undefined | null): DashboardMetrics {
+  return {
+    ...emptyMetrics,
+    ...value,
+    revenue_series: safeArray(value?.revenue_series),
+    funnel: safeArray(value?.funnel),
+    pipeline: safeArray(value?.pipeline),
+    usage: value?.usage && typeof value.usage === "object" ? value.usage : {}
+  };
+}
+
 function normalizePipeline(value: Partial<CrmPipeline> | undefined | null): CrmPipeline {
   return {
     stages: safeArray(value?.stages).length ? safeArray(value?.stages) : crmStages,
-    companies: safeArray(value?.companies),
+    companies: safeArray(value?.companies).map(normalizeCrmCompany),
     deals: safeArray(value?.deals)
   };
+}
+
+function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
+  return {
+    id: value.id || `${value.name || "company"}-${value.place_id || value.website || "unknown"}`,
+    lead_id: value.lead_id || null,
+    name: value.name || "Company name unavailable",
+    website: value.website || null,
+    domain: value.domain || null,
+    phone: value.phone || null,
+    email: value.email || null,
+    address: value.address || null,
+    city: value.city || null,
+    country: value.country || null,
+    industry: value.industry || null,
+    google_rating: value.google_rating ?? null,
+    place_id: value.place_id || null,
+    source: value.source || "workspace",
+    ai_summary: value.ai_summary || "",
+    suggested_offer: value.suggested_offer || "",
+    outreach_strategy: value.outreach_strategy || "",
+    sales_angle: value.sales_angle || "",
+    expected_reply_rate: value.expected_reply_rate || "",
+    email_status: value.email_status || "Not available",
+    crm_stage: value.crm_stage || "New Lead",
+    contacts: safeArray(value.contacts),
+    deals: safeArray(value.deals),
+    notes: safeArray(value.notes),
+    activity: safeArray(value.activity),
+    generated_emails: safeArray(value.generated_emails),
+    created_at: value.created_at || new Date().toISOString(),
+    updated_at: value.updated_at || value.created_at || new Date().toISOString(),
+    found_at: value.found_at || null,
+    saved_to_crm_at: value.saved_to_crm_at || null,
+    website_analyzed_at: value.website_analyzed_at || null,
+    contact_found_at: value.contact_found_at || null,
+    email_generated_at: value.email_generated_at || null,
+    email_approved_at: value.email_approved_at || null,
+    email_sent_at: value.email_sent_at || null,
+    delivered_at: value.delivered_at || null,
+    opened_at: value.opened_at || null,
+    replied_at: value.replied_at || null,
+    last_activity_at: value.last_activity_at || null,
+    stage_changed_at: value.stage_changed_at || null
+  };
+}
+
+function normalizeAnalysis(value: Partial<AnalysisResult> | undefined | null): AnalysisResult {
+  const company = value?.company || "";
+  const summary = value?.summary || value?.company_summary || unavailable;
+  return {
+    company,
+    website: value?.website || "",
+    description: value?.description || summary,
+    industry: value?.industry || null,
+    location: value?.location || null,
+    niche: value?.niche || unavailable,
+    products_services: safeArray(value?.products_services),
+    services: safeArray(value?.services),
+    technologies: safeArray(value?.technologies),
+    strengths: safeArray(value?.strengths),
+    weaknesses: safeArray(value?.weaknesses),
+    icp_score: typeof value?.icp_score === "number" ? value.icp_score : 0,
+    summary,
+    company_summary: value?.company_summary || summary,
+    suggested_offer: value?.suggested_offer || unavailable,
+    outreach_strategy: value?.outreach_strategy || unavailable,
+    sales_angle: value?.sales_angle || unavailable,
+    expected_reply_rate: value?.expected_reply_rate || unavailable,
+    recommended_cta: value?.recommended_cta || unavailable
+  };
+}
+
+function reportWidgetFailure(error: unknown, area: string, extra: Record<string, unknown> = {}) {
+  Sentry.captureException(error, {
+    tags: { area },
+    extra
+  });
+  captureLogRocketException(error, { area, ...extra });
+  capturePostHogException(error, { area, ...extra });
+  trackEvent("widget_failure", { area, ...extra });
+}
+
+type CachedDashboardData = {
+  metrics: DashboardMetrics;
+  leads: Lead[];
+  campaigns: Campaign[];
+  employees: AISalesEmployee[];
+  activity: Activity[];
+};
+
+function cacheDashboardData(data: CachedDashboardData) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(dashboardCacheKey, JSON.stringify({ ...data, cached_at: new Date().toISOString() }));
+  } catch {
+    // Cache is best-effort only.
+  }
+}
+
+function readCachedDashboardData() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(dashboardCacheKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      metrics?: Partial<DashboardMetrics>;
+      leads?: Lead[];
+      campaigns?: Campaign[];
+      employees?: AISalesEmployee[];
+      activity?: Activity[];
+      cached_at?: string;
+    };
+    return {
+      metrics: safeDashboardMetrics(parsed.metrics),
+      leads: safeArray(parsed.leads),
+      campaigns: safeArray(parsed.campaigns).map(safeCampaign),
+      employees: safeArray(parsed.employees),
+      activity: safeArray(parsed.activity),
+      cachedAt: parsed.cached_at || null
+    };
+  } catch {
+    return null;
+  }
+}
+
+class WidgetBoundary extends Component<{ name: string; children: ReactNode; fallback?: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    reportWidgetFailure(error, "dashboard-widget-render", {
+      widget: this.props.name,
+      component_stack: info.componentStack
+    });
+  }
+
+  render() {
+    if (this.state.failed) {
+      return this.props.fallback || <WidgetErrorCard title={`${this.props.name} is temporarily unavailable`} />;
+    }
+    return this.props.children;
+  }
 }
 
 function formatDateTime(value?: string | null) {
@@ -204,6 +374,10 @@ function leadProfile(lead: Lead) {
 
 function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, followUps?: FollowUpSequence, audit?: WebsiteAudit) {
   const profile = leadProfile(lead);
+  const noOpenFollowUps = safeArray(followUps?.no_open);
+  const openedFollowUps = safeArray(followUps?.opened);
+  const repliedFollowUps = safeArray(followUps?.replied);
+  const clickedFollowUps = safeArray(followUps?.clicked);
   return [
     ["Company profile", Boolean(lead.company && (lead.website || lead.domain || lead.industry || lead.country))],
     ["Website analysis", profile.websiteAnalysis !== unavailable || Boolean(audit?.improvement_report)],
@@ -213,7 +387,7 @@ function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, 
     ["AI opportunity analysis", profile.opportunityAnalysis !== unavailable || Boolean(copilot?.reasoning?.length)],
     ["Personalized offer", profile.offer !== unavailable],
     ["Personalized first email", Boolean(draft?.subject && draft.body)],
-    ["Follow-up sequence", Boolean(followUps && (followUps.no_open.length || followUps.opened.length || followUps.replied.length || followUps.clicked.length))],
+    ["Follow-up sequence", Boolean(followUps && (noOpenFollowUps.length || openedFollowUps.length || repliedFollowUps.length || clickedFollowUps.length))],
     ["Confidence score", Boolean(copilot)],
     ["Expected reply rate", profile.expectedReplyRate !== unavailable || Boolean(copilot)],
     ["Priority score", Boolean(copilot)]
@@ -248,6 +422,24 @@ function SecondaryButton({ children, onClick, disabled = false }: { children: Re
 
 function EmptyState({ title, copy, action }: { title: string; copy: string; action?: React.ReactNode }) {
   return <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center shadow-sm"><h2 className="text-lg font-bold text-ink">{title}</h2><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">{copy}</p>{action && <div className="mt-5 flex justify-center">{action}</div>}</section>;
+}
+
+function WidgetErrorCard({ title, copy = "This section could not update. The rest of your workspace is still available.", onRetry }: { title: string; copy?: string; onRetry?: () => void }) {
+  return (
+    <section role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-bold text-amber-950">{title}</p>
+          <p className="mt-1 text-sm leading-6 text-amber-800">{copy}</p>
+        </div>
+        {onRetry && (
+          <button type="button" onClick={onRetry} className="inline-flex min-h-11 items-center justify-center rounded-md bg-white px-4 text-sm font-bold text-amber-950 shadow-sm">
+            Retry
+          </button>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function MetricCard({ label, value, help }: { label: string; value: string; help: string }) {
@@ -366,23 +558,19 @@ function useSalesData() {
       ]);
       const [leadResult, campaignResult, dashboardResult] = results;
       if (leadResult.status === "fulfilled") setLeads(leadResult.value.items || []);
-      if (campaignResult.status === "fulfilled") setCampaigns(campaignResult.value || []);
-      if (dashboardResult.status === "fulfilled") setMetrics({ ...emptyMetrics, ...dashboardResult.value });
+      if (campaignResult.status === "fulfilled") setCampaigns(safeArray(campaignResult.value).map(safeCampaign));
+      if (dashboardResult.status === "fulfilled") setMetrics(safeDashboardMetrics(dashboardResult.value));
 
       const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
       if (failed.length) {
-        failed.forEach((result) => {
-          Sentry.captureException(result.reason, {
-            tags: { area: "sales-workspace-loader" },
-            extra: { endpoint_group: "leads-campaigns-dashboard" }
-          });
-        });
+        failed.forEach((result) => reportWidgetFailure(result.reason, "sales-workspace-loader", { endpoint_group: "leads-campaigns-dashboard" }));
         if (leadResult.status === "rejected" && campaignResult.status === "rejected" && dashboardResult.status === "rejected") {
           setError(friendlyErrorMessage(leadResult.reason, "Workspace data could not be loaded. Please try again."));
         }
       }
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not load sales workspace data. Please refresh or sign in again."));
+        reportWidgetFailure(err, "sales-workspace-loader", { endpoint_group: "leads-campaigns-dashboard" });
+        setError(friendlyErrorMessage(err, "Could not load sales workspace data. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -428,25 +616,21 @@ function useCrmData() {
         api<CrmPipeline>("/api/crm/pipeline")
       ]);
       const [companyResult, contactResult, dealResult, pipelineResult] = results;
-      if (companyResult.status === "fulfilled") setCompanies(safeArray(companyResult.value));
+      if (companyResult.status === "fulfilled") setCompanies(safeArray(companyResult.value).map(normalizeCrmCompany));
       if (contactResult.status === "fulfilled") setContacts(safeArray(contactResult.value));
       if (dealResult.status === "fulfilled") setDeals(safeArray(dealResult.value));
       if (pipelineResult.status === "fulfilled") setPipeline(normalizePipeline(pipelineResult.value));
 
       const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
       if (failed.length) {
-        failed.forEach((result) => {
-          Sentry.captureException(result.reason, {
-            tags: { area: "crm-workspace-loader" },
-            extra: { endpoint_group: "companies-contacts-deals-pipeline" }
-          });
-        });
+        failed.forEach((result) => reportWidgetFailure(result.reason, "crm-workspace-loader", { endpoint_group: "companies-contacts-deals-pipeline" }));
         if (companyResult.status === "rejected" && contactResult.status === "rejected" && dealResult.status === "rejected" && pipelineResult.status === "rejected") {
           setError(friendlyErrorMessage(companyResult.reason, "CRM data could not be loaded. Please try again."));
         }
       }
     } catch (err) {
-      setError(friendlyErrorMessage(err, "CRM data could not be loaded. Please refresh or sign in again."));
+        reportWidgetFailure(err, "crm-workspace-loader", { endpoint_group: "companies-contacts-deals-pipeline" });
+        setError(friendlyErrorMessage(err, "CRM data could not be loaded. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -471,6 +655,7 @@ function useDashboardData() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [supportingError, setSupportingError] = useState("");
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
 
   useEffect(() => {
     if (!ready) return;
@@ -479,10 +664,22 @@ function useDashboardData() {
       setLoading(true);
       setError("");
       setSupportingError("");
+      const cached = readCachedDashboardData();
+      if (cached && !cancelled) {
+        setMetrics(cached.metrics);
+        setLeads(cached.leads);
+        setCampaigns(cached.campaigns);
+        setEmployees(cached.employees);
+        setActivity(cached.activity);
+        setCachedAt(cached.cachedAt);
+        setLoading(false);
+        setSupportingError("Updating workspace data. Showing your last loaded dashboard while the latest data refreshes.");
+      }
       try {
         const dashboard = await api<DashboardMetrics>("/api/dashboard");
         if (cancelled) return;
-        setMetrics({ ...emptyMetrics, ...dashboard });
+        const nextMetrics = safeDashboardMetrics(dashboard);
+        setMetrics(nextMetrics);
 
         const results = await Promise.allSettled([
           api<PaginatedLeads>("/api/leads?page_size=5"),
@@ -492,33 +689,35 @@ function useDashboardData() {
         ]);
         if (cancelled) return;
         const [leadResult, campaignResult, employeeResult, activityResult] = results;
-        if (leadResult.status === "fulfilled") setLeads(leadResult.value.items || []);
-        if (campaignResult.status === "fulfilled") setCampaigns(campaignResult.value || []);
-        if (employeeResult.status === "fulfilled") setEmployees(employeeResult.value || []);
-        if (activityResult.status === "fulfilled") setActivity(activityResult.value || []);
+        const nextLeads = leadResult.status === "fulfilled" ? safeArray(leadResult.value.items) : null;
+        const nextCampaigns = campaignResult.status === "fulfilled" ? safeArray(campaignResult.value).map(safeCampaign) : null;
+        const nextEmployees = employeeResult.status === "fulfilled" ? safeArray(employeeResult.value) : null;
+        const nextActivity = activityResult.status === "fulfilled" ? safeArray(activityResult.value) : null;
+        if (nextLeads) setLeads(nextLeads);
+        if (nextCampaigns) setCampaigns(nextCampaigns);
+        if (nextEmployees) setEmployees(nextEmployees);
+        if (nextActivity) setActivity(nextActivity);
+        setCachedAt(null);
+        if (nextLeads && nextCampaigns && nextEmployees && nextActivity) {
+          cacheDashboardData({
+            metrics: nextMetrics,
+            leads: nextLeads,
+            campaigns: nextCampaigns,
+            employees: nextEmployees,
+            activity: nextActivity
+          });
+        }
 
         const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
         if (failed.length) {
-          failed.forEach((result) => {
-            if (process.env.NODE_ENV !== "production") {
-              console.error("Dashboard supporting data could not be loaded", result.reason);
-            }
-            Sentry.captureException(result.reason, {
-              tags: { area: "dashboard-supporting-data" },
-              extra: { endpoint_group: "leads-campaigns-employees-activity" }
-            });
-          });
-          setSupportingError("Some dashboard details are temporarily unavailable. Core workspace metrics are loaded.");
+          failed.forEach((result) => reportWidgetFailure(result.reason, "dashboard-supporting-data", { endpoint_group: "leads-campaigns-employees-activity" }));
+          setSupportingError("Some dashboard details are temporarily unavailable. Your core workspace is still loaded.");
         }
       } catch (err) {
-        if (process.env.NODE_ENV !== "production") {
-          console.error("Dashboard metrics could not be loaded", err);
+        reportWidgetFailure(err, "dashboard-critical-data", { endpoint: "/api/dashboard" });
+        if (!cached && !cancelled) {
+          setSupportingError(friendlyErrorMessage(err, "Dashboard is temporarily unavailable. You can still use Lead Finder, CRM, Campaigns, Billing and Settings."));
         }
-        Sentry.captureException(err, {
-          tags: { area: "dashboard-critical-data" },
-          extra: { endpoint: "/api/dashboard" }
-        });
-        setError(friendlyErrorMessage(err, "Dashboard data could not be loaded."));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -529,7 +728,7 @@ function useDashboardData() {
     };
   }, [api, ready]);
 
-  return { metrics, leads, campaigns, employees, activity, loading, error, supportingError };
+  return { metrics, leads, campaigns, employees, activity, loading, error, supportingError, cachedAt };
 }
 
 function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn; onLeadUpdated?: (lead: Lead) => void }) {
@@ -569,7 +768,8 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
           method: "POST",
           body: JSON.stringify({ lead_id: lead.id, website: leadWebsite(lead), company: lead.company, niche: lead.industry || lead.niche || "" })
         });
-        onLeadUpdated?.({ ...lead, ai_summary: analysis.summary, suggested_offer: analysis.suggested_offer, outreach_strategy: analysis.outreach_strategy, sales_angle: analysis.sales_angle, expected_reply_rate: analysis.expected_reply_rate, industry: lead.industry || analysis.industry || undefined });
+        const safeAnalysis = normalizeAnalysis(analysis);
+        onLeadUpdated?.({ ...lead, ai_summary: safeAnalysis.summary, suggested_offer: safeAnalysis.suggested_offer, outreach_strategy: safeAnalysis.outreach_strategy, sales_angle: safeAnalysis.sales_angle, expected_reply_rate: safeAnalysis.expected_reply_rate, industry: lead.industry || safeAnalysis.industry || undefined });
       }
       setStatus("Running AI opportunity analysis...");
       setCopilot(await api<SalesCopilot>(`/api/leads/${lead.id}/copilot`, { method: "POST" }));
@@ -667,8 +867,8 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
           ["Company profile", `${profile.industry} · ${profile.location}`],
           ["Decision maker", profile.decisionMaker],
           ["Verified email", profile.verifiedEmail],
-          ["AI pain analysis", audit?.priority_actions?.join(", ") || profile.painAnalysis],
-          ["AI opportunity analysis", copilot?.reasoning?.join(" ") || profile.opportunityAnalysis],
+          ["AI pain analysis", safeArray(audit?.priority_actions).join(", ") || profile.painAnalysis],
+          ["AI opportunity analysis", safeArray(copilot?.reasoning).join(" ") || profile.opportunityAnalysis],
           ["Personalized offer", profile.offer],
           ["Expected reply rate", copilot ? `${copilot.probability_to_reply}%` : profile.expectedReplyRate],
           ["Confidence score", copilot ? `${copilot.probability_to_buy}% purchase probability` : unavailable],
@@ -715,9 +915,8 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
 }
 
 export function DashboardHome() {
-  const { metrics, leads, campaigns, employees, activity, loading, error, supportingError } = useDashboardData();
+  const { metrics, leads, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
   if (loading) return <EmptyState title="Loading your sales workspace" copy="Collecting real leads, campaigns and metrics from your workspace." />;
-  if (error) return <EmptyState title="Workspace data unavailable" copy={error} />;
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
   const nextStep = dashboardNextStep(metrics, leads, campaigns);
   const completedSteps = completedWorkflowSteps(metrics, leads, campaigns);
@@ -730,30 +929,35 @@ export function DashboardHome() {
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Today" title="What should I do now?" copy="OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system." action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{nextStep.label} <ArrowRight size={17} /></Link>} />
-      {supportingError && <p role="status" className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm font-semibold text-orange-700">{supportingError}</p>}
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <p className="text-sm font-bold uppercase text-brand">{nextStep.step}</p>
-        <h2 className="mt-2 text-2xl font-bold text-ink">{nextStep.title}</h2>
-        <p className="mt-3 text-sm leading-6 text-slate-600">{nextStep.copy}</p>
-        <Link href={nextStep.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white">{nextStep.label}<ArrowRight size={17} /></Link>
-      </section>
-      <WorkflowTracker activeStep={nextStep.step} completedSteps={completedSteps} />
-      {activeSignals.length > 0 && <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {supportingError && <WidgetErrorCard title={cachedAt ? "Updating workspace data" : "Dashboard details are temporarily unavailable"} copy={supportingError} />}
+      {error && <WidgetErrorCard title="Dashboard metrics could not update" copy={error} />}
+      <WidgetBoundary name="Today’s priority">
+        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          <p className="text-sm font-bold uppercase text-brand">{nextStep.step}</p>
+          <h2 className="mt-2 text-2xl font-bold text-ink">{nextStep.title}</h2>
+          <p className="mt-3 text-sm leading-6 text-slate-600">{nextStep.copy}</p>
+          <Link href={nextStep.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white">{nextStep.label}<ArrowRight size={17} /></Link>
+        </section>
+      </WidgetBoundary>
+      <WidgetBoundary name="Sales workflow">
+        <WorkflowTracker activeStep={nextStep.step} completedSteps={completedSteps} />
+      </WidgetBoundary>
+      {activeSignals.length > 0 && <WidgetBoundary name="Workspace metrics"><section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {activeSignals.map((signal) => <MetricCard key={signal.label} label={signal.label} value={signal.value} help={signal.help} />)}
-      </section>}
-      {!hasAnyData && <EmptyState title="Start with one focused lead search." copy="Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after verified data exists." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}
-      {(employees.length > 0 || activity.length > 0) && <section className="grid gap-4 lg:grid-cols-2">
-        {employees.length > 0 && <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      </section></WidgetBoundary>}
+      {!hasAnyData && <WidgetBoundary name="Dashboard onboarding"><EmptyState title="Start with one focused lead search." copy="Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after verified data exists." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} /></WidgetBoundary>}
+      {(employees.length > 0 || activity.length > 0) && <WidgetBoundary name="Latest workspace activity"><section className="grid gap-4 lg:grid-cols-2">
+        {employees.length > 0 && <WidgetBoundary name="AI employee summary"><article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold text-ink">AI Employees</h2>
           <p className="mt-2 text-sm text-slate-600">Active AI workers connected to this workspace.</p>
           <div className="mt-4 space-y-2">{employees.slice(0, 3).map((employee) => <div key={employee.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{employee.name}</p><p className="text-slate-600">{employee.role} · {employee.status}</p></div>)}</div>
-        </article>}
-        {activity.length > 0 && <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        </article></WidgetBoundary>}
+        {activity.length > 0 && <WidgetBoundary name="Recent activity"><article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold text-ink">Recent activity</h2>
           <p className="mt-2 text-sm text-slate-600">Latest workspace actions from real saved events.</p>
           <div className="mt-4 space-y-2">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{item.action.replaceAll(".", " ")}</p><p className="text-slate-600">{new Date(item.created_at).toLocaleString()}</p></div>)}</div>
-        </article>}
-      </section>}
+        </article></WidgetBoundary>}
+      </section></WidgetBoundary>}
     </div>
   );
 }
@@ -1377,7 +1581,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
 
 export function CompaniesPage() {
   const { api, companies, loading, error, filters, setFilters } = useCrmData();
-  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." /> <CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <EmptyState title="Companies unavailable" copy={error} /> : companies.length ? <div className="grid gap-5">{companies.map((company) => <CrmCompanyCard key={company.id} company={company} api={api} />)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." /> <CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : companies.length ? <div className="grid gap-5">{companies.map((company) => <WidgetBoundary key={company.id} name={`Company workspace: ${company.name}`}><CrmCompanyCard company={company} api={api} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
 }
 
 export function WebsiteAnalyzerPage() {
@@ -1391,14 +1595,15 @@ export function WebsiteAnalyzerPage() {
     setLoading(true);
     setError("");
     try {
-      setAnalysis(await api<AnalysisResult>("/api/ai/analyze", { method: "POST", body: JSON.stringify({ website: String(data.get("website") || ""), company: String(data.get("company") || ""), niche: String(data.get("niche") || "") }) }));
+      const result = await api<AnalysisResult>("/api/ai/analyze", { method: "POST", body: JSON.stringify({ website: String(data.get("website") || ""), company: String(data.get("company") || ""), niche: String(data.get("niche") || "") }) });
+      setAnalysis(normalizeAnalysis(result));
     } catch (err) {
       setError(friendlyErrorMessage(err, "Website analysis could not be completed. Check the website and try again."));
     } finally {
       setLoading(false);
     }
   }
-  return <div className="space-y-6"><PageHeader eyebrow="Website Analyzer" title="Analyze a real prospect website." copy="OutreachAI reads the website and extracts ICP, pain points, offer and outreach strategy." /><form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="grid gap-4 md:grid-cols-3"><input required name="website" placeholder="https://company.com" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="company" placeholder="Company name" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="niche" placeholder="Industry or niche" className="min-h-11 rounded-md border border-slate-300 px-3" /></div><div className="mt-4"><PrimaryButton disabled={loading}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Analyze website</PrimaryButton></div>{error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}</form>{analysis ? <section className="grid gap-4 lg:grid-cols-2">{[["Business summary", analysis.company_summary || analysis.summary], ["Services", analysis.services.join(", ") || unavailable], ["Target customers", analysis.niche || unavailable], ["Weak points", analysis.weaknesses.join(", ") || unavailable], ["Possible outreach angle", analysis.sales_angle || unavailable], ["Suggested offer", analysis.suggested_offer || unavailable], ["Personalization facts", analysis.strengths.join(", ") || unavailable], ["Recommended cold email", analysis.outreach_strategy || unavailable]].map(([label, value]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{label}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{value}</p></article>)}</section> : <EmptyState title="No website analyzed yet" copy="Enter a real domain. OutreachAI will not show sample analysis." />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Website Analyzer" title="Analyze a real prospect website." copy="OutreachAI reads the website and extracts ICP, pain points, offer and outreach strategy." /><form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="grid gap-4 md:grid-cols-3"><input required name="website" placeholder="https://company.com" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="company" placeholder="Company name" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="niche" placeholder="Industry or niche" className="min-h-11 rounded-md border border-slate-300 px-3" /></div><div className="mt-4"><PrimaryButton disabled={loading}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Analyze website</PrimaryButton></div>{error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}</form>{analysis ? <WidgetBoundary name="Website analysis results"><section className="grid gap-4 lg:grid-cols-2">{[["Business summary", analysis.company_summary || analysis.summary], ["Services", safeArray(analysis.services).join(", ") || unavailable], ["Target customers", analysis.niche || unavailable], ["Weak points", safeArray(analysis.weaknesses).join(", ") || unavailable], ["Possible outreach angle", analysis.sales_angle || unavailable], ["Suggested offer", analysis.suggested_offer || unavailable], ["Personalization facts", safeArray(analysis.strengths).join(", ") || unavailable], ["Recommended cold email", analysis.outreach_strategy || unavailable]].map(([label, value]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{label}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{value}</p></article>)}</section></WidgetBoundary> : <EmptyState title="No website analyzed yet" copy="Enter a real domain. OutreachAI will not show sample analysis." />}</div>;
 }
 
 export function ContactsPage() {
