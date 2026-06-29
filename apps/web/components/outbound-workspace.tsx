@@ -290,6 +290,11 @@ function isSessionExpiredError(error: unknown) {
   return error instanceof Error && /sign in again|session has expired/i.test(error.message);
 }
 
+function userMessage(error: unknown, fallback: string, t: (key: string) => string) {
+  if (isSessionExpiredError(error)) return t("Your session has expired. Please sign in again.");
+  return t(friendlyErrorMessage(error, fallback));
+}
+
 function redirectToSignIn() {
   if (typeof window === "undefined" || !hasClerkPublishableKey || isClerkE2EBypass) return;
   const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
@@ -1050,7 +1055,11 @@ export function LeadFinderPage() {
         source: "manual"
       });
     } catch (err) {
-      const reason = friendlyErrorMessage(err, "Company could not be saved. Check the details and try again.");
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = userMessage(err, "Company could not be saved. Check the details and try again.", t);
       setMessage(reason);
       setSearchSteps([t("Save stopped")]);
       trackEvent("manual_lead_create_failed", { reason });
@@ -1108,7 +1117,11 @@ export function LeadFinderPage() {
         source: "lead_search"
       });
     } catch (err) {
-      const reason = friendlyErrorMessage(err, "Lead search could not be completed.");
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = userMessage(err, "Lead search could not be completed.", t);
       setSearchResults([]);
       setSearchSteps((items) => [...items, t("Search stopped")]);
       setMessage(reason);
@@ -1182,7 +1195,7 @@ export function LeadFinderPage() {
           </div>
         </form>
       </section>
-      {loading && !hasSearched ? <EmptyState title="Loading leads" copy="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
+      {searching ? <EmptyState title="Searching companies..." copy="We are checking matching businesses and saving valid opportunities to CRM." /> : loading && !hasSearched ? <EmptyState title="Loading leads" copy="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
         setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
         setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
       }} />)}</div> : <EmptyState title={hasSearched ? "No matching companies found" : "No real leads yet"} copy={hasSearched ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}
