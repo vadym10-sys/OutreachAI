@@ -91,7 +91,9 @@ async function loadRuntimeConfig() {
       return true;
     }
   } catch (error) {
-    console.error("PostHog runtime config could not be loaded", error);
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Product analytics runtime config could not be loaded", error);
+    }
   }
 
   return false;

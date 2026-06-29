@@ -929,10 +929,10 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
 
 def _provider_error(exc: Exception) -> HTTPException:
     if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError, HunterConfigurationError, GoogleMapsConfigurationError)):
-        return HTTPException(status_code=503, detail=str(exc))
+        return HTTPException(status_code=503, detail="This connection is not ready. Please contact the workspace owner.")
     if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError, GoogleMapsRequestError)):
-        return HTTPException(status_code=502, detail=str(exc))
-    return HTTPException(status_code=500, detail="Provider request failed.")
+        return HTTPException(status_code=502, detail="This connection is temporarily unavailable. Please try again later.")
+    return HTTPException(status_code=500, detail="Something went wrong while processing your request. Please try again.")
 
 
 def _skipped_website_analysis(company: str, website: str, niche: str | None = None) -> AnalysisOut:
@@ -1207,7 +1207,7 @@ def _default_settings() -> dict:
     return {
         "general": {"workspaceMode": "team", "dateFormat": "YYYY-MM-DD"},
         "ai": {"model": "gpt-5.5", "temperature": 0.4, "personalization": "high"},
-        "email": {"provider": "Resend", "dailyLimit": 250, "tracking": True},
+        "email": {"provider": "connected_email_sender", "dailyLimit": 250, "tracking": True},
         "billing": {"plan": "Starter", "renewal": "monthly"},
         "security": {"mfaRequired": False, "sessionTimeout": "30d"},
         "api": {"enabled": False, "webhooks": []},
@@ -1293,8 +1293,8 @@ def apollo_test_connection(request: Request, user_id: CurrentUser, db: Session =
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     if not apollo_key_loaded():
-        _save_apollo_settings_state(db, settings, connected=False, last_error="Apollo is not connected on the backend.")
-        return ApolloConnectionTestOut(configured=False, connected=False, last_error="Apollo is not connected on the backend.")
+        _save_apollo_settings_state(db, settings, connected=False, last_error="Lead search connection is not ready.")
+        return ApolloConnectionTestOut(configured=False, connected=False, last_error="Lead search connection is not ready.")
     try:
         result = test_apollo_connection()
     except Exception as exc:
@@ -1328,8 +1328,8 @@ def hunter_test_connection(request: Request, user_id: CurrentUser, db: Session =
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     if not hunter_key_loaded():
-        _save_hunter_settings_state(db, settings, connected=False, last_error="Hunter is not connected on the backend.")
-        return HunterConnectionTestOut(configured=False, connected=False, last_error="Hunter is not connected on the backend.")
+        _save_hunter_settings_state(db, settings, connected=False, last_error="Email verification is not ready.")
+        return HunterConnectionTestOut(configured=False, connected=False, last_error="Email verification is not ready.")
     try:
         result = test_hunter_connection()
     except Exception as exc:
@@ -3239,7 +3239,7 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
     _sync_lead_to_crm(db, user_id, workspace, lead)
     log_event(db, request, user_id, "lead.imported", {"company": lead.company, "source": "manual", "hunter_verified": bool(enriched.hunter_verified)})
     if enriched.hunter_verified:
-        _notify(db, user_id, NotificationKind.success, "Company analyzed", f"{lead.company} was saved, Hunter verified an email, and AI prepared the company summary.")
+        _notify(db, user_id, NotificationKind.success, "Company analyzed", f"{lead.company} was saved, an email was verified, and AI prepared the company summary.")
     else:
         _notify(db, user_id, NotificationKind.info, "Company analyzed", f"{lead.company} was saved and analyzed. No verified email was found yet.")
     db.commit()
@@ -3391,7 +3391,7 @@ def _save_provider_leads(
     log_event(db, request, user_id, action, {"source": source, "saved": len(saved), "duplicates_skipped": skipped, **payload.model_dump()})
     verified = sum(1 for item in found if item.hunter_verified)
     if saved:
-        suffix = f" Hunter verified {verified} email{'s' if verified != 1 else ''}." if verified else ""
+        suffix = f" Verified {verified} email{'s' if verified != 1 else ''}." if verified else ""
         _notify(db, user_id, NotificationKind.success, "Leads imported", f"{len(saved)} companies were added to your workspace.{suffix}")
     elif found:
         _notify(db, user_id, NotificationKind.info, "Lead search finished", "All matching results were already in your workspace.")
@@ -3854,7 +3854,7 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
             f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
             f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
             f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
-            f"Hunter verified email: {lead.email}" if intelligence.get("hunter_verified") and lead.email else "",
+            f"Verified email: {lead.email}" if intelligence.get("hunter_verified") and lead.email else "",
         ]
         if part
     ) or " ".join(part for part in [lead.website, lead.industry, lead.country, lead.city] if part) or lead.company
@@ -3923,7 +3923,7 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
             f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
             f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
             f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
-            "Verified email source: Hunter" if intelligence.get("hunter_verified") else "",
+            "Verified email available" if intelligence.get("hunter_verified") else "",
         ] if part
     )
     ai_payload = PersonalizeRequest(
@@ -4250,11 +4250,11 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Stripe subscription lookup failed") from exc
+        raise HTTPException(status_code=502, detail="Billing subscription lookup failed") from exc
     if not customer:
-        return BillingSyncOut(synced=False, customer_found=False, subscription_found=False, message="Stripe customer not found")
+        return BillingSyncOut(synced=False, customer_found=False, subscription_found=False, message="Billing customer not found")
     if not subscription:
-        return BillingSyncOut(synced=False, customer_found=True, subscription_found=False, stripe_customer_id=str(customer.id), message="No Stripe subscription found for customer")
+        return BillingSyncOut(synced=False, customer_found=True, subscription_found=False, stripe_customer_id=str(customer.id), message="No billing subscription found for customer")
     sub = subscription_payload(subscription)
     plan = str(sub["plan"]) if str(sub["plan"]) in PLAN_LIMITS else "Starter"
     synced = _sync_workspace_subscription(
@@ -4284,7 +4284,7 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
         price_id_loaded=bool(sub["price_id"]),
         subscription_found=True,
         customer_found=True,
-        message="Latest Stripe subscription synced to this workspace",
+        message="Latest billing subscription synced to this workspace",
     )
 
 
@@ -4480,34 +4480,34 @@ def _quality_checks(db: Session) -> list[QualityCheckOut]:
 
     sentry_related_logs = int(db.scalar(select(func.count()).select_from(AuditLog).where(or_(AuditLog.action.ilike("%error%"), AuditLog.action.ilike("%exception%"), AuditLog.action.ilike("%failed%")))) or 0)
     checks.append(_quality_check(
-        "Sentry issue intake",
+        "Error issue intake",
         QUALITY_MODULES["error_doctor"],
         "healthy" if settings.sentry_dsn else "blocked",
         "medium" if settings.sentry_dsn else "high",
-        "Sentry SDK is configured and app-side error events can be grouped." if settings.sentry_dsn else "SENTRY_DSN is not loaded, so production exceptions cannot be sent to Sentry.",
-        {"sentry_dsn_loaded": bool(settings.sentry_dsn), "recent_error_like_audit_logs": sentry_related_logs},
-        "Load SENTRY_DSN in the backend and keep provider errors tagged with endpoint, provider, workspace and lead context.",
+        "Error monitoring is configured and app-side events can be grouped." if settings.sentry_dsn else "Error monitoring is not loaded, so production exceptions cannot be sent to monitoring.",
+        {"error_monitoring_loaded": bool(settings.sentry_dsn), "recent_error_like_audit_logs": sentry_related_logs},
+        "Load backend error monitoring and keep service errors tagged with endpoint, workspace and lead context.",
     ))
 
     provider_flags = {
-        "Google Maps": bool(settings.google_maps_api_key),
-        "Hunter": bool(settings.hunter_api_key),
-        "OpenAI": bool(settings.openai_api_key),
-        "Resend": bool(settings.resend_api_key and settings.resend_from_email),
-        "Stripe": bool(settings.stripe_secret_key and settings.stripe_webhook_secret and settings.stripe_starter_price_id and settings.stripe_pro_price_id and settings.stripe_agency_price_id),
-        "Clerk": bool(settings.clerk_secret_key and settings.clerk_secret_key != "dev" and settings.clerk_jwt_issuer),
-        "PostHog": True,
-        "Sentry": bool(settings.sentry_dsn),
+        "Lead search": bool(settings.google_maps_api_key),
+        "Email verification": bool(settings.hunter_api_key),
+        "AI analysis": bool(settings.openai_api_key),
+        "Email sending": bool(settings.resend_api_key and settings.resend_from_email),
+        "Billing": bool(settings.stripe_secret_key and settings.stripe_webhook_secret and settings.stripe_starter_price_id and settings.stripe_pro_price_id and settings.stripe_agency_price_id),
+        "Authentication": bool(settings.clerk_secret_key and settings.clerk_secret_key != "dev" and settings.clerk_jwt_issuer),
+        "Product analytics": True,
+        "Error monitoring": bool(settings.sentry_dsn),
     }
     missing_integrations = [name for name, ok in provider_flags.items() if not ok]
     checks.append(_quality_check(
         "Production integration monitor",
         QUALITY_MODULES["integration_monitor"],
         "healthy" if not missing_integrations else "degraded",
-        "high" if {"Google Maps", "Hunter", "OpenAI", "Resend", "Stripe", "Clerk"} & set(missing_integrations) else "medium",
-        "All critical providers are configured." if not missing_integrations else f"Missing or incomplete provider config: {', '.join(missing_integrations)}.",
+        "high" if {"Lead search", "Email verification", "AI analysis", "Email sending", "Billing", "Authentication"} & set(missing_integrations) else "medium",
+        "All critical connections are configured." if not missing_integrations else f"Missing or incomplete connection: {', '.join(missing_integrations)}.",
         {"providers": provider_flags},
-        "Update the missing Railway variables, restart the affected service, then run /api/admin/quality/run.",
+        "Update the missing production settings, restart the affected service, then run the quality check again.",
     ))
 
     last_logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(200)).all())
@@ -4594,9 +4594,9 @@ def _quality_checks(db: Session) -> list[QualityCheckOut]:
     if settings.debug:
         security_gaps.append("DEBUG is enabled")
     if not settings.stripe_webhook_secret:
-        security_gaps.append("Stripe webhook signature secret missing")
+        security_gaps.append("billing webhook signature secret missing")
     if not settings.resend_webhook_secret:
-        security_gaps.append("Resend webhook signature secret missing")
+        security_gaps.append("email webhook signature secret missing")
     if settings.encryption_key == "replace-with-32-byte-url-safe-key":
         security_gaps.append("default encryption key")
     checks.append(_quality_check(

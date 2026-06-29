@@ -31,7 +31,9 @@ function initialLocale(): Locale {
     const base = browser.split('-')[0];
     if (isLocale(base)) return base;
   } catch (error) {
-    console.error('Locale read failed', error);
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Locale read failed', error);
+    }
   }
   return 'en';
 }
@@ -42,7 +44,9 @@ function persistLocale(locale: Locale) {
     document.cookie = `${cookieKey}=${locale}; path=/; max-age=31536000; SameSite=Lax`;
     document.documentElement.lang = locale;
   } catch (error) {
-    console.error('Locale persistence failed', error);
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Locale persistence failed', error);
+    }
   }
 }
 

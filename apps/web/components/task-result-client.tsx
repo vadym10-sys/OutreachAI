@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
 import { CheckCircle2, Download, Loader2, Send, UploadCloud } from 'lucide-react';
 import { clientApi, friendlyErrorMessage } from '@/lib/client-api';
-import { apiUrl, hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
+import { apiProxyUrl, hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
 import type { SalesEmployeeTaskResult } from '@/lib/types';
 
 function text(value: unknown, fallback = 'Not found') {
@@ -64,11 +64,13 @@ export function TaskResultClient({ taskId }: { taskId: string }) {
     setError('');
     try {
       const authToken = await token();
-      const response = await fetch(`${apiUrl}/api/sales-employees/tasks/${taskId}/csv`, {
+      const response = await fetch(`${apiProxyUrl}/api/sales-employees/tasks/${taskId}/csv`, {
         headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}
       });
       if (!response.ok) {
-        console.error('Task CSV download failed', { status: response.status, body: await response.text() });
+        if (process.env.NODE_ENV !== 'production') {
+          console.error('Task CSV download failed', { status: response.status, body: await response.text() });
+        }
         throw new Error('REQUEST_FAILED');
       }
       const blob = await response.blob();

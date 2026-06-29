@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Activity, AlertTriangle, BarChart3, CheckCircle2, Crown, Flag, Loader2, Lock, Server, Sparkles, Users, type LucideIcon } from "lucide-react";
-import { apiUrl, e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import { useI18n } from "@/lib/i18n/provider";
 
@@ -54,7 +54,9 @@ function e2eOwnerEmail() {
     if (typeof window === "undefined") return e2eUserEmail;
     return window.localStorage.getItem("outreachai.e2eUserEmail") || e2eUserEmail;
   } catch (error) {
-    console.error("Owner console test email lookup failed", error);
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Owner console test email lookup failed", error);
+    }
     return e2eUserEmail;
   }
 }
@@ -75,7 +77,7 @@ function useClerkOwnerAuth() {
 }
 
 async function ownerRequest<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiUrl}${path}`, {
+  const response = await fetch(`${apiProxyUrl}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -98,7 +100,9 @@ async function ownerRequest<T>(path: string, token: string | null, init: Request
     } catch {
       detail = "Response body could not be read.";
     }
-    console.error("Owner Console API request failed", { path, status: response.status, detail });
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Owner Console API request failed", { path, status: response.status, detail });
+    }
     throw new Error("REQUEST_FAILED");
   }
 

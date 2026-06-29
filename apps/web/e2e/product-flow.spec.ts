@@ -11,7 +11,7 @@ const pages = [
   ["/dashboard/crm", "Move real leads from research to revenue."],
   ["/dashboard/deals", "Revenue opportunities from saved companies."],
   ["/dashboard/analytics", "Measure real outbound performance."],
-  ["/dashboard/settings", "Configure real providers before relying on automation."],
+  ["/dashboard/settings", "Configure the workflow before relying on automation."],
   ["/dashboard/billing", "Subscription and usage."],
   ["/dashboard/sales-employees", "One click should replace hours of manual sales research."],
   ["/dashboard/admin/quality", "AI Quality & Self-Healing"]
@@ -146,52 +146,53 @@ const qualityDashboard = {
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
+    const apiPath = url.pathname.replace(/^\/api\/backend/, "");
     let body: unknown = {};
-    if (url.pathname === "/api/leads") {
+    if (apiPath === "/api/leads") {
       body = { items: [lead], total: 1, page: 1, page_size: 100 };
-    } else if (url.pathname === "/api/crm/companies") {
+    } else if (apiPath === "/api/crm/companies") {
       body = [crmCompany];
-    } else if (url.pathname === `/api/crm/companies/${crmCompany.id}/stage`) {
+    } else if (apiPath === `/api/crm/companies/${crmCompany.id}/stage`) {
       body = { ...crmCompany, crm_stage: "Meeting Scheduled", stage_changed_at: new Date().toISOString(), activity: [{ id: "99999999-9999-9999-9999-999999999990", action: "crm.stage_changed", metadata_json: {}, created_at: new Date().toISOString() }, ...crmCompany.activity] };
-    } else if (url.pathname === `/api/crm/companies/${crmCompany.id}/notes`) {
+    } else if (apiPath === `/api/crm/companies/${crmCompany.id}/notes`) {
       body = { id: "99999999-9999-9999-9999-999999999991", company_id: crmCompany.id, lead_id: lead.id, body: "Customer asked to review next week.", kind: "note", created_at: new Date().toISOString() };
-    } else if (url.pathname === "/api/crm/contacts") {
+    } else if (apiPath === "/api/crm/contacts") {
       body = crmCompany.contacts;
-    } else if (url.pathname === "/api/crm/deals") {
+    } else if (apiPath === "/api/crm/deals") {
       body = crmCompany.deals;
-    } else if (url.pathname === "/api/crm/pipeline") {
+    } else if (apiPath === "/api/crm/pipeline") {
       body = { stages: ["New Lead", "Qualified", "Website Analyzed", "Contact Found", "Email Draft Ready", "Approved", "Sent", "Replied", "Meeting Scheduled", "Won", "Lost"], companies: [crmCompany], deals: crmCompany.deals };
-    } else if (url.pathname === "/api/admin/quality") {
+    } else if (apiPath === "/api/admin/quality") {
       body = qualityDashboard;
-    } else if (url.pathname === "/api/admin/quality/run") {
+    } else if (apiPath === "/api/admin/quality/run") {
       body = qualityDashboard;
-    } else if (url.pathname === "/api/admin/quality/tasks") {
+    } else if (apiPath === "/api/admin/quality/tasks") {
       body = { id: "99999999-9999-9999-9999-999999999999", issue_id: null, title: "Repair: test issue", priority: "medium", status: "needs_approval", diagnosis: "Regression task", suggested_fix: "Add tests", required_tests: ["Playwright E2E test"], approval_required: true, created_at: new Date().toISOString() };
-    } else if (url.pathname === "/api/leads/find") {
+    } else if (apiPath === "/api/leads/find") {
       body = [lead];
-    } else if (url.pathname === "/api/campaigns") {
+    } else if (apiPath === "/api/campaigns") {
       body = route.request().method() === "POST" ? campaign : [campaign];
-    } else if (url.pathname === `/api/campaigns/${campaign.id}/launch`) {
+    } else if (apiPath === `/api/campaigns/${campaign.id}/launch`) {
       body = { ...campaign, status: "Running" };
-    } else if (url.pathname === `/api/campaigns/${campaign.id}/pause`) {
+    } else if (apiPath === `/api/campaigns/${campaign.id}/pause`) {
       body = { ...campaign, status: "Paused" };
-    } else if (url.pathname === `/api/leads/${lead.id}`) {
+    } else if (apiPath === `/api/leads/${lead.id}`) {
       body = { ...lead, campaign_id: campaign.id, status: "Qualified" };
-    } else if (url.pathname === "/api/dashboard") {
+    } else if (apiPath === "/api/dashboard") {
       body = { leads: 1, campaigns: 1, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: "Starter", usage: { leads: 1, email_sends: 0 } };
-    } else if (url.pathname.endsWith("/copilot")) {
+    } else if (apiPath.endsWith("/copilot")) {
       body = { probability_to_reply: 82, probability_to_buy: 64, best_first_contact: "Jane Doe", best_subject_line: "Quick idea for Hill Country Build Co", best_cta: "Book a growth audit", estimated_revenue: 12000, reasoning: ["Verified owner contact", "Relevant renovation services", "Clear website conversion gap"] };
-    } else if (url.pathname.endsWith("/website-audit")) {
+    } else if (apiPath.endsWith("/website-audit")) {
       body = { missing_cta: true, missing_contact_form: false, poor_seo: false, weak_trust_signals: true, missing_reviews: false, slow_website: false, outdated_design: false, improvement_report: "The website has service pages but a weak project consultation CTA.", priority_actions: ["Add a consultation CTA", "Improve trust signals"] };
-    } else if (url.pathname.endsWith("/follow-ups")) {
+    } else if (apiPath.endsWith("/follow-ups")) {
       body = { no_open: ["Worth a quick look?"], opened: ["I noticed you opened the idea."], clicked: ["Happy to send the audit outline."], replied: ["Thanks for replying."] };
-    } else if (url.pathname.endsWith("/draft-email")) {
+    } else if (apiPath.endsWith("/draft-email")) {
       body = { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "draft" };
-    } else if (url.pathname === "/api/emails/33333333-3333-3333-3333-333333333333/approve") {
+    } else if (apiPath === "/api/emails/33333333-3333-3333-3333-333333333333/approve") {
       body = { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "approved" };
-    } else if (url.pathname === "/api/emails/33333333-3333-3333-3333-333333333333/send") {
+    } else if (apiPath === "/api/emails/33333333-3333-3333-3333-333333333333/send") {
       body = { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: lead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "sent" };
-    } else if (url.pathname === "/api/ai/analyze") {
+    } else if (apiPath === "/api/ai/analyze") {
       body = { company: "Hill Country Build Co", website: "https://example.com", description: "Commercial renovation company.", industry: "Construction", location: "Austin", niche: "Construction", products_services: ["Renovation"], services: ["Commercial renovation"], technologies: [], strengths: ["Clear service pages"], weaknesses: ["Weak CTA"], icp_score: 87, summary: "Strong fit for outbound.", company_summary: "Commercial renovation company.", suggested_offer: "Booked-meeting system", outreach_strategy: "Lead with website-specific conversion idea.", sales_angle: "Turn visitors into booked calls.", expected_reply_rate: "8-12%", recommended_cta: "Book a growth audit" };
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
@@ -217,7 +218,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.goto("/dashboard/leads");
     await page.getByRole("button", { name: "Find leads" }).first().click();
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" })).toBeVisible();
-    await expect(page.getByText("jane@example.com · verified by Hunter")).toBeVisible();
+    await expect(page.getByText("jane@example.com · verified email")).toBeVisible();
     await page.getByRole("button", { name: /Complete sales research/ }).click();
     await expect(page.getByText("Review this draft before sending. No email has been sent yet.")).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Quick idea for Hill Country Build Co")).toBeVisible();

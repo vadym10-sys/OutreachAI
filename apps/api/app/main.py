@@ -7,7 +7,9 @@ import traceback
 import sentry_sdk
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.responses import Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.routes import router as api_router
 from app.api.webhooks import router as webhook_router
@@ -26,11 +28,48 @@ logger = logging.getLogger("outreachai.api")
 settings = get_settings()
 init_sentry(settings)
 
+
+def _safe_error_message(status_code: int, detail: object) -> str:
+    raw = str(detail or "")
+    lower = raw.lower()
+    if "access denied" in lower:
+        return "Access denied."
+    if status_code == 402 and raw and len(raw) <= 180 and not any(term in lower for term in ["stripe", "api", "http", "exception", "traceback", "stack", "secret", "key", "_url", "/api/"]):
+        return raw
+    if raw.startswith("This connection ") and len(raw) <= 140:
+        return raw
+    if status_code in {401, 403} or "bearer" in lower or "token" in lower or "unauthorized" in lower or "forbidden" in lower:
+        return "Your session has expired. Please sign in again."
+    if status_code == 402 or "subscription" in lower or "billing" in lower or "payment" in lower:
+        return "Your plan needs attention before you can continue."
+    if status_code == 429 or "rate limit" in lower or "quota" in lower:
+        return "This action is temporarily limited. Please try again later."
+    if "no companies" in lower or "no matching" in lower:
+        return "No companies were found. Try a broader location, industry, or company size."
+    if any(term in lower for term in ["google", "places", "apollo", "hunter", "lead search"]):
+        return "Lead search is temporarily unavailable. Please try again later."
+    if any(term in lower for term in ["openai", "model", "ai analysis", "website analysis"]):
+        return "AI analysis is temporarily unavailable. Please try again in a moment."
+    if any(term in lower for term in ["resend", "email send", "smtp"]):
+        return "Email sending is temporarily unavailable. Please try again later."
+    if any(term in lower for term in ["postgres", "database", "sql", "sqlalchemy"]):
+        return "We couldn’t load your data right now. Please refresh the page."
+    if status_code == 404:
+        return "We couldn’t find what you were looking for."
+    if 500 <= status_code:
+        return "Something went wrong while processing your request. Please try again."
+    if raw and len(raw) <= 140 and not any(term in lower for term in ["api", "http", "exception", "traceback", "stack", "secret", "key", "_url", "/api/"]):
+        return raw
+    return "Something went wrong while processing your request. Please try again."
+
 app = FastAPI(
     title="OutreachAI API",
     description="FastAPI backend for lead discovery, AI personalization, campaigns, CRM, billing, inbox, analytics, and admin operations.",
     version="1.0.0",
-    dependencies=[Depends(rate_limit)]
+    dependencies=[Depends(rate_limit)],
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
+    openapi_url="/openapi.json" if settings.debug else None
 )
 
 app.add_middleware(
@@ -50,6 +89,21 @@ async def sentry_request_context(request: Request, call_next) -> Response:
     sentry_sdk.set_tag("release", "outreachai-api@1.0.0")
     sentry_sdk.set_context("transaction", {"name": sentry_transaction_name(request)})
     return await call_next(request)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def sanitized_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    sentry_sdk.set_context("sanitized_http_error", {"path": request.url.path, "status_code": exc.status_code, "detail": str(exc.detail)[:1000]})
+    if exc.status_code >= 500:
+        sentry_sdk.capture_exception(exc)
+    return JSONResponse(status_code=exc.status_code, content={"detail": _safe_error_message(exc.status_code, exc.detail)})
+
+
+@app.exception_handler(Exception)
+async def sanitized_unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled request failed path=%s", request.url.path)
+    sentry_sdk.capture_exception(exc)
+    return JSONResponse(status_code=500, content={"detail": "Something went wrong while processing your request. Please try again."})
 
 
 @app.get("/")

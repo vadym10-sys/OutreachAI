@@ -12,6 +12,10 @@ function safeOrigin(value: string) {
 }
 
 export function GET() {
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json({ detail: 'Not found' }, { status: 404 });
+  }
+
   const stripePublishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || '';
   const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY || '';
   const posthogHost = process.env.NEXT_PUBLIC_POSTHOG_HOST || '';

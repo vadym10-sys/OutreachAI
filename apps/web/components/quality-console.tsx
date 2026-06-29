@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { AlertTriangle, CheckCircle2, ClipboardList, Loader2, ShieldAlert, Stethoscope, Wrench } from "lucide-react";
-import { apiUrl, e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import type { QualityCheck, QualityDashboard, QualityIssue, QualityRepairTask } from "@/lib/types";
 
@@ -30,7 +30,7 @@ function useQualityAuth() {
 }
 
 async function qualityRequest<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiUrl}${path}`, {
+  const response = await fetch(`${apiProxyUrl}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -53,7 +53,9 @@ async function qualityRequest<T>(path: string, token: string | null, init: Reque
     } catch {
       detail = "Response body could not be read.";
     }
-    console.error("Quality Console API request failed", { path, status: response.status, detail });
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Quality Console API request failed", { path, status: response.status, detail });
+    }
     throw new Error("Quality Console could not load. Please refresh and try again.");
   }
 
@@ -72,6 +74,28 @@ function severityClass(severity: string) {
   if (severity === "high") return "bg-red-50 text-red-700";
   if (severity === "medium") return "bg-amber-50 text-amber-700";
   return "bg-slate-100 text-slate-700";
+}
+
+function safeList<T>(value: T[] | undefined | null): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeQualityDashboard(value: Partial<QualityDashboard>): QualityDashboard {
+  return {
+    health_score: typeof value.health_score === "number" ? value.health_score : 0,
+    status: typeof value.status === "string" ? value.status : "degraded",
+    summary: typeof value.summary === "string" ? value.summary : "Quality status could not be fully loaded.",
+    deployment_gate: value.deployment_gate && typeof value.deployment_gate === "object" ? value.deployment_gate : {},
+    checks: safeList(value.checks),
+    open_bugs: safeList(value.open_bugs),
+    repair_tasks: safeList(value.repair_tasks),
+    sentry_issues: safeList(value.sentry_issues),
+    failed_integrations: safeList(value.failed_integrations),
+    failed_tests: safeList(value.failed_tests),
+    broken_flows: safeList(value.broken_flows),
+    suggested_fixes: safeList(value.suggested_fixes),
+    last_run_at: value.last_run_at || null
+  };
 }
 
 function Evidence({ evidence }: { evidence: Record<string, unknown> }) {
@@ -170,7 +194,8 @@ export function QualityConsole() {
     setError("");
     try {
       const token = await getToken();
-      setData(await qualityRequest<QualityDashboard>("/api/admin/quality", token));
+      const dashboard = await qualityRequest<Partial<QualityDashboard>>("/api/admin/quality", token);
+      setData(normalizeQualityDashboard(dashboard));
       setAccessDenied(false);
     } catch (nextError) {
       if (nextError instanceof Error && nextError.name === "AccessDeniedError") setAccessDenied(true);
@@ -190,7 +215,8 @@ export function QualityConsole() {
     setError("");
     try {
       const token = await getToken();
-      setData(await qualityRequest<QualityDashboard>("/api/admin/quality/run", token, { method: "POST" }));
+      const dashboard = await qualityRequest<Partial<QualityDashboard>>("/api/admin/quality/run", token, { method: "POST" });
+      setData(normalizeQualityDashboard(dashboard));
     } catch (nextError) {
       setError(friendlyErrorMessage(nextError, "QA check could not run. Please try again."));
     } finally {

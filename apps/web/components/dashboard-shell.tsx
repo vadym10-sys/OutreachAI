@@ -39,7 +39,9 @@ function currentE2EUserEmail() {
     if (typeof window === "undefined") return e2eUserEmail;
     return window.localStorage.getItem("outreachai.e2eUserEmail") || e2eUserEmail;
   } catch (error) {
-    console.error("Owner test email lookup failed", error);
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Owner test email lookup failed", error);
+    }
     return e2eUserEmail;
   }
 }

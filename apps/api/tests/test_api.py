@@ -400,7 +400,7 @@ def test_google_maps_missing_key_blocks_lead_finder(monkeypatch) -> None:
     get_settings.cache_clear()
     response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
     assert response.status_code == 503
-    assert "Google Maps is not connected" in response.json()["detail"]
+    assert response.json()["detail"] == "This connection is not ready. Please contact the workspace owner."
     get_settings.cache_clear()
 
 
@@ -408,7 +408,7 @@ def test_google_maps_timeout_returns_user_safe_error(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes.search_google_places", lambda payload: (_ for _ in ()).throw(GoogleMapsRequestError("Google Maps is temporarily unavailable after retries.")))
     response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
     assert response.status_code == 502
-    assert "Google Maps is temporarily unavailable" in response.json()["detail"]
+    assert response.json()["detail"] == "This connection is temporarily unavailable. Please try again later."
 
 
 def test_google_maps_text_query_keeps_radius_out_of_search_phrase() -> None:
@@ -511,7 +511,7 @@ def test_apollo_invalid_key_reports_safe_error(monkeypatch) -> None:
     response = client.post("/api/integrations/apollo/test", headers=AUTH)
     assert response.status_code == 200
     assert response.json()["connected"] is False
-    assert "Apollo rejected" in response.json()["last_error"]
+    assert response.json()["last_error"] == "This connection is temporarily unavailable. Please try again later."
     get_settings.cache_clear()
 
 
@@ -536,7 +536,7 @@ def test_hunter_invalid_key_reports_safe_error(monkeypatch) -> None:
     response = client.post("/api/integrations/hunter/test", headers=AUTH)
     assert response.status_code == 200
     assert response.json()["connected"] is False
-    assert "Hunter rejected" in response.json()["last_error"]
+    assert response.json()["last_error"] == "This connection is temporarily unavailable. Please try again later."
     get_settings.cache_clear()
 
 
@@ -610,7 +610,7 @@ def test_apollo_timeout_returns_user_safe_error(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes.search_apollo_companies", lambda payload: (_ for _ in ()).throw(ApolloRequestError("Apollo is temporarily unavailable. Please try again in a few minutes.")))
     response = client.post("/api/apollo/search-companies", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
     assert response.status_code == 502
-    assert "temporarily unavailable" in response.json()["detail"]
+    assert response.json()["detail"] == "This connection is temporarily unavailable. Please try again later."
 
 
 def test_apollo_empty_results_are_safe(monkeypatch) -> None:

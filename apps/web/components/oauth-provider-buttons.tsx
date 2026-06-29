@@ -36,7 +36,9 @@ export function OAuthProviderButtons({ mode, embedded = false }: { mode: AuthMod
         redirectUrlComplete: "/dashboard"
       });
     } catch (event) {
-      console.error("OAuth redirect failed", event);
+      if (process.env.NODE_ENV !== "production") {
+        console.error("OAuth redirect failed", event);
+      }
       setBusyProvider(null);
       setError(`Unable to start ${provider === "apple" ? "Apple" : "Google"} sign in. Please try again.`);
     }

@@ -47,7 +47,9 @@ function safePendingPlan(action: "get" | "set" | "remove", value?: PlanName) {
     }
     return window.localStorage.getItem(pendingPlanKey);
   } catch (error) {
-    console.error("Billing localStorage access failed", error);
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Billing storage access failed", error);
+    }
     return null;
   }
 }
@@ -56,7 +58,9 @@ function safeRedirect(url: string) {
   try {
     window.location.assign(url);
   } catch (error) {
-    console.error("Redirect failed", error);
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Redirect failed", error);
+    }
     window.location.href = url;
   }
 }
@@ -111,7 +115,9 @@ export function PricingCheckoutButton({ plan, children = 'Subscribe' }: { plan: 
       safePendingPlan("remove");
       safeRedirect(session.url);
     } catch (nextError) {
-      console.error("Checkout start failed", nextError);
+      if (process.env.NODE_ENV !== "production") {
+        console.error("Checkout start failed", nextError);
+      }
     } finally {
       setLoading(false);
     }
@@ -138,7 +144,9 @@ export function CheckoutContinuation() {
           safeRedirect(session.url);
         })
         .catch((error) => {
-          console.error("Checkout continuation failed", error);
+          if (process.env.NODE_ENV !== "production") {
+            console.error("Checkout continuation failed", error);
+          }
           setRunning(false);
         });
     });
@@ -171,12 +179,14 @@ export function BillingWorkspace({ showDiagnostics = false }: { showDiagnostics?
         ]);
         setPlans(nextPlans);
         setStatus(nextStatus);
-        if (showDiagnostics) {
+        if (showDiagnostics && process.env.NODE_ENV !== 'production') {
           const [nextDiagnostics, nextRuntimeDiagnostics] = await Promise.all([
             apiWithToken<Diagnostics>('/api/billing/diagnostics', authToken),
             fetch('/api/runtime-diagnostics', { cache: 'no-store' }).then((response) => {
               if (!response.ok) {
-                console.error('Runtime billing diagnostics failed', { status: response.status });
+                if (process.env.NODE_ENV !== 'production') {
+                  console.error('Runtime billing diagnostics failed', { status: response.status });
+                }
                 throw new Error('REQUEST_FAILED');
               }
               return response.json() as Promise<RuntimeDiagnostics>;
@@ -184,6 +194,8 @@ export function BillingWorkspace({ showDiagnostics = false }: { showDiagnostics?
           ]);
           setDiagnostics(nextDiagnostics);
           setRuntimeDiagnostics(nextRuntimeDiagnostics);
+        } else if (showDiagnostics) {
+          setDiagnostics(await apiWithToken<Diagnostics>('/api/billing/diagnostics', authToken));
         }
       })
       .catch((nextError) => setError(friendlyErrorMessage(nextError, 'Billing could not be loaded. Please refresh and try again.')))
@@ -208,10 +220,12 @@ export function BillingWorkspace({ showDiagnostics = false }: { showDiagnostics?
   }
 
   const diagnosticsRows = diagnostics ? [
-    ['Stripe secret loaded', diagnostics.stripe_secret_loaded],
+    ['Billing connection loaded', diagnostics.stripe_secret_loaded],
     ['Webhook secret loaded', diagnostics.webhook_secret_loaded],
-    ['Frontend publishable key loaded', Boolean(runtimeDiagnostics?.stripe_publishable_key_loaded)],
-    ['Frontend publishable key is live', Boolean(runtimeDiagnostics?.stripe_publishable_key_live)],
+    ...(runtimeDiagnostics ? [
+      ['Frontend publishable key loaded', Boolean(runtimeDiagnostics.stripe_publishable_key_loaded)],
+      ['Frontend publishable key is live', Boolean(runtimeDiagnostics.stripe_publishable_key_live)]
+    ] as const : []),
     ['Starter price ID', diagnostics.starter_price_id_loaded],
     ['Pro price ID', diagnostics.pro_price_id_loaded],
     ['Agency price ID', diagnostics.agency_price_id_loaded],

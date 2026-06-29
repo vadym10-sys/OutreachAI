@@ -84,7 +84,9 @@ async function loadRuntimeConfig() {
       return true;
     }
   } catch (error) {
-    console.error("LogRocket runtime config could not be loaded", error);
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Session replay runtime config could not be loaded", error);
+    }
   }
   return false;
 }
@@ -225,4 +227,3 @@ export function trackLogRocketApiFailure(path: string, status: number, detail: s
     detail: detail.slice(0, 500)
   });
 }
-

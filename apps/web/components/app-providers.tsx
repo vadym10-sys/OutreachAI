@@ -45,7 +45,9 @@ class ClientErrorBoundary extends Component<{ children: ReactNode }, { failed: b
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("OutreachAI client render failed", error, info);
+    if (process.env.NODE_ENV !== "production") {
+      console.error("OutreachAI client render failed", error, info);
+    }
     Sentry.captureException(error, {
       tags: { area: "react-error-boundary" },
       extra: { componentStack: info.componentStack }

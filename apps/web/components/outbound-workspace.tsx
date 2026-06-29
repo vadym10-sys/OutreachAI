@@ -66,7 +66,7 @@ const emptyMetrics: DashboardMetrics = {
   usage: {}
 };
 
-const unavailable = "Unavailable until provider data is collected.";
+const unavailable = "Unavailable until verified data is collected.";
 
 const crmStages = [
   "New Lead",
@@ -81,6 +81,20 @@ const crmStages = [
   "Won",
   "Lost"
 ];
+
+const emptyPipeline: CrmPipeline = { stages: crmStages, companies: [], deals: [] };
+
+function safeArray<T>(value: T[] | undefined | null): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizePipeline(value: Partial<CrmPipeline> | undefined | null): CrmPipeline {
+  return {
+    stages: safeArray(value?.stages).length ? safeArray(value?.stages) : crmStages,
+    companies: safeArray(value?.companies),
+    deals: safeArray(value?.deals)
+  };
+}
 
 function formatDateTime(value?: string | null) {
   if (!value) return "Not recorded yet";
@@ -163,7 +177,7 @@ function leadProfile(lead: Lead) {
     location: lead.address || [lead.city, lead.country].filter(Boolean).join(", ") || unavailable,
     size: lead.employee_count ? `${lead.employee_count} employees` : lead.revenue_range || unavailable,
     decisionMaker: [lead.contact, lead.title].filter(Boolean).join(", ") || unavailable,
-    verifiedEmail: lead.email ? `${lead.email}${lead.hunter_verified ? " · verified by Hunter" : ""}` : lead.hunter_status === "no_verified_email" ? "No verified email found by Hunter." : unavailable,
+    verifiedEmail: lead.email ? `${lead.email}${lead.hunter_verified ? " · verified email" : ""}` : lead.hunter_status === "no_verified_email" ? "No verified email found yet." : unavailable,
     phone: lead.phone || unavailable,
     linkedin: lead.linkedin || unavailable,
     websiteAnalysis: lead.ai_summary || text(metadata.ai_summary),
@@ -269,7 +283,7 @@ function useCrmData() {
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [contacts, setContacts] = useState<CrmContact[]>([]);
   const [deals, setDeals] = useState<CrmDeal[]>([]);
-  const [pipeline, setPipeline] = useState<CrmPipeline>({ stages: [], companies: [], deals: [] });
+  const [pipeline, setPipeline] = useState<CrmPipeline>(emptyPipeline);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [filters, setFilters] = useState({ search: "", city: "", country: "", industry: "", stage: "", email_status: "", source: "" });
@@ -294,10 +308,10 @@ function useCrmData() {
         api<CrmDeal[]>(`/api/crm/deals${suffix}`),
         api<CrmPipeline>("/api/crm/pipeline")
       ]);
-      setCompanies(companyList);
-      setContacts(contactList);
-      setDeals(dealList);
-      setPipeline(pipelineData);
+      setCompanies(safeArray(companyList));
+      setContacts(safeArray(contactList));
+      setDeals(safeArray(dealList));
+      setPipeline(normalizePipeline(pipelineData));
     } catch (err) {
       setError(friendlyErrorMessage(err, "CRM data could not be loaded. Please refresh or sign in again."));
     } finally {
@@ -353,7 +367,9 @@ function useDashboardData() {
         const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
         if (failed.length) {
           failed.forEach((result) => {
-            console.error("Dashboard supporting data could not be loaded", result.reason);
+            if (process.env.NODE_ENV !== "production") {
+              console.error("Dashboard supporting data could not be loaded", result.reason);
+            }
             Sentry.captureException(result.reason, {
               tags: { area: "dashboard-supporting-data" },
               extra: { endpoint_group: "leads-campaigns-employees-activity" }
@@ -362,7 +378,9 @@ function useDashboardData() {
           setSupportingError("Some dashboard details are temporarily unavailable. Core workspace metrics are loaded.");
         }
       } catch (err) {
-        console.error("Dashboard metrics could not be loaded", err);
+        if (process.env.NODE_ENV !== "production") {
+          console.error("Dashboard metrics could not be loaded", err);
+        }
         Sentry.captureException(err, {
           tags: { area: "dashboard-critical-data" },
           extra: { endpoint: "/api/dashboard" }
@@ -439,7 +457,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         has_verified_email: Boolean(lead.email && lead.hunter_verified)
       });
     } catch (err) {
-      const reason = friendlyErrorMessage(err, "Research could not be completed. Check subscription, OpenAI, Hunter, website access, or provider limits.");
+      const reason = friendlyErrorMessage(err, "Research could not be completed. Please check the lead details and try again.");
       setReadyToSend(false);
       setError(reason);
       trackEvent("sales_research_failed", {
@@ -467,7 +485,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         "Email approval timed out. Please try again before sending."
       );
       setDraft(approved);
-      setStatus("Sending approved email through Resend...");
+      setStatus("Sending approved email...");
       const sent = await withTimeout(
         api<Email>(`/api/emails/${draft.id}/send`, { method: "POST" }),
         30000,
@@ -483,7 +501,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         company: lead.company
       });
     } catch (err) {
-      const reason = friendlyErrorMessage(err, "Email could not be sent. Check Resend, recipient email, subscription and sending limits.");
+      const reason = friendlyErrorMessage(err, "Email could not be sent. Check the recipient email, plan limits, and try again.");
       setError(reason);
       setStatus("");
       trackEvent("approved_email_send_failed", {
@@ -579,11 +597,11 @@ export function DashboardHome() {
     <div className="space-y-6">
       <PageHeader eyebrow="Today" title="What should I do now?" copy="Turn the next real company in your workspace into a complete sales opportunity." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">Find leads <ArrowRight size={17} /></Link>} />
       {supportingError && <p role="status" className="rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm font-semibold text-orange-700">{supportingError}</p>}
-      {nextLead ? <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6"><h2 className="text-2xl font-bold text-ink">Complete research for {nextLead.company}</h2><p className="mt-3 text-sm leading-6 text-slate-600">One click can analyze the website, score the opportunity, prepare the first email and create follow-ups. If a provider cannot supply a field, OutreachAI will say why.</p><Link href="/dashboard/companies" className="mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">Review opportunities</Link></section> : <EmptyState title="No real companies yet" copy="Add or search for companies in Lead Finder. OutreachAI will not show fake pipeline data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find real leads</Link>} />}
+      {nextLead ? <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6"><h2 className="text-2xl font-bold text-ink">Complete research for {nextLead.company}</h2><p className="mt-3 text-sm leading-6 text-slate-600">One click can analyze the website, score the opportunity, prepare the first email and create follow-ups. If verified data is unavailable, OutreachAI will explain what to do next.</p><Link href="/dashboard/companies" className="mt-5 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">Review opportunities</Link></section> : <EmptyState title="No real companies yet" copy="Add or search for companies in Lead Finder. OutreachAI will not show fake pipeline data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find real leads</Link>} />}
       {activeSignals.length > 0 && <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {activeSignals.map((signal) => <MetricCard key={signal.label} label={signal.label} value={signal.value} help={signal.help} />)}
       </section>}
-      {!hasAnyData && <EmptyState title="Start with one focused lead search." copy="Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after provider data exists." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}
+      {!hasAnyData && <EmptyState title="Start with one focused lead search." copy="Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after verified data exists." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}
       {(employees.length > 0 || activity.length > 0) && <section className="grid gap-4 lg:grid-cols-2">
         {employees.length > 0 && <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold text-ink">AI Employees</h2>
@@ -627,7 +645,7 @@ export function LeadFinderPage() {
     setSearching(true);
     setHasSearched(true);
     setSearchResults([]);
-    setSearchSteps(["Connecting to Google Maps..."]);
+    setSearchSteps(["Connecting to lead sources..."]);
     setMessage("Searching companies...");
     trackEvent("lead_finder_search_started", {
       country: payload.country,
@@ -635,7 +653,7 @@ export function LeadFinderPage() {
       industry: payload.industry,
       company_size: payload.company_size,
       radius: payload.radius,
-      source: "google_maps"
+      source: "lead_search"
     });
     try {
       const found = await withTimeout(
@@ -655,10 +673,10 @@ export function LeadFinderPage() {
         city: payload.city,
         industry: payload.industry,
         result_count: found.length,
-        source: "google_maps"
+        source: "lead_search"
       });
     } catch (err) {
-      const reason = friendlyErrorMessage(err, "Google Maps lead search could not be completed.");
+      const reason = friendlyErrorMessage(err, "Lead search could not be completed.");
       setSearchResults([]);
       setSearchSteps((items) => [...items, "Search stopped"]);
       setMessage(reason);
@@ -666,7 +684,7 @@ export function LeadFinderPage() {
         country: payload.country,
         city: payload.city,
         industry: payload.industry,
-        source: "google_maps",
+        source: "lead_search",
         reason
       });
     } finally {
@@ -675,7 +693,7 @@ export function LeadFinderPage() {
   }
   return (
     <div className="space-y-6">
-      <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search runs through Google Maps, then Hunter and AI enrich what is available. Missing provider data is shown clearly instead of invented." />
+      <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
       <form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">
           <p className="text-sm font-bold text-brand">Step 1 of 3 · Choose a focused market</p>
@@ -709,10 +727,10 @@ export function LeadFinderPage() {
           {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
         </ol>}
       </form>
-      {loading && !hasSearched ? <EmptyState title="Loading leads" copy="Reading saved companies from PostgreSQL." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
+      {loading && !hasSearched ? <EmptyState title="Loading leads" copy="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
         setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
         setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
-      }} />)}</div> : <EmptyState title={hasSearched ? "No matching companies found" : "No real leads yet"} copy={hasSearched ? "Google Maps did not return saved companies for those filters. Broaden the city, category, or radius and search again." : "Run a Google Maps search or add a company through the existing backend. No demo companies are shown."} />}
+      }} />)}</div> : <EmptyState title={hasSearched ? "No matching companies found" : "No real leads yet"} copy={hasSearched ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}
     </div>
   );
 }
@@ -959,7 +977,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
 
 export function CompaniesPage() {
   const { api, companies, loading, error, filters, setFilters } = useCrmData();
-  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by Google Maps, enriched by Hunter, or added manually stay here after refresh." /> <CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading CRM companies" copy="Reading saved companies from PostgreSQL." /> : error ? <EmptyState title="Companies unavailable" copy={error} /> : companies.length ? <div className="grid gap-5">{companies.map((company) => <CrmCompanyCard key={company.id} company={company} api={api} />)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." /> <CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <EmptyState title="Companies unavailable" copy={error} /> : companies.length ? <div className="grid gap-5">{companies.map((company) => <CrmCompanyCard key={company.id} company={company} api={api} />)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
 }
 
 export function WebsiteAnalyzerPage() {
@@ -975,17 +993,17 @@ export function WebsiteAnalyzerPage() {
     try {
       setAnalysis(await api<AnalysisResult>("/api/ai/analyze", { method: "POST", body: JSON.stringify({ website: String(data.get("website") || ""), company: String(data.get("company") || ""), niche: String(data.get("niche") || "") }) }));
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Website analysis could not be completed. Check website access, subscription and OpenAI configuration."));
+      setError(friendlyErrorMessage(err, "Website analysis could not be completed. Check the website and try again."));
     } finally {
       setLoading(false);
     }
   }
-  return <div className="space-y-6"><PageHeader eyebrow="Website Analyzer" title="Analyze a real prospect website." copy="OutreachAI fetches the website and uses OpenAI to extract ICP, pain points, offer and outreach strategy." /><form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="grid gap-4 md:grid-cols-3"><input required name="website" placeholder="https://company.com" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="company" placeholder="Company name" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="niche" placeholder="Industry or niche" className="min-h-11 rounded-md border border-slate-300 px-3" /></div><div className="mt-4"><PrimaryButton disabled={loading}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Analyze website</PrimaryButton></div>{error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}</form>{analysis ? <section className="grid gap-4 lg:grid-cols-2">{[["Business summary", analysis.company_summary || analysis.summary], ["Services", analysis.services.join(", ") || unavailable], ["Target customers", analysis.niche || unavailable], ["Weak points", analysis.weaknesses.join(", ") || unavailable], ["Possible outreach angle", analysis.sales_angle || unavailable], ["Suggested offer", analysis.suggested_offer || unavailable], ["Personalization facts", analysis.strengths.join(", ") || unavailable], ["Recommended cold email", analysis.outreach_strategy || unavailable]].map(([label, value]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{label}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{value}</p></article>)}</section> : <EmptyState title="No website analyzed yet" copy="Enter a real domain. OutreachAI will not show sample analysis." />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Website Analyzer" title="Analyze a real prospect website." copy="OutreachAI reads the website and extracts ICP, pain points, offer and outreach strategy." /><form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="grid gap-4 md:grid-cols-3"><input required name="website" placeholder="https://company.com" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="company" placeholder="Company name" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="niche" placeholder="Industry or niche" className="min-h-11 rounded-md border border-slate-300 px-3" /></div><div className="mt-4"><PrimaryButton disabled={loading}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Analyze website</PrimaryButton></div>{error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}</form>{analysis ? <section className="grid gap-4 lg:grid-cols-2">{[["Business summary", analysis.company_summary || analysis.summary], ["Services", analysis.services.join(", ") || unavailable], ["Target customers", analysis.niche || unavailable], ["Weak points", analysis.weaknesses.join(", ") || unavailable], ["Possible outreach angle", analysis.sales_angle || unavailable], ["Suggested offer", analysis.suggested_offer || unavailable], ["Personalization facts", analysis.strengths.join(", ") || unavailable], ["Recommended cold email", analysis.outreach_strategy || unavailable]].map(([label, value]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{label}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{value}</p></article>)}</section> : <EmptyState title="No website analyzed yet" copy="Enter a real domain. OutreachAI will not show sample analysis." />}</div>;
 }
 
 export function ContactsPage() {
   const { contacts, loading, error, filters, setFilters } = useCrmData();
-  return <div className="space-y-6"><PageHeader eyebrow="Contacts" title="Decision makers and verified emails." copy="Contacts come from Hunter, Google Maps data, or manual lead import. Missing emails are not invented." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading contacts" copy="Checking saved CRM contacts." /> : error ? <EmptyState title="Contacts unavailable" copy={error} /> : contacts.length ? <section className="grid gap-4 lg:grid-cols-3">{contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{contact.name || "Decision maker unavailable"}</h2><p className="mt-1 text-sm text-slate-600">{contact.title || "Role unavailable"} · {contact.company}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold">{contact.email || "No verified email available"}</p><p className="mt-3 text-sm text-slate-600">{contact.email_status} · Source: {contact.source}</p></article>)}</section> : <EmptyState title="No decision makers yet" copy="Run Hunter enrichment or add a contact manually. OutreachAI will not create fake contacts." />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Contacts" title="Decision makers and verified emails." copy="Contacts come from verified contact discovery, local business data, or manual lead import. Missing emails are not invented." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading contacts" copy="Checking saved CRM contacts." /> : error ? <EmptyState title="Contacts unavailable" copy={error} /> : contacts.length ? <section className="grid gap-4 lg:grid-cols-3">{contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{contact.name || "Decision maker unavailable"}</h2><p className="mt-1 text-sm text-slate-600">{contact.title || "Role unavailable"} · {contact.company}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold">{contact.email || "No verified email available"}</p><p className="mt-3 text-sm text-slate-600">{contact.email_status} · Source: {contact.source}</p></article>)}</section> : <EmptyState title="No decision makers yet" copy="Find contacts or add one manually. OutreachAI will not create fake contacts." />}</div>;
 }
 
 export function CampaignsPage() {
@@ -1082,7 +1100,7 @@ export function CampaignsPage() {
 }
 
 export function InboxPage() {
-  return <div className="space-y-6"><PageHeader eyebrow="Inbox" title="Replies will appear here when campaigns receive real responses." copy="AI classification is available after Resend/webhook reply events exist in the workspace." /><EmptyState title="No real replies yet" copy="OutreachAI will classify replies as Interested, Not interested, Later, Asked for pricing, Wants a call or Wrong person after inbound events are received." /></div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Inbox" title="Replies will appear here when campaigns receive real responses." copy="AI classification is available after reply events exist in the workspace." /><EmptyState title="No real replies yet" copy="OutreachAI will classify replies as Interested, Not interested, Later, Asked for pricing, Wants a call or Wrong person after replies are received." /></div>;
 }
 
 export function CrmPipelinePage() {
@@ -1102,7 +1120,7 @@ export function AnalyticsPage() {
 }
 
 export function SettingsPage() {
-  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Configure real providers before relying on automation." copy="Apollo, Hunter, OpenAI, Resend and Stripe determine which parts of the opportunity workflow can be completed." /><section className="grid gap-4 lg:grid-cols-2">{["Lead providers", "Email verification", "OpenAI analysis", "Email sending", "Security", "Billing"].map((item) => <article key={item} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{item}</h2><p className="mt-2 text-sm text-slate-600">If this provider is not configured or entitled, related opportunity fields will show as unavailable instead of fake.</p></article>)}</section></div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Configure the workflow before relying on automation." copy="Lead search, contact verification, AI research, email sending and billing determine which parts of the opportunity workflow can be completed." /><section className="grid gap-4 lg:grid-cols-2">{["Lead search", "Email verification", "AI analysis", "Email sending", "Security", "Billing"].map((item) => <article key={item} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{item}</h2><p className="mt-2 text-sm text-slate-600">If this connection is not ready, related opportunity fields will show as unavailable instead of fake.</p></article>)}</section></div>;
 }
 
 export function BillingPage() {
@@ -1112,5 +1130,5 @@ export function BillingPage() {
 
 export function AiEmployeesPage() {
   const { leads, api, loading, error } = useSalesData();
-  return <div className="space-y-6"><PageHeader eyebrow="AI Sales Employee" title="One click should replace hours of manual sales research." copy="The AI employee uses real provider data only. Missing fields stay visible as unavailable until a provider supplies them." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find or research leads</Link>} />{loading ? <EmptyState title="Loading AI work" copy="Reading saved leads." /> : error ? <EmptyState title="AI employee unavailable" copy={error} /> : leads.length ? <div className="grid gap-5">{leads.slice(0, 3).map((lead) => <OpportunityCard key={lead.id || lead.company} lead={lead} api={api} />)}</div> : <EmptyState title="No AI work yet" copy="Find or add real companies first. The AI employee will not show invented results." />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="AI Sales Employee" title="One click should replace hours of manual sales research." copy="The AI employee uses real source data only. Missing fields stay visible as unavailable until verified information is available." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find or research leads</Link>} />{loading ? <EmptyState title="Loading AI work" copy="Reading saved leads." /> : error ? <EmptyState title="AI employee unavailable" copy={error} /> : leads.length ? <div className="grid gap-5">{leads.slice(0, 3).map((lead) => <OpportunityCard key={lead.id || lead.company} lead={lead} api={api} />)}</div> : <EmptyState title="No AI work yet" copy="Find or add real companies first. The AI employee will not show invented results." />}</div>;
 }

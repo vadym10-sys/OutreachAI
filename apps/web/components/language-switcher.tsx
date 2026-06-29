@@ -31,7 +31,9 @@ export function LanguageSwitcher({ compact = false }: { compact?: boolean }) {
         body: JSON.stringify({ ...profile, language: localeLanguageNames[next] }),
       });
     } catch (error) {
-      console.error('Profile locale sync failed', error);
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Profile locale sync failed', error);
+      }
     }
   }
 

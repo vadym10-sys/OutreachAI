@@ -62,13 +62,15 @@ function sanitizeUserError(error: unknown, fallback: string) {
 
 function logCEOFailure(step: string, reason: unknown, startedAt: number, api?: string) {
   const error = reason instanceof Error ? reason : new Error(String(reason));
-  console.error('AI CEO voice briefing failure', {
-    step,
-    reason: error.message,
-    stack: error.stack,
-    api,
-    duration_ms: Math.round(performance.now() - startedAt)
-  });
+  if (process.env.NODE_ENV !== 'production') {
+    console.error('AI CEO voice briefing failure', {
+      step,
+      reason: error.message,
+      stack: error.stack,
+      api,
+      duration_ms: Math.round(performance.now() - startedAt)
+    });
+  }
 }
 
 export function AICEOVoiceBriefing() {
@@ -134,7 +136,9 @@ export function AICEOVoiceBriefing() {
       const data = await clientApi<AICEOBriefing[]>('/api/ai-ceo/briefings', authToken);
       setHistory(data);
     } catch (nextError) {
-      console.error('AI CEO history failed', nextError);
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('AI CEO history failed', nextError);
+      }
     }
   }, [ready, token]);
 
@@ -220,7 +224,9 @@ export function AICEOVoiceBriefing() {
     recognition.maxAlternatives = 1;
     recognition.onstart = () => setListening(true);
     recognition.onerror = (event) => {
-      console.error('AI CEO microphone failed', event);
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('AI CEO microphone failed', event);
+      }
       setListening(false);
     };
     recognition.onend = () => setListening(false);

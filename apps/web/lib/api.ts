@@ -1,10 +1,11 @@
 import { auth } from "@clerk/nextjs/server";
-import { apiUrl } from "@/lib/env";
+
+const backendUrl = process.env.BACKEND_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { getToken } = await auth();
   const token = await getToken();
-  const response = await fetch(`${apiUrl}${path}`, {
+  const response = await fetch(`${backendUrl.replace(/\/$/, "")}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -15,7 +16,9 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   });
 
   if (!response.ok) {
-    console.error("OutreachAI server API request failed", { path, status: response.status });
+    if (process.env.NODE_ENV !== "production") {
+      console.error("OutreachAI server API request failed", { path, status: response.status });
+    }
     throw new Error("REQUEST_FAILED");
   }
 
