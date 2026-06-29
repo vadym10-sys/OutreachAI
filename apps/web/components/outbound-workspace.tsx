@@ -759,6 +759,54 @@ function CrmFilters({ filters, setFilters }: { filters: Record<string, string>; 
   </section>;
 }
 
+function companyHealthScore(company: CrmCompany) {
+  const checks = [
+    Boolean(company.website || company.domain),
+    Boolean(company.address || company.city || company.country),
+    Boolean(company.phone),
+    Boolean(company.email || company.contacts.some((contact) => contact.email)),
+    Boolean(company.contacts.length),
+    Boolean(company.ai_summary),
+    Boolean(company.suggested_offer || company.sales_angle),
+    Boolean(company.generated_emails.length),
+    Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent")),
+    Boolean(company.email_sent_at || company.generated_emails.some((email) => email.delivery_status === "sent")),
+    Boolean(company.replied_at || company.crm_stage === "Replied" || company.crm_stage === "Meeting Scheduled" || company.crm_stage === "Won"),
+    Boolean(company.notes.length || company.activity.length),
+  ];
+  return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+}
+
+function companyNextAction(company: CrmCompany) {
+  const hasContact = Boolean(company.email || company.contacts.some((contact) => contact.email));
+  const hasDraft = Boolean(company.generated_emails.length);
+  const hasApproved = Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"));
+  const hasSent = Boolean(company.email_sent_at || company.generated_emails.some((email) => email.delivery_status === "sent"));
+  if (!company.website && !company.domain) return "Add a website so OutreachAI can research this company.";
+  if (!company.ai_summary) return "Run company research to create the sales angle.";
+  if (!hasContact) return "Find or add a decision maker before preparing outreach.";
+  if (!hasDraft) return "Generate a personalized email for review.";
+  if (!hasApproved) return "Review and approve the prepared email.";
+  if (!hasSent) return "Send the approved email when you are ready.";
+  if (!company.replied_at) return "Watch for replies and follow up from the inbox.";
+  if (company.crm_stage !== "Meeting Scheduled" && company.crm_stage !== "Won") return "Move the opportunity to the next CRM stage.";
+  return "Keep notes updated and close the outcome.";
+}
+
+function timelineProgress(company: CrmCompany) {
+  const steps = [
+    ["Saved", company.saved_to_crm_at || company.created_at],
+    ["Researched", company.website_analyzed_at || company.ai_summary],
+    ["Contact", company.contact_found_at || company.email || company.contacts.length],
+    ["Draft", company.email_generated_at || company.generated_emails.length],
+    ["Approved", company.email_approved_at],
+    ["Sent", company.email_sent_at],
+    ["Reply", company.replied_at],
+    ["Outcome", company.crm_stage === "Won" || company.crm_stage === "Lost"],
+  ] as const;
+  return steps;
+}
+
 function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
   const [current, setCurrent] = useState(company);
   const [stageValue, setStageValue] = useState(company.crm_stage);
@@ -768,6 +816,10 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
   const [actionError, setActionError] = useState("");
   const [notesOpen, setNotesOpen] = useState(false);
   const lead = leadFromCrmCompany(current);
+  const healthScore = companyHealthScore(current);
+  const nextAction = companyNextAction(current);
+  const progress = timelineProgress(current);
+  const primaryContact = current.contacts[0];
   const lifecycle = [
     ["Lead found", current.found_at],
     ["Saved to CRM", current.saved_to_crm_at || current.created_at],
@@ -818,28 +870,51 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
       setActionBusy("");
     }
   }
-  return <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-    <div className="flex flex-col gap-4 min-[520px]:flex-row min-[520px]:items-start min-[520px]:justify-between">
-      <div>
-        <p className="text-xs font-bold uppercase text-brand">{current.crm_stage}</p>
+  return <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <div className="border-b border-slate-200 bg-gradient-to-br from-white to-slate-50 p-5">
+      <div className="flex flex-col gap-4 min-[640px]:flex-row min-[640px]:items-start min-[640px]:justify-between">
+        <div className="min-w-0">
+        <p className="text-xs font-bold uppercase text-brand">{current.crm_stage} opportunity</p>
         <h2 className="mt-1 text-xl font-bold text-ink">{current.name}</h2>
-        <p className="mt-1 break-all text-sm text-slate-500">{current.website || current.domain || "Website not found"}</p>
-        <p className="mt-2 text-sm text-slate-600">{[current.industry, current.city, current.country].filter(Boolean).join(" · ") || "Company details pending"}</p>
+        <p className="mt-1 break-all text-sm text-slate-500">{current.website || current.domain || "Add a website to unlock company research"}</p>
+        <p className="mt-2 text-sm text-slate-600">{[current.industry, current.city, current.country].filter(Boolean).join(" · ") || "Add industry and location to qualify this company faster"}</p>
+        </div>
+        <div className="grid gap-2 min-[430px]:grid-cols-2 min-[640px]:w-80">
+          <div className="rounded-xl border border-slate-200 bg-white p-3">
+            <p className="text-xs font-bold uppercase text-slate-500">Health score</p>
+            <p className="mt-1 text-2xl font-black text-ink">{healthScore}%</p>
+            <div className="mt-2 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-brand" style={{ width: `${healthScore}%` }} /></div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-3">
+            <p className="text-xs font-bold uppercase text-slate-500">Needs attention</p>
+            <p className="mt-1 text-sm font-semibold text-ink">{nextAction}</p>
+          </div>
+        </div>
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="mt-4 flex flex-wrap gap-2">
         <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">Source: {current.source}</span>
         <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{current.email_status}</span>
       </div>
     </div>
-    <div className="mt-5 grid gap-3 lg:grid-cols-3">
-      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Company data</p><p className="mt-2 text-slate-600">{current.address || "Address not found"}</p><p className="text-slate-600">{current.phone || "Phone not found"}</p><p className="text-slate-600">{current.google_rating ? `Google rating ${current.google_rating}` : "Rating unavailable"}</p></div>
-      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Contacts</p>{current.contacts.length ? current.contacts.slice(0, 2).map((contact) => <p key={contact.id} className="mt-2 text-slate-600">{contact.name || "Decision maker"} · {contact.email || "No email"} · {contact.source}</p>) : <p className="mt-2 text-slate-600">No verified contact yet.</p>}</div>
-      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Email status</p><p className="mt-2 text-slate-600">{current.generated_emails[0]?.subject || "No generated email yet"}</p><p className="text-slate-600">{current.generated_emails[0]?.delivery_status || current.email_status}</p></div>
+    <div className="grid gap-3 p-5 lg:grid-cols-4">
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Company profile</p><p className="mt-2 text-slate-600">{current.address || "Address will appear after lead discovery returns it."}</p><p className="text-slate-600">{current.phone || "Phone not available yet."}</p><p className="text-slate-600">{current.google_rating ? `Google rating ${current.google_rating}` : "Rating not available yet."}</p></div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Decision maker</p>{primaryContact ? <p className="mt-2 text-slate-600">{primaryContact.name || "Contact name pending"} · {primaryContact.email || "Email pending"} · {primaryContact.source}</p> : <p className="mt-2 text-slate-600">Find a decision maker before sending outreach.</p>}</div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Prepared email</p><p className="mt-2 text-slate-600">{current.generated_emails[0]?.subject || "No email prepared yet."}</p><p className="text-slate-600">{current.generated_emails[0]?.delivery_status || "Generate a draft when research is ready."}</p></div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">Next action</p><p className="mt-2 text-slate-600">{nextAction}</p></div>
     </div>
-    <section className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 lg:grid-cols-[1fr_1.2fr]">
+    <section className="border-y border-slate-200 bg-white px-5 py-4">
+      <p className="text-sm font-bold text-ink">What already happened</p>
+      <div className="mt-3 grid gap-2 min-[520px]:grid-cols-4 lg:grid-cols-8">
+        {progress.map(([label, done]) => <div key={label} className={`rounded-xl border p-3 text-sm ${done ? "border-teal-200 bg-teal-50 text-brand" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+          <CheckCircle2 size={16} className={done ? "text-brand" : "text-slate-300"} />
+          <p className="mt-2 font-bold">{label}</p>
+        </div>)}
+      </div>
+    </section>
+    <section className="grid gap-3 border-b border-slate-200 bg-slate-50 p-5 lg:grid-cols-[1fr_1.2fr]">
       <div>
-        <p className="text-sm font-bold text-ink">Move CRM stage</p>
-        <p className="mt-1 text-sm text-slate-600">Keep the pipeline accurate after each sales action.</p>
+        <p className="text-sm font-bold text-ink">Pipeline</p>
+        <p className="mt-1 text-sm text-slate-600">Move the opportunity when the real sales situation changes.</p>
         <div className="mt-3 grid gap-2 min-[430px]:grid-cols-[1fr_auto]">
           <select value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
             {crmStages.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
@@ -857,7 +932,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
       {actionNotice && <p className="rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand lg:col-span-2">{actionNotice}</p>}
       {actionError && <p className="rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-700 lg:col-span-2">{actionError}</p>}
     </section>
-    <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+    <section className="p-5">
       <p className="text-sm font-bold text-ink">Activity history</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {lifecycle.map(([label, value]) => <div key={label} className="rounded-lg bg-slate-50 p-3 text-sm">
@@ -866,19 +941,19 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
         </div>)}
       </div>
     </section>
-    <div className="mt-4 rounded-xl bg-teal-50 p-4 text-sm">
+    <div className="mx-5 rounded-xl bg-teal-50 p-4 text-sm">
       <p className="font-bold text-brand">AI summary</p>
-      <p className="mt-2 leading-6 text-slate-700">{company.ai_summary || "Run AI research to create a company summary, sales angle and suggested offer."}</p>
-      {company.suggested_offer && <p className="mt-2 font-semibold text-slate-800">Offer: {company.suggested_offer}</p>}
+      <p className="mt-2 leading-6 text-slate-700">{current.ai_summary || "Run company research to create the summary, sales angle and suggested offer."}</p>
+      {current.suggested_offer && <p className="mt-2 font-semibold text-slate-800">Offer: {current.suggested_offer}</p>}
     </div>
-    <details open={notesOpen} onToggle={(event) => setNotesOpen(event.currentTarget.open)} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+    <details open={notesOpen} onToggle={(event) => setNotesOpen(event.currentTarget.open)} className="m-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
       <summary className="cursor-pointer text-sm font-bold text-ink">Notes and activity timeline</summary>
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
         <div>{current.notes.length ? current.notes.slice(0, 4).map((note) => <p key={note.id} className="mb-2 rounded-lg bg-white p-3 text-sm text-slate-600">{note.body}</p>) : <p className="rounded-lg bg-white p-3 text-sm text-slate-600">No notes yet.</p>}</div>
         <div>{current.activity.length ? current.activity.slice(0, 4).map((item) => <p key={item.id} className="mb-2 rounded-lg bg-white p-3 text-sm text-slate-600">{item.action.replaceAll(".", " ")} · {new Date(item.created_at).toLocaleString()}</p>) : <p className="rounded-lg bg-white p-3 text-sm text-slate-600">Activity will appear after lead search, AI generation or email events.</p>}</div>
       </div>
     </details>
-    {current.lead_id ? <div className="mt-5"><OpportunityCard lead={lead} api={api} /></div> : <p className="mt-4 rounded-xl bg-orange-50 p-3 text-sm font-semibold text-orange-700">This CRM company is missing its lead link. Re-import or update the company before generating outreach.</p>}
+    {current.lead_id ? <div className="border-t border-slate-200 p-5"><OpportunityCard lead={lead} api={api} /></div> : <p className="m-5 rounded-xl bg-orange-50 p-3 text-sm font-semibold text-orange-700">Reconnect this company to a lead before generating outreach.</p>}
   </article>;
 }
 
