@@ -417,23 +417,23 @@ function priorityScore(copilot?: SalesCopilot) {
 function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action?: React.ReactNode }) {
   const { t } = useI18n();
   return (
-    <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-      <div className="max-w-3xl">
+    <header className="min-w-0 max-w-full overflow-hidden flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      <div className="min-w-0 max-w-3xl">
         <p className="text-sm font-bold uppercase tracking-wide text-brand">{t(eyebrow)}</p>
         <h1 className="mt-2 text-3xl font-bold tracking-tight text-ink min-[390px]:text-4xl">{t(title)}</h1>
         <p className="mt-3 text-sm leading-6 text-slate-600 min-[390px]:text-base">{t(copy)}</p>
       </div>
-      {action}
+      {action && <div className="min-w-0 max-w-full shrink-0 [&>a]:w-full [&>button]:w-full min-[430px]:[&>a]:w-auto min-[430px]:[&>button]:w-auto">{action}</div>}
     </header>
   );
 }
 
 function PrimaryButton({ children, onClick, disabled = false }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
-  return <button onClick={onClick} disabled={disabled} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
+  return <button onClick={onClick} disabled={disabled} className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
 }
 
 function SecondaryButton({ children, onClick, disabled = false }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
-  return <button onClick={onClick} disabled={disabled} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
+  return <button onClick={onClick} disabled={disabled} className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
 }
 
 function EmptyState({ title, copy, action }: { title: string; copy: string; action?: React.ReactNode }) {

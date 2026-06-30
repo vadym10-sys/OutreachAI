@@ -152,7 +152,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   }, [email, pathname, userId, workspaceId]);
 
   return (
-    <div className="min-h-screen min-w-0 overflow-x-hidden bg-slate-50">
+    <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
       <CheckoutContinuation />
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white px-4 py-5 lg:block">
         <Link href="/dashboard" className="mb-8 block text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
@@ -170,7 +170,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
       </aside>
-      <div className="lg:pl-64">
+      <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-64">
         <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-hidden border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="relative lg:hidden">
@@ -209,7 +209,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
         </header>
-        <main className="min-w-0 px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
+        <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>

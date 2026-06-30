@@ -128,6 +128,41 @@ a[aria-label="Clerk logo"] {
   border-radius: 9999px !important;
 }
 
+.dashboard-safe,
+.dashboard-safe main,
+.dashboard-safe header,
+.dashboard-safe section,
+.dashboard-safe article,
+.dashboard-safe div {
+  max-width: 100%;
+}
+
+.dashboard-safe *,
+.dashboard-safe *::before,
+.dashboard-safe *::after {
+  min-width: 0;
+}
+
+.dashboard-safe h1,
+.dashboard-safe h2,
+.dashboard-safe h3,
+.dashboard-safe p,
+.dashboard-safe span,
+.dashboard-safe a,
+.dashboard-safe button,
+.dashboard-safe dd,
+.dashboard-safe dt,
+.dashboard-safe li {
+  overflow-wrap: anywhere;
+}
+
+.dashboard-safe pre,
+.dashboard-safe textarea,
+.dashboard-safe input {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .focus-ring {
   @apply focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2;
 }
