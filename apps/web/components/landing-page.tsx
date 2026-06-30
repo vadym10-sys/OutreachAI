@@ -124,35 +124,35 @@ export function LandingPage() {
   };
 
   return (
-    <main className="min-w-0 overflow-x-hidden bg-white text-ink">
+    <main className="landing-safe min-w-0 max-w-[100vw] overflow-x-clip bg-white text-ink">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }} />
       <section className="relative border-b border-slate-200 bg-[radial-gradient(circle_at_top_left,#e6fffb_0,#ffffff_34rem)]">
-        <nav className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-5 min-[360px]:px-5">
-          <Link href="/" className="text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
+        <nav className="mx-auto flex max-w-7xl items-center justify-between gap-3 overflow-hidden px-4 py-5 min-[360px]:px-5">
+          <Link href="/" className="shrink-0 text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
           <div className="hidden items-center gap-7 text-sm font-semibold text-slate-600 md:flex">
             <a href="#tools" className="hover:text-ink">{t("Tools")}</a>
             <a href="#workflow" className="hover:text-ink">{t("Workflow")}</a>
             <a href="#pricing" className="hover:text-ink">{t("Pricing")}</a>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex min-w-0 shrink-0 items-center gap-2">
             <LanguageSwitcher compact />
             <AuthNavigationLink href="/sign-in" className="hidden min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 sm:inline-flex">{t("Login")}</AuthNavigationLink>
             <AuthNavigationLink href="/sign-up?plan=Starter" className="hidden min-h-11 items-center rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-soft hover:bg-slate-800 sm:inline-flex">{t("Start free trial")}</AuthNavigationLink>
           </div>
         </nav>
 
-        <div className="mx-auto grid max-w-7xl items-center gap-10 px-4 pb-14 pt-8 min-[360px]:px-5 sm:pb-20 sm:pt-12 lg:grid-cols-[1.02fr_0.98fr]">
-          <div className="min-w-0">
+        <div className="mx-auto grid max-w-7xl items-center gap-10 overflow-hidden px-4 pb-14 pt-8 min-[360px]:px-5 sm:pb-20 sm:pt-12 lg:grid-cols-[1.02fr_0.98fr]">
+          <div className="min-w-0 max-w-full">
             <p className="inline-flex rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-sm font-bold text-brand">{t("AI Sales Workspace for outbound growth")}</p>
-            <h1 className="mt-5 max-w-4xl text-4xl font-bold tracking-normal text-ink min-[390px]:text-5xl md:text-6xl lg:text-7xl">{t("AI Sales Employee for B2B Lead Generation")}</h1>
+            <h1 className="mt-5 max-w-full text-[clamp(2.35rem,10vw,4.5rem)] font-bold leading-[0.98] tracking-normal text-ink md:text-6xl md:leading-[0.95] lg:text-7xl">{t("AI Sales Employee for B2B Lead Generation")}</h1>
             <p className="mt-6 max-w-2xl text-base leading-7 text-slate-600 min-[390px]:text-lg sm:text-xl sm:leading-8">
               {t("Find qualified companies, analyze their websites, generate personalized outreach, launch campaigns, and turn replies into meetings — from one workspace.")}
             </p>
-            <div className="mt-8 flex flex-col gap-3 min-[390px]:flex-row">
-              <AuthNavigationLink href="/sign-up?plan=Starter" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-brand px-5 text-sm font-bold text-white shadow-soft hover:bg-teal-700" testId="hero-start-free-trial">
+            <div className="mt-8 flex flex-col gap-3 min-[430px]:flex-row">
+              <AuthNavigationLink href="/sign-up?plan=Starter" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-brand px-5 text-sm font-bold text-white shadow-soft hover:bg-teal-700 min-[430px]:w-auto" testId="hero-start-free-trial">
                 {t("Start free trial")} <ArrowRight size={18} aria-hidden="true" />
               </AuthNavigationLink>
-              <AuthNavigationLink href="/sign-in" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-bold text-ink hover:border-slate-400">{t("Login")}</AuthNavigationLink>
+              <AuthNavigationLink href="/sign-in" className="inline-flex min-h-12 w-full items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-bold text-ink hover:border-slate-400 min-[430px]:w-auto">{t("Login")}</AuthNavigationLink>
             </div>
             <div className="mt-8 grid gap-3 text-sm text-slate-600 sm:grid-cols-3">
               {["Replace 5-6 sales tools", "Review before send", "Built for meetings"].map((item) => (

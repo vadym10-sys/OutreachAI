@@ -271,7 +271,8 @@ def _workspace_out(db: Session, workspace: Workspace) -> WorkspaceOut:
 
 
 def _workspace_stmt(model, workspace: Workspace, user_id: str):
-    return or_(model.workspace_id == workspace.id, (model.workspace_id.is_(None) & (model.user_id == user_id)))
+    del user_id
+    return model.workspace_id == workspace.id
 
 
 def _settings_for_workspace(db: Session, user_id: str, workspace: Workspace) -> AppSettings:
@@ -785,7 +786,7 @@ def _first_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id: 
     return db.scalar(
         select(AuditLog.created_at)
         .where(
-            or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id),
+            AuditLog.workspace_id == workspace.id,
             _audit_log_lead_id_clause(lead_id),
             AuditLog.action.in_(actions),
         )
@@ -799,7 +800,7 @@ def _latest_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id:
         return None
     return db.scalar(
         select(AuditLog.created_at)
-        .where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id), _audit_log_lead_id_clause(lead_id))
+        .where(AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(lead_id))
         .order_by(AuditLog.created_at.desc())
         .limit(1)
     )
@@ -810,7 +811,7 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc())).all())
     notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc()).limit(20)).all())
     emails = list(db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc()).limit(10)).all()) if company.lead_id else []
-    activity = list(db.scalars(select(AuditLog).where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id), _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
+    activity = list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
     lead = db.get(Lead, company.lead_id) if company.lead_id else None
     found_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"lead.found", "lead.imported", "google_maps.company_search", "apollo.company_search", "apollo.contact_search"}) or (lead.created_at if lead else company.created_at)
     saved_to_crm_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"lead.saved_to_crm"}) or company.created_at
@@ -4129,13 +4130,13 @@ def update_onboarding(payload: OnboardingUpdate, request: Request, user_id: Curr
 @router.get("/activity", response_model=list[ActivityOut])
 def activity(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[AuditLog]:
     workspace = _current_workspace(db, user_id)
-    return list(db.scalars(select(AuditLog).where(or_(AuditLog.workspace_id == workspace.id, AuditLog.user_id == user_id)).order_by(AuditLog.created_at.desc()).limit(50)).all())
+    return list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id).order_by(AuditLog.created_at.desc()).limit(50)).all())
 
 
 @router.get("/notifications", response_model=list[NotificationOut])
 def notifications(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[Notification]:
     workspace = _current_workspace(db, user_id)
-    return list(db.scalars(select(Notification).where(or_(Notification.workspace_id == workspace.id, Notification.user_id == user_id)).order_by(Notification.created_at.desc()).limit(30)).all())
+    return list(db.scalars(select(Notification).where(Notification.workspace_id == workspace.id).order_by(Notification.created_at.desc()).limit(30)).all())
 
 
 @router.get("/profile", response_model=ProfileOut)
@@ -4750,8 +4751,8 @@ def admin_quality_create_task(payload: QualityRepairTaskCreate, request: Request
 
 
 @router.get("/admin/summary", response_model=AdminSummaryOut)
-def admin_summary(user_id: CurrentUser, db: Session = Depends(get_db)) -> AdminSummaryOut:
-    del user_id
+def admin_summary(owner: OwnerUser, db: Session = Depends(get_db)) -> AdminSummaryOut:
+    del owner
     usage = db.scalar(select(func.coalesce(func.sum(UsageCounter.leads), 0))) or 0
     ai = db.scalar(select(func.coalesce(func.sum(UsageCounter.ai_generations), 0))) or 0
     sends = db.scalar(select(func.coalesce(func.sum(UsageCounter.email_sends), 0))) or 0
@@ -4767,6 +4768,6 @@ def admin_summary(user_id: CurrentUser, db: Session = Depends(get_db)) -> AdminS
 
 
 @router.get("/admin/logs", response_model=list[ActivityOut])
-def admin_logs(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[AuditLog]:
-    del user_id
+def admin_logs(owner: OwnerUser, db: Session = Depends(get_db)) -> list[AuditLog]:
+    del owner
     return list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(100)).all())

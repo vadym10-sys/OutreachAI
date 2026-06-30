@@ -54,6 +54,8 @@ Base.metadata.create_all(bind=get_engine())
 
 client = TestClient(app)
 AUTH = {"Authorization": "Bearer dev"}
+USER_A_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "tenant-a@example.com"}
+USER_B_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "tenant-b@example.com"}
 OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "romaniukvadym10@gmail.com"}
 NON_OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "not-owner@example.com"}
 security.limiter.limit = 10000
@@ -163,6 +165,98 @@ def test_owner_can_update_feature_flags() -> None:
     data = response.json()
     assert data["ai_ceo_voice"] is True
     assert data["analytics_nav"] is True
+
+
+def test_admin_summary_and_logs_are_owner_only() -> None:
+    denied_summary = client.get("/api/admin/summary", headers=NON_OWNER_AUTH)
+    denied_logs = client.get("/api/admin/logs", headers=NON_OWNER_AUTH)
+    assert denied_summary.status_code == 403
+    assert denied_logs.status_code == 403
+
+    summary = client.get("/api/admin/summary", headers=OWNER_AUTH)
+    logs = client.get("/api/admin/logs", headers=OWNER_AUTH)
+    assert summary.status_code == 200
+    assert logs.status_code == 200
+
+
+def test_workspace_data_is_private_between_users(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+
+    lead_payload = {
+        "company": "Tenant A Berlin Builders",
+        "website": "https://tenant-a-builders.example",
+        "country": "Germany",
+        "city": "Berlin",
+        "industry": "Construction",
+    }
+    lead_response = client.post("/api/leads", headers=USER_A_AUTH, json=lead_payload)
+    assert lead_response.status_code == 200
+    lead_id = lead_response.json()["id"]
+
+    user_a_workspace = client.get("/api/workspace", headers=USER_A_AUTH)
+    user_b_workspace = client.get("/api/workspace", headers=USER_B_AUTH)
+    assert user_a_workspace.status_code == 200
+    assert user_b_workspace.status_code == 200
+    assert user_a_workspace.json()["id"] != user_b_workspace.json()["id"]
+
+    user_a_leads = client.get("/api/leads?search=Tenant%20A%20Berlin%20Builders", headers=USER_A_AUTH)
+    user_b_leads = client.get("/api/leads?search=Tenant%20A%20Berlin%20Builders", headers=USER_B_AUTH)
+    assert user_a_leads.status_code == 200
+    assert user_b_leads.status_code == 200
+    assert user_a_leads.json()["total"] == 1
+    assert user_b_leads.json()["total"] == 0
+
+    user_a_companies = client.get("/api/crm/companies?search=Tenant%20A%20Berlin%20Builders", headers=USER_A_AUTH)
+    user_b_companies = client.get("/api/crm/companies?search=Tenant%20A%20Berlin%20Builders", headers=USER_B_AUTH)
+    assert user_a_companies.status_code == 200
+    assert user_b_companies.status_code == 200
+    assert len(user_a_companies.json()) == 1
+    assert user_b_companies.json() == []
+
+    company_id = user_a_companies.json()[0]["id"]
+    forbidden_stage_update = client.patch(f"/api/crm/companies/{company_id}/stage", headers=USER_B_AUTH, json={"stage": "Qualified"})
+    assert forbidden_stage_update.status_code == 404
+
+    campaign_payload = {
+        "name": "Tenant A Construction Outreach",
+        "industry": "Construction",
+        "countries": ["Germany"],
+        "cities": ["Berlin"],
+        "offer": "More qualified construction leads",
+    }
+    campaign_response = client.post("/api/campaigns", headers=USER_A_AUTH, json=campaign_payload)
+    assert campaign_response.status_code == 200
+    campaign_id = campaign_response.json()["id"]
+
+    user_b_campaigns = client.get("/api/campaigns", headers=USER_B_AUTH)
+    assert user_b_campaigns.status_code == 200
+    assert all(item["id"] != campaign_id for item in user_b_campaigns.json())
+
+    forbidden_campaign_update = client.put(f"/api/campaigns/{campaign_id}", headers=USER_B_AUTH, json={**campaign_payload, "name": "Hijacked"})
+    assert forbidden_campaign_update.status_code == 404
+
+    signed_out = client.get("/api/leads")
+    assert signed_out.status_code == 401
+    assert lead_id
+
+
+def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        legacy = Lead(
+            user_id="tenant-a@example.com",
+            workspace_id=None,
+            company="Legacy Shared Lead",
+            website="https://legacy-shared.example",
+            status=LeadStatus.new,
+        )
+        db.add(legacy)
+        db.commit()
+
+    response = client.get("/api/leads?search=Legacy%20Shared%20Lead", headers=USER_A_AUTH)
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
 
 
 def test_quality_console_requires_owner_and_creates_repair_tasks() -> None:
@@ -1116,13 +1210,16 @@ def test_ai_sales_copilot_endpoints(monkeypatch) -> None:
 
 
 def test_resend_webhook_updates_delivery_metrics() -> None:
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    workspace_id = UUID(workspace["id"])
     db = get_sessionmaker()()
     try:
-        campaign = Campaign(user_id="dev_user", name="Webhook Campaign", industry="Construction")
+        campaign = Campaign(user_id="dev_user", workspace_id=workspace_id, name="Webhook Campaign", industry="Construction")
         db.add(campaign)
         db.flush()
         lead = Lead(
             user_id="dev_user",
+            workspace_id=workspace_id,
             campaign_id=campaign.id,
             company="Webhook Build Co",
             email="webhook@example.com",
@@ -1132,6 +1229,7 @@ def test_resend_webhook_updates_delivery_metrics() -> None:
         db.flush()
         message = EmailMessage(
             user_id="dev_user",
+            workspace_id=workspace_id,
             campaign_id=campaign.id,
             lead_id=lead.id,
             direction="outbound",
@@ -1271,7 +1369,7 @@ def test_workspace_onboarding_usage_and_campaign_duplicate() -> None:
     assert usage.status_code == 200
     assert usage.json()["plan"] in {"Starter", "Pro"}
 
-    admin = client.get("/api/admin/summary", headers=AUTH)
+    admin = client.get("/api/admin/summary", headers=OWNER_AUTH)
     assert admin.status_code == 200
     assert "system_health" in admin.json()
 

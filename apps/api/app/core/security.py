@@ -108,7 +108,10 @@ def _verify_clerk_token(token: str) -> dict:
     return claims
 
 
-def get_current_user(authorization: Annotated[Optional[str], Header()] = None) -> str:
+def get_current_user(
+    authorization: Annotated[Optional[str], Header()] = None,
+    x_test_user_email: Annotated[Optional[str], Header(alias="X-Test-User-Email")] = None,
+) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
 
@@ -116,7 +119,8 @@ def get_current_user(authorization: Annotated[Optional[str], Header()] = None) -
     settings = get_settings()
 
     if settings.app_env == "development" and token == "dev":
-        return "dev_user"
+        test_user = (x_test_user_email or "").strip().lower()
+        return test_user or "dev_user"
 
     claims = _verify_clerk_token(token)
     return str(claims["sub"])
