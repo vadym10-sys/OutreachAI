@@ -30,6 +30,26 @@ test.describe("customer workspace routes", () => {
     await expect(page.locator("body")).not.toContainText("Something went wrong");
     await expect(page.locator("body")).not.toContainText("The page failed to render");
     await expectNoHorizontalOverflow(page);
+    const mobileHeader = await page.evaluate(() => {
+      const header = document.querySelector("header");
+      const avatar = document.querySelector(".dashboard-user-button");
+      return {
+        viewportWidth: window.innerWidth,
+        pageWidth: document.documentElement.scrollWidth,
+        headerWidth: header?.getBoundingClientRect().width || 0,
+        visibleHeaderSelects: Array.from(header?.querySelectorAll("select") || []).filter((item) => {
+          const rect = item.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        }).length,
+        avatarWidth: avatar?.getBoundingClientRect().width || 0,
+        avatarHeight: avatar?.getBoundingClientRect().height || 0
+      };
+    });
+    expect(mobileHeader.pageWidth).toBeLessThanOrEqual(mobileHeader.viewportWidth + 1);
+    expect(mobileHeader.headerWidth).toBeLessThanOrEqual(mobileHeader.viewportWidth + 1);
+    expect(mobileHeader.visibleHeaderSelects).toBe(0);
+    expect(mobileHeader.avatarWidth).toBeLessThanOrEqual(44);
+    expect(mobileHeader.avatarHeight).toBeLessThanOrEqual(44);
     await guards.assertClean();
   });
 

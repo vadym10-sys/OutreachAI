@@ -171,13 +171,16 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         </nav>
       </aside>
       <div className="lg:pl-64">
-        <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
-          <div className="flex min-w-0 items-center gap-3">
+        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-hidden border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="relative lg:hidden">
               <button type="button" onClick={() => setMobileMenuOpen((open) => !open)} className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300 bg-white text-slate-700" aria-label={t("nav.open")} aria-expanded={mobileMenuOpen}>
                 <Menu size={20} aria-hidden="true" />
               </button>
               {mobileMenuOpen && <div className="absolute left-0 top-12 z-40 w-[min(82vw,19rem)] rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
+                <div className="mb-2 rounded-md border border-slate-200 bg-slate-50 p-2 min-[430px]:hidden">
+                  <LanguageSwitcher compact />
+                </div>
                 {visibleNav.map((item) => {
                   const Icon = item.icon;
                   const active = pathname === item.href;
@@ -193,14 +196,18 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </div>
             <span className="truncate text-sm font-semibold text-slate-600">{t("shell.workspace")}</span>
           </div>
-          <LanguageSwitcher compact />
-          {hasClerkPublishableKey && !isClerkE2EBypass ? (
-            <UserButton />
-          ) : (
-            <div className="grid size-8 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600" aria-label="User profile">
-              AI
-            </div>
-          )}
+          <div className="hidden shrink-0 min-[430px]:block">
+            <LanguageSwitcher compact />
+          </div>
+          <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full">
+            {hasClerkPublishableKey && !isClerkE2EBypass ? (
+              <UserButton />
+            ) : (
+              <div className="grid size-10 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600" aria-label="User profile">
+                AI
+              </div>
+            )}
+          </div>
         </header>
         <main className="min-w-0 px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>

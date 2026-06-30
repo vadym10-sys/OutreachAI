@@ -104,6 +104,30 @@ a[aria-label="Clerk logo"] {
   max-width: 100% !important;
 }
 
+.dashboard-user-button .cl-rootBox,
+.dashboard-user-button .cl-userButtonBox,
+.dashboard-user-button .cl-userButtonTrigger,
+.dashboard-user-button .cl-avatarBox {
+  width: 2.5rem !important;
+  min-width: 2.5rem !important;
+  max-width: 2.5rem !important;
+  height: 2.5rem !important;
+  min-height: 2.5rem !important;
+  max-height: 2.5rem !important;
+}
+
+.dashboard-user-button .cl-userButtonTrigger {
+  display: grid !important;
+  place-items: center !important;
+  overflow: hidden !important;
+  border-radius: 9999px !important;
+}
+
+.dashboard-user-button .cl-avatarBox {
+  overflow: hidden !important;
+  border-radius: 9999px !important;
+}
+
 .focus-ring {
   @apply focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2;
 }

@@ -136,8 +136,8 @@ export function LandingPage() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <LanguageSwitcher compact />
-            <AuthNavigationLink href="/sign-in" className="hidden min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 min-[430px]:inline-flex">{t("Login")}</AuthNavigationLink>
-            <AuthNavigationLink href="/sign-up?plan=Starter" className="hidden min-h-11 items-center rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-soft hover:bg-slate-800 min-[430px]:inline-flex">{t("Start free trial")}</AuthNavigationLink>
+            <AuthNavigationLink href="/sign-in" className="hidden min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 sm:inline-flex">{t("Login")}</AuthNavigationLink>
+            <AuthNavigationLink href="/sign-up?plan=Starter" className="hidden min-h-11 items-center rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-soft hover:bg-slate-800 sm:inline-flex">{t("Start free trial")}</AuthNavigationLink>
           </div>
         </nav>
 
