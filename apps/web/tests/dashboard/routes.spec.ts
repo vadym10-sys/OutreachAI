@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { mockWorkspaceApi } from "../../mocks/workspace-api";
 import { expectNoBrokenImages, expectNoHorizontalOverflow, expectNoSensitiveCustomerText, installQaGuards } from "../helpers/qa-guards";
 
+const appHeader = "body > div > div > header";
+
 const customerRoutes = [
   ["/dashboard", "What should I do now?"],
   ["/dashboard/leads", "Find real companies and turn each into a sales opportunity."],
@@ -27,6 +29,7 @@ test.describe("customer workspace routes", () => {
 
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expect(page.locator(appHeader)).toContainText("QA Private Workspace");
     await expect(page.locator("body")).not.toContainText("Something went wrong");
     await expect(page.locator("body")).not.toContainText("The page failed to render");
     await expectNoHorizontalOverflow(page);
@@ -50,6 +53,47 @@ test.describe("customer workspace routes", () => {
     expect(mobileHeader.visibleHeaderSelects).toBe(0);
     expect(mobileHeader.avatarWidth).toBeLessThanOrEqual(44);
     expect(mobileHeader.avatarHeight).toBeLessThanOrEqual(44);
+    await guards.assertClean();
+  });
+
+  test("new private workspace dashboard shows account-specific onboarding instead of shared demo data", async ({ page }, testInfo) => {
+    await page.unroute("**/api/**");
+    await page.route("**/api/**", async (route) => {
+      const url = new URL(route.request().url());
+      const apiPath = url.pathname.replace(/^\/api\/backend/, "");
+      const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+      if (apiPath === "/api/workspace") {
+        return json({
+          id: "workspace-private-test",
+          name: "Private Test Workspace",
+          company: "Private Test Workspace",
+          industry: "",
+          target_country: "",
+          target_customer: "",
+          timezone: "UTC",
+          language: "en",
+          onboarding_step: 1,
+          onboarding_completed: false,
+          members: []
+        });
+      }
+      if (apiPath === "/api/dashboard") return json({ leads: 0, campaigns: 0, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: "Starter", usage: { leads: 0, email_sends: 0 } });
+      if (apiPath === "/api/leads") return json({ items: [], total: 0, page: 1, page_size: 100 });
+      if (apiPath === "/api/campaigns") return json([]);
+      if (apiPath === "/api/sales-employees") return json([]);
+      if (apiPath === "/api/activity") return json([]);
+      return json({});
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+
+    await page.goto("/dashboard");
+    await expect(page.getByRole("heading", { name: "Your private workspace is ready" })).toBeVisible();
+    await expect(page.locator(appHeader)).toContainText("Private Test Workspace");
+    await expect(page.getByRole("link", { name: "Add your first company" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Find leads" }).first()).toBeVisible();
+    await expect(page.getByRole("main")).not.toContainText("demo account");
+    await expectNoHorizontalOverflow(page);
     await guards.assertClean();
   });
 
@@ -86,14 +130,15 @@ test.describe("customer workspace routes", () => {
   test("Russian mobile dashboard does not mix in English dashboard copy", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const guards = installQaGuards(page, testInfo);
-    await page.goto("/dashboard");
-    await page.evaluate(() => {
+    await page.addInitScript(() => {
       window.localStorage.setItem("outreachai.locale", "ru");
-      document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
     });
-    await page.reload({ waitUntil: "networkidle" });
+    await page.context().addCookies([{ name: "outreachai_locale", value: "ru", url: "http://127.0.0.1:3000" }]);
+    await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
 
     await expect(page.getByRole("heading", { name: "Что мне делать сейчас?" })).toBeVisible();
+    await expect(page.locator(appHeader)).toContainText("QA Private Workspace");
+    await expect(page.locator(appHeader)).toContainText("Приватное пространство");
     await expect(page.locator("body")).not.toContainText("What should I do now?");
     await expect(page.locator("body")).not.toContainText("Dashboard details are temporarily unavailable");
     await expect(page.locator("body")).not.toContainText("Find your first qualified companies");
@@ -106,19 +151,24 @@ test.describe("customer workspace routes", () => {
 
   test("Russian mobile workspace pages do not show the English lead/settings copy", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    const guards = installQaGuards(page, testInfo);
-    await page.goto("/dashboard");
-    await page.evaluate(() => {
+    await page.addInitScript(() => {
       window.localStorage.setItem("outreachai.locale", "ru");
-      document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
     });
+    await page.context().addCookies([{ name: "outreachai_locale", value: "ru", url: "http://127.0.0.1:3000" }]);
 
     const russianRoutes = ["/dashboard/leads", "/dashboard/companies", "/dashboard/crm", "/dashboard/billing", "/dashboard/settings"];
 
     for (const route of russianRoutes) {
-      await page.goto(route, { waitUntil: "domcontentloaded" });
-      await expect(page.getByRole("main")).toBeVisible();
-      const body = page.locator("body");
+      const routePage = await page.context().newPage();
+      await routePage.setViewportSize({ width: 390, height: 844 });
+      await routePage.addInitScript(() => {
+        window.localStorage.setItem("outreachai.locale", "ru");
+      });
+      await mockWorkspaceApi(routePage);
+      const routeGuards = installQaGuards(routePage, testInfo);
+      await routePage.goto(route, { waitUntil: "domcontentloaded" });
+      await expect(routePage.getByRole("main")).toBeVisible();
+      const body = routePage.locator("body");
       await expect(body).not.toContainText("Lead Finder");
       await expect(body).not.toContainText("Save company to CRM");
       await expect(body).not.toContainText("Fast fallback");
@@ -127,11 +177,11 @@ test.describe("customer workspace routes", () => {
       await expect(body).not.toContainText("Subscription and usage.");
       await expect(body).not.toContainText("Make the workspace ready for your first campaign.");
       await expect(body).not.toContainText("Your session has expired. Please sign in again.");
-      await expect(page.getByRole("main")).not.toContainText("Something went wrong");
-      await expectNoHorizontalOverflow(page);
+      await expect(routePage.getByRole("main")).not.toContainText("Something went wrong");
+      await expectNoHorizontalOverflow(routePage);
+      await routeGuards.assertClean();
+      await routePage.close();
     }
-
-    await guards.assertClean();
   });
 
   for (const [route, heading] of customerRoutes) {
@@ -167,7 +217,7 @@ test.describe("customer workspace routes", () => {
     });
 
     await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Your private workspace is ready" })).toBeVisible();
     await expect(page.getByRole("main")).toContainText("Dashboard details are temporarily unavailable");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("The page failed to render");

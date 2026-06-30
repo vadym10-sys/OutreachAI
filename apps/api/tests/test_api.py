@@ -207,6 +207,13 @@ def test_workspace_data_is_private_between_users(monkeypatch) -> None:
     assert user_a_leads.json()["total"] == 1
     assert user_b_leads.json()["total"] == 0
 
+    user_a_dashboard = client.get("/api/dashboard", headers=USER_A_AUTH)
+    user_b_dashboard = client.get("/api/dashboard", headers=USER_B_AUTH)
+    assert user_a_dashboard.status_code == 200
+    assert user_b_dashboard.status_code == 200
+    assert user_a_dashboard.json()["leads"] == 1
+    assert user_b_dashboard.json()["leads"] == 0
+
     user_a_companies = client.get("/api/crm/companies?search=Tenant%20A%20Berlin%20Builders", headers=USER_A_AUTH)
     user_b_companies = client.get("/api/crm/companies?search=Tenant%20A%20Berlin%20Builders", headers=USER_B_AUTH)
     assert user_a_companies.status_code == 200

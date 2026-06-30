@@ -1,15 +1,17 @@
 "use client";
 
-import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserButton, useUser } from "@clerk/nextjs";
+import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
 import { BarChart3, Bot, Building2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
 import { e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useI18n } from "@/lib/i18n/provider";
+import { clientApi } from "@/lib/client-api";
+import type { Workspace } from "@/lib/types";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 
@@ -64,20 +66,28 @@ function useDashboardIdentity() {
       isOwner: testEmail.trim().toLowerCase() === ownerEmail,
       userId: testEmail ? `e2e:${testEmail}` : "e2e-user",
       email: testEmail,
-      workspaceId: "e2e-workspace"
+      workspaceId: "e2e-workspace",
+      ready: true,
+      getAuthToken: async () => (isClerkE2EBypass ? "dev" : null)
     };
   }
 
   // The no-Clerk branch is required for local/E2E builds where ClerkProvider is intentionally not mounted.
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const { user } = useUser();
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const { getToken, isLoaded, isSignedIn } = useAuth();
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const getAuthToken = useCallback(() => getToken(), [getToken]);
   const currentEmail = user?.primaryEmailAddress?.emailAddress || user?.emailAddresses?.[0]?.emailAddress || "";
   const publicMetadata = user?.publicMetadata as { workspace_id?: unknown; workspaceId?: unknown } | undefined;
   return {
     isOwner: currentEmail.trim().toLowerCase() === ownerEmail,
     userId: user?.id || "unknown-user",
     email: currentEmail,
-    workspaceId: String(publicMetadata?.workspace_id || publicMetadata?.workspaceId || "unknown-workspace")
+    workspaceId: String(publicMetadata?.workspace_id || publicMetadata?.workspaceId || "unknown-workspace"),
+    ready: isLoaded && Boolean(isSignedIn),
+    getAuthToken
   };
 }
 
@@ -133,23 +143,62 @@ class DashboardContentBoundary extends Component<{ children: ReactNode; pathname
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
-  const { isOwner, userId, email, workspaceId } = useDashboardIdentity();
+  const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
   const visibleNav = nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner));
   const primaryMobileNav = visibleNav.slice(0, 4);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspaceLoadFailed, setWorkspaceLoadFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadWorkspace() {
+      if (!ready) return;
+      try {
+        const token = await getAuthToken();
+        if (!token) return;
+        const loadedWorkspace = await clientApi<Workspace>("/api/workspace", token);
+        if (!cancelled) {
+          setWorkspace(loadedWorkspace);
+          setWorkspaceLoadFailed(false);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setWorkspaceLoadFailed(true);
+        }
+        Sentry.captureException(error, {
+          tags: { area: "workspace-shell", current_route: pathname },
+          extra: { user_id: userId }
+        });
+        captureLogRocketException(error, {
+          area: "workspace-shell",
+          current_route: pathname
+        });
+        trackEvent("workspace_shell_load_failed", { current_route: pathname });
+      }
+    }
+    void loadWorkspace();
+    return () => {
+      cancelled = true;
+    };
+  }, [getAuthToken, pathname, ready, userId]);
 
   useEffect(() => {
     Sentry.setUser({ id: userId, email: email || undefined });
     Sentry.setTag("current_route", pathname);
-    Sentry.setTag("workspace_id", workspaceId);
+    Sentry.setTag("workspace_id", workspace?.id || workspaceId);
     Sentry.setTag("release", process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0");
     Sentry.setTag("environment", process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development");
     Sentry.setContext("outreachai", {
       workspace_id: workspaceId,
+      loaded_workspace_id: workspace?.id,
       user_id: userId,
       current_route: pathname
     });
-  }, [email, pathname, userId, workspaceId]);
+  }, [email, pathname, userId, workspace?.id, workspaceId]);
+
+  const workspaceLabel = workspace?.name?.trim() || workspace?.company?.trim() || t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
+  const accountLabel = email ? `${t("shell.account")}: ${email}` : t("shell.privateWorkspace");
 
   return (
     <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
@@ -194,7 +243,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 })}
               </div>}
             </div>
-            <span className="truncate text-sm font-semibold text-slate-600">{t("shell.workspace")}</span>
+            <div className="min-w-0">
+              <span className="block truncate text-sm font-semibold text-slate-700">{workspaceLabel}</span>
+              <span className="block max-w-[58vw] truncate text-xs font-medium text-slate-500 sm:max-w-none">{accountLabel}</span>
+            </div>
           </div>
           <div className="hidden shrink-0 min-[430px]:block">
             <LanguageSwitcher compact />

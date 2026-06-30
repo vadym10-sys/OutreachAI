@@ -152,6 +152,28 @@ export async function mockWorkspaceApi(page: Page) {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
+    if (apiPath === "/api/workspace") return fulfillJson(route, {
+      id: "99999999-9999-9999-9999-999999999999",
+      name: "QA Private Workspace",
+      company: "QA Private Workspace",
+      industry: "Construction",
+      target_country: "United States",
+      target_customer: "Commercial builders",
+      timezone: "UTC",
+      language: "en",
+      onboarding_step: 1,
+      onboarding_completed: false,
+      members: [
+        {
+          id: "99999999-9999-9999-9999-999999999998",
+          user_id: "e2e-user",
+          email: "qa@example.com",
+          role: "owner",
+          status: "active",
+          created_at: now
+        }
+      ]
+    });
     if (apiPath === "/api/leads" && route.request().method() === "POST") {
       const body = route.request().postDataJSON() as Partial<typeof qaLead>;
       return fulfillJson(route, {

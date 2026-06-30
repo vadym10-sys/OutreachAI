@@ -970,9 +970,28 @@ export function DashboardHome() {
   ].filter((signal) => signal.show);
   return (
     <div className="space-y-6">
-      <PageHeader eyebrow={t("Today")} title={t("What should I do now?")} copy={t("OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system.")} action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={17} /></Link>} />
+      <PageHeader
+        eyebrow={t("Today")}
+        title={t(hasAnyData ? "What should I do now?" : "Your private workspace is ready")}
+        copy={t(hasAnyData ? "OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system." : "This is your private account. Leads, CRM, campaigns, billing and settings are visible only to your workspace. Start with one real company or a focused lead search.")}
+        action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={17} /></Link>}
+      />
       {supportingError && <WidgetErrorCard title={cachedAt ? "Updating workspace data" : "Dashboard details are temporarily unavailable"} copy={supportingError} />}
       {error && <WidgetErrorCard title="Dashboard metrics could not update" copy={error} />}
+      {!hasAnyData && <WidgetBoundary name="Private workspace onboarding"><section className="rounded-3xl border border-teal-100 bg-gradient-to-br from-white to-teal-50/70 p-5 shadow-sm sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-bold uppercase text-brand">{t("Private workspace")}</p>
+            <h2 className="mt-2 text-2xl font-bold text-ink">{t("Your workspace is clean and private.")}</h2>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">{t("No shared demo CRM is loaded. Add your first company or run Lead Finder, and every saved lead will belong only to this account.")}</p>
+          </div>
+          <div className="grid min-w-0 gap-2 sm:grid-cols-3 lg:w-[34rem]">
+            <Link href="/dashboard/leads#manual-company" className="inline-flex min-h-12 items-center justify-center rounded-md border border-teal-200 bg-white px-3 text-center text-sm font-bold text-brand shadow-sm">{t("Add your first company")}</Link>
+            <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center rounded-md bg-brand px-3 text-center text-sm font-bold text-white shadow-sm">{t("Find leads")}</Link>
+            <Link href="/dashboard/campaigns" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-center text-sm font-bold text-slate-800 shadow-sm">{t("Create your first campaign")}</Link>
+          </div>
+        </div>
+      </section></WidgetBoundary>}
       <WidgetBoundary name="Today’s priority">
         <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
           <p className="text-sm font-bold uppercase text-brand">{t(nextStep.step)}</p>
@@ -1181,7 +1200,7 @@ export function LeadFinderPage() {
           </div>
           <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Takes 20 seconds")}</span>
         </div>
-        <form aria-label="Manual company entry" onSubmit={addManualLead} className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <form id="manual-company" aria-label="Manual company entry" onSubmit={addManualLead} className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <label className="text-sm font-semibold text-slate-700">{t("Company name")}<input name="company" required placeholder="Acme Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
           <label className="text-sm font-semibold text-slate-700">{t("Website")}<input name="website" placeholder="https://company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
           <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
