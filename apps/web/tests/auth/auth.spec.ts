@@ -6,7 +6,7 @@ test.describe("authentication UX", () => {
   for (const route of ["/sign-in", "/sign-up", "/forgot-password"]) {
     test(`${route} renders without duplicate or broken auth UI`, async ({ page }, testInfo) => {
       const guards = installQaGuards(page, testInfo);
-      await page.goto(route);
+      await page.goto(route, { waitUntil: "domcontentloaded" });
       await expect(page.locator("main")).toBeVisible();
       await expectNoBrokenImages(page);
       await guards.assertClean();
@@ -17,5 +17,29 @@ test.describe("authentication UX", () => {
     await mockWorkspaceApi(page);
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+  });
+
+  test("selected Russian language also localizes auth fallbacks", async ({ page }, testInfo) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem("outreachai.locale", "ru");
+    });
+    await page.context().addCookies([{
+      name: "outreachai_locale",
+      value: "ru",
+      domain: "127.0.0.1",
+      path: "/",
+      sameSite: "Lax"
+    }]);
+
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/sign-up", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Регистрация временно недоступна" })).toBeVisible();
+    await expect(page.locator("main")).not.toContainText("Sign up is temporarily unavailable");
+
+    await page.goto("/sign-in", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Вход временно недоступен" })).toBeVisible();
+    await expect(page.locator("main")).not.toContainText("Welcome back");
+    await expect(page.locator("main")).not.toContainText("Sign in is temporarily unavailable");
+    await guards.assertClean();
   });
 });

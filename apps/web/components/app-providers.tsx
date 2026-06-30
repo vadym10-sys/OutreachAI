@@ -5,7 +5,8 @@ import { ClerkFailed, ClerkProvider, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { I18nProvider } from "@/lib/i18n/provider";
+import { getClerkLocalization } from "@/lib/i18n/clerk";
+import { I18nProvider, useI18n } from "@/lib/i18n/provider";
 import { bootLogRocket, captureLogRocketException, identifyLogRocketUser, trackLogRocketEvent, trackLogRocketPage } from "@/lib/logrocket";
 import { bootPostHog, capturePostHogException, identifyPostHogUser, trackPageView } from "@/lib/posthog";
 
@@ -382,7 +383,25 @@ export function AppProviders({
   }
 
   return (
-    <ClerkProvider publishableKey={clerkPublishableKey}>
+    <I18nProvider>
+      <LocaleAwareClerkProvider clerkPublishableKey={clerkPublishableKey}>
+        {children}
+      </LocaleAwareClerkProvider>
+    </I18nProvider>
+  );
+}
+
+function LocaleAwareClerkProvider({
+  children,
+  clerkPublishableKey
+}: {
+  children: ReactNode;
+  clerkPublishableKey: string;
+}) {
+  const { locale } = useI18n();
+
+  return (
+    <ClerkProvider publishableKey={clerkPublishableKey} localization={getClerkLocalization(locale)}>
       <SilentIntegrationBoundary area="sentry-page-context">
         <SentryPageContext />
       </SilentIntegrationBoundary>
@@ -402,7 +421,7 @@ export function AppProviders({
         <StabilityFallback title="Authentication could not load. Please refresh or sign in again." />
       </ClerkFailed>
       <ClientErrorBoundary>
-        <I18nProvider>{children}</I18nProvider>
+        {children}
       </ClientErrorBoundary>
     </ClerkProvider>
   );

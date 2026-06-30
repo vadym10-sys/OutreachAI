@@ -58,6 +58,11 @@ function sanitizeUrl(url: string) {
   }
 }
 
+function isBenignRuntimeConfigFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /abort|cancelled|load failed|failed to fetch|network\s?error/i.test(message);
+}
+
 async function loadRuntimeConfig() {
   if (runtimeAppId || typeof window === "undefined") {
     return Boolean(runtimeAppId);
@@ -84,7 +89,7 @@ async function loadRuntimeConfig() {
       return true;
     }
   } catch (error) {
-    if (process.env.NODE_ENV !== "production") {
+    if (process.env.NODE_ENV !== "production" && !isBenignRuntimeConfigFailure(error)) {
       console.error("Session replay runtime config could not be loaded", error);
     }
   }

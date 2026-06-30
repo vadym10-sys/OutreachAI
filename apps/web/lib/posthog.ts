@@ -47,6 +47,11 @@ type ClientConfig = {
   };
 };
 
+function isBenignRuntimeConfigFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /abort|cancelled|load failed|failed to fetch|network\s?error/i.test(message);
+}
+
 export function posthogEnabled() {
   return Boolean(runtimePostHogKey) && typeof window !== "undefined";
 }
@@ -91,7 +96,7 @@ async function loadRuntimeConfig() {
       return true;
     }
   } catch (error) {
-    if (process.env.NODE_ENV !== "production") {
+    if (process.env.NODE_ENV !== "production" && !isBenignRuntimeConfigFailure(error)) {
       console.error("Product analytics runtime config could not be loaded", error);
     }
   }

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useSignIn, useSignUp } from "@clerk/nextjs/legacy";
 import { Loader2 } from "lucide-react";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { useI18n } from "@/lib/i18n/provider";
 
 type AuthMode = "sign-in" | "sign-up";
 type OAuthProvider = "google" | "apple";
@@ -31,6 +32,8 @@ function OAuthButtonShell({
 }
 
 export function OAuthProviderButtons({ mode, embedded = false }: { mode: AuthMode; embedded?: boolean }) {
+  const { t } = useI18n();
+
   if (!hasClerkPublishableKey || isClerkE2EBypass) {
     return (
       <OAuthButtonShell embedded={embedded}>
@@ -42,7 +45,7 @@ export function OAuthProviderButtons({ mode, embedded = false }: { mode: AuthMod
             className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-ink opacity-60"
           >
             <span className="text-base">{provider.id === "apple" ? "A" : "G"}</span>
-            <span>{provider.label}</span>
+            <span>{t(provider.label)}</span>
           </button>
         ))}
       </OAuthButtonShell>
@@ -53,6 +56,7 @@ export function OAuthProviderButtons({ mode, embedded = false }: { mode: AuthMod
 }
 
 function LiveOAuthProviderButtons({ mode, embedded = false }: { mode: AuthMode; embedded?: boolean }) {
+  const { t } = useI18n();
   const signInState = useSignIn();
   const signUpState = useSignUp();
   const [busyProvider, setBusyProvider] = useState<OAuthProvider | null>(null);
@@ -80,7 +84,7 @@ function LiveOAuthProviderButtons({ mode, embedded = false }: { mode: AuthMode; 
         console.error("OAuth redirect failed", event);
       }
       setBusyProvider(null);
-      setError(`Unable to start ${provider === "apple" ? "Apple" : "Google"} sign in. Please try again.`);
+      setError(t("Sign in could not start. Please try again."));
     }
   }
 
@@ -97,7 +101,7 @@ function LiveOAuthProviderButtons({ mode, embedded = false }: { mode: AuthMode; 
             className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-ink transition hover:border-slate-400 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isBusy ? <Loader2 className="animate-spin" size={17} /> : <span className="text-base">{provider.id === "apple" ? "A" : "G"}</span>}
-            <span>{provider.label}</span>
+            <span>{t(provider.label)}</span>
           </button>
         );
       })}
