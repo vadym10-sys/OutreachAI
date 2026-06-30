@@ -11,3 +11,15 @@ test("landing explains the B2B outbound product and pricing", async ({ page }) =
   await expect(page.getByText("€149")).toBeVisible();
   await expect(page.getByText("€499")).toBeVisible();
 });
+
+test("landing follows the selected language without mixed English hero copy", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Language").selectOption("ru");
+
+  await expect(page.getByRole("heading", { name: "AI сотрудник продаж для поиска B2B клиентов" })).toBeVisible();
+  await expect(page.getByText("Находите подходящие компании, анализируйте их сайты")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Посмотреть демо-панель" })).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("AI Sales Employee for B2B Lead Generation");
+  await expect(page.locator("main")).not.toContainText("Find qualified companies, analyze their websites");
+  await expect(page.locator("main")).not.toContainText("Start free trial");
+});
