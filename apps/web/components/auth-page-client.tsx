@@ -39,7 +39,7 @@ const clerkAppearance = {
     formField: "w-full",
     formFieldInput: "min-h-11 w-full rounded-md border-slate-300",
     formButtonPrimary: "min-h-11 w-full rounded-md bg-ink text-sm font-semibold text-white hover:bg-slate-900",
-    footer: "bg-transparent"
+    footer: "hidden"
   }
 };
 
