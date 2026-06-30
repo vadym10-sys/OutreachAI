@@ -1,6 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { hasClerkRuntimeConfig } from "@/lib/env";
+import { hasClerkRuntimeConfig, isClerkE2EBypass } from "@/lib/env";
 
 const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/admin(.*)"]);
 
@@ -34,7 +34,7 @@ const protectedMiddleware = clerkMiddleware(async (auth, req) => {
   return res;
 });
 
-export default process.env.CLERK_E2E_BYPASS === "true"
+export default isClerkE2EBypass
   ? bypassMiddleware
   : hasClerkRuntimeConfig
     ? protectedMiddleware
