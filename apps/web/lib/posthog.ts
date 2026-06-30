@@ -271,3 +271,14 @@ export function capturePostHogException(error: unknown, properties: Properties =
     });
   });
 }
+
+export function isPostHogFeatureEnabled(flag: string, fallback = false): Promise<boolean> {
+  return bootPostHog().then((ready) => {
+    if (!ready) return fallback;
+    try {
+      return posthog.isFeatureEnabled(flag) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  });
+}

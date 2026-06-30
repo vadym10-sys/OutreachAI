@@ -39,6 +39,7 @@ os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
+from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
@@ -118,6 +119,20 @@ def test_health() -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.headers.get("x-response-time-ms")
+
+
+def test_redis_cache_unavailable_fails_open(monkeypatch) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "upstash_redis_rest_url", "https://redis.example.com")
+    monkeypatch.setattr(settings, "upstash_redis_rest_token", "token")
+
+    def broken_post(*args, **kwargs):
+        raise RuntimeError("redis offline")
+
+    monkeypatch.setattr(cache_module.httpx, "post", broken_post)
+    assert cache_module.get_json("outreachai:test") is None
+    cache_module.set_json("outreachai:test", {"ok": True}, 10)
 
 
 def test_owner_helper_matches_only_configured_owner_email() -> None:

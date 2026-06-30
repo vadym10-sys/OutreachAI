@@ -16,6 +16,7 @@ from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core.cache import cache_key, get_json, set_json
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
 from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
@@ -2536,8 +2537,16 @@ def _dashboard_metrics(user_id: str, db: Session) -> DashboardMetrics:
 
 @router.get("/dashboard", response_model=DashboardMetrics)
 def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardMetrics:
+    settings = get_app_settings()
     try:
-        return _dashboard_metrics(user_id, db)
+        workspace = _current_workspace(db, user_id)
+        key = cache_key("dashboard", workspace.id, user_id)
+        cached = get_json(key)
+        if cached:
+            return DashboardMetrics.model_validate(cached)
+        metrics = _dashboard_metrics(user_id, db)
+        set_json(key, metrics.model_dump(mode="json"), settings.cache_dashboard_ttl_seconds)
+        return metrics
     except SQLAlchemyError as exc:
         capture_provider_exception(exc, provider="postgresql", endpoint="/api/dashboard")
         raise HTTPException(status_code=503, detail="Database unavailable. Dashboard metrics could not be loaded.") from exc
@@ -3251,6 +3260,7 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
 def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
     request_id = request.headers.get("x-request-id") or str(uuid4())
     workspace = _current_workspace(db, user_id)
+    settings = get_app_settings()
     _lead_trace(
         request_id,
         "request_received",
@@ -3264,15 +3274,23 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
         resend_configured=bool(get_app_settings().resend_api_key),
     )
     _require_active_subscription(db, workspace)
-    try:
-        _lead_trace(request_id, "google_maps_request_started")
-        result = search_google_places(payload)
-    except Exception as exc:
-        _lead_trace(request_id, "google_maps_request_failed", error=str(exc), error_type=type(exc).__name__)
-        raise _provider_error(exc) from exc
-    _lead_trace(request_id, "google_maps_response_received", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
-    _lead_trace(request_id, "hunter_enrichment_started", leads=len(result.leads), hunter_configured=hunter_key_loaded())
-    leads = _hunter_enriched_leads(db, request, user_id, workspace, result.leads)
+    search_cache_key = cache_key("lead-search", workspace.id, payload.model_dump(mode="json"))
+    cached_search = get_json(search_cache_key)
+    if cached_search:
+        _lead_trace(request_id, "lead_search_cache_hit", parsed_count=len(cached_search))
+        result_leads = [LeadOut.model_validate(item) for item in cached_search]
+    else:
+        try:
+            _lead_trace(request_id, "google_maps_request_started")
+            result = search_google_places(payload)
+        except Exception as exc:
+            _lead_trace(request_id, "google_maps_request_failed", error=str(exc), error_type=type(exc).__name__)
+            raise _provider_error(exc) from exc
+        _lead_trace(request_id, "google_maps_response_received", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
+        result_leads = result.leads
+        set_json(search_cache_key, [lead.model_dump(mode="json") for lead in result_leads], settings.cache_lead_search_ttl_seconds)
+    _lead_trace(request_id, "hunter_enrichment_started", leads=len(result_leads), hunter_configured=hunter_key_loaded())
+    leads = _hunter_enriched_leads(db, request, user_id, workspace, result_leads)
     _lead_trace(request_id, "hunter_response_received", leads=len(leads), verified=sum(1 for lead in leads if lead.hunter_verified))
     saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="google_maps_hunter", action="google_maps.company_search", request_id=request_id)
     response = [_lead_out(lead) for lead in saved]
@@ -3446,10 +3464,17 @@ def crm_companies(
     email_status: str = "",
     source: str = "",
 ) -> list[CrmCompanyOut]:
+    app_settings = get_app_settings()
     workspace = _current_workspace(db, user_id)
+    key = cache_key("crm-companies", workspace.id, user_id, search, city, country, industry, stage, email_status, source)
+    cached = get_json(key)
+    if cached:
+        return [CrmCompanyOut.model_validate(item) for item in cached]
     _ensure_crm_backfilled(db, user_id, workspace)
     companies = list(db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(100)).all())
-    return [_crm_company_out(db, workspace, user_id, company) for company in companies]
+    output = [_crm_company_out(db, workspace, user_id, company) for company in companies]
+    set_json(key, [item.model_dump(mode="json") for item in output], app_settings.cache_crm_ttl_seconds)
+    return output
 
 
 @router.get("/crm/contacts", response_model=list[CrmContactOut])
@@ -4290,7 +4315,12 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
 
 @router.get("/billing/status", response_model=BillingStatusOut)
 def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> BillingStatusOut:
+    app_settings = get_app_settings()
     workspace = _current_workspace(db, user_id)
+    key = cache_key("billing-status", workspace.id, user_id)
+    cached = get_json(key)
+    if cached:
+        return BillingStatusOut.model_validate(cached)
     plan = _plan_for_workspace(db, user_id, workspace)
     usage = _usage_for_workspace(db, workspace)
     subscription = _latest_subscription(db, workspace)
@@ -4304,7 +4334,7 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
         trial_days_remaining = max(0, (trial_end.date() - datetime.utcnow().date()).days)
     sales_employees_used = db.scalar(select(func.count()).select_from(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id)) or 0
     workspaces_used = db.scalar(select(func.count()).select_from(WorkspaceMember).where(WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active")) or 1
-    return BillingStatusOut(
+    output = BillingStatusOut(
         plan=plan,
         price=int(PLAN_LIMITS[plan]["mrr"]),
         status=status,
@@ -4318,6 +4348,8 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
         sales_employees_used=int(sales_employees_used),
         workspaces_used=int(workspaces_used),
     )
+    set_json(key, output.model_dump(mode="json"), app_settings.cache_billing_ttl_seconds)
+    return output
 
 
 @router.get("/billing/invoices")

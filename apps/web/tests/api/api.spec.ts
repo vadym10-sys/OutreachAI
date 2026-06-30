@@ -6,6 +6,8 @@ test("client config endpoint returns safe public configuration only", async ({ p
   const response = await page.request.get("/api/client-config");
   expect(response.ok()).toBe(true);
   const body = await response.json();
+  expect(body.app.release).toBeTruthy();
+  expect(body.app.environment).toBeTruthy();
   expect(JSON.stringify(body)).not.toMatch(/sk_live_|sk_test_|DATABASE_URL|SECRET|PRIVATE|API_KEY/i);
   await guards.assertClean();
 });

@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     stripe_price_pro: str = ""
     stripe_price_agency: str = ""
     sentry_dsn: str = ""
+    sentry_traces_sample_rate: float = 0.1
+    slow_request_ms: int = 2500
+    upstash_redis_rest_url: str = ""
+    upstash_redis_rest_token: str = ""
+    cache_dashboard_ttl_seconds: int = 15
+    cache_crm_ttl_seconds: int = 5
+    cache_billing_ttl_seconds: int = 60
+    cache_lead_search_ttl_seconds: int = 600
+    cache_website_analysis_ttl_seconds: int = 3600
     debug: bool = False
     encryption_key: str = "replace-with-32-byte-url-safe-key"
     auto_create_tables: bool = True
@@ -89,6 +98,8 @@ class Settings(BaseSettings):
             missing.append("HUNTER_API_KEY")
         if not self.google_maps_api_key:
             missing.append("GOOGLE_MAPS_API_KEY")
+        if not (self.upstash_redis_rest_url and self.upstash_redis_rest_token):
+            missing.append("UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN")
         if not self.clay_api_key:
             missing.append("CLAY_API_KEY")
         if not self.stripe_secret_key:

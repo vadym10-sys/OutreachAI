@@ -18,7 +18,7 @@ def init_sentry(settings: Settings) -> None:
         dsn=settings.sentry_dsn,
         environment=settings.app_env,
         release="outreachai-api@1.0.0",
-        traces_sample_rate=0.1,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
         integrations=[
             FastApiIntegration(transaction_style="endpoint"),
             SqlalchemyIntegration(),

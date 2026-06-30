@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 import traceback
 
 import sentry_sdk
@@ -83,12 +84,30 @@ app.add_middleware(
 
 @app.middleware("http")
 async def sentry_request_context(request: Request, call_next) -> Response:
+    started = time.perf_counter()
     set_request_context(request)
     sentry_sdk.set_tag("endpoint", request.url.path)
     sentry_sdk.set_tag("environment", settings.app_env)
     sentry_sdk.set_tag("release", "outreachai-api@1.0.0")
     sentry_sdk.set_context("transaction", {"name": sentry_transaction_name(request)})
-    return await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        sentry_sdk.set_tag("request_duration_ms", duration_ms)
+        sentry_sdk.set_context("request_performance", {"duration_ms": duration_ms, "path": request.url.path})
+        raise
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    response.headers["X-Response-Time-Ms"] = str(duration_ms)
+    sentry_sdk.set_tag("request_duration_ms", duration_ms)
+    if duration_ms >= settings.slow_request_ms:
+        logger.warning("Slow request path=%s duration_ms=%s", request.url.path, duration_ms)
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("endpoint", request.url.path)
+            scope.set_tag("kind", "slow_request")
+            scope.set_context("request_performance", {"duration_ms": duration_ms, "path": request.url.path})
+            sentry_sdk.capture_message("Slow API request", level="warning")
+    return response
 
 
 @app.exception_handler(StarletteHTTPException)

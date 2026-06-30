@@ -286,7 +286,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.getByRole("main")).not.toContainText("Что-то пошло не так");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
-    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Что мне делать сейчас?" })).toBeVisible();
     expect(pageErrors).toEqual([]);
   });
 

@@ -248,6 +248,88 @@ function LogRocketPageContext() {
   return null;
 }
 
+function WebVitalsContext() {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") return;
+    if (typeof PerformanceObserver === "undefined") return;
+
+    const report = (name: string, value: number, rating: "good" | "needs-improvement" | "poor") => {
+      const payload = {
+        metric: name,
+        value: Math.round(value * 100) / 100,
+        rating,
+        current_route: window.location.pathname,
+        viewport_width: window.innerWidth,
+        release: process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0",
+        environment: process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development"
+      };
+      trackLogRocketEvent("web_vital_recorded", payload);
+      import("@/lib/posthog").then(({ trackEvent }) => trackEvent("web_vital_recorded", payload)).catch(() => {});
+      if (rating === "poor") {
+        Sentry.captureMessage("Poor web vital", {
+          level: "warning",
+          tags: { area: "web-vitals", metric: name },
+          extra: payload
+        });
+      }
+    };
+
+    const ratingFor = (name: string, value: number): "good" | "needs-improvement" | "poor" => {
+      if (name === "LCP") return value <= 2500 ? "good" : value <= 4000 ? "needs-improvement" : "poor";
+      if (name === "CLS") return value <= 0.1 ? "good" : value <= 0.25 ? "needs-improvement" : "poor";
+      if (name === "INP") return value <= 200 ? "good" : value <= 500 ? "needs-improvement" : "poor";
+      if (name === "TTFB") return value <= 800 ? "good" : value <= 1800 ? "needs-improvement" : "poor";
+      return "good";
+    };
+
+    const observers: PerformanceObserver[] = [];
+    try {
+      const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+      if (navigation) {
+        const ttfb = navigation.responseStart - navigation.requestStart;
+        report("TTFB", ttfb, ratingFor("TTFB", ttfb));
+      }
+
+      let cls = 0;
+      const clsObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries() as Array<PerformanceEntry & { value?: number; hadRecentInput?: boolean }>) {
+          if (!entry.hadRecentInput && typeof entry.value === "number") cls += entry.value;
+        }
+        report("CLS", cls, ratingFor("CLS", cls));
+      });
+      clsObserver.observe({ type: "layout-shift", buffered: true });
+      observers.push(clsObserver);
+
+      const lcpObserver = new PerformanceObserver((list) => {
+        const entries = list.getEntries();
+        const last = entries[entries.length - 1] as PerformanceEntry | undefined;
+        if (last) report("LCP", last.startTime, ratingFor("LCP", last.startTime));
+      });
+      lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
+      observers.push(lcpObserver);
+
+      const inpObserver = new PerformanceObserver((list) => {
+        const slowest = Math.max(...list.getEntries().map((entry) => {
+          const event = entry as PerformanceEventTiming;
+          return event.processingStart && event.startTime ? event.processingStart - event.startTime : 0;
+        }));
+        if (Number.isFinite(slowest) && slowest > 0) report("INP", slowest, ratingFor("INP", slowest));
+      });
+      inpObserver.observe({ type: "event", buffered: true, durationThreshold: 40 } as PerformanceObserverInit);
+      observers.push(inpObserver);
+    } catch (error) {
+      captureLogRocketException(error, { area: "web-vitals" });
+      capturePostHogException(error, { area: "web-vitals" });
+    }
+
+    return () => observers.forEach((observer) => observer.disconnect());
+  }, [pathname]);
+
+  return null;
+}
+
 function PostHogIdentityContext() {
   const { isLoaded, isSignedIn, user } = useUser();
   const workspaceMetadata = user?.publicMetadata as { workspace_id?: unknown; workspaceId?: unknown } | undefined;
@@ -291,6 +373,7 @@ export function AppProviders({
         <SilentIntegrationBoundary area="sentry-page-context"><SentryPageContext /></SilentIntegrationBoundary>
         <SilentIntegrationBoundary area="posthog-page-context"><PostHogPageContext /></SilentIntegrationBoundary>
         <SilentIntegrationBoundary area="logrocket-page-context"><LogRocketPageContext /></SilentIntegrationBoundary>
+        <SilentIntegrationBoundary area="web-vitals-context"><WebVitalsContext /></SilentIntegrationBoundary>
         <ClientErrorBoundary>
           <I18nProvider>{children}</I18nProvider>
         </ClientErrorBoundary>
@@ -308,6 +391,9 @@ export function AppProviders({
       </SilentIntegrationBoundary>
       <SilentIntegrationBoundary area="logrocket-page-context">
         <LogRocketPageContext />
+      </SilentIntegrationBoundary>
+      <SilentIntegrationBoundary area="web-vitals-context">
+        <WebVitalsContext />
       </SilentIntegrationBoundary>
       <SilentIntegrationBoundary area="posthog-identity-context">
         <PostHogIdentityContext />

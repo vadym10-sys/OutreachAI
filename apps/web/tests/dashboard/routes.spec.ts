@@ -93,8 +93,11 @@ test.describe("customer workspace routes", () => {
       document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
     });
 
-    for (const route of ["/dashboard/leads", "/dashboard/companies", "/dashboard/crm", "/dashboard/billing", "/dashboard/settings"]) {
-      await page.goto(route, { waitUntil: "networkidle" });
+    const russianRoutes = ["/dashboard/leads", "/dashboard/companies", "/dashboard/crm", "/dashboard/billing", "/dashboard/settings"];
+
+    for (const route of russianRoutes) {
+      await page.goto(route, { waitUntil: "domcontentloaded" });
+      await expect(page.getByRole("main")).toBeVisible();
       const body = page.locator("body");
       await expect(body).not.toContainText("Lead Finder");
       await expect(body).not.toContainText("Save company to CRM");
