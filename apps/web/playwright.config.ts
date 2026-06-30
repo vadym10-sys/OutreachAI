@@ -26,14 +26,15 @@ export default defineConfig({
     reuseExistingServer: !isCI,
     timeout: 120_000,
     env: {
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_replace_me",
-      CLERK_SECRET_KEY: "sk_test_replace_me",
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "",
+      CLERK_SECRET_KEY: "",
       CLERK_E2E_BYPASS: "true",
       NEXT_PUBLIC_CLERK_E2E_BYPASS: "true",
       NEXT_PUBLIC_API_URL: "http://127.0.0.1:8000",
       NEXT_PUBLIC_LOGROCKET_APP_ID: "",
       NEXT_PUBLIC_POSTHOG_KEY: "",
-      NEXT_PUBLIC_SENTRY_DSN: ""
+      NEXT_PUBLIC_SENTRY_DSN: "",
+      NODE_OPTIONS: "--max-old-space-size=4096"
     }
   },
   use: {

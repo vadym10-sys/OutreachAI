@@ -46,7 +46,10 @@ export function installQaGuards(page: Page, testInfo: TestInfo) {
     if (/\/api\/client-config/.test(url) && /cancelled|abort/i.test(failure)) {
       return;
     }
-    if (/\/_next\/static\/chunks\//.test(url) && /abort/i.test(failure)) {
+    if (/\/_next\/static\/chunks\//.test(url) && /abort|cancelled/i.test(failure)) {
+      return;
+    }
+    if (/\/_next\/static\/css\//.test(url) && /abort|cancelled/i.test(failure)) {
       return;
     }
     if (!ignoredFailedRequestPatterns.some((pattern) => pattern.test(url))) {

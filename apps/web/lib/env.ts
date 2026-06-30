@@ -32,7 +32,7 @@ export const isClerkE2EBypass = !isProductionRuntime && (process.env.CLERK_E2E_B
 export const ownerEmail = "romaniukvadym10@gmail.com";
 export const e2eUserEmail = process.env.NEXT_PUBLIC_E2E_USER_EMAIL || "";
 
-export const hasClerkPublishableKey = Boolean(clerkPublishableKey);
-export const hasClerkRuntimeConfig = Boolean(clerkPublishableKey && clerkSecretKey);
+export const hasClerkPublishableKey = Boolean(clerkPublishableKey && /^pk_(test|live)_[A-Za-z0-9+/_=-]{16,}$/.test(clerkPublishableKey));
+export const hasClerkRuntimeConfig = Boolean(hasClerkPublishableKey && clerkSecretKey);
 export const hasPostHog = Boolean(posthogKey);
 export const hasLogRocket = Boolean(logRocketAppId);

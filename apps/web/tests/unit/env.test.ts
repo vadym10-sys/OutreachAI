@@ -33,4 +33,14 @@ describe("environment safety", () => {
     expect(env.isProductionRuntime).toBe(false);
     expect(env.isClerkE2EBypass).toBe(true);
   });
+
+  it("does not enable Clerk for placeholder publishable keys", async () => {
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_replace_me";
+    process.env.CLERK_SECRET_KEY = "sk_test_replace_me";
+
+    const env = await loadEnv();
+
+    expect(env.hasClerkPublishableKey).toBe(false);
+    expect(env.hasClerkRuntimeConfig).toBe(false);
+  });
 });
