@@ -28,3 +28,13 @@ test("customer route HTML is not cached as stale app state", async ({ page }, te
   expect(response.headers()["cache-control"] || "").not.toMatch(/s-maxage=31536000/);
   await guards.assertClean();
 });
+
+test("backend proxy outage returns a safe customer message", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  const response = await page.request.get("/api/backend/api/health");
+  expect(response.status()).toBe(503);
+  const text = await response.text();
+  expect(text).toContain("workspace data");
+  expect(text).not.toMatch(/ECONNREFUSED|127\.0\.0\.1|localhost|fetch failed|stack|Traceback|DATABASE_URL/i);
+  await guards.assertClean();
+});

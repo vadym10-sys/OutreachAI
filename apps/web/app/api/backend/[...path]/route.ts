@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 
 export const dynamic = "force-dynamic";
 
@@ -20,13 +21,27 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   headers.delete("content-length");
 
   const body = ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer();
-  const response = await fetch(url, {
-    method: request.method,
-    headers,
-    body,
-    redirect: "manual",
-    cache: "no-store"
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: request.method,
+      headers,
+      body,
+      redirect: "manual",
+      cache: "no-store"
+    });
+  } catch (error) {
+    Sentry.captureException(error, {
+      tags: {
+        area: "api-proxy",
+        endpoint: `/${(path || []).join("/")}`
+      }
+    });
+    return NextResponse.json(
+      { detail: "We could not reach your workspace data right now. Please try again in a moment." },
+      { status: 503, headers: { "Cache-Control": "no-store" } }
+    );
+  }
 
   const responseHeaders = new Headers(response.headers);
   for (const key of responseHeaders.keys()) {
