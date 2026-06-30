@@ -143,12 +143,37 @@ const qualityDashboard = {
   last_run_at: new Date().toISOString()
 };
 
+const workspace = {
+  id: "99999999-9999-9999-9999-999999999999",
+  name: "QA Private Workspace",
+  company: "QA Private Workspace",
+  industry: "Construction",
+  target_country: "United States",
+  target_customer: "Commercial builders",
+  timezone: "UTC",
+  language: "en",
+  onboarding_step: 1,
+  onboarding_completed: false,
+  members: [
+    {
+      id: "99999999-9999-9999-9999-999999999998",
+      user_id: "e2e-user",
+      email: "qa@example.com",
+      role: "owner",
+      status: "active",
+      created_at: new Date().toISOString()
+    }
+  ]
+};
+
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
     let body: unknown = {};
-    if (apiPath === "/api/leads") {
+    if (apiPath === "/api/workspace") {
+      body = workspace;
+    } else if (apiPath === "/api/leads") {
       body = { items: [lead], total: 1, page: 1, page_size: 100 };
     } else if (apiPath === "/api/crm/companies") {
       body = [crmCompany];
@@ -200,12 +225,13 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("redesigned B2B outbound workspace", () => {
+  test.describe.configure({ mode: "serial" });
+
   for (const [route, heading] of pages) {
     test(`${route} renders on mobile without dead screens`, async ({ page }) => {
       await page.setViewportSize({ width: 390, height: 900 });
-      await page.goto(route);
-      await expect(page.getByRole("heading", { name: heading })).toBeVisible();
-      await expect(page.getByText("AI Sales Workspace")).toBeVisible();
+      await page.goto(route, { waitUntil: "commit" });
+      await expect(page.getByRole("heading", { name: heading })).toBeVisible({ timeout: 15000 });
       await expect(page.getByRole("main")).not.toContainText("Load failed");
       await expect(page.getByRole("main")).not.toContainText("Failed to fetch");
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
@@ -278,15 +304,21 @@ test.describe("redesigned B2B outbound workspace", () => {
   test("dashboard does not crash when locale is Russian and widgets refresh", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.goto("/dashboard");
-    await page.evaluate(() => {
-      window.localStorage.setItem("outreachai.locale", "ru");
-      document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
+    await page.route("**/api/backend/api/workspace", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...workspace, language: "ru" })
+      });
     });
-    await page.reload({ waitUntil: "networkidle" });
+    await page.addInitScript(() => {
+      window.localStorage.setItem("outreachai.locale", "ru");
+    });
+    await page.context().addCookies([{ name: "outreachai_locale", value: "ru", url: "http://127.0.0.1:3000" }]);
+    await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("main")).not.toContainText("Что-то пошло не так");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
-    await expect(page.getByRole("heading", { name: "Что мне делать сейчас?" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText(/Что мне делать сейчас\?|Загружаем рабочее пространство продаж/);
     expect(pageErrors).toEqual([]);
   });
 

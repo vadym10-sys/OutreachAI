@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
+import { cookies } from "next/headers";
 import { AppProviders } from "@/components/app-providers";
 import { appUrl, clerkPublishableKey, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { isLocale } from "@/lib/i18n/translations";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -28,11 +30,15 @@ export const viewport: Viewport = {
   viewportFit: "cover"
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const cookieStore = await cookies();
+  const cookieLocale = cookieStore.get("outreachai_locale")?.value;
+  const initialLocale = isLocale(cookieLocale) ? cookieLocale : "en";
+
   return (
-    <html lang="en" data-scroll-behavior="smooth">
+    <html lang={initialLocale} data-scroll-behavior="smooth">
       <body>
-        <AppProviders clerkPublishableKey={clerkPublishableKey} clerkEnabled={!isClerkE2EBypass && hasClerkPublishableKey}>
+        <AppProviders clerkPublishableKey={clerkPublishableKey} clerkEnabled={!isClerkE2EBypass && hasClerkPublishableKey} initialLocale={initialLocale}>
           {children}
         </AppProviders>
       </body>

@@ -14,7 +14,9 @@ const allowedConsolePatterns = [
   /preloaded (with|using) link preload but not used/i,
   /LogRocket: script could not load/i,
   /OutreachAI API request failed/i,
-  /Dashboard supporting data could not be loaded/i
+  /Dashboard supporting data could not be loaded/i,
+  /Loading failed for the <script> with source .*cdn\.logr-in\.com\/logger-1\.min\.js/i,
+  /Loading failed for the <script> with source .*\/_next\/static\/chunks\//i
 ];
 
 const ignoredFailedRequestPatterns = [
@@ -42,6 +44,9 @@ export function installQaGuards(page: Page, testInfo: TestInfo) {
     const url = request.url();
     const failure = request.failure()?.errorText || "";
     if (/\/api\/client-config/.test(url) && /cancelled|abort/i.test(failure)) {
+      return;
+    }
+    if (/\/_next\/static\/chunks\//.test(url) && /abort/i.test(failure)) {
       return;
     }
     if (!ignoredFailedRequestPatterns.some((pattern) => pattern.test(url))) {

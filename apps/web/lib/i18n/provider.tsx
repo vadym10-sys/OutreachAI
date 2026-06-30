@@ -47,8 +47,8 @@ function persistLocale(locale: Locale) {
   }
 }
 
-export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>('en');
+export function I18nProvider({ children, initialLocale: serverLocale = 'en' }: { children: ReactNode; initialLocale?: Locale }) {
+  const [locale, setLocaleState] = useState<Locale>(serverLocale);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {

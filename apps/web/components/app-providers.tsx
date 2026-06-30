@@ -7,6 +7,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { getClerkLocalization } from "@/lib/i18n/clerk";
 import { I18nProvider, useI18n } from "@/lib/i18n/provider";
+import type { Locale } from "@/lib/i18n/translations";
 import { bootLogRocket, captureLogRocketException, identifyLogRocketUser, trackLogRocketEvent, trackLogRocketPage } from "@/lib/logrocket";
 import { bootPostHog, capturePostHogException, identifyPostHogUser, trackPageView } from "@/lib/posthog";
 
@@ -362,11 +363,13 @@ function PostHogIdentityContext() {
 export function AppProviders({
   children,
   clerkPublishableKey,
-  clerkEnabled
+  clerkEnabled,
+  initialLocale = "en"
 }: {
   children: ReactNode;
   clerkPublishableKey?: string;
   clerkEnabled: boolean;
+  initialLocale?: Locale;
 }) {
   if (!clerkEnabled || !clerkPublishableKey) {
     return (
@@ -376,14 +379,14 @@ export function AppProviders({
         <SilentIntegrationBoundary area="logrocket-page-context"><LogRocketPageContext /></SilentIntegrationBoundary>
         <SilentIntegrationBoundary area="web-vitals-context"><WebVitalsContext /></SilentIntegrationBoundary>
         <ClientErrorBoundary>
-          <I18nProvider>{children}</I18nProvider>
+          <I18nProvider initialLocale={initialLocale}>{children}</I18nProvider>
         </ClientErrorBoundary>
       </>
     );
   }
 
   return (
-    <I18nProvider>
+    <I18nProvider initialLocale={initialLocale}>
       <LocaleAwareClerkProvider clerkPublishableKey={clerkPublishableKey}>
         {children}
       </LocaleAwareClerkProvider>
