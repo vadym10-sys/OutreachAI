@@ -31,7 +31,7 @@ test("landing follows the selected language without mixed English hero copy", as
 test("start free trial opens the real sign-up flow instead of a demo dashboard", async ({ page }) => {
   await page.goto("/");
   await Promise.all([
-    page.waitForURL("**/sign-up", { timeout: 15000 }),
+    page.waitForURL("**/sign-up?plan=Starter", { timeout: 15000 }),
     page.getByTestId("hero-start-free-trial").click()
   ]);
   await expect(page.locator("main")).toBeVisible();

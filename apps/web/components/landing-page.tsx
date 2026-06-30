@@ -91,7 +91,7 @@ function AuthNavigationLink({
   testId,
   children
 }: {
-  href: "/sign-in" | "/sign-up";
+  href: string;
   className: string;
   testId?: string;
   children: ReactNode;
@@ -137,7 +137,7 @@ export function LandingPage() {
           <div className="flex shrink-0 items-center gap-2">
             <LanguageSwitcher compact />
             <AuthNavigationLink href="/sign-in" className="hidden min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 min-[430px]:inline-flex">{t("Login")}</AuthNavigationLink>
-            <AuthNavigationLink href="/sign-up" className="hidden min-h-11 items-center rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-soft hover:bg-slate-800 min-[430px]:inline-flex">{t("Start free trial")}</AuthNavigationLink>
+            <AuthNavigationLink href="/sign-up?plan=Starter" className="hidden min-h-11 items-center rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-soft hover:bg-slate-800 min-[430px]:inline-flex">{t("Start free trial")}</AuthNavigationLink>
           </div>
         </nav>
 
@@ -149,7 +149,7 @@ export function LandingPage() {
               {t("Find qualified companies, analyze their websites, generate personalized outreach, launch campaigns, and turn replies into meetings — from one workspace.")}
             </p>
             <div className="mt-8 flex flex-col gap-3 min-[390px]:flex-row">
-              <AuthNavigationLink href="/sign-up" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-brand px-5 text-sm font-bold text-white shadow-soft hover:bg-teal-700" testId="hero-start-free-trial">
+              <AuthNavigationLink href="/sign-up?plan=Starter" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-brand px-5 text-sm font-bold text-white shadow-soft hover:bg-teal-700" testId="hero-start-free-trial">
                 {t("Start free trial")} <ArrowRight size={18} aria-hidden="true" />
               </AuthNavigationLink>
               <AuthNavigationLink href="/sign-in" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-bold text-ink hover:border-slate-400">{t("Login")}</AuthNavigationLink>
@@ -293,9 +293,9 @@ export function LandingPage() {
             <h2 className="text-3xl font-bold min-[390px]:text-4xl">{t("Find customers faster than manual outbound.")}</h2>
             <p className="mt-3 max-w-2xl text-slate-300">{t("Start with a target market. OutreachAI prepares leads, research, emails and campaign review from one workspace.")}</p>
           </div>
-          <Link href="/sign-up" className="inline-flex min-h-12 w-fit items-center justify-center gap-2 rounded-md bg-white px-5 text-sm font-bold text-ink hover:bg-slate-100">
+          <AuthNavigationLink href="/sign-up?plan=Starter" className="inline-flex min-h-12 w-fit items-center justify-center gap-2 rounded-md bg-white px-5 text-sm font-bold text-ink hover:bg-slate-100">
             {t("Start free trial")} <ArrowRight size={18} />
-          </Link>
+          </AuthNavigationLink>
         </div>
       </section>
 

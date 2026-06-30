@@ -1,11 +1,20 @@
 "use client";
 
-import { SignIn, SignUp } from "@clerk/nextjs";
+import { SignIn, SignUp, useAuth, useClerk } from "@clerk/nextjs";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { Loader2 } from "lucide-react";
+import { useEffect } from "react";
 import { OAuthProviderButtons } from "@/components/oauth-provider-buttons";
 import { useI18n } from "@/lib/i18n/provider";
 
 type AuthMode = "sign-in" | "sign-up";
+const pendingPlanKey = "outreachai.pendingPlan";
+const planNames = ["Starter", "Pro", "Agency"] as const;
+
+function isPlan(value: string | null): value is typeof planNames[number] {
+  return Boolean(value && planNames.includes(value as typeof planNames[number]));
+}
 
 function MissingClerkConfig({ mode }: { mode: AuthMode }) {
   const { t } = useI18n();
@@ -18,6 +27,50 @@ function MissingClerkConfig({ mode }: { mode: AuthMode }) {
     <div className="max-w-md rounded-lg border border-slate-200 bg-white p-6 text-center shadow-soft">
       <h1 className="text-xl font-bold text-ink">{title}</h1>
       <p className="mt-3 text-sm leading-6 text-slate-600">{copy}</p>
+    </div>
+  );
+}
+
+function AuthLoadingState() {
+  const { t } = useI18n();
+
+  return (
+    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-soft">
+      <Loader2 className="mx-auto animate-spin text-brand" size={28} />
+      <h1 className="mt-4 text-xl font-bold text-ink">{t("Preparing secure sign in")}</h1>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{t("This usually takes a few seconds.")}</p>
+    </div>
+  );
+}
+
+function AlreadySignedInState({ mode }: { mode: AuthMode }) {
+  const { t } = useI18n();
+  const { signOut } = useClerk();
+  const isSignUp = mode === "sign-up";
+
+  async function switchAccount() {
+    await signOut({ redirectUrl: isSignUp ? "/sign-up" : "/sign-in" });
+  }
+
+  return (
+    <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-soft">
+      <p className="text-sm font-bold uppercase tracking-wide text-brand">{t("Account ready")}</p>
+      <h1 className="mt-3 text-2xl font-bold tracking-tight text-ink">
+        {isSignUp ? t("You are already signed in") : t("You are already signed in")}
+      </h1>
+      <p className="mt-3 text-sm leading-6 text-slate-600">
+        {isSignUp
+          ? t("To create a different account, sign out first. To start your 14-day trial, continue to billing.")
+          : t("Continue to your workspace, or sign out if you want to use another account.")}
+      </p>
+      <div className="mt-6 grid gap-3">
+        <Link href={isSignUp ? "/dashboard/billing" : "/dashboard"} className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white">
+          {isSignUp ? t("Start 14-day trial") : t("Open workspace")}
+        </Link>
+        <button type="button" onClick={switchAccount} className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-ink">
+          {isSignUp ? t("Sign out and create a new account") : t("Sign out and use another account")}
+        </button>
+      </div>
     </div>
   );
 }
@@ -43,54 +96,95 @@ const clerkAppearance = {
   }
 };
 
-export function AuthPageClient({ mode, clerkEnabled }: { mode: AuthMode; clerkEnabled: boolean }) {
+function ClerkAuthPage({ mode }: { mode: AuthMode }) {
   const { t } = useI18n();
+  const { isLoaded, isSignedIn } = useAuth();
+  const searchParams = useSearchParams();
   const isSignUp = mode === "sign-up";
+  const selectedPlan = isPlan(searchParams.get("plan")) ? searchParams.get("plan") : null;
+  const authCompleteUrl = selectedPlan ? "/dashboard/billing" : "/dashboard";
+
+  useEffect(() => {
+    if (!selectedPlan) return;
+    try {
+      window.localStorage.setItem(pendingPlanKey, selectedPlan);
+    } catch {
+      // Some private mobile browsers block storage. Registration should still work.
+    }
+  }, [selectedPlan]);
+
+  if (!isLoaded) {
+    return (
+      <main className="flex min-h-screen items-center justify-center overflow-x-hidden bg-slate-50 px-4 py-6 min-[360px]:px-5">
+        <AuthLoadingState />
+      </main>
+    );
+  }
+
+  if (isSignedIn) {
+    return (
+      <main className="flex min-h-screen items-center justify-center overflow-x-hidden bg-slate-50 px-4 py-6 min-[360px]:px-5">
+        <AlreadySignedInState mode={mode} />
+      </main>
+    );
+  }
 
   return (
     <main className="flex min-h-screen items-center justify-center overflow-x-hidden bg-slate-50 px-4 py-6 min-[360px]:px-5">
-      {clerkEnabled ? (
-        <div className={`${isSignUp ? "signup" : "signin"}-auth-card w-full max-w-[min(100%,28rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-soft sm:p-6`}>
-          <div className="mb-6 text-center">
-            <h1 className="text-2xl font-bold tracking-tight text-ink">{isSignUp ? t("Create your account") : t("Welcome back")}</h1>
-            <p className="mt-2 text-sm leading-6 text-slate-600">
-              {isSignUp ? t("Start with Google, Apple, or your work email.") : t("Continue with Google, Apple, or your work email.")}
-            </p>
-          </div>
-          <OAuthProviderButtons mode={mode} embedded />
-          <div className="my-6 flex items-center gap-4 text-sm text-slate-500" aria-hidden="true">
-            <span className="h-px flex-1 bg-slate-200" />
-            <span>{t("or")}</span>
-            <span className="h-px flex-1 bg-slate-200" />
-          </div>
-          {isSignUp ? (
-            <SignUp
+      <div className={`${isSignUp ? "signup" : "signin"}-auth-card w-full max-w-[min(100%,28rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-soft sm:p-6`}>
+        <div className="mb-6 text-center">
+          <h1 className="text-2xl font-bold tracking-tight text-ink">{isSignUp ? t("Create your account") : t("Welcome back")}</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            {isSignUp ? t("Start with Google, Apple, or your work email.") : t("Continue with Google, Apple, or your work email.")}
+          </p>
+        </div>
+        <OAuthProviderButtons mode={mode} embedded redirectUrlComplete={authCompleteUrl} />
+        <div className="my-6 flex items-center gap-4 text-sm text-slate-500" aria-hidden="true">
+          <span className="h-px flex-1 bg-slate-200" />
+          <span>{t("or")}</span>
+          <span className="h-px flex-1 bg-slate-200" />
+        </div>
+        {isSignUp ? (
+          <SignUp
+            routing="path"
+            path="/sign-up"
+            signInUrl="/sign-in"
+            fallbackRedirectUrl={authCompleteUrl}
+            forceRedirectUrl={authCompleteUrl}
+            appearance={clerkAppearance}
+          />
+        ) : (
+          <>
+            <SignIn
               routing="path"
-              path="/sign-up"
-              signInUrl="/sign-in"
-              fallbackRedirectUrl="/dashboard"
+              path="/sign-in"
+              signUpUrl="/sign-up"
+              fallbackRedirectUrl={authCompleteUrl}
+              forceRedirectUrl={authCompleteUrl}
               appearance={clerkAppearance}
             />
-          ) : (
-            <>
-              <SignIn
-                routing="path"
-                path="/sign-in"
-                signUpUrl="/sign-up"
-                fallbackRedirectUrl="/dashboard"
-                appearance={clerkAppearance}
-              />
-              <div className="mt-4 rounded-lg border border-slate-200 bg-white px-4 py-3 text-center text-sm shadow-soft">
-                <Link href="/forgot-password" className="font-semibold text-brand">
-                  {t("Forgot password?")}
-                </Link>
-              </div>
-            </>
-          )}
-        </div>
-      ) : (
-        <MissingClerkConfig mode={mode} />
-      )}
+            <div className="mt-4 rounded-lg border border-slate-200 bg-white px-4 py-3 text-center text-sm shadow-soft">
+              <Link href="/forgot-password" className="font-semibold text-brand">
+                {t("Forgot password?")}
+              </Link>
+            </div>
+          </>
+        )}
+      </div>
     </main>
+  );
+}
+
+export function AuthPageClient({ mode, clerkEnabled }: { mode: AuthMode; clerkEnabled: boolean }) {
+  return (
+    <>
+      {clerkEnabled ? (
+        <ClerkAuthPage mode={mode} />
+      ) : (
+        <main className="flex min-h-screen items-center justify-center overflow-x-hidden bg-slate-50 px-4 py-6 min-[360px]:px-5">
+          <MissingClerkConfig mode={mode} />
+        </main>
+      )}
+    </>
   );
 }

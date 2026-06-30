@@ -31,7 +31,7 @@ function OAuthButtonShell({
   );
 }
 
-export function OAuthProviderButtons({ mode, embedded = false }: { mode: AuthMode; embedded?: boolean }) {
+export function OAuthProviderButtons({ mode, embedded = false, redirectUrlComplete = "/dashboard" }: { mode: AuthMode; embedded?: boolean; redirectUrlComplete?: string }) {
   const { t } = useI18n();
 
   if (!hasClerkPublishableKey || isClerkE2EBypass) {
@@ -52,10 +52,10 @@ export function OAuthProviderButtons({ mode, embedded = false }: { mode: AuthMod
     );
   }
 
-  return <LiveOAuthProviderButtons mode={mode} embedded={embedded} />;
+  return <LiveOAuthProviderButtons mode={mode} embedded={embedded} redirectUrlComplete={redirectUrlComplete} />;
 }
 
-function LiveOAuthProviderButtons({ mode, embedded = false }: { mode: AuthMode; embedded?: boolean }) {
+function LiveOAuthProviderButtons({ mode, embedded = false, redirectUrlComplete = "/dashboard" }: { mode: AuthMode; embedded?: boolean; redirectUrlComplete?: string }) {
   const { t } = useI18n();
   const signInState = useSignIn();
   const signUpState = useSignUp();
@@ -77,7 +77,7 @@ function LiveOAuthProviderButtons({ mode, embedded = false }: { mode: AuthMode; 
       await resource.authenticateWithRedirect({
         strategy: `oauth_${provider}`,
         redirectUrl: "/sso-callback",
-        redirectUrlComplete: "/dashboard"
+        redirectUrlComplete
       });
     } catch (event) {
       if (process.env.NODE_ENV !== "production") {
