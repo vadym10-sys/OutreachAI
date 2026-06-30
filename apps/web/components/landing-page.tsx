@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { ReactNode } from "react";
 import {
   ArrowRight,
   BarChart3,
@@ -84,6 +85,33 @@ const darkMetrics = [
   [BarChart3, "Meetings", "8 booked"]
 ] as const;
 
+function AuthNavigationLink({
+  href,
+  className,
+  testId,
+  children
+}: {
+  href: "/sign-in" | "/sign-up";
+  className: string;
+  testId?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Link
+      href={href}
+      prefetch={false}
+      onClick={(event) => {
+        event.preventDefault();
+        window.location.assign(href);
+      }}
+      data-testid={testId}
+      className={className}
+    >
+      {children}
+    </Link>
+  );
+}
+
 export function LandingPage() {
   const { t } = useI18n();
   const schema = {
@@ -108,8 +136,8 @@ export function LandingPage() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <LanguageSwitcher compact />
-            <Link href="/sign-in" className="hidden min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 min-[430px]:inline-flex">{t("Login")}</Link>
-            <Link href="/sign-up" className="inline-flex min-h-11 items-center rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-soft hover:bg-slate-800">{t("Start free trial")}</Link>
+            <AuthNavigationLink href="/sign-in" className="hidden min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 min-[430px]:inline-flex">{t("Login")}</AuthNavigationLink>
+            <AuthNavigationLink href="/sign-up" className="hidden min-h-11 items-center rounded-md bg-ink px-4 text-sm font-semibold text-white shadow-soft hover:bg-slate-800 min-[430px]:inline-flex">{t("Start free trial")}</AuthNavigationLink>
           </div>
         </nav>
 
@@ -121,10 +149,10 @@ export function LandingPage() {
               {t("Find qualified companies, analyze their websites, generate personalized outreach, launch campaigns, and turn replies into meetings — from one workspace.")}
             </p>
             <div className="mt-8 flex flex-col gap-3 min-[390px]:flex-row">
-              <Link href="/sign-up" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-brand px-5 text-sm font-bold text-white shadow-soft hover:bg-teal-700">
+              <AuthNavigationLink href="/sign-up" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-brand px-5 text-sm font-bold text-white shadow-soft hover:bg-teal-700" testId="hero-start-free-trial">
                 {t("Start free trial")} <ArrowRight size={18} aria-hidden="true" />
-              </Link>
-              <Link href="/dashboard" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-bold text-ink hover:border-slate-400">{t("View demo dashboard")}</Link>
+              </AuthNavigationLink>
+              <AuthNavigationLink href="/sign-in" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-300 bg-white px-5 text-sm font-bold text-ink hover:border-slate-400">{t("Login")}</AuthNavigationLink>
             </div>
             <div className="mt-8 grid gap-3 text-sm text-slate-600 sm:grid-cols-3">
               {["Replace 5-6 sales tools", "Review before send", "Built for meetings"].map((item) => (

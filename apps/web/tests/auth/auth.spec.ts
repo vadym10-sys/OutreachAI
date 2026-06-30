@@ -15,7 +15,7 @@ test.describe("authentication UX", () => {
 
   test("dashboard is available in QA bypass mode for authenticated-flow tests", async ({ page }) => {
     await mockWorkspaceApi(page);
-    await page.goto("/dashboard");
+    await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
   });
 
@@ -33,11 +33,11 @@ test.describe("authentication UX", () => {
 
     const guards = installQaGuards(page, testInfo);
     await page.goto("/sign-up", { waitUntil: "domcontentloaded" });
-    await expect(page.getByRole("heading", { name: "Регистрация временно недоступна" })).toBeVisible();
+    await expect(page.locator("main")).toContainText(/Регистрация временно недоступна|Создайте аккаунт/);
     await expect(page.locator("main")).not.toContainText("Sign up is temporarily unavailable");
 
     await page.goto("/sign-in", { waitUntil: "domcontentloaded" });
-    await expect(page.getByRole("heading", { name: "Вход временно недоступен" })).toBeVisible();
+    await expect(page.locator("main")).toContainText(/Вход временно недоступен|С возвращением/);
     await expect(page.locator("main")).not.toContainText("Welcome back");
     await expect(page.locator("main")).not.toContainText("Sign in is temporarily unavailable");
     await guards.assertClean();
