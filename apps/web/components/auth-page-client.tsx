@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { useEffect } from "react";
-import { OAuthProviderButtons } from "@/components/oauth-provider-buttons";
 import { useI18n } from "@/lib/i18n/provider";
 
 type AuthMode = "sign-in" | "sign-up";
@@ -84,10 +83,9 @@ const clerkAppearance = {
     header: "hidden",
     headerTitle: "hidden",
     headerSubtitle: "hidden",
-    socialButtons: "hidden",
-    socialButtonsBlockButton: "hidden",
-    socialButtonsProviderIcon: "hidden",
-    dividerRow: "hidden",
+    socialButtonsBlockButton: "min-h-11 rounded-md border border-slate-300 text-sm font-semibold text-ink",
+    socialButtonsProviderIcon: "size-5",
+    dividerRow: "my-6",
     form: "w-full",
     formField: "w-full",
     formFieldInput: "min-h-11 w-full rounded-md border-slate-300",
@@ -137,12 +135,6 @@ function ClerkAuthPage({ mode }: { mode: AuthMode }) {
           <p className="mt-2 text-sm leading-6 text-slate-600">
             {isSignUp ? t("Start with Google, Apple, or your work email.") : t("Continue with Google, Apple, or your work email.")}
           </p>
-        </div>
-        <OAuthProviderButtons mode={mode} embedded redirectUrlComplete={authCompleteUrl} />
-        <div className="my-6 flex items-center gap-4 text-sm text-slate-500" aria-hidden="true">
-          <span className="h-px flex-1 bg-slate-200" />
-          <span>{t("or")}</span>
-          <span className="h-px flex-1 bg-slate-200" />
         </div>
         {isSignUp ? (
           <SignUp
