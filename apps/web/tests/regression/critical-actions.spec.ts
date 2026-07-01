@@ -2,12 +2,19 @@ import { expect, test } from "@playwright/test";
 import { mockWorkspaceApi, qaLead } from "../../mocks/workspace-api";
 import { installQaGuards } from "../helpers/qa-guards";
 
+test.describe.configure({ mode: "serial" });
+
 test.beforeEach(async ({ page }) => {
   await mockWorkspaceApi(page);
 });
 
 test("lead search has loading, success, saved CRM result, and no global crash", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
+  let leadFindRequests = 0;
+  await page.route("**/api/leads/find", async (route) => {
+    leadFindRequests += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([qaLead]) });
+  });
   await page.goto("/dashboard/leads");
   const leadSearch = page.getByRole("form", { name: "Lead search" });
   await leadSearch.getByLabel("Country").fill("Germany");
@@ -16,12 +23,13 @@ test("lead search has loading, success, saved CRM result, and no global crash", 
   await leadSearch.getByRole("button", { name: "Find leads" }).click();
   await expect(page.getByLabel("Lead search progress").getByText("Saved to CRM")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
+  expect(leadFindRequests).toBe(1);
   await guards.assertClean();
 });
 
 test("lead search empty result finishes with guidance and retry", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
-  await page.route("**/api/backend/api/leads/find", async (route) => {
+  await page.route("**/api/leads/find", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
   });
   await page.goto("/dashboard/leads");
@@ -38,7 +46,7 @@ test("lead search empty result finishes with guidance and retry", async ({ page 
 
 test("lead search timeout ends loading and offers retry", async ({ page }, testInfo) => {
   installQaGuards(page, testInfo);
-  await page.route("**/api/backend/api/leads/find", async (route) => {
+  await page.route("**/api/leads/find", async (route) => {
     await route.fulfill({
       status: 504,
       contentType: "application/json",
@@ -59,7 +67,7 @@ test("lead search timeout ends loading and offers retry", async ({ page }, testI
 
 test("lead search provider error does not leave an infinite spinner", async ({ page }, testInfo) => {
   installQaGuards(page, testInfo);
-  await page.route("**/api/backend/api/leads/find", async (route) => {
+  await page.route("**/api/leads/find", async (route) => {
     await route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -80,7 +88,7 @@ test("lead search provider error does not leave an infinite spinner", async ({ p
 test("lead search retry reuses the last filters and can recover", async ({ page }, testInfo) => {
   installQaGuards(page, testInfo);
   let attempts = 0;
-  await page.route("**/api/backend/api/leads/find", async (route) => {
+  await page.route("**/api/leads/find", async (route) => {
     attempts += 1;
     if (attempts === 1) {
       await route.fulfill({

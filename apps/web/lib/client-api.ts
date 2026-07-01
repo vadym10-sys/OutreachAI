@@ -68,11 +68,13 @@ function safeApiMessage(status: number, detail: string) {
 
 export type ClientApiInit = RequestInit & {
   timeoutMs?: number;
+  direct?: boolean;
 };
 
 export async function clientApi<T>(path: string, token: string | null, init: ClientApiInit = {}): Promise<T> {
   let response: Response;
-  const { timeoutMs = 30000, signal, ...requestInit } = init;
+  const { timeoutMs = 30000, signal, direct = false, ...requestInit } = init;
+  const requestPath = direct ? path : `${apiProxyUrl}${path}`;
   const controller = new AbortController();
   let didTimeout = false;
   const timeoutId = globalThis.setTimeout(() => {
@@ -84,7 +86,7 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   signal?.addEventListener('abort', abortFromCaller, { once: true });
 
   try {
-    response = await fetch(`${apiProxyUrl}${path}`, {
+    response = await fetch(requestPath, {
       ...requestInit,
       headers: {
         'Content-Type': 'application/json',
@@ -97,11 +99,11 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
     const timedOut = didTimeout;
     Sentry.captureException(error, {
       tags: { area: 'api-client', api_status: timedOut ? 'timeout' : 'network-error' },
-      extra: { path, timeout_ms: timeoutMs }
+      extra: { path: requestPath, timeout_ms: timeoutMs }
     });
     captureLogRocketException(error, {
       area: 'api-client',
-      endpoint: path,
+      endpoint: requestPath,
       api_status: timedOut ? 'timeout' : 'network-error'
     });
     trackEvent(timedOut ? 'api_request_timeout' : 'api_network_error', {
@@ -114,7 +116,7 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   }
 
   if (!response.ok) {
-    const detail = await logApiFailure(path, response);
+    const detail = await logApiFailure(requestPath, response);
     throw new Error(`REQUEST_FAILED:${safeApiMessage(response.status, detail)}`);
   }
 

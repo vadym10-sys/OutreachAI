@@ -12,6 +12,7 @@ const allowedConsolePatterns = [
   /Ignoring unsupported entryTypes: layout-shift/i,
   /Layout was forced before the page was fully loaded/i,
   /preloaded (with|using) link preload but not used/i,
+  /preloaded with link preload was not used/i,
   /LogRocket: script could not load/i,
   /OutreachAI API request failed/i,
   /Dashboard supporting data could not be loaded/i,

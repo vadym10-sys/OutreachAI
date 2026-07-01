@@ -2,7 +2,7 @@
 
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
-import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState, type ErrorInfo } from "react";
+import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState, type ButtonHTMLAttributes, type ErrorInfo } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
@@ -308,6 +308,13 @@ function userMessage(error: unknown, fallback: string, t: (key: string) => strin
   return t(friendlyErrorMessage(error, fallback));
 }
 
+function leadFinderDebug(step: string, details?: Record<string, unknown>) {
+  if (typeof window === "undefined") return;
+  const enabled = window.localStorage.getItem("outreachai.leadFinderDebug") === "true" || window.location.search.includes("leadDebug=1");
+  if (!enabled) return;
+  console.info(step, details || {});
+}
+
 function redirectToSignIn() {
   if (typeof window === "undefined" || !hasClerkPublishableKey || isClerkE2EBypass) return;
   const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
@@ -441,12 +448,12 @@ function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: 
   );
 }
 
-function PrimaryButton({ children, onClick, disabled = false }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
-  return <button onClick={onClick} disabled={disabled} className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
+function PrimaryButton({ children, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }) {
+  return <button type={type} {...props} className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
 }
 
-function SecondaryButton({ children, onClick, disabled = false }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean }) {
-  return <button onClick={onClick} disabled={disabled} className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
+function SecondaryButton({ children, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }) {
+  return <button type={type} {...props} className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
 }
 
 function EmptyState({ title, copy, action }: { title: string; copy: string; action?: React.ReactNode }) {
@@ -1102,6 +1109,12 @@ export function LeadFinderPage() {
   }
 
   async function runLeadSearch(payload: LeadSearchPayload) {
+    leadFinderDebug("SUBMIT_STARTED", {
+      country: payload.country,
+      city: payload.city,
+      industry: payload.industry,
+      limit: payload.limit
+    });
     setSearching(true);
     setHasSearched(true);
     setSearchResults([]);
@@ -1117,15 +1130,18 @@ export function LeadFinderPage() {
       source: "lead_search"
     });
     try {
+      leadFinderDebug("FETCH_STARTED", { endpoint: "/api/leads/find" });
       const found = await withTimeout(
         api<Lead[]>("/api/leads/find", {
           method: "POST",
           body: JSON.stringify(payload),
-          timeoutMs: 35000
+          timeoutMs: 35000,
+          direct: true
         }),
         36000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
+      leadFinderDebug("FETCH_FINISHED", { status: "success", count: found.length });
       setSearchSteps((items) => [...items, t("Found companies count").replace("{count}", String(found.length)), t("Saved to CRM")]);
       setLeads(found);
       setSearchResults(found);
@@ -1138,6 +1154,7 @@ export function LeadFinderPage() {
         source: "lead_search"
       });
     } catch (err) {
+      leadFinderDebug("FETCH_FINISHED", { status: "error", reason: err instanceof Error ? err.message : "unknown" });
       if (isSessionExpiredError(err)) {
         redirectToSignIn();
         return;
@@ -1160,6 +1177,7 @@ export function LeadFinderPage() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    leadFinderDebug("FORM_VALID");
     const data = new FormData(event.currentTarget);
     const payload: LeadSearchPayload = {
       country: String(data.get("country") || ""),
@@ -1203,13 +1221,16 @@ export function LeadFinderPage() {
           </div>
         </details>
         <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
-          <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
+          <PrimaryButton type="submit" disabled={searching} onClick={() => leadFinderDebug("BUTTON_CLICKED")}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
           <p className="text-sm text-slate-600">{t("Expected time: 20-30 seconds. Saved companies will stay after refresh.")}</p>
         </div>
         {visibleMessage && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm font-semibold text-slate-700">{visibleMessage}</p>
           {hasSearched && !searching && lastSearchPayload && searchResults.length === 0 && (
-            <button type="button" onClick={() => runLeadSearch(lastSearchPayload)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm">
+            <button type="button" onClick={() => {
+              leadFinderDebug("BUTTON_CLICKED", { action: "retry" });
+              runLeadSearch(lastSearchPayload);
+            }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm">
               <Search size={16} /> {t("Retry search")}
             </button>
           )}
@@ -1237,7 +1258,7 @@ export function LeadFinderPage() {
           <label className="text-sm font-semibold text-slate-700">{t("Email")}<input name="email" type="email" placeholder="name@company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
           <label className="text-sm font-semibold text-slate-700">{t("Phone")}<input name="phone" placeholder="+49..." className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
           <div className="md:col-span-2 xl:col-span-4">
-            <PrimaryButton disabled={manualBusy}>{manualBusy ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Save company to CRM")}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={manualBusy}>{manualBusy ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Save company to CRM")}</PrimaryButton>
           </div>
         </form>
       </section>
@@ -1702,7 +1723,7 @@ export function WebsiteAnalyzerPage() {
       setLoading(false);
     }
   }
-  return <div className="space-y-6"><PageHeader eyebrow="Website Analyzer" title="Analyze a real prospect website." copy="OutreachAI reads the website and extracts ICP, pain points, offer and outreach strategy." /><form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="grid gap-4 md:grid-cols-3"><input required name="website" placeholder="https://company.com" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="company" placeholder={t("Company name")} className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="niche" placeholder={t("Industry or niche")} className="min-h-11 rounded-md border border-slate-300 px-3" /></div><div className="mt-4"><PrimaryButton disabled={loading}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Analyze website")}</PrimaryButton></div>{error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}</form>{analysis ? <WidgetBoundary name="Website analysis results"><section className="grid gap-4 lg:grid-cols-2">{[["Business summary", analysis.company_summary || analysis.summary], ["Services", safeArray(analysis.services).join(", ") || unavailable], ["Target customers", analysis.niche || unavailable], ["Weak points", safeArray(analysis.weaknesses).join(", ") || unavailable], ["Possible outreach angle", analysis.sales_angle || unavailable], ["Suggested offer", analysis.suggested_offer || unavailable], ["Personalization facts", safeArray(analysis.strengths).join(", ") || unavailable], ["Recommended cold email", analysis.outreach_strategy || unavailable]].map(([label, value]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(label)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(value)}</p></article>)}</section></WidgetBoundary> : <EmptyState title="No website analyzed yet" copy="Enter a real domain. OutreachAI will not show sample analysis." />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Website Analyzer" title="Analyze a real prospect website." copy="OutreachAI reads the website and extracts ICP, pain points, offer and outreach strategy." /><form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="grid gap-4 md:grid-cols-3"><input required name="website" placeholder="https://company.com" className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="company" placeholder={t("Company name")} className="min-h-11 rounded-md border border-slate-300 px-3" /><input name="niche" placeholder={t("Industry or niche")} className="min-h-11 rounded-md border border-slate-300 px-3" /></div><div className="mt-4"><PrimaryButton type="submit" disabled={loading}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Analyze website")}</PrimaryButton></div>{error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}</form>{analysis ? <WidgetBoundary name="Website analysis results"><section className="grid gap-4 lg:grid-cols-2">{[["Business summary", analysis.company_summary || analysis.summary], ["Services", safeArray(analysis.services).join(", ") || unavailable], ["Target customers", analysis.niche || unavailable], ["Weak points", safeArray(analysis.weaknesses).join(", ") || unavailable], ["Possible outreach angle", analysis.sales_angle || unavailable], ["Suggested offer", analysis.suggested_offer || unavailable], ["Personalization facts", safeArray(analysis.strengths).join(", ") || unavailable], ["Recommended cold email", analysis.outreach_strategy || unavailable]].map(([label, value]) => <article key={label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(label)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(value)}</p></article>)}</section></WidgetBoundary> : <EmptyState title="No website analyzed yet" copy="Enter a real domain. OutreachAI will not show sample analysis." />}</div>;
 }
 
 export function ContactsPage() {
@@ -1798,7 +1819,7 @@ export function CampaignsPage() {
         <label className="text-sm font-semibold text-slate-700">CTA<input name="cta" placeholder="Open to a quick review?" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
         <label className="text-sm font-semibold text-slate-700">Signature<input name="signature" placeholder="Your name" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
       </div>
-      <div className="mt-5"><PrimaryButton disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} Create campaign</PrimaryButton></div>
+      <div className="mt-5"><PrimaryButton type="submit" disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} Create campaign</PrimaryButton></div>
     </form>}
     {loading ? <EmptyState title="Loading campaigns" copy="Reading saved campaigns." /> : error ? <EmptyState title="Campaign data unavailable" copy={error} /> : campaigns.length ? <section className="grid gap-4 lg:grid-cols-2">{campaigns.map((campaign) => <article key={campaign.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{campaign.name}</h2><p className="mt-2 text-sm text-slate-600">{campaign.leads} {t("leads")} · {campaign.sent} {t("sent")} · {campaign.replies} {t("replies")} · {t(campaign.status)}</p><div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `${t("Email")} ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || t("Subject unavailable until AI draft is reviewed")}</p><p className="mt-1 text-xs font-semibold text-slate-500">{t("Delay")}: {step.delay_days} {t("days")}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No sequence saved yet.")}</p>}</div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("Review before send: enabled")}</p><div className="mt-4 grid gap-2 min-[430px]:grid-cols-2"><SecondaryButton onClick={() => campaignAction(campaign.id, "pause")} disabled={actionBusy === `${campaign.id}:pause`}><Pause size={17} /> {t("Pause")}</SecondaryButton><PrimaryButton onClick={() => campaignAction(campaign.id, campaign.status === "Paused" ? "resume" : "launch")} disabled={actionBusy === `${campaign.id}:launch` || actionBusy === `${campaign.id}:resume`}>{actionBusy.startsWith(campaign.id) ? <Loader2 className="animate-spin" size={17} /> : <Play size={17} />} {campaign.status === "Paused" ? t("Resume") : t("Launch after approval")}</PrimaryButton></div></article>)}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} action={leads.length ? undefined : <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}
   </div>;
