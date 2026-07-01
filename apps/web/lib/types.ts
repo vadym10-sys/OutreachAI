@@ -58,6 +58,7 @@ export type Campaign = {
 
 export type Lead = {
   id?: string;
+  crm_company_id?: string | null;
   company: string;
   website?: string | null;
   domain?: string | null;

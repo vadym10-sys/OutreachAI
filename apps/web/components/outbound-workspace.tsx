@@ -72,6 +72,34 @@ type WorkspaceAppCompanyCreateResponse = {
   company: CrmCompany;
 };
 
+type WorkspaceAppActionResponse = {
+  status: WorkspaceAppLeadSearchResponse["status"];
+  message: string;
+  company?: CrmCompany | null;
+  email?: Email | null;
+};
+
+type WorkspaceAppBootstrapResponse = {
+  workspace: {
+    id: string;
+    name: string;
+    company?: string | null;
+    industry?: string | null;
+    target_country?: string | null;
+    target_customer?: string | null;
+  };
+  counts: {
+    leads: number;
+    companies: number;
+    campaigns: number;
+    emails: number;
+    deals: number;
+  };
+  next_action: string;
+  recent_companies: CrmCompany[];
+  recent_activity: Array<{ action: string; created_at: string; company?: string; message?: string }>;
+};
+
 const emptyMetrics: DashboardMetrics = {
   leads: 0,
   campaigns: 0,
@@ -159,6 +187,33 @@ function normalizePipeline(value: Partial<CrmPipeline> | undefined | null): CrmP
     stages: safeArray(value?.stages).length ? safeArray(value?.stages) : crmStages,
     companies: safeArray(value?.companies).map(normalizeCrmCompany),
     deals: safeArray(value?.deals)
+  };
+}
+
+function metricsFromWorkspaceBootstrap(bootstrap: WorkspaceAppBootstrapResponse, fallback: Partial<DashboardMetrics> | null = null): DashboardMetrics {
+  return safeDashboardMetrics({
+    ...fallback,
+    leads: bootstrap.counts.leads || bootstrap.counts.companies || fallback?.leads || 0,
+    campaigns: bootstrap.counts.campaigns || fallback?.campaigns || 0,
+    emails_sent: fallback?.emails_sent || 0,
+    pipeline: crmStages.map((stage) => ({
+      status: stage,
+      count: safeArray(bootstrap.recent_companies).filter((company) => company.crm_stage === stage).length,
+      revenue: 0
+    })),
+    funnel: [
+      { status: "Companies", count: bootstrap.counts.companies },
+      { status: "Emails", count: bootstrap.counts.emails },
+      { status: "Deals", count: bootstrap.counts.deals }
+    ]
+  });
+}
+
+function pipelineFromCompanies(companies: CrmCompany[], deals: CrmDeal[] = []): CrmPipeline {
+  return {
+    stages: crmStages,
+    companies,
+    deals
   };
 }
 
@@ -653,14 +708,19 @@ function useSalesData() {
     setError("");
     try {
       const results = await Promise.allSettled([
-        api<PaginatedLeads>("/api/leads?page_size=100"),
+        api<WorkspaceAppBootstrapResponse>("/api/workspace-app/bootstrap"),
         api<Campaign[]>("/api/campaigns"),
         api<DashboardMetrics>("/api/dashboard")
       ]);
-      const [leadResult, campaignResult, dashboardResult] = results;
-      if (leadResult.status === "fulfilled") setLeads(leadResult.value.items || []);
+      const [bootstrapResult, campaignResult, dashboardResult] = results;
+      if (bootstrapResult.status === "fulfilled") {
+        const companies = safeArray(bootstrapResult.value.recent_companies).map(normalizeCrmCompany);
+        setLeads(companies.map(leadFromCrmCompany));
+        setMetrics(metricsFromWorkspaceBootstrap(bootstrapResult.value, dashboardResult.status === "fulfilled" ? dashboardResult.value : null));
+      } else if (dashboardResult.status === "fulfilled") {
+        setMetrics(safeDashboardMetrics(dashboardResult.value));
+      }
       if (campaignResult.status === "fulfilled") setCampaigns(safeArray(campaignResult.value).map(safeCampaign));
-      if (dashboardResult.status === "fulfilled") setMetrics(safeDashboardMetrics(dashboardResult.value));
 
       const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
       if (failed.length) {
@@ -669,8 +729,8 @@ function useSalesData() {
           return;
         }
         failed.forEach((result) => reportWidgetFailure(result.reason, "sales-workspace-loader", { endpoint_group: "leads-campaigns-dashboard" }));
-        if (leadResult.status === "rejected" && campaignResult.status === "rejected" && dashboardResult.status === "rejected") {
-          setError(friendlyErrorMessage(leadResult.reason, "Workspace data could not be loaded. Please try again."));
+        if (bootstrapResult.status === "rejected" && campaignResult.status === "rejected" && dashboardResult.status === "rejected") {
+          setError(friendlyErrorMessage(bootstrapResult.reason, "Workspace data could not be loaded. Please try again."));
         }
       }
     } catch (err) {
@@ -719,16 +779,18 @@ function useCrmData() {
     try {
       const suffix = queryString ? `?${queryString}` : "";
       const results = await Promise.allSettled([
-        api<CrmCompany[]>(`/api/crm/companies${suffix}`),
+        api<CrmCompany[]>(`/api/workspace-app/companies${suffix}`),
         api<CrmContact[]>(`/api/crm/contacts${suffix}`),
         api<CrmDeal[]>(`/api/crm/deals${suffix}`),
         api<CrmPipeline>("/api/crm/pipeline")
       ]);
       const [companyResult, contactResult, dealResult, pipelineResult] = results;
-      if (companyResult.status === "fulfilled") setCompanies(safeArray(companyResult.value).map(normalizeCrmCompany));
+      const workspaceCompanies = companyResult.status === "fulfilled" ? safeArray(companyResult.value).map(normalizeCrmCompany) : null;
+      if (workspaceCompanies) setCompanies(workspaceCompanies);
       if (contactResult.status === "fulfilled") setContacts(safeArray(contactResult.value));
       if (dealResult.status === "fulfilled") setDeals(safeArray(dealResult.value));
       if (pipelineResult.status === "fulfilled") setPipeline(normalizePipeline(pipelineResult.value));
+      else if (workspaceCompanies) setPipeline(pipelineFromCompanies(workspaceCompanies, dealResult.status === "fulfilled" ? safeArray(dealResult.value) : []));
 
       const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
       if (failed.length) {
@@ -793,32 +855,35 @@ function useDashboardData() {
         setSupportingError("Updating workspace data. Showing your last loaded dashboard while the latest data refreshes.");
       }
       try {
-        const dashboard = await api<DashboardMetrics>("/api/dashboard");
+        const bootstrap = await api<WorkspaceAppBootstrapResponse>("/api/workspace-app/bootstrap");
         if (cancelled) return;
-        const nextMetrics = safeDashboardMetrics(dashboard);
+        const bootstrapCompanies = safeArray(bootstrap.recent_companies).map(normalizeCrmCompany);
+        const bootstrapLeads = bootstrapCompanies.map(leadFromCrmCompany);
+        const nextMetrics = metricsFromWorkspaceBootstrap(bootstrap);
         setMetrics(nextMetrics);
+        setLeads(bootstrapLeads);
 
         const results = await Promise.allSettled([
-          api<PaginatedLeads>("/api/leads?page_size=5"),
+          api<DashboardMetrics>("/api/dashboard"),
           api<Campaign[]>("/api/campaigns"),
           api<AISalesEmployee[]>("/api/sales-employees"),
           api<Activity[]>("/api/activity")
         ]);
         if (cancelled) return;
-        const [leadResult, campaignResult, employeeResult, activityResult] = results;
-        const nextLeads = leadResult.status === "fulfilled" ? safeArray(leadResult.value.items) : null;
+        const [dashboardResult, campaignResult, employeeResult, activityResult] = results;
+        const refreshedMetrics = dashboardResult.status === "fulfilled" ? metricsFromWorkspaceBootstrap(bootstrap, dashboardResult.value) : nextMetrics;
         const nextCampaigns = campaignResult.status === "fulfilled" ? safeArray(campaignResult.value).map(safeCampaign) : null;
         const nextEmployees = employeeResult.status === "fulfilled" ? safeArray(employeeResult.value) : null;
         const nextActivity = activityResult.status === "fulfilled" ? safeArray(activityResult.value) : null;
-        if (nextLeads) setLeads(nextLeads);
+        setMetrics(refreshedMetrics);
         if (nextCampaigns) setCampaigns(nextCampaigns);
         if (nextEmployees) setEmployees(nextEmployees);
         if (nextActivity) setActivity(nextActivity);
         setCachedAt(null);
-        if (nextLeads && nextCampaigns && nextEmployees && nextActivity) {
+        if (nextCampaigns && nextEmployees && nextActivity) {
           cacheDashboardData({
-            metrics: nextMetrics,
-            leads: nextLeads,
+            metrics: refreshedMetrics,
+            leads: bootstrapLeads,
             campaigns: nextCampaigns,
             employees: nextEmployees,
             activity: nextActivity
@@ -827,11 +892,11 @@ function useDashboardData() {
 
         const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
         if (failed.length) {
-          failed.forEach((result) => reportWidgetFailure(result.reason, "dashboard-supporting-data", { endpoint_group: "leads-campaigns-employees-activity" }));
+          failed.forEach((result) => reportWidgetFailure(result.reason, "dashboard-supporting-data", { endpoint_group: "dashboard-campaigns-employees-activity" }));
           setSupportingError("Some dashboard details are temporarily unavailable. Your core workspace is still loaded.");
         }
       } catch (err) {
-        reportWidgetFailure(err, "dashboard-critical-data", { endpoint: "/api/dashboard" });
+        reportWidgetFailure(err, "dashboard-critical-data", { endpoint: "/api/workspace-app/bootstrap" });
         if (isSessionExpiredError(err)) {
           redirectToSignIn();
           return;
@@ -868,10 +933,11 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
   const completed = coverage.filter(([, done]) => done).length;
   const priority = priorityScore(copilot);
   const visibleStatus = status;
+  const companyId = lead.crm_company_id || null;
 
   async function completeResearch() {
-    if (!lead.id) {
-      setError(t("Save this lead before running AI research."));
+    if (!companyId) {
+      setError(t("Save this company to CRM before running AI research."));
       return;
     }
     setBusy(true);
@@ -886,23 +952,23 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
     try {
       if (lead.website || lead.domain) {
         setStatus(t("Analyzing website..."));
-        const analysis = await api<AnalysisResult>("/api/ai/analyze", {
-          method: "POST",
-          body: JSON.stringify({ lead_id: lead.id, website: leadWebsite(lead), company: lead.company, niche: lead.industry || lead.niche || "" })
-        });
-        const safeAnalysis = normalizeAnalysis(analysis);
-        onLeadUpdated?.({ ...lead, ai_summary: safeAnalysis.summary, suggested_offer: safeAnalysis.suggested_offer, outreach_strategy: safeAnalysis.outreach_strategy, sales_angle: safeAnalysis.sales_angle, expected_reply_rate: safeAnalysis.expected_reply_rate, industry: lead.industry || safeAnalysis.industry || undefined });
+        const analysisResult = await api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/analyze`, { method: "POST" });
+        if (analysisResult.company) {
+          onLeadUpdated?.(leadFromCrmCompany(normalizeCrmCompany(analysisResult.company)));
+        }
+        if (analysisResult.status !== "success") {
+          setStatus(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
+        }
       }
-      setStatus(t("Running AI opportunity analysis..."));
-      setCopilot(await api<SalesCopilot>(`/api/leads/${lead.id}/copilot`, { method: "POST" }));
-      if (lead.website || lead.domain) {
-        setStatus(t("Auditing website pain points..."));
-        setAudit(await api<WebsiteAudit>(`/api/leads/${lead.id}/website-audit`, { method: "POST" }));
-      }
-      setStatus(t("Generating follow-up sequence..."));
-      setFollowUps(await api<FollowUpSequence>(`/api/leads/${lead.id}/follow-ups`, { method: "POST" }));
       setStatus(t("Preparing personalized first email..."));
-      const nextDraft = await api<Email>(`/api/leads/${lead.id}/draft-email`, { method: "POST" });
+      const draftResult = await api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/email-draft`, { method: "POST" });
+      if (draftResult.company) {
+        onLeadUpdated?.(leadFromCrmCompany(normalizeCrmCompany(draftResult.company)));
+      }
+      if (!draftResult.email) {
+        throw new Error(draftResult.message || "Email draft could not be created.");
+      }
+      const nextDraft = draftResult.email;
       setStatus(t("Email draft is ready. Review it below, then approve the send when you are ready."));
       setDraft(nextDraft);
       setReadyToSend(true);
@@ -935,11 +1001,14 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
     setStatus(t("Approving email..."));
     try {
       const approved = await withTimeout(
-        api<Email>(`/api/emails/${draft.id}/approve`, { method: "POST" }),
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}/approve`, { method: "POST" }),
         15000,
         "Email approval timed out. Please try again before sending."
       );
-      setDraft(approved);
+      if (!approved.email) {
+        throw new Error(approved.message || "Email approval could not be completed.");
+      }
+      setDraft(approved.email);
       setStatus(t("Sending approved email..."));
       const sent = await withTimeout(
         api<Email>(`/api/emails/${draft.id}/send`, { method: "POST" }),
@@ -1365,6 +1434,7 @@ export function LeadFinderPage() {
 function leadFromCrmCompany(company: CrmCompany): Lead {
   return {
     id: company.lead_id || undefined,
+    crm_company_id: company.id,
     company: company.name,
     website: company.website,
     domain: company.domain,
@@ -1386,6 +1456,19 @@ function leadFromCrmCompany(company: CrmCompany): Lead {
     outreach_strategy: company.outreach_strategy,
     sales_angle: company.sales_angle,
     expected_reply_rate: company.expected_reply_rate,
+    created_at: company.created_at,
+    found_at: company.found_at,
+    saved_to_crm_at: company.saved_to_crm_at,
+    website_analyzed_at: company.website_analyzed_at,
+    contact_found_at: company.contact_found_at,
+    email_generated_at: company.email_generated_at,
+    email_approved_at: company.email_approved_at,
+    email_sent_at: company.email_sent_at,
+    delivered_at: company.delivered_at,
+    opened_at: company.opened_at,
+    replied_at: company.replied_at,
+    last_activity_at: company.last_activity_at || company.updated_at,
+    stage_changed_at: company.stage_changed_at
   };
 }
 

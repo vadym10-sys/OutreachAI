@@ -303,6 +303,7 @@ def test_workspace_app_manual_company_save_persists_and_dedupes() -> None:
         "country": "Germany",
         "city": "Berlin",
         "industry": "Construction",
+        "contact": "Erika Owner",
         "phone": "+49 30 555 0101",
         "email": "hello@usage-berlin-builders.example",
         "address": "Friedrichstrasse 1, Berlin",
@@ -313,6 +314,8 @@ def test_workspace_app_manual_company_save_persists_and_dedupes() -> None:
     company = created.json()["company"]
     assert company["name"] == "Usage Berlin Builders"
     assert company["website"] == "https://usage-berlin-builders.example"
+    assert company["contacts"][0]["name"] == "Erika Owner"
+    assert company["contacts"][0]["email"] == "hello@usage-berlin-builders.example"
     assert company["saved_to_crm_at"]
 
     reused = client.post("/api/workspace-app/companies", headers=headers, json=payload)
@@ -324,6 +327,10 @@ def test_workspace_app_manual_company_save_persists_and_dedupes() -> None:
     assert refreshed.status_code == 200
     assert len(refreshed.json()) == 1
     assert refreshed.json()[0]["id"] == company["id"]
+
+    filtered = client.get("/api/workspace-app/companies?city=Berlin&industry=Construction&email_status=Found", headers=headers)
+    assert filtered.status_code == 200
+    assert filtered.json()[0]["id"] == company["id"]
 
 
 def test_workspace_app_company_data_is_private_between_users() -> None:

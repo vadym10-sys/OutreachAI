@@ -73,6 +73,7 @@ class UsageCompanyCreateIn(BaseModel):
     country: Optional[str] = Field(default=None, max_length=120)
     city: Optional[str] = Field(default=None, max_length=120)
     industry: Optional[str] = Field(default=None, max_length=160)
+    contact: Optional[str] = Field(default=None, max_length=220)
     phone: Optional[str] = Field(default=None, max_length=80)
     email: Optional[EmailStr] = None
     address: Optional[str] = Field(default=None, max_length=500)
@@ -242,6 +243,7 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Curren
         industry=payload.industry,
         country=payload.country,
         city=payload.city,
+        contact=payload.contact,
         email=payload.email,
         phone=payload.phone,
         notes="",
@@ -263,6 +265,7 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Curren
         workspace_id=workspace.id,
         company=payload.name,
         website=normalized_website,
+        contact=payload.contact,
         industry=payload.industry,
         country=payload.country,
         city=payload.city,
@@ -358,13 +361,35 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: CurrentUser
 
 
 @router.get("/companies", response_model=list[CrmCompanyOut])
-def list_companies(user: CurrentUserContext, db: Session = Depends(get_db), search: str = "") -> list[CrmCompanyOut]:
+def list_companies(
+    user: CurrentUserContext,
+    db: Session = Depends(get_db),
+    search: str = "",
+    city: str = "",
+    country: str = "",
+    industry: str = "",
+    stage: str = "",
+    email_status: str = "",
+    source: str = "",
+) -> list[CrmCompanyOut]:
     workspace = _current_workspace(db, user.user_id, user.email)
     _ensure_crm_backfilled(db, user.user_id, workspace)
     stmt = select(Company).where(Company.workspace_id == workspace.id)
     if search:
         term = f"%{search}%"
         stmt = stmt.where(or_(Company.name.ilike(term), Company.website.ilike(term), Company.city.ilike(term), Company.industry.ilike(term)))
+    if city:
+        stmt = stmt.where(Company.city.ilike(f"%{city}%"))
+    if country:
+        stmt = stmt.where(Company.country.ilike(f"%{country}%"))
+    if industry:
+        stmt = stmt.where(Company.industry.ilike(f"%{industry}%"))
+    if stage:
+        stmt = stmt.where(Company.crm_stage == stage)
+    if email_status:
+        stmt = stmt.where(Company.email_status == email_status)
+    if source:
+        stmt = stmt.where(Company.source == source)
     companies = list(db.scalars(stmt.order_by(Company.updated_at.desc()).limit(100)).all())
     return [_crm_company_out(db, workspace, user.user_id, company) for company in companies]
 
