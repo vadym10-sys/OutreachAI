@@ -285,6 +285,147 @@ def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> N
     assert any(member["email"] == user_email and member["role"].lower() == "owner" for member in data["members"])
 
 
+def test_workspace_app_bootstrap_creates_private_workspace() -> None:
+    response = client.get("/api/workspace-app/bootstrap", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "usage-owner@example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["workspace"]["name"] == "usage-owner's workspace"
+    assert data["workspace"]["members"][0]["role"] == "Owner"
+    assert data["counts"]["companies"] == 0
+    assert "Add your first company" in data["next_action"]
+
+
+def test_workspace_app_manual_company_save_persists_and_dedupes() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-company@example.com"}
+    payload = {
+        "name": "Usage Berlin Builders",
+        "website": "usage-berlin-builders.example",
+        "country": "Germany",
+        "city": "Berlin",
+        "industry": "Construction",
+        "phone": "+49 30 555 0101",
+        "email": "hello@usage-berlin-builders.example",
+        "address": "Friedrichstrasse 1, Berlin",
+    }
+    created = client.post("/api/workspace-app/companies", headers=headers, json=payload)
+    assert created.status_code == 200
+    assert created.json()["status"] == "created"
+    company = created.json()["company"]
+    assert company["name"] == "Usage Berlin Builders"
+    assert company["website"] == "https://usage-berlin-builders.example"
+    assert company["saved_to_crm_at"]
+
+    reused = client.post("/api/workspace-app/companies", headers=headers, json=payload)
+    assert reused.status_code == 200
+    assert reused.json()["status"] == "reused"
+    assert reused.json()["company"]["id"] == company["id"]
+
+    refreshed = client.get("/api/workspace-app/companies?search=Usage%20Berlin", headers=headers)
+    assert refreshed.status_code == 200
+    assert len(refreshed.json()) == 1
+    assert refreshed.json()[0]["id"] == company["id"]
+
+
+def test_workspace_app_company_data_is_private_between_users() -> None:
+    user_a = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-a@example.com"}
+    user_b = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-b@example.com"}
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=user_a,
+        json={"name": "Private Usage Build", "website": "https://private-usage-build.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert response.status_code == 200
+    company_id = response.json()["company"]["id"]
+
+    user_a_company = client.get(f"/api/workspace-app/companies/{company_id}", headers=user_a)
+    user_b_company = client.get(f"/api/workspace-app/companies/{company_id}", headers=user_b)
+    assert user_a_company.status_code == 200
+    assert user_b_company.status_code == 404
+
+    user_b_list = client.get("/api/workspace-app/companies?search=Private%20Usage", headers=user_b)
+    assert user_b_list.status_code == 200
+    assert user_b_list.json() == []
+
+
+def test_workspace_app_lead_search_success_saves_to_crm(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-search@example.com"}
+    monkeypatch.setattr("app.api.usage._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr(
+        "app.api.usage.search_google_places",
+        lambda payload: GooglePlacesSearchResult(
+            leads=[
+                LeadOut(
+                    company="Usage Search GmbH",
+                    website="https://usage-search.example",
+                    industry="Construction",
+                    country="Germany",
+                    city="Berlin",
+                    notes='{"source":"google_maps","domain":"usage-search.example","place_id":"usage-search-1"}',
+                    domain="usage-search.example",
+                    place_id="usage-search-1",
+                    source="google_maps",
+                )
+            ],
+            raw_count=1,
+            duration_ms=8,
+        ),
+    )
+    response = client.post("/api/workspace-app/leads/search", headers=headers, json={"industry": "Construction", "country": "Germany", "city": "Berlin", "limit": 10})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert data["companies_saved"] == 1
+    assert data["companies"][0]["name"] == "Usage Search GmbH"
+
+    persisted = client.get("/api/workspace-app/companies?search=Usage%20Search", headers=headers)
+    assert persisted.status_code == 200
+    assert len(persisted.json()) == 1
+
+
+def test_workspace_app_lead_search_provider_error_returns_structured_status(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-provider-error@example.com"}
+    monkeypatch.setattr("app.api.usage.search_google_places", lambda payload: (_ for _ in ()).throw(GoogleMapsRequestError("provider outage")))
+    response = client.post("/api/workspace-app/leads/search", headers=headers, json={"industry": "Construction", "country": "Germany", "city": "Berlin", "limit": 10})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "provider_unavailable"
+    assert data["companies"] == []
+    assert "temporarily unavailable" in data["message"]
+
+
+def test_workspace_app_email_draft_requires_approval(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-email@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Email Build", "website": "https://usage-email.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    monkeypatch.setattr(
+        "app.api.usage.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Idea for Usage Email Build",
+            preview="Quick idea",
+            full_email="Hi, I found a relevant opportunity for your team.",
+            cta="Book a quick call",
+            cold_email="Hi, I found a relevant opportunity for your team.",
+            follow_ups=["Following up once.", "Following up twice."],
+        ),
+    )
+    draft = client.post(f"/api/workspace-app/companies/{company_id}/email-draft", headers=headers)
+    assert draft.status_code == 200
+    assert draft.json()["status"] == "success"
+    email = draft.json()["email"]
+    assert email["delivery_status"] == "draft"
+
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
+    assert approved.json()["company"]["crm_stage"] == "Approved"
+
+
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:
     SessionLocal = get_sessionmaker()
     with SessionLocal() as db:

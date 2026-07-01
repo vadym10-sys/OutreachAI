@@ -13,6 +13,7 @@ from starlette.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.routes import router as api_router
+from app.api.usage import router as usage_router
 from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
 from app.core.database import Base, get_engine
@@ -138,6 +139,7 @@ def sentry_error_probe() -> dict[str, str]:
 
 
 app.include_router(api_router, prefix="/api", tags=["api"])
+app.include_router(usage_router, prefix="/api/workspace-app", tags=["workspace-app"])
 app.include_router(webhook_router)
 
 
