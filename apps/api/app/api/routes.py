@@ -240,6 +240,25 @@ def _private_workspace_name(email: str = "") -> str:
 
 
 def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
+    workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
+    if workspace is not None:
+        if workspace.name in {"Outreach workspace", "Private workspace"}:
+            workspace.name = _private_workspace_name(email)
+            db.add(workspace)
+            db.flush()
+        existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
+        if existing_member:
+            existing_member.email = email or existing_member.email
+            existing_member.role = WorkspaceRole.owner
+            existing_member.status = "active"
+            db.add(existing_member)
+        else:
+            db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=email, role=WorkspaceRole.owner, status="active"))
+        db.commit()
+        db.refresh(workspace)
+        set_workspace_context(workspace.id)
+        return workspace
+
     member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active").order_by(WorkspaceMember.created_at.asc()))
     if member:
         if email and not member.email:
@@ -254,15 +273,9 @@ def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
                 db.commit()
             set_workspace_context(workspace.id)
             return workspace
-    workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
-    if workspace is None:
-        workspace = Workspace(owner_user_id=user_id, name=_private_workspace_name(email))
-        db.add(workspace)
-        db.flush()
-    elif workspace.name == "Outreach workspace":
-        workspace.name = _private_workspace_name(email)
-        db.add(workspace)
-        db.flush()
+    workspace = Workspace(owner_user_id=user_id, name=_private_workspace_name(email))
+    db.add(workspace)
+    db.flush()
     existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
     if existing_member:
         existing_member.email = email or existing_member.email

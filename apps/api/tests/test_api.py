@@ -42,7 +42,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -261,6 +261,28 @@ def test_workspace_me_creates_private_workspace_with_owner_email() -> None:
     second = client.get("/api/workspace/me", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "new-owner@example.com"})
     assert second.status_code == 200
     assert second.json()["id"] == data["id"]
+
+
+def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> None:
+    SessionLocal = get_sessionmaker()
+    user_email = "workspace-owner@example.com"
+    with SessionLocal() as db:
+        shared = Workspace(owner_user_id="shared-owner", name="Shared AI Workspace")
+        private = Workspace(owner_user_id=user_email, name="Outreach workspace")
+        db.add_all([shared, private])
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=shared.id, user_id=user_email, email=user_email, role=WorkspaceRole.member, status="active"))
+        db.commit()
+        shared_id = str(shared.id)
+        private_id = str(private.id)
+
+    response = client.get("/api/workspace/me", headers={"Authorization": "Bearer dev", "X-Test-User-Email": user_email})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == private_id
+    assert data["id"] != shared_id
+    assert data["name"] == "workspace-owner's workspace"
+    assert any(member["email"] == user_email and member["role"].lower() == "owner" for member in data["members"])
 
 
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:

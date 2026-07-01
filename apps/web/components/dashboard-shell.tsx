@@ -1,11 +1,11 @@
 "use client";
 
-import { Component, useCallback, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, useCallback, useEffect, useMemo, useState, type ErrorInfo, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { BarChart3, Bot, Building2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
+import { ArrowRight, BarChart3, Bot, Building2, CheckCircle2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
 import { e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -178,46 +178,54 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [workspaceLoadFailed, setWorkspaceLoadFailed] = useState(false);
+  const [workspaceSaving, setWorkspaceSaving] = useState(false);
+  const [workspaceNotice, setWorkspaceNotice] = useState("");
+  const [workspaceError, setWorkspaceError] = useState("");
+
+  const loadWorkspace = useCallback(async () => {
+    if (!ready) return null;
+    try {
+      const token = await getAuthToken();
+      if (!token) {
+        redirectToSignIn();
+        return null;
+      }
+      const loadedWorkspace = await clientApi<Workspace>("/api/workspace/me", token);
+      setWorkspace(loadedWorkspace);
+      setWorkspaceLoadFailed(false);
+      return loadedWorkspace;
+    } catch (error) {
+      if (isSessionExpiredError(error)) {
+        redirectToSignIn();
+        return null;
+      }
+      setWorkspaceLoadFailed(true);
+      Sentry.captureException(error, {
+        tags: { area: "workspace-shell", current_route: pathname },
+        extra: { user_id: userId }
+      });
+      captureLogRocketException(error, {
+        area: "workspace-shell",
+        current_route: pathname
+      });
+      trackEvent("workspace_shell_load_failed", { current_route: pathname });
+      return null;
+    }
+  }, [getAuthToken, pathname, ready, userId]);
 
   useEffect(() => {
     let cancelled = false;
-    async function loadWorkspace() {
-      if (!ready) return;
-      try {
-        const token = await getAuthToken();
-        if (!token) {
-          redirectToSignIn();
-          return;
-        }
-        const loadedWorkspace = await clientApi<Workspace>("/api/workspace/me", token);
-        if (!cancelled) {
-          setWorkspace(loadedWorkspace);
-          setWorkspaceLoadFailed(false);
-        }
-      } catch (error) {
-        if (isSessionExpiredError(error)) {
-          redirectToSignIn();
-          return;
-        }
-        if (!cancelled) {
-          setWorkspaceLoadFailed(true);
-        }
-        Sentry.captureException(error, {
-          tags: { area: "workspace-shell", current_route: pathname },
-          extra: { user_id: userId }
-        });
-        captureLogRocketException(error, {
-          area: "workspace-shell",
-          current_route: pathname
-        });
-        trackEvent("workspace_shell_load_failed", { current_route: pathname });
+    async function run() {
+      const loaded = await loadWorkspace();
+      if (cancelled && loaded) {
+        return;
       }
     }
-    void loadWorkspace();
+    void run();
     return () => {
       cancelled = true;
     };
-  }, [getAuthToken, pathname, ready, userId]);
+  }, [loadWorkspace]);
 
   useEffect(() => {
     Sentry.setUser({ id: userId, email: email || undefined });
@@ -236,6 +244,67 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const workspaceLabel = workspace?.name?.trim() || workspace?.company?.trim() || t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
+  const workspaceReadyScore = useMemo(() => {
+    if (!workspace) return 0;
+    return [workspace.name, workspace.company, workspace.industry, workspace.target_country, workspace.target_customer].filter((item) => String(item || "").trim()).length;
+  }, [workspace]);
+  const workspaceNeedsSetup = Boolean(workspace && workspaceReadyScore < 4);
+
+  async function saveWorkspace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setWorkspaceNotice("");
+    setWorkspaceError("");
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const payload = {
+      name: String(formData.get("name") || "").trim(),
+      company: String(formData.get("company") || "").trim(),
+      industry: String(formData.get("industry") || "").trim(),
+      target_country: String(formData.get("target_country") || "").trim(),
+      target_customer: String(formData.get("target_customer") || "").trim(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || workspace?.timezone || "UTC",
+      language: workspace?.language || "en",
+      onboarding_step: workspace?.onboarding_step || 1,
+      onboarding_completed: Boolean(workspace?.onboarding_completed)
+    };
+    if (!payload.name || !payload.company) {
+      setWorkspaceError(t("workspace.setupRequired"));
+      return;
+    }
+    setWorkspaceSaving(true);
+    try {
+      const token = await getAuthToken();
+      if (!token) {
+        redirectToSignIn();
+        return;
+      }
+      const updated = await clientApi<Workspace>("/api/workspace", token, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+      setWorkspace(updated);
+      setWorkspaceNotice(t("workspace.saved"));
+      trackEvent("workspace_setup_saved", {
+        has_company: Boolean(updated.company),
+        has_industry: Boolean(updated.industry),
+        has_target_country: Boolean(updated.target_country)
+      });
+    } catch (error) {
+      if (isSessionExpiredError(error)) {
+        redirectToSignIn();
+        return;
+      }
+      setWorkspaceError(error instanceof Error ? error.message.replace(/^REQUEST_FAILED:/, "") : t("workspace.saveFailed"));
+      Sentry.captureException(error, {
+        tags: { area: "workspace-setup", current_route: pathname },
+        extra: { user_id: userId, workspace_id: workspace?.id }
+      });
+      captureLogRocketException(error, { area: "workspace-setup", current_route: pathname });
+      trackEvent("workspace_setup_failed", { current_route: pathname });
+    } finally {
+      setWorkspaceSaving(false);
+    }
+  }
 
   return (
     <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
@@ -272,7 +341,11 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <div className="hidden shrink-0 min-[430px]:block">
             <LanguageSwitcher compact />
           </div>
-          <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full" aria-label={t("shell.account")}>
+          <div className="hidden min-w-0 shrink-0 text-right md:block">
+            <p className="truncate text-xs font-bold uppercase text-brand">{t("workspace.privateAccount")}</p>
+            <p className="max-w-52 truncate text-sm font-semibold text-slate-700">{workspaceOwnerEmail || email || t("shell.account")}</p>
+          </div>
+          <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full ring-2 ring-teal-100" aria-label={t("shell.account")}>
             {clerkEnabled && !isClerkE2EBypass ? (
               <UserButton
                 appearance={{
@@ -317,6 +390,46 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
         )}
         <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
+          <section className="mb-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+            <div className="grid gap-5 lg:grid-cols-[1.1fr_1.4fr] lg:items-start">
+              <div className="min-w-0">
+                <p className="text-sm font-bold uppercase text-brand">{t("workspace.privateAccount")}</p>
+                <h1 className="mt-2 text-2xl font-black tracking-tight text-ink sm:text-3xl">{workspaceLabel}</h1>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{t("workspace.privateCopy")}</p>
+                <div className="mt-4 grid gap-2 text-sm">
+                  <div className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{t("workspace.owner")}: {workspaceOwnerEmail || email || t("shell.account")}</div>
+                  <div className="flex items-center gap-2 rounded-xl bg-slate-50 p-3 font-semibold text-slate-700"><CheckCircle2 size={16} />{t("workspace.dataIsolation")}</div>
+                </div>
+              </div>
+              <form onSubmit={saveWorkspace} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm font-black text-ink">{t(workspaceNeedsSetup ? "workspace.finishSetup" : "workspace.setupComplete")}</p>
+                    <p className="mt-1 text-sm leading-6 text-slate-600">{t("workspace.setupCopy")}</p>
+                  </div>
+                  <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-black text-brand shadow-sm">{workspaceReadyScore}/5</span>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm font-bold text-slate-700">{t("workspace.name")}<input name="name" defaultValue={workspace?.name || ""} placeholder={t("workspace.namePlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
+                  <label className="text-sm font-bold text-slate-700">{t("workspace.company")}<input name="company" defaultValue={workspace?.company || ""} placeholder={t("workspace.companyPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
+                  <label className="text-sm font-bold text-slate-700">{t("workspace.industry")}<input name="industry" defaultValue={workspace?.industry || ""} placeholder={t("workspace.industryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
+                  <label className="text-sm font-bold text-slate-700">{t("workspace.targetCountry")}<input name="target_country" defaultValue={workspace?.target_country || ""} placeholder={t("workspace.countryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
+                  <label className="text-sm font-bold text-slate-700 sm:col-span-2">{t("workspace.targetCustomer")}<input name="target_customer" defaultValue={workspace?.target_customer || ""} placeholder={t("workspace.customerPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
+                </div>
+                {workspaceNotice && <p className="mt-3 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{workspaceNotice}</p>}
+                {workspaceError && <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{workspaceError}</p>}
+                <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <button type="submit" disabled={workspaceSaving} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-black text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60">
+                    {workspaceSaving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />}
+                    {t("workspace.save")}
+                  </button>
+                  <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
+                    {t("workspace.nextLeadFinder")} <ArrowRight size={17} />
+                  </Link>
+                </div>
+              </form>
+            </div>
+          </section>
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>
