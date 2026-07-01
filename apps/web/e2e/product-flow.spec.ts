@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 
 const pages = [
   ["/dashboard", "What should I do now?"],
@@ -171,7 +171,7 @@ test.beforeEach(async ({ page }) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
     let body: unknown = {};
-    if (apiPath === "/api/workspace") {
+    if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") {
       body = workspace;
     } else if (apiPath === "/api/leads") {
       body = { items: [lead], total: 1, page: 1, page_size: 100 };
@@ -304,13 +304,15 @@ test.describe("redesigned B2B outbound workspace", () => {
   test("dashboard does not crash when locale is Russian and widgets refresh", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.route("**/api/backend/api/workspace", async (route) => {
+    const fulfillRussianWorkspace = async (route: Route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({ ...workspace, language: "ru" })
       });
-    });
+    };
+    await page.route("**/api/backend/api/workspace", fulfillRussianWorkspace);
+    await page.route("**/api/backend/api/workspace/me", fulfillRussianWorkspace);
     await page.addInitScript(() => {
       window.localStorage.setItem("outreachai.locale", "ru");
     });
