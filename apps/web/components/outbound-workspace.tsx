@@ -437,28 +437,28 @@ function priorityScore(copilot?: SalesCopilot) {
 function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action?: React.ReactNode }) {
   const { t } = useI18n();
   return (
-    <header className="min-w-0 max-w-full overflow-hidden flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <header className="min-w-0 max-w-full overflow-hidden rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6 lg:flex lg:items-end lg:justify-between lg:gap-6">
       <div className="min-w-0 max-w-3xl">
         <p className="text-sm font-bold uppercase tracking-wide text-brand">{t(eyebrow)}</p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-ink min-[390px]:text-4xl">{t(title)}</h1>
+        <h1 className="mt-2 text-[clamp(2rem,7vw,3.5rem)] font-black leading-[0.98] tracking-tight text-ink">{t(title)}</h1>
         <p className="mt-3 text-sm leading-6 text-slate-600 min-[390px]:text-base">{t(copy)}</p>
       </div>
-      {action && <div className="min-w-0 max-w-full shrink-0 [&>a]:w-full [&>button]:w-full min-[430px]:[&>a]:w-auto min-[430px]:[&>button]:w-auto">{action}</div>}
+      {action && <div className="mt-5 min-w-0 max-w-full shrink-0 [&>a]:w-full [&>button]:w-full min-[430px]:[&>a]:w-auto min-[430px]:[&>button]:w-auto lg:mt-0">{action}</div>}
     </header>
   );
 }
 
 function PrimaryButton({ children, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }) {
-  return <button type={type} {...props} className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
+  return <button type={type} {...props} className="inline-flex min-h-12 max-w-full items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-black text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-teal-700 disabled:cursor-not-allowed disabled:translate-y-0 disabled:opacity-60">{children}</button>;
 }
 
 function SecondaryButton({ children, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }) {
-  return <button type={type} {...props} className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60">{children}</button>;
+  return <button type={type} {...props} className="inline-flex min-h-12 max-w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm transition hover:-translate-y-0.5 hover:border-slate-400 disabled:cursor-not-allowed disabled:translate-y-0 disabled:opacity-60">{children}</button>;
 }
 
 function EmptyState({ title, copy, action }: { title: string; copy: string; action?: React.ReactNode }) {
   const { t } = useI18n();
-  return <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center shadow-sm"><h2 className="text-lg font-bold text-ink">{t(title)}</h2><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">{t(copy)}</p>{action && <div className="mt-5 flex justify-center">{action}</div>}</section>;
+  return <section className="rounded-3xl border border-dashed border-slate-300 bg-white p-6 text-center shadow-sm sm:p-8"><div className="mx-auto grid size-12 place-items-center rounded-2xl bg-teal-50 text-brand"><Sparkles size={22} /></div><h2 className="mt-4 text-xl font-black text-ink">{t(title)}</h2><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">{t(copy)}</p>{action && <div className="mt-5 flex justify-center">{action}</div>}</section>;
 }
 
 function WidgetErrorCard({ title, copy = "This section could not update. The rest of your workspace is still available.", onRetry }: { title: string; copy?: string; onRetry?: () => void }) {
@@ -482,7 +482,38 @@ function WidgetErrorCard({ title, copy = "This section could not update. The res
 
 function MetricCard({ label, value, help }: { label: string; value: string; help: string }) {
   const { t } = useI18n();
-  return <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-semibold text-slate-500">{t(label)}</p><p className="mt-2 text-3xl font-bold text-ink">{value}</p><p className="mt-2 text-sm text-slate-600">{t(help)}</p></article>;
+  return <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-bold text-slate-500">{t(label)}</p><p className="mt-2 text-3xl font-black text-ink">{value}</p><p className="mt-2 text-sm leading-6 text-slate-600">{t(help)}</p></article>;
+}
+
+function ActionPanel({ eyebrow, title, copy, children }: { eyebrow: string; title: string; copy: string; children: ReactNode }) {
+  const { t } = useI18n();
+  return (
+    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <p className="text-sm font-bold uppercase text-brand">{t(eyebrow)}</p>
+      <h2 className="mt-2 text-2xl font-black tracking-tight text-ink">{t(title)}</h2>
+      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t(copy)}</p>
+      <div className="mt-5">{children}</div>
+    </section>
+  );
+}
+
+function LoadingSkeleton({ title = "Loading workspace" }: { title?: string }) {
+  const { t } = useI18n();
+  return (
+    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <p className="text-sm font-bold uppercase text-brand">{t(title)}</p>
+      <div className="mt-5 grid gap-3">
+        <div className="h-8 w-2/3 animate-pulse rounded-xl bg-slate-200" />
+        <div className="h-4 w-full animate-pulse rounded-xl bg-slate-100" />
+        <div className="h-4 w-5/6 animate-pulse rounded-xl bg-slate-100" />
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
+          <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
+          <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function WorkflowTracker({ activeStep, completedSteps }: { activeStep: string; completedSteps: string[] }) {
@@ -978,7 +1009,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
 export function DashboardHome() {
   const { metrics, leads, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
   const { t } = useI18n();
-  if (loading) return <EmptyState title={t("Loading your sales workspace")} copy={t("Collecting real leads, campaigns and metrics from your workspace.")} />;
+  if (loading) return <LoadingSkeleton title="Loading your private workspace" />;
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
   const nextStep = dashboardNextStep(metrics, leads, campaigns);
   const completedSteps = completedWorkflowSteps(metrics, leads, campaigns);
@@ -1019,6 +1050,28 @@ export function DashboardHome() {
           <p className="mt-3 text-sm leading-6 text-slate-600">{t(nextStep.copy)}</p>
           <Link href={nextStep.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white">{t(nextStep.label)}<ArrowRight size={17} /></Link>
         </section>
+      </WidgetBoundary>
+      <WidgetBoundary name="Customer success path">
+        <ActionPanel
+          eyebrow="Fastest path to value"
+          title="Get from one company to one reviewed email."
+          copy="The workspace is organized around the shortest useful sales path: find companies, complete research, review the email, then launch only after approval."
+        >
+          <div className="grid gap-3 md:grid-cols-4">
+            {[
+              ["1", "Find companies", "Search one focused market.", "/dashboard/leads"],
+              ["2", "Review CRM", "Open saved company workspaces.", "/dashboard/companies"],
+              ["3", "Approve outreach", "Review the AI email before sending.", "/dashboard/campaigns"],
+              ["4", "Track results", "Move replies through CRM.", "/dashboard/crm"]
+            ].map(([step, title, copy, href]) => (
+              <Link key={step} href={href} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:border-teal-200 hover:bg-teal-50">
+                <span className="grid size-9 place-items-center rounded-xl bg-white text-sm font-black text-brand shadow-sm">{step}</span>
+                <h3 className="mt-3 font-black text-ink">{t(title)}</h3>
+                <p className="mt-1 text-sm leading-6 text-slate-600">{t(copy)}</p>
+              </Link>
+            ))}
+          </div>
+        </ActionPanel>
       </WidgetBoundary>
       <WidgetBoundary name="Sales workflow">
         <WorkflowTracker activeStep={nextStep.step} completedSteps={completedSteps} />
@@ -1196,7 +1249,8 @@ export function LeadFinderPage() {
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
-      <form aria-label="Lead search" onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
+      <form aria-label="Lead search" onSubmit={submit} className="space-y-5">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">
           <p className="text-sm font-bold text-brand">{t("Step 1 of 3 · Choose a focused market")}</p>
           <p className="mt-1 text-sm leading-6 text-slate-700">{t("Use one country, one city and one industry. A narrower search creates better opportunities faster.")}</p>
@@ -1239,6 +1293,7 @@ export function LeadFinderPage() {
           {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
         </ol>}
       </form>
+      </ActionPanel>
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -1262,7 +1317,7 @@ export function LeadFinderPage() {
           </div>
         </form>
       </section>
-      {searching ? <EmptyState title="Searching companies..." copy="We are checking matching businesses and saving valid opportunities to CRM." /> : loading && !hasSearched ? <EmptyState title="Loading leads" copy="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
+      {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies" /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
         setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
         setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
       }} />)}</div> : <EmptyState title={hasSearched ? "No matching companies found" : "No real leads yet"} copy={hasSearched ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}
