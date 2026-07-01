@@ -56,6 +56,22 @@ type LeadSearchPayload = {
   limit: number;
 };
 
+type WorkspaceAppLeadSearchResponse = {
+  status: "success" | "partial_success" | "empty" | "provider_unavailable" | "timeout" | "error";
+  request_id: string;
+  message: string;
+  companies_saved: number;
+  duplicates_skipped: number;
+  companies: CrmCompany[];
+  warnings: string[];
+};
+
+type WorkspaceAppCompanyCreateResponse = {
+  status: "created" | "reused";
+  message: string;
+  company: CrmCompany;
+};
+
 const emptyMetrics: DashboardMetrics = {
   leads: 0,
   campaigns: 0,
@@ -1113,17 +1129,17 @@ export function LeadFinderPage() {
     const form = event.currentTarget;
     const data = new FormData(form);
     const payload = {
-      company: String(data.get("company") || "").trim(),
-      website: String(data.get("website") || "").trim(),
-      country: String(data.get("country") || "").trim(),
-      city: String(data.get("city") || "").trim(),
-      industry: String(data.get("industry") || "").trim(),
+      name: String(data.get("company") || "").trim(),
+      website: String(data.get("website") || "").trim() || undefined,
+      country: String(data.get("country") || "").trim() || undefined,
+      city: String(data.get("city") || "").trim() || undefined,
+      industry: String(data.get("industry") || "").trim() || undefined,
       contact: String(data.get("contact") || "").trim(),
-      email: String(data.get("email") || "").trim(),
-      phone: String(data.get("phone") || "").trim(),
+      email: String(data.get("email") || "").trim() || undefined,
+      phone: String(data.get("phone") || "").trim() || undefined,
       status: "New"
     };
-    if (!payload.company) {
+    if (!payload.name) {
       setMessage(t("Add the company name before saving."));
       return;
     }
@@ -1133,18 +1149,19 @@ export function LeadFinderPage() {
     setSearchSteps([t("Saving company to CRM...")]);
     try {
       const saved = await withTimeout(
-        api<Lead>("/api/leads", { method: "POST", body: JSON.stringify(payload) }),
+        api<WorkspaceAppCompanyCreateResponse>("/api/workspace-app/companies", { method: "POST", body: JSON.stringify(payload) }),
         30000,
         "Company save timed out. Please try again."
       );
-      setLeads((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
-      setSearchResults((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
-      setMessage(t("Company saved to CRM. Next: complete sales research.").replace("{company}", saved.company));
+      const lead = leadFromCrmCompany(saved.company);
+      setLeads((items) => [lead, ...items.filter((item) => item.id !== lead.id)]);
+      setSearchResults((items) => [lead, ...items.filter((item) => item.id !== lead.id)]);
+      setMessage(t(saved.message || "Company saved to CRM. Next: complete sales research."));
       setSearchSteps([t("Saved to CRM"), t("Ready for company research")]);
       form.reset();
       trackEvent("manual_lead_created", {
-        has_website: Boolean(saved.website || saved.domain),
-        has_email: Boolean(saved.email),
+        has_website: Boolean(lead.website || lead.domain),
+        has_email: Boolean(lead.email),
         source: "manual"
       });
     } catch (err) {
@@ -1183,27 +1200,33 @@ export function LeadFinderPage() {
       source: "lead_search"
     });
     try {
-      leadFinderDebug("FETCH_STARTED", { endpoint: "/api/leads/find" });
-      const found = await withTimeout(
-        api<Lead[]>("/api/leads/find", {
+      leadFinderDebug("FETCH_STARTED", { endpoint: "/api/workspace-app/leads/search" });
+      const result = await withTimeout(
+        api<WorkspaceAppLeadSearchResponse>("/api/workspace-app/leads/search", {
           method: "POST",
           body: JSON.stringify(payload),
-          timeoutMs: 35000,
-          direct: true
+          timeoutMs: 35000
         }),
         36000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
-      leadFinderDebug("FETCH_FINISHED", { status: "success", count: found.length });
-      setSearchSteps((items) => [...items, t("Found companies count").replace("{count}", String(found.length)), t("Saved to CRM")]);
+      const found = safeArray(result.companies).map(normalizeCrmCompany).map(leadFromCrmCompany);
+      leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id });
+      setSearchSteps((items) => {
+        const nextSteps = [...items, t("Found companies count").replace("{count}", String(found.length))];
+        if (found.length) nextSteps.push(t("Saved to CRM"));
+        if (result.warnings.length) nextSteps.push(t("Partial data available"));
+        return nextSteps;
+      });
       setLeads(found);
       setSearchResults(found);
-      setMessage(found.length ? t("Found companies saved to CRM").replace("{count}", String(found.length)) : t("No results. Try a broader city, industry, radius, or fewer filters."));
+      setMessage(result.message || (found.length ? t("Found companies saved to CRM").replace("{count}", String(found.length)) : t("No results. Try a broader city, industry, radius, or fewer filters.")));
       trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
         country: payload.country,
         city: payload.city,
         industry: payload.industry,
         result_count: found.length,
+        status: result.status,
         source: "lead_search"
       });
     } catch (err) {
