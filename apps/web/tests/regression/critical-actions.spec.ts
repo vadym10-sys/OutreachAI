@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockWorkspaceApi } from "../../mocks/workspace-api";
+import { mockWorkspaceApi, qaLead } from "../../mocks/workspace-api";
 import { installQaGuards } from "../helpers/qa-guards";
 
 test.beforeEach(async ({ page }) => {
@@ -17,6 +17,92 @@ test("lead search has loading, success, saved CRM result, and no global crash", 
   await expect(page.getByLabel("Lead search progress").getByText("Saved to CRM")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
   await guards.assertClean();
+});
+
+test("lead search empty result finishes with guidance and retry", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.route("**/api/backend/api/leads/find", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+  await page.goto("/dashboard/leads");
+  const leadSearch = page.getByRole("form", { name: "Lead search" });
+  await leadSearch.getByLabel("Country").fill("Germany");
+  await leadSearch.getByLabel("City").fill("Berlin");
+  await leadSearch.getByLabel("Industry").fill("Construction");
+  await leadSearch.getByRole("button", { name: "Find leads" }).click();
+  await expect(page.getByText("No results. Try a broader city, industry, radius, or fewer filters.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry search" })).toBeVisible();
+  await expect(page.getByText("Searching companies...")).not.toBeVisible();
+  await guards.assertClean();
+});
+
+test("lead search timeout ends loading and offers retry", async ({ page }, testInfo) => {
+  installQaGuards(page, testInfo);
+  await page.route("**/api/backend/api/leads/find", async (route) => {
+    await route.fulfill({
+      status: 504,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "This request took too long. Please try again with a smaller search." })
+    });
+  });
+  await page.goto("/dashboard/leads");
+  const leadSearch = page.getByRole("form", { name: "Lead search" });
+  await leadSearch.getByLabel("Country").fill("Germany");
+  await leadSearch.getByLabel("City").fill("Berlin");
+  await leadSearch.getByLabel("Industry").fill("Construction");
+  await leadSearch.getByRole("button", { name: "Find leads" }).click();
+  await expect(page.getByText("This request took too long. Please try again with a smaller search.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry search" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Find leads" })).toBeEnabled();
+  await expect(page.getByText("Something went wrong. Please refresh or sign in again.")).not.toBeVisible();
+});
+
+test("lead search provider error does not leave an infinite spinner", async ({ page }, testInfo) => {
+  installQaGuards(page, testInfo);
+  await page.route("**/api/backend/api/leads/find", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "Lead search is temporarily unavailable. Please try again later." })
+    });
+  });
+  await page.goto("/dashboard/leads");
+  const leadSearch = page.getByRole("form", { name: "Lead search" });
+  await leadSearch.getByLabel("Country").fill("Germany");
+  await leadSearch.getByLabel("City").fill("Berlin");
+  await leadSearch.getByLabel("Industry").fill("Construction");
+  await leadSearch.getByRole("button", { name: "Find leads" }).click();
+  await expect(page.getByText("Lead search is temporarily unavailable. Please try again later.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry search" })).toBeVisible();
+  await expect(page.getByText("Something went wrong. Please refresh or sign in again.")).not.toBeVisible();
+});
+
+test("lead search retry reuses the last filters and can recover", async ({ page }, testInfo) => {
+  installQaGuards(page, testInfo);
+  let attempts = 0;
+  await page.route("**/api/backend/api/leads/find", async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await route.fulfill({
+        status: 504,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "This request took too long. Please try again with a smaller search." })
+      });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([{ ...qaLead, company: "Retry Build GmbH" }]) });
+  });
+  await page.goto("/dashboard/leads");
+  const leadSearch = page.getByRole("form", { name: "Lead search" });
+  await leadSearch.getByLabel("Country").fill("Germany");
+  await leadSearch.getByLabel("City").fill("Berlin");
+  await leadSearch.getByLabel("Industry").fill("Construction");
+  await leadSearch.getByRole("button", { name: "Find leads" }).click();
+  await expect(page.getByRole("button", { name: "Retry search" })).toBeVisible();
+  await page.getByRole("button", { name: "Retry search" }).click();
+  await expect(page.getByRole("heading", { name: "Retry Build GmbH" })).toBeVisible();
+  expect(attempts).toBe(2);
+  await expect(page.getByText("Something went wrong. Please refresh or sign in again.")).not.toBeVisible();
 });
 
 test("manual company entry saves to CRM and becomes a research opportunity", async ({ page }, testInfo) => {

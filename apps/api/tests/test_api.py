@@ -522,9 +522,33 @@ def test_google_maps_missing_key_blocks_lead_finder(monkeypatch) -> None:
 
 def test_google_maps_timeout_returns_user_safe_error(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes.search_google_places", lambda payload: (_ for _ in ()).throw(GoogleMapsRequestError("Google Maps is temporarily unavailable after retries.")))
+    monkeypatch.setattr("app.api.routes.apollo_key_loaded", lambda: False)
     response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
     assert response.status_code == 502
     assert response.json()["detail"] == "This connection is temporarily unavailable. Please try again later."
+
+
+def test_lead_finder_uses_apollo_fallback_when_google_request_fails(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
+    monkeypatch.setattr("app.api.routes.search_google_places", lambda payload: (_ for _ in ()).throw(GoogleMapsRequestError("Google Maps timed out.")))
+    fallback_lead = LeadOut(
+        company="Fallback Build GmbH",
+        website="https://fallback-build.example",
+        industry="Construction",
+        country="Germany",
+        city="Munich",
+        notes='{"source":"apollo","domain":"fallback-build.example","apollo_company_id":"apollo_fallback_1"}',
+        domain="fallback-build.example",
+        apollo_company_id="apollo_fallback_1",
+        source="apollo",
+    )
+    monkeypatch.setattr("app.api.routes.search_apollo_companies", lambda payload: ApolloSearchResult(leads=[fallback_lead], raw_count=1, duration_ms=7))
+    response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Munich"})
+    assert response.status_code == 200
+    assert response.json()[0]["company"] == "Fallback Build GmbH"
+    with get_sessionmaker()() as db:
+        lead = db.scalar(select(Lead).where(Lead.company == "Fallback Build GmbH"))
+    assert lead is not None
 
 
 def test_google_maps_text_query_keeps_radius_out_of_search_phrase() -> None:

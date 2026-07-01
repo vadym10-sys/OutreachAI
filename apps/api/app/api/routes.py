@@ -3280,20 +3280,52 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
     if cached_search:
         _lead_trace(request_id, "lead_search_cache_hit", parsed_count=len(cached_search))
         result_leads = [LeadOut.model_validate(item) for item in cached_search]
+        lead_source = "google_maps_hunter"
+        lead_action = "google_maps.company_search"
     else:
         try:
             _lead_trace(request_id, "google_maps_request_started")
             result = search_google_places(payload)
+            _lead_trace(request_id, "google_maps_response_received", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
+            result_leads = result.leads
+            lead_source = "google_maps_hunter"
+            lead_action = "google_maps.company_search"
+        except GoogleMapsConfigurationError as exc:
+            _lead_trace(request_id, "google_maps_configuration_failed", error=str(exc), error_type=type(exc).__name__)
+            raise _provider_error(exc) from exc
         except Exception as exc:
             _lead_trace(request_id, "google_maps_request_failed", error=str(exc), error_type=type(exc).__name__)
-            raise _provider_error(exc) from exc
-        _lead_trace(request_id, "google_maps_response_received", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
-        result_leads = result.leads
+            if not apollo_key_loaded():
+                _lead_trace(request_id, "fallback_provider_unavailable", provider="apollo", reason="not_configured")
+                raise _provider_error(exc) from exc
+            try:
+                _lead_trace(request_id, "fallback_provider_request_started", provider="apollo")
+                fallback_result = search_apollo_companies(payload)
+                _lead_trace(
+                    request_id,
+                    "fallback_provider_response_received",
+                    provider="apollo",
+                    raw_count=fallback_result.raw_count,
+                    parsed_count=len(fallback_result.leads),
+                    duration_ms=fallback_result.duration_ms,
+                )
+                result_leads = fallback_result.leads
+                lead_source = "apollo_hunter_fallback"
+                lead_action = "apollo.company_search_fallback"
+            except Exception as fallback_exc:
+                _lead_trace(
+                    request_id,
+                    "fallback_provider_request_failed",
+                    provider="apollo",
+                    error=str(fallback_exc),
+                    error_type=type(fallback_exc).__name__,
+                )
+                raise _provider_error(fallback_exc) from fallback_exc
         set_json(search_cache_key, [lead.model_dump(mode="json") for lead in result_leads], settings.cache_lead_search_ttl_seconds)
     _lead_trace(request_id, "hunter_enrichment_started", leads=len(result_leads), hunter_configured=hunter_key_loaded())
     leads = _hunter_enriched_leads(db, request, user_id, workspace, result_leads)
     _lead_trace(request_id, "hunter_response_received", leads=len(leads), verified=sum(1 for lead in leads if lead.hunter_verified))
-    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="google_maps_hunter", action="google_maps.company_search", request_id=request_id)
+    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source=lead_source, action=lead_action, request_id=request_id)
     response = [_lead_out(lead) for lead in saved]
     _lead_trace(request_id, "frontend_response_ready", response_count=len(response), companies=[lead.company for lead in response[:5]])
     return response

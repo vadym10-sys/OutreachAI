@@ -5,14 +5,14 @@ import Link from "next/link";
 import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState, type ErrorInfo } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
-import { clientApi, friendlyErrorMessage, splitList } from "@/lib/client-api";
+import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Activity, AISalesEmployee, Campaign, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
 
-type ApiFn = <T>(path: string, init?: RequestInit) => Promise<T>;
+type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
 
 type PaginatedLeads = {
   items: Lead[];
@@ -41,6 +41,19 @@ type AnalysisResult = {
   sales_angle: string;
   expected_reply_rate: string;
   recommended_cta: string;
+};
+
+type LeadSearchPayload = {
+  country: string;
+  city: string;
+  industry: string;
+  category: string;
+  keyword: string;
+  company_size: string;
+  keywords: string[];
+  technologies: string[];
+  radius: number;
+  limit: number;
 };
 
 const emptyMetrics: DashboardMetrics = {
@@ -305,7 +318,7 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function devApi<T>(path: string, init: RequestInit = {}) {
+async function devApi<T>(path: string, init: ClientApiInit = {}) {
   return clientApi<T>(path, "dev", init);
 }
 
@@ -317,7 +330,7 @@ function useTokenApi(): { api: ApiFn; ready: boolean } {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   // The no-Clerk branch above is required for local/E2E builds where ClerkProvider is intentionally not mounted.
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const api = useCallback(async function api<T>(path: string, init: RequestInit = {}) {
+  const api = useCallback(async function api<T>(path: string, init: ClientApiInit = {}) {
     if (!isLoaded || !isSignedIn) throw new Error("Please sign in again before continuing.");
     let token = await getToken();
     for (let attempt = 0; !token && attempt < 20; attempt += 1) {
@@ -1030,6 +1043,7 @@ export function LeadFinderPage() {
   const [message, setMessage] = useState("");
   const [searchSteps, setSearchSteps] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
+  const [lastSearchPayload, setLastSearchPayload] = useState<LeadSearchPayload | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
   const { t } = useI18n();
   const visibleMessage = message;
@@ -1087,24 +1101,11 @@ export function LeadFinderPage() {
     }
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const payload = {
-      country: String(data.get("country") || ""),
-      city: String(data.get("city") || ""),
-      industry: String(data.get("industry") || ""),
-      category: String(data.get("category") || data.get("industry") || ""),
-      keyword: String(data.get("keyword") || ""),
-      company_size: String(data.get("company_size") || ""),
-      keywords: splitList(String(data.get("keywords") || "")),
-      technologies: splitList(String(data.get("technology") || "")),
-      radius: Number(data.get("radius") || 10000),
-      limit: Number(data.get("limit") || 10)
-    };
+  async function runLeadSearch(payload: LeadSearchPayload) {
     setSearching(true);
     setHasSearched(true);
     setSearchResults([]);
+    setLastSearchPayload(payload);
     setSearchSteps([t("Connecting to lead sources...")]);
     setMessage(t("Searching companies..."));
     trackEvent("lead_finder_search_started", {
@@ -1119,9 +1120,10 @@ export function LeadFinderPage() {
       const found = await withTimeout(
         api<Lead[]>("/api/leads/find", {
           method: "POST",
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          timeoutMs: 65000
         }),
-        45000,
+        66000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
       setSearchSteps((items) => [...items, t("Found companies count").replace("{count}", String(found.length)), t("Saved to CRM")]);
@@ -1155,6 +1157,24 @@ export function LeadFinderPage() {
       setSearching(false);
     }
   }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const payload: LeadSearchPayload = {
+      country: String(data.get("country") || ""),
+      city: String(data.get("city") || ""),
+      industry: String(data.get("industry") || ""),
+      category: String(data.get("category") || data.get("industry") || ""),
+      keyword: String(data.get("keyword") || ""),
+      company_size: String(data.get("company_size") || ""),
+      keywords: splitList(String(data.get("keywords") || "")),
+      technologies: splitList(String(data.get("technology") || "")),
+      radius: Number(data.get("radius") || 10000),
+      limit: Number(data.get("limit") || 10)
+    };
+    await runLeadSearch(payload);
+  }
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
@@ -1186,7 +1206,14 @@ export function LeadFinderPage() {
           <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
           <p className="text-sm text-slate-600">{t("Expected time: 30-60 seconds. Saved companies will stay after refresh.")}</p>
         </div>
-        {visibleMessage && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{visibleMessage}</p>}
+        {visibleMessage && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm font-semibold text-slate-700">{visibleMessage}</p>
+          {hasSearched && !searching && lastSearchPayload && searchResults.length === 0 && (
+            <button type="button" onClick={() => runLeadSearch(lastSearchPayload)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm">
+              <Search size={16} /> {t("Retry search")}
+            </button>
+          )}
+        </div>}
         {searchSteps.length > 0 && <ol className="mt-4 grid gap-2 text-sm sm:grid-cols-3" aria-label="Lead search progress">
           {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
         </ol>}

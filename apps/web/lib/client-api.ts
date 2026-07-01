@@ -66,32 +66,51 @@ function safeApiMessage(status: number, detail: string) {
   return sanitizeUserMessage(backendDetail, 'Something went wrong while processing your request. Please try again.');
 }
 
-export async function clientApi<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
+export type ClientApiInit = RequestInit & {
+  timeoutMs?: number;
+};
+
+export async function clientApi<T>(path: string, token: string | null, init: ClientApiInit = {}): Promise<T> {
   let response: Response;
+  const { timeoutMs = 30000, signal, ...requestInit } = init;
+  const controller = new AbortController();
+  let didTimeout = false;
+  const timeoutId = globalThis.setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, timeoutMs);
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) abortFromCaller();
+  signal?.addEventListener('abort', abortFromCaller, { once: true });
 
   try {
     response = await fetch(`${apiProxyUrl}${path}`, {
-      ...init,
+      ...requestInit,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...init.headers
-      }
+        ...requestInit.headers
+      },
+      signal: controller.signal
     });
   } catch (error) {
+    const timedOut = didTimeout;
     Sentry.captureException(error, {
-      tags: { area: 'api-client', api_status: 'network-error' },
-      extra: { path }
+      tags: { area: 'api-client', api_status: timedOut ? 'timeout' : 'network-error' },
+      extra: { path, timeout_ms: timeoutMs }
     });
     captureLogRocketException(error, {
       area: 'api-client',
       endpoint: path,
-      api_status: 'network-error'
+      api_status: timedOut ? 'timeout' : 'network-error'
     });
-    trackEvent('api_network_error', {
+    trackEvent(timedOut ? 'api_request_timeout' : 'api_network_error', {
       area: 'customer_action'
     });
-    throw new Error('REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
+    throw new Error(timedOut ? 'REQUEST_FAILED:This request took too long. Please try again with a smaller search.' : 'REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
 
   if (!response.ok) {
