@@ -21,7 +21,7 @@ from app.core.cache import cache_key, get_json, set_json
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
 from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
-from app.core.security import CurrentUser, OwnerUser
+from app.core.security import CurrentUser, CurrentUserContext, OwnerUser
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
@@ -233,19 +233,44 @@ def _month_period() -> str:
     return datetime.utcnow().strftime("%Y-%m")
 
 
-def _current_workspace(db: Session, user_id: str) -> Workspace:
+def _private_workspace_name(email: str = "") -> str:
+    if email:
+        return f"{email.split('@')[0]}'s workspace"
+    return "Private workspace"
+
+
+def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
     member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active").order_by(WorkspaceMember.created_at.asc()))
     if member:
+        if email and not member.email:
+            member.email = email
+            db.add(member)
+            db.commit()
         workspace = db.get(Workspace, member.workspace_id)
         if workspace:
+            if workspace.name == "Outreach workspace":
+                workspace.name = _private_workspace_name(email)
+                db.add(workspace)
+                db.commit()
             set_workspace_context(workspace.id)
             return workspace
     workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
     if workspace is None:
-        workspace = Workspace(owner_user_id=user_id)
+        workspace = Workspace(owner_user_id=user_id, name=_private_workspace_name(email))
         db.add(workspace)
         db.flush()
-    db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, role=WorkspaceRole.owner, status="active"))
+    elif workspace.name == "Outreach workspace":
+        workspace.name = _private_workspace_name(email)
+        db.add(workspace)
+        db.flush()
+    existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
+    if existing_member:
+        existing_member.email = email or existing_member.email
+        existing_member.role = WorkspaceRole.owner
+        existing_member.status = "active"
+        db.add(existing_member)
+    else:
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=email, role=WorkspaceRole.owner, status="active"))
     db.commit()
     db.refresh(workspace)
     set_workspace_context(workspace.id)
@@ -4144,8 +4169,13 @@ def inbox(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[EmailMess
 
 
 @router.get("/workspace", response_model=WorkspaceOut)
-def get_workspace(user_id: CurrentUser, db: Session = Depends(get_db)) -> WorkspaceOut:
-    return _workspace_out(db, _current_workspace(db, user_id))
+def get_workspace(user: CurrentUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+    return _workspace_out(db, _current_workspace(db, user.user_id, user.email))
+
+
+@router.get("/workspace/me", response_model=WorkspaceOut)
+def get_my_workspace(user: CurrentUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+    return _workspace_out(db, _current_workspace(db, user.user_id, user.email))
 
 
 @router.put("/workspace", response_model=WorkspaceOut)

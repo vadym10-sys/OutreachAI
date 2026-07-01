@@ -152,7 +152,7 @@ export async function mockWorkspaceApi(page: Page) {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
-    if (apiPath === "/api/workspace") return fulfillJson(route, {
+    if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, {
       id: "99999999-9999-9999-9999-999999999999",
       name: "QA Private Workspace",
       company: "QA Private Workspace",

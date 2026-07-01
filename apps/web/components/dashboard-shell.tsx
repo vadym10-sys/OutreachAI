@@ -38,6 +38,20 @@ const featureFlags = {
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function redirectToSignIn() {
+  if (typeof window === "undefined" || !hasClerkPublishableKey || isClerkE2EBypass) return;
+  const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
+  window.location.assign(`/sign-in?redirect_url=${redirectUrl}`);
+}
+
+function isSessionExpiredError(error: unknown) {
+  return error instanceof Error && /sign in again|session has expired/i.test(error.message);
+}
+
 function currentE2EUserEmail() {
   try {
     if (typeof window === "undefined") return e2eUserEmail;
@@ -48,6 +62,10 @@ function currentE2EUserEmail() {
     }
     return e2eUserEmail;
   }
+}
+
+async function getE2EAuthToken() {
+  return isClerkE2EBypass ? "dev" : null;
 }
 
 function useDashboardIdentity() {
@@ -68,7 +86,7 @@ function useDashboardIdentity() {
       email: testEmail,
       workspaceId: "e2e-workspace",
       ready: true,
-      getAuthToken: async () => (isClerkE2EBypass ? "dev" : null)
+      getAuthToken: getE2EAuthToken
     };
   }
 
@@ -78,7 +96,15 @@ function useDashboardIdentity() {
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const { getToken, isLoaded, isSignedIn } = useAuth();
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const getAuthToken = useCallback(() => getToken(), [getToken]);
+  const getAuthToken = useCallback(async () => {
+    if (!isLoaded || !isSignedIn) return null;
+    let token = await getToken();
+    for (let attempt = 0; !token && attempt < 20; attempt += 1) {
+      await delay(100);
+      token = await getToken();
+    }
+    return token;
+  }, [getToken, isLoaded, isSignedIn]);
   const currentEmail = user?.primaryEmailAddress?.emailAddress || user?.emailAddresses?.[0]?.emailAddress || "";
   const publicMetadata = user?.publicMetadata as { workspace_id?: unknown; workspaceId?: unknown } | undefined;
   return {
@@ -156,13 +182,20 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       if (!ready) return;
       try {
         const token = await getAuthToken();
-        if (!token) return;
-        const loadedWorkspace = await clientApi<Workspace>("/api/workspace", token);
+        if (!token) {
+          redirectToSignIn();
+          return;
+        }
+        const loadedWorkspace = await clientApi<Workspace>("/api/workspace/me", token);
         if (!cancelled) {
           setWorkspace(loadedWorkspace);
           setWorkspaceLoadFailed(false);
         }
       } catch (error) {
+        if (isSessionExpiredError(error)) {
+          redirectToSignIn();
+          return;
+        }
         if (!cancelled) {
           setWorkspaceLoadFailed(true);
         }
@@ -198,7 +231,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   }, [email, pathname, userId, workspace?.id, workspaceId]);
 
   const workspaceLabel = workspace?.name?.trim() || workspace?.company?.trim() || t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
-  const accountLabel = email ? `${t("shell.account")}: ${email}` : t("shell.privateWorkspace");
+  const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
+  const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
 
   return (
     <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
@@ -220,28 +254,12 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         </nav>
       </aside>
       <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-64">
-        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-hidden border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
+        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="relative lg:hidden">
               <button type="button" onClick={() => setMobileMenuOpen((open) => !open)} className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300 bg-white text-slate-700" aria-label={t("nav.open")} aria-expanded={mobileMenuOpen}>
                 <Menu size={20} aria-hidden="true" />
               </button>
-              {mobileMenuOpen && <div className="absolute left-0 top-12 z-40 w-[min(82vw,19rem)] rounded-lg border border-slate-200 bg-white p-2 shadow-soft">
-                <div className="mb-2 rounded-md border border-slate-200 bg-slate-50 p-2 min-[430px]:hidden">
-                  <LanguageSwitcher compact />
-                </div>
-                {visibleNav.map((item) => {
-                  const Icon = item.icon;
-                  const active = pathname === item.href;
-                  const label = t(item.labelKey);
-                  return (
-                    <Link key={item.href} href={item.href} onClick={() => setMobileMenuOpen(false)} className={`flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
-                      <Icon size={18} aria-hidden="true" />
-                      {label}
-                    </Link>
-                  );
-                })}
-              </div>}
             </div>
             <div className="min-w-0">
               <span className="block truncate text-sm font-semibold text-slate-700">{workspaceLabel}</span>
@@ -261,6 +279,33 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
         </header>
+        {mobileMenuOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden">
+            <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-950/20" onClick={() => setMobileMenuOpen(false)} />
+            <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),20rem)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+              <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="truncate text-sm font-bold text-ink">{workspaceLabel}</p>
+                <p className="mt-1 truncate text-xs font-semibold text-slate-500">{accountLabel}</p>
+                <div className="mt-3 min-[430px]:hidden">
+                  <LanguageSwitcher compact />
+                </div>
+              </div>
+              <nav className="space-y-1" aria-label={t("nav.open")}>
+                {visibleNav.map((item) => {
+                  const Icon = item.icon;
+                  const active = pathname === item.href;
+                  const label = t(item.labelKey);
+                  return (
+                    <Link key={item.href} href={item.href} onClick={() => setMobileMenuOpen(false)} className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
+                      <Icon size={18} aria-hidden="true" />
+                      {label}
+                    </Link>
+                  );
+                })}
+              </nav>
+            </div>
+          </div>
+        )}
         <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>

@@ -62,7 +62,7 @@ test.describe("customer workspace routes", () => {
       const url = new URL(route.request().url());
       const apiPath = url.pathname.replace(/^\/api\/backend/, "");
       const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
-      if (apiPath === "/api/workspace") {
+      if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") {
         return json({
           id: "workspace-private-test",
           name: "Private Test Workspace",
@@ -138,13 +138,41 @@ test.describe("customer workspace routes", () => {
 
     await expect(page.getByRole("heading", { name: "Что мне делать сейчас?" })).toBeVisible();
     await expect(page.locator(appHeader)).toContainText("QA Private Workspace");
-    await expect(page.locator(appHeader)).toContainText("Приватное пространство");
+    await expect(page.locator(appHeader)).toContainText("Аккаунт: qa@example.com");
     await expect(page.locator("body")).not.toContainText("What should I do now?");
     await expect(page.locator("body")).not.toContainText("Dashboard details are temporarily unavailable");
     await expect(page.locator("body")).not.toContainText("Find your first qualified companies");
     await expect(page.locator("body")).not.toContainText("Sales workflow");
     await expect(page.locator("body")).not.toContainText("Current step");
     await expect(page.locator("body")).not.toContainText("OutreachAI keeps one obvious next action");
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
+  test("mobile drawer opens, shows the private account, navigates, and closes without overflow", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+
+    await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+    await expect(page.locator(appHeader)).toContainText("QA Private Workspace");
+    await expect(page.locator(appHeader)).toContainText("Account: qa@example.com");
+    await expectNoHorizontalOverflow(page);
+
+    const openNavigation = page.getByRole("button", { name: "Open navigation" });
+    await expect(openNavigation).toBeVisible();
+    await openNavigation.click();
+
+    const drawer = page.getByRole("dialog", { name: "Open navigation" });
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText("QA Private Workspace");
+    await expect(drawer).toContainText("Account: qa@example.com");
+    await expect(drawer.getByRole("link", { name: "Companies" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+
+    await drawer.getByRole("link", { name: "Companies" }).click();
+    await expect(page).toHaveURL(/\/dashboard\/companies$/);
+    await expect(page.getByRole("heading", { name: "Every company is saved in your CRM." })).toBeVisible();
+    await expect(drawer).not.toBeVisible();
     await expectNoHorizontalOverflow(page);
     await guards.assertClean();
   });

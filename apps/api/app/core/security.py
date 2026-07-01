@@ -182,7 +182,8 @@ def get_current_user_context(
     settings = get_settings()
 
     if settings.app_env == "development" and token == "dev":
-        return AuthenticatedUser(user_id="dev_user", email=(x_test_user_email or "").strip().lower())
+        test_user = (x_test_user_email or "").strip().lower()
+        return AuthenticatedUser(user_id=test_user or "dev_user", email=test_user)
 
     claims = _verify_clerk_token(token)
     user_id = str(claims["sub"])

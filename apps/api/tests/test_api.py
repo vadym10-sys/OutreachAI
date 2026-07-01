@@ -248,6 +248,21 @@ def test_workspace_data_is_private_between_users(monkeypatch) -> None:
     assert lead_id
 
 
+def test_workspace_me_creates_private_workspace_with_owner_email() -> None:
+    response = client.get("/api/workspace/me", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "new-owner@example.com"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "new-owner's workspace"
+    assert data["name"] != "Outreach workspace"
+    assert data["company"] == ""
+    assert data["members"][0]["email"] == "new-owner@example.com"
+    assert data["members"][0]["role"].lower() == "owner"
+
+    second = client.get("/api/workspace/me", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "new-owner@example.com"})
+    assert second.status_code == 200
+    assert second.json()["id"] == data["id"]
+
+
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:
     SessionLocal = get_sessionmaker()
     with SessionLocal() as db:
