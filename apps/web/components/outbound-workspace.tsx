@@ -1121,9 +1121,9 @@ export function LeadFinderPage() {
         api<Lead[]>("/api/leads/find", {
           method: "POST",
           body: JSON.stringify(payload),
-          timeoutMs: 65000
+          timeoutMs: 35000
         }),
-        66000,
+        36000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
       setSearchSteps((items) => [...items, t("Found companies count").replace("{count}", String(found.length)), t("Saved to CRM")]);
@@ -1204,7 +1204,7 @@ export function LeadFinderPage() {
         </details>
         <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
           <PrimaryButton disabled={searching}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
-          <p className="text-sm text-slate-600">{t("Expected time: 30-60 seconds. Saved companies will stay after refresh.")}</p>
+          <p className="text-sm text-slate-600">{t("Expected time: 20-30 seconds. Saved companies will stay after refresh.")}</p>
         </div>
         {visibleMessage && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm font-semibold text-slate-700">{visibleMessage}</p>

@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 const backendUrl = process.env.BACKEND_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 const hopByHopHeaders = new Set(["connection", "content-length", "keep-alive", "transfer-encoding", "upgrade"]);
 const defaultProxyTimeoutMs = 30000;
-const longRunningTimeoutMs = 65000;
+const longRunningTimeoutMs = 35000;
 
 function targetUrl(parts: string[]) {
   const base = backendUrl.replace(/\/$/, "");

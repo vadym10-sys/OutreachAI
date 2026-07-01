@@ -433,52 +433,9 @@ def test_find_leads_imports_real_provider_results(monkeypatch) -> None:
     assert lead["business_category"] == "Construction company"
 
 
-def test_lead_finder_persists_ai_intelligence_from_website_analysis(monkeypatch) -> None:
+def test_lead_finder_returns_before_inline_website_analysis(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
-    monkeypatch.setattr(
-        "app.api.routes.collect_website",
-        lambda url: type(
-            "Snapshot",
-            (),
-            {
-                "url": "https://intelligence-build.example",
-                "title": "Intelligence Build",
-                "meta_description": "Commercial construction services",
-                "text": "Commercial construction, renovation, project management, contact us",
-                "technologies": ["WordPress"],
-            },
-        )(),
-    )
-    monkeypatch.setattr(
-        "app.api.routes.analyze_company_website",
-        lambda **kwargs: AnalysisOut(
-            company="Intelligence Build GmbH",
-            website="https://intelligence-build.example",
-            description="Commercial construction services",
-            industry="Construction",
-            location="Berlin, Germany",
-            niche="Commercial construction",
-            products_services=["Renovation", "Project management"],
-            services=["Renovation", "Project management"],
-            technologies=["WordPress"],
-            strengths=["Clear services"],
-            weaknesses=["Weak CTA"],
-            icp_score=82,
-            summary="A Berlin construction firm with a clear commercial services offer.",
-            icp="Owner-led commercial construction companies",
-            value_proposition="Reliable commercial renovation delivery",
-            detected_language="English",
-            target_geography="Germany",
-            sales_angle="Turn website traffic into qualified project calls.",
-            company_summary="Intelligence Build serves commercial renovation buyers in Germany.",
-            suggested_offer="Offer a booked-project consultation system.",
-            outreach_strategy="Lead with the weak CTA and propose a short growth audit.",
-            recommended_tone="Consultative",
-            recommended_cta="Book a 15 minute growth audit",
-            follow_up_strategy="Follow up with one website-specific improvement.",
-            expected_reply_rate="8-12%",
-        ),
-    )
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("inline analysis should not run")))
     monkeypatch.setattr(
         "app.api.routes.search_google_places",
         lambda payload: GooglePlacesSearchResult(
@@ -504,11 +461,8 @@ def test_lead_finder_persists_ai_intelligence_from_website_analysis(monkeypatch)
     response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Berlin"})
     assert response.status_code == 200
     lead = response.json()[0]
-    assert lead["ai_summary"] == "Intelligence Build serves commercial renovation buyers in Germany."
-    assert lead["suggested_offer"] == "Offer a booked-project consultation system."
-    assert lead["outreach_strategy"] == "Lead with the weak CTA and propose a short growth audit."
-    assert lead["sales_angle"] == "Turn website traffic into qualified project calls."
-    assert lead["expected_reply_rate"] == "8-12%"
+    assert lead["company"] == "Intelligence Build GmbH"
+    assert lead["ai_summary"] is None
 
 
 def test_google_maps_missing_key_blocks_lead_finder(monkeypatch) -> None:
@@ -549,6 +503,56 @@ def test_lead_finder_uses_apollo_fallback_when_google_request_fails(monkeypatch)
     with get_sessionmaker()() as db:
         lead = db.scalar(select(Lead).where(Lead.company == "Fallback Build GmbH"))
     assert lead is not None
+
+
+def test_lead_finder_returns_partial_results_when_hunter_times_out(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.LEAD_PROVIDER_TIMEOUT_SECONDS", 1)
+    lead = LeadOut(
+        company="Partial Hunter Timeout GmbH",
+        website="https://partial-hunter-timeout.example",
+        industry="Construction",
+        country="Germany",
+        city="Hamburg",
+        notes='{"source":"google_maps","domain":"partial-hunter-timeout.example","place_id":"google_partial_hunter_timeout"}',
+        domain="partial-hunter-timeout.example",
+        place_id="google_partial_hunter_timeout",
+        source="google_maps",
+    )
+    monkeypatch.setattr("app.api.routes.search_google_places", lambda payload: GooglePlacesSearchResult(leads=[lead], raw_count=1, duration_ms=5))
+
+    def slow_hunter(leads: list[LeadOut]) -> list[LeadOut]:
+        time.sleep(2)
+        return leads
+
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", slow_hunter)
+    response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Hamburg"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["company"] == "Partial Hunter Timeout GmbH"
+    assert payload[0]["email"] is None
+    with get_sessionmaker()() as db:
+        lead_record = db.scalar(select(Lead).where(Lead.company == "Partial Hunter Timeout GmbH"))
+    assert lead_record is not None
+
+
+def test_lead_finder_does_not_run_inline_website_analysis_before_response(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes.enrich_leads_with_hunter", lambda leads: leads)
+    lead = LeadOut(
+        company="Response First Build GmbH",
+        website="https://response-first-build.example",
+        industry="Construction",
+        country="Germany",
+        city="Cologne",
+        notes='{"source":"google_maps","domain":"response-first-build.example","place_id":"google_response_first"}',
+        domain="response-first-build.example",
+        place_id="google_response_first",
+        source="google_maps",
+    )
+    monkeypatch.setattr("app.api.routes.search_google_places", lambda payload: GooglePlacesSearchResult(leads=[lead], raw_count=1, duration_ms=5))
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("inline analysis should not run")))
+    response = client.post("/api/leads/find", headers=AUTH, json={"industry": "Construction", "country": "Germany", "city": "Cologne"})
+    assert response.status_code == 200
+    assert response.json()[0]["company"] == "Response First Build GmbH"
 
 
 def test_google_maps_text_query_keeps_radius_out_of_search_phrase() -> None:

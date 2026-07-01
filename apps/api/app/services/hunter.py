@@ -189,9 +189,9 @@ def _hunter_get(path: str, params: dict[str, Any], operation: str) -> dict[str, 
     query["api_key"] = api_key
     last_error: Exception | None = None
     started = time.monotonic()
-    for attempt in range(1, 4):
+    for attempt in range(1, 3):
         try:
-            with httpx.Client(timeout=httpx.Timeout(16.0, connect=5.0)) as client:
+            with httpx.Client(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
                 response = client.get(f"{HUNTER_BASE_URL}{path}", params=query)
                 response.raise_for_status()
                 data = response.json()
@@ -216,7 +216,7 @@ def _hunter_get(path: str, params: dict[str, Any], operation: str) -> dict[str, 
             last_error = exc
             logger.warning("%s request_error attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
             capture_provider_exception(exc, provider="hunter", endpoint=operation, extra={"attempt": attempt, "duration_ms": _duration_ms(started)})
-        if attempt < 3:
+        if attempt < 2:
             time.sleep(0.35 * attempt)
     raise HunterRequestError(f"Hunter is temporarily unavailable after retries. Apollo leads were saved without verified Hunter emails. Last error: {last_error}") from last_error
 

@@ -98,9 +98,9 @@ def _apollo_post(path: str, body: dict[str, Any], operation: str) -> dict[str, A
     }
     last_error: Exception | None = None
     started = time.monotonic()
-    for attempt in range(1, 4):
+    for attempt in range(1, 3):
         try:
-            with httpx.Client(timeout=httpx.Timeout(20.0, connect=6.0), headers=headers) as client:
+            with httpx.Client(timeout=httpx.Timeout(8.0, connect=3.0), headers=headers) as client:
                 response = client.post(f"{APOLLO_BASE_URL}{path}", json=body)
                 response.raise_for_status()
                 data = response.json()
@@ -141,7 +141,7 @@ def _apollo_post(path: str, body: dict[str, Any], operation: str) -> dict[str, A
             last_error = exc
             logger.warning("%s request_error attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
             capture_provider_exception(exc, provider="apollo", endpoint=operation, extra={"attempt": attempt, "duration_ms": _duration_ms(started)})
-        if attempt < 3:
+        if attempt < 2:
             time.sleep(0.35 * attempt)
 
     raise ApolloRequestError(f"Apollo is temporarily unavailable after retries. Last error: {last_error}") from last_error

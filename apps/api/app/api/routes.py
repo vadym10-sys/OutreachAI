@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import concurrent.futures
 import io
 import json
 import logging
@@ -198,6 +199,7 @@ from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError,
 
 router = APIRouter()
 logger = logging.getLogger("outreachai.api.routes")
+LEAD_PROVIDER_TIMEOUT_SECONDS = 10
 
 
 LEGACY_STATUS_MAP = {
@@ -932,7 +934,7 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
 def _provider_error(exc: Exception) -> HTTPException:
     if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError, HunterConfigurationError, GoogleMapsConfigurationError)):
         return HTTPException(status_code=503, detail="This connection is not ready. Please contact the workspace owner.")
-    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError, GoogleMapsRequestError)):
+    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError, GoogleMapsRequestError, LeadProviderTimeoutError)):
         return HTTPException(status_code=502, detail="This connection is temporarily unavailable. Please try again later.")
     return HTTPException(status_code=500, detail="Something went wrong while processing your request. Please try again.")
 
@@ -962,6 +964,28 @@ def _skipped_website_analysis(company: str, website: str, niche: str | None = No
 def _lead_trace(request_id: str, step: str, **data: Any) -> None:
     safe = {key: value for key, value in data.items() if key not in {"api_key", "secret", "token"}}
     logger.info("lead_finder_trace request_id=%s step=%s data=%s", request_id, step, json.dumps(safe, default=str, ensure_ascii=False, sort_keys=True)[:4000])
+
+
+class LeadProviderTimeoutError(RuntimeError):
+    pass
+
+
+def _run_provider_with_deadline(request_id: str, provider: str, operation: str, func: Any, *args: Any, timeout_seconds: int | None = None) -> Any:
+    timeout_seconds = timeout_seconds or LEAD_PROVIDER_TIMEOUT_SECONDS
+    started = time.monotonic()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"lead-{provider}")
+    future = executor.submit(func, *args)
+    try:
+        result = future.result(timeout=timeout_seconds)
+        _lead_trace(request_id, f"{provider}_finished", operation=operation, duration_ms=int((time.monotonic() - started) * 1000))
+        return result
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()
+        _lead_trace(request_id, f"{provider}_timeout", operation=operation, timeout_seconds=timeout_seconds, duration_ms=int((time.monotonic() - started) * 1000))
+        capture_provider_exception(exc, provider=provider, endpoint=operation, extra={"request_id": request_id, "timeout_seconds": timeout_seconds})
+        raise LeadProviderTimeoutError(f"{operation} timed out after {timeout_seconds} seconds") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _icp_score(analysis: AnalysisOut, lead: Lead) -> int:
@@ -3275,6 +3299,7 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
         resend_configured=bool(get_app_settings().resend_api_key),
     )
     _require_active_subscription(db, workspace)
+    _lead_trace(request_id, "validation_passed", workspace_id=str(workspace.id), limit=payload.limit, country=payload.country, city=payload.city, industry=payload.industry)
     search_cache_key = cache_key("lead-search", workspace.id, payload.model_dump(mode="json"))
     cached_search = get_json(search_cache_key)
     if cached_search:
@@ -3284,23 +3309,23 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
         lead_action = "google_maps.company_search"
     else:
         try:
-            _lead_trace(request_id, "google_maps_request_started")
-            result = search_google_places(payload)
-            _lead_trace(request_id, "google_maps_response_received", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
+            _lead_trace(request_id, "google_places_started", timeout_seconds=LEAD_PROVIDER_TIMEOUT_SECONDS)
+            result = _run_provider_with_deadline(request_id, "google_places", "google_places.search", search_google_places, payload)
+            _lead_trace(request_id, "google_places_finished", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
             result_leads = result.leads
             lead_source = "google_maps_hunter"
             lead_action = "google_maps.company_search"
         except GoogleMapsConfigurationError as exc:
-            _lead_trace(request_id, "google_maps_configuration_failed", error=str(exc), error_type=type(exc).__name__)
+            _lead_trace(request_id, "google_places_configuration_failed", error=str(exc), error_type=type(exc).__name__)
             raise _provider_error(exc) from exc
         except Exception as exc:
-            _lead_trace(request_id, "google_maps_request_failed", error=str(exc), error_type=type(exc).__name__)
+            _lead_trace(request_id, "google_places_failed", error=str(exc), error_type=type(exc).__name__)
             if not apollo_key_loaded():
                 _lead_trace(request_id, "fallback_provider_unavailable", provider="apollo", reason="not_configured")
                 raise _provider_error(exc) from exc
             try:
                 _lead_trace(request_id, "fallback_provider_request_started", provider="apollo")
-                fallback_result = search_apollo_companies(payload)
+                fallback_result = _run_provider_with_deadline(request_id, "apollo", "apollo.company_search", search_apollo_companies, payload)
                 _lead_trace(
                     request_id,
                     "fallback_provider_response_received",
@@ -3322,12 +3347,12 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
                 )
                 raise _provider_error(fallback_exc) from fallback_exc
         set_json(search_cache_key, [lead.model_dump(mode="json") for lead in result_leads], settings.cache_lead_search_ttl_seconds)
-    _lead_trace(request_id, "hunter_enrichment_started", leads=len(result_leads), hunter_configured=hunter_key_loaded())
+    _lead_trace(request_id, "hunter_started", leads=len(result_leads), hunter_configured=hunter_key_loaded(), timeout_seconds=LEAD_PROVIDER_TIMEOUT_SECONDS)
     leads = _hunter_enriched_leads(db, request, user_id, workspace, result_leads)
-    _lead_trace(request_id, "hunter_response_received", leads=len(leads), verified=sum(1 for lead in leads if lead.hunter_verified))
-    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source=lead_source, action=lead_action, request_id=request_id)
+    _lead_trace(request_id, "hunter_finished", leads=len(leads), verified=sum(1 for lead in leads if lead.hunter_verified))
+    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source=lead_source, action=lead_action, request_id=request_id, run_inline_analysis=False)
     response = [_lead_out(lead) for lead in saved]
-    _lead_trace(request_id, "frontend_response_ready", response_count=len(response), companies=[lead.company for lead in response[:5]])
+    _lead_trace(request_id, "response_returned", response_count=len(response), companies=[lead.company for lead in response[:5]])
     return response
 
 
@@ -3364,7 +3389,14 @@ def _hunter_enriched_leads(db: Session, request: Request, user_id: str, workspac
         return leads
     settings = _settings_for_workspace(db, user_id, workspace)
     try:
-        enriched = enrich_leads_with_hunter(leads)
+        request_id = request.headers.get("x-request-id") or str(uuid4())
+        enriched = _run_provider_with_deadline(request_id, "hunter", "hunter.enrichment", enrich_leads_with_hunter, leads)
+    except LeadProviderTimeoutError as exc:
+        friendly = "Contact enrichment took too long. Companies were saved without verified emails. Try finding contacts again from the company profile."
+        _save_hunter_settings_state(db, settings, connected=False, last_error=friendly)
+        log_event(db, request, user_id, "hunter.enrichment_timeout", {"reason": friendly})
+        capture_provider_exception(exc, provider="hunter", endpoint="hunter.enrichment", workspace_id=workspace.id)
+        return leads
     except Exception as exc:
         friendly = _provider_error(exc).detail
         _save_hunter_settings_state(db, settings, connected=False, last_error=str(friendly))
@@ -3387,6 +3419,7 @@ def _save_provider_leads(
     source: str,
     action: str,
     request_id: str = "",
+    run_inline_analysis: bool = True,
 ) -> list[Lead]:
     saved: list[Lead] = []
     reused: list[Lead] = []
@@ -3431,7 +3464,10 @@ def _save_provider_leads(
         db.flush()
         _add_lead_activity(db, request, user_id, workspace, "lead.found", lead, {"source": source})
         _lead_trace(request_id or str(uuid4()), "database_lead_inserted", lead_id=str(lead.id), company=lead.company, website=lead.website or "", email=lead.email or "")
-        _analyze_lead_if_possible(db, user_id, workspace, lead)
+        if run_inline_analysis:
+            _analyze_lead_if_possible(db, user_id, workspace, lead)
+        else:
+            _lead_trace(request_id or str(uuid4()), "website_analysis_deferred", lead_id=str(lead.id), company=lead.company, reason="lead_finder_response_first")
         _sync_lead_to_crm(db, user_id, workspace, lead)
         _add_lead_activity(db, request, user_id, workspace, "lead.saved_to_crm", lead, {"source": source, "crm_stage": _crm_stage_for_lead(lead)})
         if _lead_metadata(lead).get("website_analyzed_at"):
@@ -3450,6 +3486,7 @@ def _save_provider_leads(
         _notify(db, user_id, NotificationKind.info, "Lead search finished", "No matching companies were found for those filters.")
     db.commit()
     _lead_trace(request_id or str(uuid4()), "database_save_committed", saved=len(saved), duplicates_skipped=skipped)
+    _lead_trace(request_id or str(uuid4()), "database_save_finished", saved=len(saved), duplicates_skipped=skipped, returned=len(saved) + len(reused))
     return saved + reused
 
 
