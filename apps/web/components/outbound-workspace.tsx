@@ -331,6 +331,20 @@ function leadFinderDebug(step: string, details?: Record<string, unknown>) {
   console.info(step, details || {});
 }
 
+function workspaceSearchMessage(result: WorkspaceAppLeadSearchResponse, count: number, t: (key: string) => string) {
+  if (count > 0) return t("Found companies saved to CRM").replace("{count}", String(count));
+  if (result.status === "empty") return t("No results. Try a broader city, industry, radius, or fewer filters.");
+  if (result.status === "timeout") return t("Lead search timed out. Try a smaller radius or broader filters.");
+  if (result.status === "provider_unavailable") return t("Lead search is temporarily unavailable. Please try again later.");
+  if (result.status === "partial_success") return t("Partial results were saved. Some data can be completed later.");
+  return t("Lead search could not be completed.");
+}
+
+function workspaceManualSaveMessage(result: WorkspaceAppCompanyCreateResponse, company: Lead, t: (key: string) => string) {
+  if (result.status === "reused") return t("This company already exists in your CRM.");
+  return t("Company saved to CRM. Next: complete sales research.").replace("{company}", company.company);
+}
+
 function redirectToSignIn() {
   if (typeof window === "undefined" || !hasClerkPublishableKey || isClerkE2EBypass) return;
   const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
@@ -1156,7 +1170,7 @@ export function LeadFinderPage() {
       const lead = leadFromCrmCompany(saved.company);
       setLeads((items) => [lead, ...items.filter((item) => item.id !== lead.id)]);
       setSearchResults((items) => [lead, ...items.filter((item) => item.id !== lead.id)]);
-      setMessage(t(saved.message || "Company saved to CRM. Next: complete sales research."));
+      setMessage(workspaceManualSaveMessage(saved, lead, t));
       setSearchSteps([t("Saved to CRM"), t("Ready for company research")]);
       form.reset();
       trackEvent("manual_lead_created", {
@@ -1220,7 +1234,7 @@ export function LeadFinderPage() {
       });
       setLeads(found);
       setSearchResults(found);
-      setMessage(result.message || (found.length ? t("Found companies saved to CRM").replace("{count}", String(found.length)) : t("No results. Try a broader city, industry, radius, or fewer filters.")));
+      setMessage(workspaceSearchMessage(result, found.length, t));
       trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
         country: payload.country,
         city: payload.city,
