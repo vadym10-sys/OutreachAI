@@ -249,6 +249,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     return [workspace.name, workspace.company, workspace.industry, workspace.target_country, workspace.target_customer].filter((item) => String(item || "").trim()).length;
   }, [workspace]);
   const workspaceNeedsSetup = Boolean(workspace && workspaceReadyScore < 4);
+  const showWorkspaceSetupPanel = workspaceNeedsSetup;
 
   async function saveWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -387,7 +388,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           </div>
         )}
         <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
-          <section className="mb-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          {showWorkspaceSetupPanel && <section className="mb-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <div className="grid gap-5 lg:grid-cols-[1.1fr_1.4fr] lg:items-start">
               <div className="min-w-0">
                 <p className="text-sm font-bold uppercase text-brand">{t("workspace.privateAccount")}</p>
@@ -429,12 +430,12 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     {t("workspace.save")}
                   </button>
                   <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
-                    {t("workspace.nextLeadFinder")} <ArrowRight size={17} />
+                    {t("nav.leads")} <ArrowRight size={17} />
                   </Link>
                 </div>
               </form>
             </div>
-          </section>
+          </section>}
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>

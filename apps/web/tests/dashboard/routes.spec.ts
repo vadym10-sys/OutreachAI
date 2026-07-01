@@ -245,7 +245,7 @@ test.describe("customer workspace routes", () => {
     });
 
     await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "Your private workspace is ready" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
     await expect(page.getByRole("main")).toContainText("Dashboard details are temporarily unavailable");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("The page failed to render");
@@ -255,7 +255,7 @@ test.describe("customer workspace routes", () => {
   test("malformed company data is normalized and cannot crash the companies page", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.route("**/api/backend/api/crm/companies", async (route) => {
+    await page.route("**/api/backend/api/workspace-app/companies", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",

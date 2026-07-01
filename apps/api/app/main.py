@@ -4,6 +4,7 @@ import logging
 import sys
 import time
 import traceback
+from uuid import uuid4
 
 import sentry_sdk
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -86,27 +87,47 @@ app.add_middleware(
 @app.middleware("http")
 async def sentry_request_context(request: Request, call_next) -> Response:
     started = time.perf_counter()
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    request.state.request_id = request_id
     set_request_context(request)
+    sentry_sdk.set_tag("request_id", request_id)
     sentry_sdk.set_tag("endpoint", request.url.path)
     sentry_sdk.set_tag("environment", settings.app_env)
     sentry_sdk.set_tag("release", "outreachai-api@1.0.0")
-    sentry_sdk.set_context("transaction", {"name": sentry_transaction_name(request)})
+    sentry_sdk.set_context("transaction", {"name": sentry_transaction_name(request), "request_id": request_id})
     try:
         response = await call_next(request)
     except Exception:
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         sentry_sdk.set_tag("request_duration_ms", duration_ms)
-        sentry_sdk.set_context("request_performance", {"duration_ms": duration_ms, "path": request.url.path})
+        sentry_sdk.set_context("request_performance", {"duration_ms": duration_ms, "path": request.url.path, "request_id": request_id})
+        logger.exception(
+            "Request failed request_id=%s method=%s path=%s duration_ms=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms
+        )
         raise
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
     response.headers["X-Response-Time-Ms"] = str(duration_ms)
+    response.headers["X-Request-ID"] = request_id
     sentry_sdk.set_tag("request_duration_ms", duration_ms)
+    logger.info(
+        "Request completed request_id=%s method=%s path=%s status=%s duration_ms=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms
+    )
     if duration_ms >= settings.slow_request_ms:
-        logger.warning("Slow request path=%s duration_ms=%s", request.url.path, duration_ms)
+        logger.warning("Slow request request_id=%s path=%s duration_ms=%s", request_id, request.url.path, duration_ms)
         with sentry_sdk.new_scope() as scope:
+            scope.set_tag("request_id", request_id)
             scope.set_tag("endpoint", request.url.path)
             scope.set_tag("kind", "slow_request")
-            scope.set_context("request_performance", {"duration_ms": duration_ms, "path": request.url.path})
+            scope.set_context("request_performance", {"duration_ms": duration_ms, "path": request.url.path, "request_id": request_id})
             sentry_sdk.capture_message("Slow API request", level="warning")
     return response
 

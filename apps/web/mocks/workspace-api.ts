@@ -65,7 +65,7 @@ const qaCampaign = {
   created_at: now
 };
 
-const qaCompany = {
+export const qaCompany = {
   id: "44444444-4444-4444-4444-444444444444",
   lead_id: qaLead.id,
   name: qaLead.company,
@@ -208,6 +208,68 @@ export async function mockWorkspaceApi(page: Page) {
     }
     if (apiPath === "/api/leads") return fulfillJson(route, { items: [qaLead], total: 1, page: 1, page_size: 100 });
     if (apiPath === "/api/leads/find") return fulfillJson(route, [qaLead]);
+    if (apiPath === "/api/workspace-app/bootstrap") {
+      return fulfillJson(route, {
+        workspace: {
+          id: "99999999-9999-9999-9999-999999999999",
+          name: "QA Private Workspace"
+        },
+        counts: { leads: 1, companies: 1, campaigns: 1, emails: 1, deals: 1 },
+        metrics: { leads: 1, companies: 1, contacts: 1, campaigns: 1, emails: 1, deals: 1 },
+        next_action: "Review saved companies",
+        recent_companies: [qaCompany],
+        recent_activity: qaCompany.activity
+      });
+    }
+    if (apiPath === "/api/workspace-app/leads/search") {
+      return fulfillJson(route, {
+        request_id: "qa-request",
+        status: "success",
+        provider_status: { google_maps: "success", hunter: "success", openai: "success", database: "success" },
+        companies: [qaCompany],
+        saved_count: 1,
+        duplicates_skipped: 0,
+        warnings: [],
+        message: "Found 1 company. Saved to CRM."
+      });
+    }
+    if (apiPath === "/api/workspace-app/companies" && route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as Partial<typeof qaCompany>;
+      return fulfillJson(route, {
+        status: "created",
+        company: {
+          ...qaCompany,
+          id: "44444444-4444-4444-4444-444444444445",
+          name: body.name || "Manual Company",
+          website: body.website || null,
+          country: body.country || null,
+          city: body.city || null,
+          industry: body.industry || null,
+          phone: body.phone || null,
+          email: body.email || null,
+          source: "manual",
+          email_status: body.email ? "Manual" : "Not found",
+          crm_stage: "New Lead",
+          contacts: body.email ? qaCompany.contacts : [],
+          deals: [],
+          notes: [],
+          activity: [{ id: "88888888-8888-8888-8888-888888888889", action: "company.manual_created", metadata_json: {}, created_at: now }],
+          generated_emails: [],
+          created_at: now,
+          found_at: now,
+          saved_to_crm_at: now,
+          website_analyzed_at: null,
+          contact_found_at: body.email ? now : null,
+          email_generated_at: null,
+          last_activity_at: now,
+          stage_changed_at: now
+        },
+        warnings: [],
+        message: "Company saved to CRM."
+      });
+    }
+    if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [qaCompany]);
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, qaCompany);
     if (apiPath === "/api/dashboard") return fulfillJson(route, { leads: 1, campaigns: 1, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: "Starter", usage: { leads: 1, email_sends: 0 } });
     if (apiPath === "/api/campaigns") return fulfillJson(route, route.request().method() === "POST" ? qaCampaign : [qaCampaign]);
     if (apiPath === `/api/campaigns/${qaCampaign.id}/launch`) return fulfillJson(route, { ...qaCampaign, status: "Running" });

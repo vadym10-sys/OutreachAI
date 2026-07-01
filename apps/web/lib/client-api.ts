@@ -15,7 +15,14 @@ export function friendlyErrorMessage(error: unknown, fallback: string) {
   return sanitizeUserMessage(error.message, fallback);
 }
 
-async function logApiFailure(path: string, response: Response) {
+function createRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function logApiFailure(path: string, response: Response, requestId: string) {
   let detail = '';
   try {
     detail = await response.text();
@@ -23,7 +30,7 @@ async function logApiFailure(path: string, response: Response) {
     detail = 'Response body could not be read.';
   }
   if (!isProduction) {
-    console.error('OutreachAI API request failed', { path, status: response.status, detail });
+    console.error('OutreachAI API request failed', { path, status: response.status, request_id: requestId, detail });
   }
   Sentry.addBreadcrumb({
     category: 'api',
@@ -31,22 +38,26 @@ async function logApiFailure(path: string, response: Response) {
     message: 'OutreachAI API request failed',
     data: {
       path,
-      status: response.status
+      status: response.status,
+      request_id: requestId
     }
   });
   Sentry.captureException(new Error(`API request failed: ${response.status} ${path}`), {
     tags: {
       area: 'api-client',
-      api_status: String(response.status)
+      api_status: String(response.status),
+      request_id: requestId
     },
     extra: {
       path,
       status: response.status,
+      request_id: requestId,
+      response_request_id: response.headers.get('x-request-id') || '',
       response_detail: detail.slice(0, 1000)
     }
   });
-  trackLogRocketApiFailure(path, response.status, detail);
-  trackEvent('api_request_failed', { area: 'customer_action' });
+  trackLogRocketApiFailure(path, response.status, `${detail}\nrequest_id=${requestId}`);
+  trackEvent('api_request_failed', { area: 'customer_action', request_id: requestId, status: response.status });
   return detail;
 }
 
@@ -75,6 +86,13 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   let response: Response;
   const { timeoutMs = 30000, signal, direct = false, ...requestInit } = init;
   const requestPath = direct ? path : `${apiProxyUrl}${path}`;
+  const requestId = createRequestId();
+  const headers = new Headers(requestInit.headers);
+  headers.set('Content-Type', headers.get('Content-Type') || 'application/json');
+  headers.set('X-Request-ID', headers.get('X-Request-ID') || requestId);
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
   const controller = new AbortController();
   let didTimeout = false;
   const timeoutId = globalThis.setTimeout(() => {
@@ -88,26 +106,24 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   try {
     response = await fetch(requestPath, {
       ...requestInit,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...requestInit.headers
-      },
+      headers,
       signal: controller.signal
     });
   } catch (error) {
     const timedOut = didTimeout;
     Sentry.captureException(error, {
-      tags: { area: 'api-client', api_status: timedOut ? 'timeout' : 'network-error' },
-      extra: { path: requestPath, timeout_ms: timeoutMs }
+      tags: { area: 'api-client', api_status: timedOut ? 'timeout' : 'network-error', request_id: requestId },
+      extra: { path: requestPath, timeout_ms: timeoutMs, request_id: requestId }
     });
     captureLogRocketException(error, {
       area: 'api-client',
       endpoint: requestPath,
-      api_status: timedOut ? 'timeout' : 'network-error'
+      api_status: timedOut ? 'timeout' : 'network-error',
+      request_id: requestId
     });
     trackEvent(timedOut ? 'api_request_timeout' : 'api_network_error', {
-      area: 'customer_action'
+      area: 'customer_action',
+      request_id: requestId
     });
     throw new Error(timedOut ? 'REQUEST_FAILED:This request took too long. Please try again with a smaller search.' : 'REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
   } finally {
@@ -116,7 +132,7 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   }
 
   if (!response.ok) {
-    const detail = await logApiFailure(requestPath, response);
+    const detail = await logApiFailure(requestPath, response, requestId);
     throw new Error(`REQUEST_FAILED:${safeApiMessage(response.status, detail)}`);
   }
 

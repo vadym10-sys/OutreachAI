@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockWorkspaceApi, qaLead } from "../../mocks/workspace-api";
+import { mockWorkspaceApi, qaCompany } from "../../mocks/workspace-api";
 import { installQaGuards } from "../helpers/qa-guards";
 
 test.describe.configure({ mode: "serial" });
@@ -11,9 +11,9 @@ test.beforeEach(async ({ page }) => {
 test("lead search has loading, success, saved CRM result, and no global crash", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   let leadFindRequests = 0;
-  await page.route("**/api/leads/find", async (route) => {
+  await page.route("**/api/workspace-app/leads/search", async (route) => {
     leadFindRequests += 1;
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([qaLead]) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ request_id: "qa-search", status: "success", provider_status: { google_maps: "success", hunter: "success", openai: "success", database: "success" }, companies: [qaCompany], saved_count: 1, duplicates_skipped: 0, warnings: [], message: "Found 1 company. Saved to CRM." }) });
   });
   await page.goto("/dashboard/leads");
   const leadSearch = page.getByRole("form", { name: "Lead search" });
@@ -29,8 +29,8 @@ test("lead search has loading, success, saved CRM result, and no global crash", 
 
 test("lead search empty result finishes with guidance and retry", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
-  await page.route("**/api/leads/find", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  await page.route("**/api/workspace-app/leads/search", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ request_id: "qa-empty", status: "empty", provider_status: { google_maps: "empty", hunter: "skipped", openai: "skipped", database: "skipped" }, companies: [], saved_count: 0, duplicates_skipped: 0, warnings: [], message: "No companies were found." }) });
   });
   await page.goto("/dashboard/leads");
   const leadSearch = page.getByRole("form", { name: "Lead search" });
@@ -46,7 +46,7 @@ test("lead search empty result finishes with guidance and retry", async ({ page 
 
 test("lead search timeout ends loading and offers retry", async ({ page }, testInfo) => {
   installQaGuards(page, testInfo);
-  await page.route("**/api/leads/find", async (route) => {
+  await page.route("**/api/workspace-app/leads/search", async (route) => {
     await route.fulfill({
       status: 504,
       contentType: "application/json",
@@ -67,7 +67,7 @@ test("lead search timeout ends loading and offers retry", async ({ page }, testI
 
 test("lead search provider error does not leave an infinite spinner", async ({ page }, testInfo) => {
   installQaGuards(page, testInfo);
-  await page.route("**/api/leads/find", async (route) => {
+  await page.route("**/api/workspace-app/leads/search", async (route) => {
     await route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -88,7 +88,7 @@ test("lead search provider error does not leave an infinite spinner", async ({ p
 test("lead search retry reuses the last filters and can recover", async ({ page }, testInfo) => {
   installQaGuards(page, testInfo);
   let attempts = 0;
-  await page.route("**/api/leads/find", async (route) => {
+  await page.route("**/api/workspace-app/leads/search", async (route) => {
     attempts += 1;
     if (attempts === 1) {
       await route.fulfill({
@@ -98,7 +98,7 @@ test("lead search retry reuses the last filters and can recover", async ({ page 
       });
       return;
     }
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([{ ...qaLead, company: "Retry Build GmbH" }]) });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ request_id: "qa-retry", status: "success", provider_status: { google_maps: "success", hunter: "success", openai: "success", database: "success" }, companies: [{ ...qaCompany, name: "Retry Build GmbH" }], saved_count: 1, duplicates_skipped: 0, warnings: [], message: "Found 1 company. Saved to CRM." }) });
   });
   await page.goto("/dashboard/leads");
   const leadSearch = page.getByRole("form", { name: "Lead search" });

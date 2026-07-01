@@ -95,6 +95,14 @@ type WorkspaceAppBootstrapResponse = {
     emails: number;
     deals: number;
   };
+  metrics?: Partial<DashboardMetrics> & {
+    leads?: number;
+    companies?: number;
+    contacts?: number;
+    campaigns?: number;
+    emails?: number;
+    deals?: number;
+  };
   next_action: string;
   recent_companies: CrmCompany[];
   recent_activity: Array<{ action: string; created_at: string; company?: string; message?: string }>;
@@ -191,10 +199,11 @@ function normalizePipeline(value: Partial<CrmPipeline> | undefined | null): CrmP
 }
 
 function metricsFromWorkspaceBootstrap(bootstrap: WorkspaceAppBootstrapResponse, fallback: Partial<DashboardMetrics> | null = null): DashboardMetrics {
+  const counts = workspaceBootstrapCounts(bootstrap);
   return safeDashboardMetrics({
     ...fallback,
-    leads: bootstrap.counts.leads || bootstrap.counts.companies || fallback?.leads || 0,
-    campaigns: bootstrap.counts.campaigns || fallback?.campaigns || 0,
+    leads: counts.leads || counts.companies || fallback?.leads || 0,
+    campaigns: counts.campaigns || fallback?.campaigns || 0,
     emails_sent: fallback?.emails_sent || 0,
     pipeline: crmStages.map((stage) => ({
       status: stage,
@@ -202,9 +211,9 @@ function metricsFromWorkspaceBootstrap(bootstrap: WorkspaceAppBootstrapResponse,
       revenue: 0
     })),
     funnel: [
-      { status: "Companies", count: bootstrap.counts.companies },
-      { status: "Emails", count: bootstrap.counts.emails },
-      { status: "Deals", count: bootstrap.counts.deals }
+      { status: "Companies", count: counts.companies },
+      { status: "Emails", count: counts.emails },
+      { status: "Deals", count: counts.deals }
     ]
   });
 }
@@ -214,6 +223,23 @@ function pipelineFromCompanies(companies: CrmCompany[], deals: CrmDeal[] = []): 
     stages: crmStages,
     companies,
     deals
+  };
+}
+
+function workspaceBootstrapCounts(bootstrap: WorkspaceAppBootstrapResponse) {
+  const counts = bootstrap.counts || {
+    leads: bootstrap.metrics?.leads || bootstrap.metrics?.companies || 0,
+    companies: bootstrap.metrics?.companies || bootstrap.metrics?.leads || 0,
+    campaigns: bootstrap.metrics?.campaigns || 0,
+    emails: bootstrap.metrics?.emails || bootstrap.metrics?.emails_sent || 0,
+    deals: bootstrap.metrics?.deals || 0
+  };
+  return {
+    leads: Number(counts.leads || 0),
+    companies: Number(counts.companies || 0),
+    campaigns: Number(counts.campaigns || 0),
+    emails: Number(counts.emails || 0),
+    deals: Number(counts.deals || 0)
   };
 }
 
@@ -1122,7 +1148,7 @@ export function DashboardHome() {
     <div className="space-y-6">
       <PageHeader
         eyebrow={t("Today")}
-        title={t(hasAnyData ? "What should I do now?" : "Your private workspace is ready")}
+        title={t("What should I do now?")}
         copy={t(hasAnyData ? "OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system." : "This is your private account. Leads, CRM, campaigns, billing and settings are visible only to your workspace. Start with one real company or a focused lead search.")}
         action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={17} /></Link>}
       />
@@ -1132,7 +1158,7 @@ export function DashboardHome() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <p className="text-sm font-bold uppercase text-brand">{t("Private workspace")}</p>
-            <h2 className="mt-2 text-2xl font-bold text-ink">{t("Your workspace is clean and private.")}</h2>
+            <h2 className="mt-2 text-2xl font-bold text-ink">{t("Your private workspace is ready")}</h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">{t("No shared demo CRM is loaded. Add your first company or run Lead Finder, and every saved lead will belong only to this account.")}</p>
           </div>
           <div className="grid min-w-0 gap-2 sm:grid-cols-3 lg:w-[34rem]">
@@ -1227,7 +1253,9 @@ export function LeadFinderPage() {
       return;
     }
     setManualBusy(true);
-    setHasSearched(false);
+    setHasSearched(true);
+    setLastSearchPayload(null);
+    setSearchResults([]);
     setMessage(t("Saving company to CRM..."));
     setSearchSteps([t("Saving company to CRM...")]);
     try {
@@ -1295,10 +1323,11 @@ export function LeadFinderPage() {
       );
       const found = safeArray(result.companies).map(normalizeCrmCompany).map(leadFromCrmCompany);
       leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id });
+      const warnings = safeArray(result.warnings);
       setSearchSteps((items) => {
         const nextSteps = [...items, t("Found companies count").replace("{count}", String(found.length))];
         if (found.length) nextSteps.push(t("Saved to CRM"));
-        if (result.warnings.length) nextSteps.push(t("Partial data available"));
+        if (warnings.length) nextSteps.push(t("Partial data available"));
         return nextSteps;
       });
       setLeads(found);
@@ -1944,10 +1973,16 @@ export function CampaignsPage() {
     setNotice("");
     try {
       const campaign = await api<Campaign>("/api/campaigns", { method: "POST", body: JSON.stringify(payload) });
+      let attachWarning = "";
       if (lead?.id) {
-        await api<Lead>(`/api/leads/${lead.id}`, { method: "PATCH", body: JSON.stringify({ campaign_id: campaign.id, status: "Qualified" }) });
+        try {
+          await api<Lead>(`/api/leads/${lead.id}`, { method: "PATCH", body: JSON.stringify({ campaign_id: campaign.id, status: "Qualified" }) });
+        } catch (attachError) {
+          reportWidgetFailure(attachError, "campaign-lead-attach", { campaign_id: campaign.id, lead_id: lead.id });
+          attachWarning = " Campaign was created, but the first lead could not be attached automatically. Open CRM and add leads manually.";
+        }
       }
-      setNotice("Campaign created. Your first opportunity was added for review; no email was sent.");
+      setNotice(`Campaign created. Your first opportunity was added for review; no email was sent.${attachWarning}`);
       trackEvent("campaign_created_from_workspace", { campaign_id: campaign.id, first_lead_id: lead?.id || "" });
       form.reset();
       await refresh();

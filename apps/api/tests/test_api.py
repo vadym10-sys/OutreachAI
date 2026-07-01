@@ -121,6 +121,14 @@ def test_health() -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.headers.get("x-request-id")
+    assert response.headers.get("x-response-time-ms")
+
+
+def test_request_id_is_echoed_for_traceability() -> None:
+    response = client.get("/api/health", headers={"X-Request-ID": "test-request-123"})
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "test-request-123"
     assert response.headers.get("x-response-time-ms")
 
 
