@@ -11,7 +11,7 @@ import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useAuthRuntime } from "@/components/app-providers";
 import { useI18n } from "@/lib/i18n/provider";
-import { clientApi } from "@/lib/client-api";
+import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
 import type { Workspace } from "@/lib/types";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
@@ -262,10 +262,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       industry: String(formData.get("industry") || "").trim(),
       target_country: String(formData.get("target_country") || "").trim(),
       target_customer: String(formData.get("target_customer") || "").trim(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || workspace?.timezone || "UTC",
-      language: workspace?.language || "en",
-      onboarding_step: workspace?.onboarding_step || 1,
-      onboarding_completed: Boolean(workspace?.onboarding_completed)
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || workspace?.timezone || "UTC"
     };
     if (!payload.name || !payload.company) {
       setWorkspaceError(t("workspace.setupRequired"));
@@ -294,7 +291,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         redirectToSignIn();
         return;
       }
-      setWorkspaceError(error instanceof Error ? error.message.replace(/^REQUEST_FAILED:/, "") : t("workspace.saveFailed"));
+      setWorkspaceError(friendlyErrorMessage(error, t("workspace.saveFailed")));
       Sentry.captureException(error, {
         tags: { area: "workspace-setup", current_route: pathname },
         extra: { user_id: userId, workspace_id: workspace?.id }
@@ -409,12 +406,20 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   </div>
                   <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-black text-brand shadow-sm">{workspaceReadyScore}/5</span>
                 </div>
+                <div className="mt-4 rounded-2xl border border-teal-100 bg-white p-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-brand">{t("workspace.howItWorksTitle")}</p>
+                  <ol className="mt-2 grid gap-2 text-sm font-semibold text-slate-700">
+                    <li>{t("workspace.stepCompany")}</li>
+                    <li>{t("workspace.stepMarket")}</li>
+                    <li>{t("workspace.stepLeads")}</li>
+                  </ol>
+                </div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm font-bold text-slate-700">{t("workspace.name")}<input name="name" defaultValue={workspace?.name || ""} placeholder={t("workspace.namePlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
-                  <label className="text-sm font-bold text-slate-700">{t("workspace.company")}<input name="company" defaultValue={workspace?.company || ""} placeholder={t("workspace.companyPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
-                  <label className="text-sm font-bold text-slate-700">{t("workspace.industry")}<input name="industry" defaultValue={workspace?.industry || ""} placeholder={t("workspace.industryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
-                  <label className="text-sm font-bold text-slate-700">{t("workspace.targetCountry")}<input name="target_country" defaultValue={workspace?.target_country || ""} placeholder={t("workspace.countryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
-                  <label className="text-sm font-bold text-slate-700 sm:col-span-2">{t("workspace.targetCustomer")}<input name="target_customer" defaultValue={workspace?.target_customer || ""} placeholder={t("workspace.customerPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /></label>
+                  <label className="text-sm font-bold text-slate-700">{t("workspace.name")}<input name="name" defaultValue={workspace?.name || ""} placeholder={t("workspace.namePlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.nameHelp")}</span></label>
+                  <label className="text-sm font-bold text-slate-700">{t("workspace.company")}<input name="company" defaultValue={workspace?.company || ""} placeholder={t("workspace.companyPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.companyHelp")}</span></label>
+                  <label className="text-sm font-bold text-slate-700">{t("workspace.industry")}<input name="industry" defaultValue={workspace?.industry || ""} placeholder={t("workspace.industryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.industryHelp")}</span></label>
+                  <label className="text-sm font-bold text-slate-700">{t("workspace.targetCountry")}<input name="target_country" defaultValue={workspace?.target_country || ""} placeholder={t("workspace.countryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.countryHelp")}</span></label>
+                  <label className="text-sm font-bold text-slate-700 sm:col-span-2">{t("workspace.targetCustomer")}<input name="target_customer" defaultValue={workspace?.target_customer || ""} placeholder={t("workspace.customerPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.customerHelp")}</span></label>
                 </div>
                 {workspaceNotice && <p className="mt-3 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{workspaceNotice}</p>}
                 {workspaceError && <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{workspaceError}</p>}
