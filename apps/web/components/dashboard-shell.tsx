@@ -9,6 +9,7 @@ import { BarChart3, Bot, Building2, CreditCard, Crown, Globe2, Handshake, Inbox,
 import { e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
+import { useAuthRuntime } from "@/components/app-providers";
 import { useI18n } from "@/lib/i18n/provider";
 import { clientApi } from "@/lib/client-api";
 import type { Workspace } from "@/lib/types";
@@ -70,16 +71,17 @@ async function getE2EAuthToken() {
 
 function useDashboardIdentity() {
   const [testEmail, setTestEmail] = useState(e2eUserEmail);
+  const { clerkEnabled } = useAuthRuntime();
 
   useEffect(() => {
-    if (isClerkE2EBypass || !hasClerkPublishableKey) {
+    if (isClerkE2EBypass || !clerkEnabled) {
       const timer = window.setTimeout(() => setTestEmail(currentE2EUserEmail()), 0);
       return () => window.clearTimeout(timer);
     }
     return undefined;
-  }, []);
+  }, [clerkEnabled]);
 
-  if (!hasClerkPublishableKey || isClerkE2EBypass) {
+  if (!clerkEnabled || isClerkE2EBypass) {
     return {
       isOwner: testEmail.trim().toLowerCase() === ownerEmail,
       userId: testEmail ? `e2e:${testEmail}` : "e2e-user",
@@ -169,6 +171,7 @@ class DashboardContentBoundary extends Component<{ children: ReactNode; pathname
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
+  const { clerkEnabled } = useAuthRuntime();
   const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
   const visibleNav = nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner));
   const primaryMobileNav = visibleNav.slice(0, 4);
@@ -269,9 +272,16 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <div className="hidden shrink-0 min-[430px]:block">
             <LanguageSwitcher compact />
           </div>
-          <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full">
-            {hasClerkPublishableKey && !isClerkE2EBypass ? (
-              <UserButton />
+          <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full" aria-label={t("shell.account")}>
+            {clerkEnabled && !isClerkE2EBypass ? (
+              <UserButton
+                appearance={{
+                  elements: {
+                    avatarBox: "size-10",
+                    userButtonPopoverCard: "shadow-soft border border-slate-200"
+                  }
+                }}
+              />
             ) : (
               <div className="grid size-10 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600" aria-label="User profile">
                 AI

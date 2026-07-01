@@ -1,6 +1,6 @@
 "use client";
 
-import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
+import { Component, createContext, useContext, useEffect, type ErrorInfo, type ReactNode } from "react";
 import { ClerkFailed, ClerkProvider, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
 import Link from "next/link";
@@ -10,6 +10,16 @@ import { I18nProvider, useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
 import { bootLogRocket, captureLogRocketException, identifyLogRocketUser, trackLogRocketEvent, trackLogRocketPage } from "@/lib/logrocket";
 import { bootPostHog, capturePostHogException, identifyPostHogUser, trackPageView } from "@/lib/posthog";
+
+type AuthRuntime = {
+  clerkEnabled: boolean;
+};
+
+const AuthRuntimeContext = createContext<AuthRuntime>({ clerkEnabled: false });
+
+export function useAuthRuntime() {
+  return useContext(AuthRuntimeContext);
+}
 
 function StabilityFallback({ title = "Something went wrong. Please refresh or sign in again." }: { title?: string }) {
   return (
@@ -373,7 +383,7 @@ export function AppProviders({
 }) {
   if (!clerkEnabled || !clerkPublishableKey) {
     return (
-      <>
+      <AuthRuntimeContext.Provider value={{ clerkEnabled: false }}>
         <SilentIntegrationBoundary area="sentry-page-context"><SentryPageContext /></SilentIntegrationBoundary>
         <SilentIntegrationBoundary area="posthog-page-context"><PostHogPageContext /></SilentIntegrationBoundary>
         <SilentIntegrationBoundary area="logrocket-page-context"><LogRocketPageContext /></SilentIntegrationBoundary>
@@ -381,16 +391,18 @@ export function AppProviders({
         <ClientErrorBoundary>
           <I18nProvider initialLocale={initialLocale}>{children}</I18nProvider>
         </ClientErrorBoundary>
-      </>
+      </AuthRuntimeContext.Provider>
     );
   }
 
   return (
-    <I18nProvider initialLocale={initialLocale}>
-      <LocaleAwareClerkProvider clerkPublishableKey={clerkPublishableKey}>
-        {children}
-      </LocaleAwareClerkProvider>
-    </I18nProvider>
+    <AuthRuntimeContext.Provider value={{ clerkEnabled: true }}>
+      <I18nProvider initialLocale={initialLocale}>
+        <LocaleAwareClerkProvider clerkPublishableKey={clerkPublishableKey}>
+          {children}
+        </LocaleAwareClerkProvider>
+      </I18nProvider>
+    </AuthRuntimeContext.Provider>
   );
 }
 
