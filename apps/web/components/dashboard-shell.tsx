@@ -189,6 +189,15 @@ function DashboardBoundaryFallback({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+function profileInitials(email: string, workspaceLabel: string) {
+  const source = (email || workspaceLabel || "Workspace").trim();
+  const name = source.includes("@") ? source.split("@")[0] : source;
+  const parts = name.split(/[\s._-]+/).filter(Boolean);
+  const first = parts[0]?.[0] || "W";
+  const second = parts.length > 1 ? parts[1]?.[0] : parts[0]?.[1];
+  return `${first || ""}${second || ""}`.toUpperCase();
+}
+
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
@@ -272,6 +281,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       : t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
+  const accountInitials = profileInitials(workspaceOwnerEmail || email, workspaceLabel);
   const workspaceReadyScore = useMemo(() => {
     if (!workspace) return 0;
     return [isGenericWorkspaceName ? "" : workspace.name, workspace.company, workspace.industry, workspace.target_country, workspace.target_customer].filter((item) => String(item || "").trim()).length;
@@ -382,8 +392,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 }}
               />
             ) : (
-              <div className="grid size-10 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600" aria-label="User profile">
-                AI
+              <div className="grid size-10 place-items-center rounded-full bg-teal-50 text-xs font-black text-brand" aria-label={accountLabel} title={accountLabel}>
+                {accountInitials}
               </div>
             )}
           </div>
