@@ -166,17 +166,27 @@ class DashboardContentBoundary extends Component<{ children: ReactNode; pathname
     if (this.state.failed) {
       return (
         <section role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
-          <p className="text-lg font-bold text-amber-950">This workspace section is temporarily unavailable.</p>
-          <p className="mt-2 text-sm leading-6 text-amber-800">Use the navigation to continue working, or retry this section. Your saved CRM data is not affected.</p>
-          <button type="button" onClick={() => this.setState({ failed: false })} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-white px-4 text-sm font-bold text-amber-950 shadow-sm">
-            Retry section
-          </button>
+          <DashboardBoundaryFallback onRetry={() => this.setState({ failed: false })} />
         </section>
       );
     }
 
     return this.props.children;
   }
+}
+
+function DashboardBoundaryFallback({ onRetry }: { onRetry: () => void }) {
+  const { t } = useI18n();
+
+  return (
+    <>
+      <p className="text-lg font-bold text-amber-950">{t("dashboard.sectionUnavailable")}</p>
+      <p className="mt-2 text-sm leading-6 text-amber-800">{t("dashboard.sectionUnavailableCopy")}</p>
+      <button type="button" onClick={onRetry} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-white px-4 text-sm font-bold text-amber-950 shadow-sm">
+        {t("dashboard.retrySection")}
+      </button>
+    </>
+  );
 }
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {

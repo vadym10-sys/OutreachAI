@@ -4192,11 +4192,11 @@ def get_my_workspace(user: CurrentUserContext, db: Session = Depends(get_db)) ->
 
 
 @router.put("/workspace", response_model=WorkspaceOut)
-def update_workspace(payload: WorkspaceUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> WorkspaceOut:
-    workspace = _current_workspace(db, user_id)
+def update_workspace(payload: WorkspaceUpdate, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
     for key, value in payload.model_dump().items():
         setattr(workspace, key, value)
-    log_event(db, request, user_id, "workspace.updated", {"workspace_id": str(workspace.id)})
+    log_event(db, request, user.user_id, "workspace.updated", {"workspace_id": str(workspace.id)})
     db.commit()
     db.refresh(workspace)
     return _workspace_out(db, workspace)

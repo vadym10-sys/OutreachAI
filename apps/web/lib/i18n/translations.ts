@@ -156,6 +156,9 @@ const en = {
   'dashboard.noActivity': 'No activity yet',
   'dashboard.noFunnel': 'No funnel yet',
   'dashboard.loading': 'Loading dashboard',
+  'dashboard.sectionUnavailable': 'This workspace section is temporarily unavailable.',
+  'dashboard.sectionUnavailableCopy': 'Use the navigation to continue working, or retry this section. Your saved CRM data is not affected.',
+  'dashboard.retrySection': 'Retry section',
   'dashboard.eyebrow': "Today's workspace",
   'dashboard.v2Subtitle': 'See what is happening, what to do now, and what result to expect.',
   'dashboard.optimisticPrefix': 'Opening',
@@ -407,6 +410,9 @@ const ru: Partial<TranslationMap> = {
   'landing.everyPlanIncludes': 'В каждом тарифе',
   'dashboard.title': 'Панель',
   'dashboard.loading': 'Загрузка панели',
+  'dashboard.sectionUnavailable': 'Этот раздел пространства временно недоступен.',
+  'dashboard.sectionUnavailableCopy': 'Продолжайте работу через меню или повторите попытку. Сохранённые данные CRM не затронуты.',
+  'dashboard.retrySection': 'Повторить раздел',
   'dashboard.eyebrow': 'Рабочее пространство сегодня',
   'dashboard.v2Subtitle': 'Сразу видно, что происходит, что сделать сейчас и какой результат ожидать.',
   'dashboard.optimisticPrefix': 'Открываем',
@@ -1131,6 +1137,9 @@ export const translations: Record<Locale, Partial<TranslationMap>> = {
 };
 
 const visiblePhraseTranslations: Record<string, Partial<Record<Locale, string>>> = {
+  'dashboard.sectionUnavailable': { ru: 'Этот раздел пространства временно недоступен.', es: 'Esta sección del workspace no está disponible temporalmente.', 'en-US': 'This workspace section is temporarily unavailable.', fr: 'Cette section de l’espace est temporairement indisponible.', it: 'Questa sezione dello spazio è temporaneamente non disponibile.', pl: 'Ta sekcja przestrzeni jest chwilowo niedostępna.' },
+  'dashboard.sectionUnavailableCopy': { ru: 'Продолжайте работу через меню или повторите попытку. Сохранённые данные CRM не затронуты.', es: 'Usa la navegación para seguir trabajando o reintenta esta sección. Tus datos guardados en CRM no se ven afectados.', 'en-US': 'Use the navigation to continue working, or retry this section. Your saved CRM data is not affected.', fr: 'Utilisez la navigation pour continuer ou réessayez cette section. Vos données CRM enregistrées ne sont pas affectées.', it: 'Usa la navigazione per continuare o riprova questa sezione. I dati CRM salvati non sono interessati.', pl: 'Użyj nawigacji, aby kontynuować, albo spróbuj ponownie. Zapisane dane CRM nie są naruszone.' },
+  'dashboard.retrySection': { ru: 'Повторить раздел', es: 'Reintentar sección', 'en-US': 'Retry section', fr: 'Réessayer la section', it: 'Riprova sezione', pl: 'Spróbuj sekcję ponownie' },
   'Integration status': { ru: 'Статус подключений', es: 'Estado de integraciones', 'en-US': 'Integration status', fr: 'État des intégrations', it: 'Stato integrazioni', pl: 'Status integracji' },
   'Integration status is temporarily unavailable': { ru: 'Статус подключений временно недоступен', es: 'El estado de integraciones no está disponible temporalmente', 'en-US': 'Integration status is temporarily unavailable', fr: 'L’état des intégrations est temporairement indisponible', it: 'Lo stato integrazioni è temporaneamente non disponibile', pl: 'Status integracji jest chwilowo niedostępny' },
   'Integration status is temporarily unavailable. Core CRM data is still available.': { ru: 'Статус подключений временно недоступен. Основные данные CRM всё ещё доступны.', es: 'El estado de integraciones no está disponible temporalmente. Los datos principales del CRM siguen disponibles.', 'en-US': 'Integration status is temporarily unavailable. Core CRM data is still available.', fr: 'L’état des intégrations est temporairement indisponible. Les données CRM principales restent disponibles.', it: 'Lo stato integrazioni è temporaneamente non disponibile. I dati CRM principali restano disponibili.', pl: 'Status integracji jest chwilowo niedostępny. Główne dane CRM nadal są dostępne.' },
