@@ -2,11 +2,30 @@
 
 import { FormEvent, useState } from 'react';
 import { useSignIn } from '@clerk/nextjs/legacy';
+import * as Sentry from '@sentry/nextjs';
 import Link from 'next/link';
 import { CheckCircle2, Loader2, Mail, ShieldCheck } from 'lucide-react';
 import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
+import { captureLogRocketException } from '@/lib/logrocket';
+import {
+  clerkPasswordResetErrorCode,
+  genericPasswordResetRequestMessage,
+  passwordResetRejectedCodeMessage,
+  passwordResetRequestMessage
+} from '@/lib/password-reset-errors';
+import { capturePostHogException } from '@/lib/posthog';
 
 type Step = 'request' | 'reset' | 'success';
+
+function reportPasswordResetError(stage: 'request' | 'complete', error: unknown) {
+  const code = clerkPasswordResetErrorCode(error);
+  Sentry.captureException(error, {
+    tags: { area: 'password-reset', stage, clerk_error_code: code || 'unknown' }
+  });
+  captureLogRocketException(error, { area: 'password-reset', stage, clerk_error_code: code || 'unknown' });
+  capturePostHogException(error, { area: 'password-reset', stage, clerk_error_code: code || 'unknown' });
+}
+
 export function PasswordResetClient() {
   if (!hasClerkPublishableKey || isClerkE2EBypass) {
     return <PasswordResetUnavailable />;
@@ -32,11 +51,18 @@ function LivePasswordResetClient() {
     setError('');
     try {
       await signIn.create({ strategy: 'reset_password_email_code', identifier: email });
-    } catch {
-      // Keep the response identical so the UI never confirms whether an account exists.
-    } finally {
-      setMessage('If this email exists, we sent password reset instructions.');
+      setMessage(genericPasswordResetRequestMessage);
       setStep('reset');
+    } catch (error) {
+      reportPasswordResetError('request', error);
+      const userMessage = passwordResetRequestMessage(error);
+      if (userMessage === genericPasswordResetRequestMessage) {
+        setMessage(genericPasswordResetRequestMessage);
+        setStep('reset');
+      } else {
+        setError(userMessage);
+      }
+    } finally {
       setBusy(false);
     }
   }
@@ -59,8 +85,9 @@ function LivePasswordResetClient() {
         return;
       }
       setError('Password reset needs one more verification step. Open the latest reset email and try again.');
-    } catch {
-      setError('The reset code or new password could not be accepted. Request a new email if the code expired.');
+    } catch (error) {
+      reportPasswordResetError('complete', error);
+      setError(passwordResetRejectedCodeMessage);
     } finally {
       setBusy(false);
     }
