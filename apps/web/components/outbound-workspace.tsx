@@ -451,6 +451,25 @@ function integrationStatusClasses(status: WorkspaceIntegrationStatus["status"]) 
   return "border-red-200 bg-red-50 text-red-700";
 }
 
+function integrationRecoveryAction(item: WorkspaceIntegrationStatus) {
+  if (item.key === "lead_search" && item.status !== "connected") {
+    return { href: "#manual-company", label: "Add company manually" };
+  }
+  if (item.key === "contact_discovery" && item.status !== "connected") {
+    return { href: "/dashboard/companies", label: "Open company workspace" };
+  }
+  if (item.key === "ai_research" && item.status !== "connected") {
+    return { href: "/dashboard/companies", label: "Review saved companies" };
+  }
+  if (item.key === "email_sending" && item.status !== "connected") {
+    return { href: "/dashboard/campaigns", label: "Review campaigns" };
+  }
+  if (item.key === "billing" && item.status !== "connected") {
+    return { href: "/dashboard/billing", label: "Open billing" };
+  }
+  return null;
+}
+
 function redirectToSignIn() {
   if (typeof window === "undefined" || isClerkE2EBypass) return;
   const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
@@ -869,15 +888,23 @@ function IntegrationStatusPanel({ api, ready }: { api: ApiFn; ready: boolean }) 
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t("OutreachAI only shows an action as ready when the required service is connected. Missing services show a clear fallback instead of endless loading.")}</p>
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          {integrations.map((item) => (
-            <article key={item.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="font-bold text-ink">{t(item.label)}</h3>
-                <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${integrationStatusClasses(item.status)}`}>{t(integrationStatusLabel(item.status))}</span>
-              </div>
-              <p className="mt-2 text-sm leading-6 text-slate-600">{t(item.message)}</p>
-            </article>
-          ))}
+          {integrations.map((item) => {
+            const action = integrationRecoveryAction(item);
+            return (
+              <article key={item.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-bold text-ink">{t(item.label)}</h3>
+                  <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${integrationStatusClasses(item.status)}`}>{t(integrationStatusLabel(item.status))}</span>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{t(item.message)}</p>
+                {action && (
+                  <Link href={action.href} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-black text-ink shadow-sm">
+                    {t(action.label)}
+                  </Link>
+                )}
+              </article>
+            );
+          })}
         </div>
       </section>
     </WidgetBoundary>
