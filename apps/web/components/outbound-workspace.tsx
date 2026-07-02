@@ -705,7 +705,7 @@ function dashboardNextStep(metrics: DashboardMetrics, leads: Lead[], campaigns: 
   if (leadNeedingResearch) {
     return {
       step: leadNeedingResearch.ai_summary ? "AI Email" : "Company Research",
-      title: `Complete research for ${leadNeedingResearch.company}`,
+      title: "Complete company research",
       copy: "Turn the saved company into a complete opportunity: research, contacts, AI email, follow-ups and approval.",
       href: "/dashboard/companies",
       label: "Review opportunity"
@@ -1333,7 +1333,7 @@ export function DashboardHome() {
         {activity.length > 0 && <WidgetBoundary name="Recent activity"><article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold text-ink">{t("Recent activity")}</h2>
           <p className="mt-2 text-sm text-slate-600">{t("Latest workspace actions from real saved events.")}</p>
-          <div className="mt-4 space-y-2">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{item.action.replaceAll(".", " ")}</p><p className="text-slate-600">{new Date(item.created_at).toLocaleString()}</p></div>)}</div>
+          <div className="mt-4 space-y-2">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{t(activityLabel(item.action))}</p><p className="text-slate-600">{new Date(item.created_at).toLocaleString()}</p></div>)}</div>
         </article></WidgetBoundary>}
       </section></WidgetBoundary>}
     </div>
