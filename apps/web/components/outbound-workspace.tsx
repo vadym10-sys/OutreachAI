@@ -992,6 +992,8 @@ function useDashboardData() {
         const nextMetrics = metricsFromWorkspaceBootstrap(bootstrap);
         setMetrics(nextMetrics);
         setLeads(bootstrapLeads);
+        setCachedAt(null);
+        setSupportingError("");
 
         const results = await Promise.allSettled([
           api<DashboardMetrics>("/api/dashboard"),
@@ -1009,7 +1011,6 @@ function useDashboardData() {
         if (nextCampaigns) setCampaigns(nextCampaigns);
         if (nextEmployees) setEmployees(nextEmployees);
         if (nextActivity) setActivity(nextActivity);
-        setCachedAt(null);
         if (nextCampaigns && nextEmployees && nextActivity) {
           cacheDashboardData({
             metrics: refreshedMetrics,
@@ -1023,7 +1024,6 @@ function useDashboardData() {
         const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
         if (failed.length) {
           failed.forEach((result) => reportWidgetFailure(result.reason, "dashboard-supporting-data", { endpoint_group: "dashboard-campaigns-employees-activity" }));
-          setSupportingError("Some dashboard details are temporarily unavailable. Your core workspace is still loaded.");
         }
       } catch (err) {
         reportWidgetFailure(err, "dashboard-critical-data", { endpoint: "/api/workspace-app/bootstrap" });
