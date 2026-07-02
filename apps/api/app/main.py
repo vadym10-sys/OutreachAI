@@ -17,7 +17,7 @@ from app.api.routes import router as api_router
 from app.api.usage import router as usage_router
 from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
-from app.core.database import Base, get_engine
+from app.core.database import Base, ensure_runtime_schema, get_engine
 from app.core.observability import init_sentry, sentry_transaction_name, set_request_context
 from app.core.security import rate_limit
 
@@ -180,7 +180,9 @@ def startup() -> None:
             logger.info("Database table auto-creation disabled; /api/health is available without database connectivity")
             return
 
-        Base.metadata.create_all(bind=get_engine())
+        engine = get_engine()
+        Base.metadata.create_all(bind=engine)
+        ensure_runtime_schema(engine)
         logger.info("Database tables verified")
     except Exception:
         logger.exception("Startup initialization failed; API will keep running so /api/health remains available")
