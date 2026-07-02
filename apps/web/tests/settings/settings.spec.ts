@@ -11,8 +11,9 @@ test("settings keeps one primary next action and advanced controls collapsed", a
   await page.goto("/dashboard/settings");
   await expect(page.getByRole("heading", { name: "Make the workspace ready for your first campaign." })).toBeVisible();
   await expect(page.getByRole("link", { name: "Find leads" })).toBeVisible();
-  await expect(page.getByText("Use this area only when a workspace owner needs to adjust")).not.toBeVisible();
-  await page.getByText("Advanced settings").click();
-  await expect(page.getByText("Use this area only when a workspace owner needs to adjust")).toBeVisible();
+  const advancedCopy = "Use this area only when a workspace owner needs to adjust";
+  await expect(page.locator("details[open]").getByText(advancedCopy)).toHaveCount(0);
+  await page.getByText("Advanced settings").first().click();
+  await expect(page.locator("details[open]").getByText(advancedCopy).first()).toBeVisible();
   await guards.assertClean();
 });

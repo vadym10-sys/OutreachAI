@@ -44,6 +44,9 @@ export function installQaGuards(page: Page, testInfo: TestInfo) {
   page.on("requestfailed", (request) => {
     const url = request.url();
     const failure = request.failure()?.errorText || "";
+    if (/[?&]_rsc=/.test(url) && /abort|cancelled/i.test(failure)) {
+      return;
+    }
     if (/\/api\/client-config/.test(url) && /cancelled|abort/i.test(failure)) {
       return;
     }

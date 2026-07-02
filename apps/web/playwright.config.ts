@@ -7,7 +7,7 @@ export default defineConfig({
   testMatch: ["e2e/**/*.spec.ts", "tests/**/*.spec.ts"],
   fullyParallel: true,
   forbidOnly: isCI,
-  workers: isCI ? 4 : undefined,
+  workers: 1,
   retries: isCI ? 2 : 1,
   timeout: 45_000,
   expect: {
@@ -21,20 +21,21 @@ export default defineConfig({
   ],
   outputDir: "test-results",
   webServer: {
-    command: "npm run dev -- --webpack",
+    command: "npm run build && npm run start -- -H 127.0.0.1",
     url: "http://127.0.0.1:3000",
-    reuseExistingServer: !isCI,
+    reuseExistingServer: false,
     timeout: 120_000,
     env: {
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "",
       CLERK_SECRET_KEY: "",
       CLERK_E2E_BYPASS: "true",
+      NEXT_PUBLIC_APP_ENV: "test",
       NEXT_PUBLIC_CLERK_E2E_BYPASS: "true",
       NEXT_PUBLIC_API_URL: "http://127.0.0.1:8000",
       NEXT_PUBLIC_LOGROCKET_APP_ID: "",
       NEXT_PUBLIC_POSTHOG_KEY: "",
       NEXT_PUBLIC_SENTRY_DSN: "",
-      NODE_OPTIONS: "--max-old-space-size=4096"
+      NODE_OPTIONS: "--max-old-space-size=8192"
     }
   },
   use: {

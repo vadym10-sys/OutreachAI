@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { AlertTriangle, CheckCircle2, ClipboardList, Loader2, ShieldAlert, Stethoscope, Wrench } from "lucide-react";
-import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import type { QualityCheck, QualityDashboard, QualityIssue, QualityRepairTask } from "@/lib/types";
 
@@ -15,10 +15,10 @@ const noClerkAuth = {
 
 function e2eOwnerEmail() {
   try {
-    if (typeof window === "undefined") return e2eUserEmail;
-    return window.localStorage.getItem("outreachai.e2eUserEmail") || e2eUserEmail;
+    if (typeof window === "undefined") return e2eUserEmail || ownerEmail;
+    return window.localStorage.getItem("outreachai.e2eOwnerEmail") || e2eUserEmail || ownerEmail;
   } catch {
-    return e2eUserEmail;
+    return e2eUserEmail || ownerEmail;
   }
 }
 

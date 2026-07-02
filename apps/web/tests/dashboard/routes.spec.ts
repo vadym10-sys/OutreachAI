@@ -240,8 +240,9 @@ test.describe("customer workspace routes", () => {
   test("dashboard metrics failure stays inside the dashboard and never shows the global error page", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.route("**/api/backend/api/dashboard", async (route) => {
-      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Dashboard unavailable" }) });
+    await page.unroute("**/api/**");
+    await mockWorkspaceApi(page, {
+      "/api/dashboard": { status: 503, body: { detail: "Dashboard unavailable" } }
     });
 
     await page.goto("/dashboard");
@@ -255,11 +256,10 @@ test.describe("customer workspace routes", () => {
   test("malformed company data is normalized and cannot crash the companies page", async ({ page }) => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
-    await page.route("**/api/backend/api/workspace-app/companies", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify([{
+    await page.unroute("**/api/**");
+    await mockWorkspaceApi(page, {
+      "/api/workspace-app/companies": {
+        body: [{
           id: "broken-company",
           name: "Partial Company",
           source: "workspace",
@@ -269,8 +269,8 @@ test.describe("customer workspace routes", () => {
           notes: null,
           activity: null,
           generated_emails: null
-        }])
-      });
+        }]
+      }
     });
 
     await page.goto("/dashboard/companies");

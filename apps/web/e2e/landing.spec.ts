@@ -1,45 +1,46 @@
 import { expect, test } from "@playwright/test";
 
+const visibleLanguageSelect = (page: import("@playwright/test").Page) =>
+  page.locator('select[aria-label="Language"]:visible').first();
+
 test("landing explains the B2B outbound product and pricing", async ({ page }) => {
   await page.goto("/");
+  const main = page.getByRole("main");
   await expect(page.getByRole("heading", { name: "AI Sales Employee for B2B Lead Generation" })).toBeVisible();
-  await expect(page.getByText("Find qualified companies, analyze their websites, generate personalized outreach")).toBeVisible();
+  await expect(main.getByText("Find qualified companies, analyze their websites, generate personalized outreach").first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Start free trial" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Login" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "View demo dashboard" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Lead Finder" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Decision Maker Finder" })).toBeVisible();
-  await expect(page.getByText("Starter")).toBeVisible();
-  await expect(page.getByText("€149")).toBeVisible();
-  await expect(page.getByText("€499")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Starter" }).first()).toBeVisible();
+  await expect(page.getByText("€149").first()).toBeVisible();
+  await expect(page.getByText("€499").first()).toBeVisible();
 });
 
 test("landing follows the selected language without mixed English hero copy", async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("Language").selectOption("ru");
+  const main = page.getByRole("main");
+  await visibleLanguageSelect(page).selectOption("ru");
 
   await expect(page.getByRole("heading", { name: "AI сотрудник продаж для поиска B2B клиентов" })).toBeVisible();
   await expect(page.getByText("Находите подходящие компании, анализируйте их сайты")).toBeVisible();
   await expect(page.getByRole("link", { name: "Начать бесплатно" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Войти" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Посмотреть демо-панель" })).toHaveCount(0);
-  await expect(page.locator("main")).not.toContainText("AI Sales Employee for B2B Lead Generation");
-  await expect(page.locator("main")).not.toContainText("Find qualified companies, analyze their websites");
-  await expect(page.locator("main")).not.toContainText("Start free trial");
+  await expect(main).not.toContainText("AI Sales Employee for B2B Lead Generation");
+  await expect(main).not.toContainText("Find qualified companies, analyze their websites");
+  await expect(main).not.toContainText("Start free trial");
 });
 
 for (const width of [360, 390, 430]) {
   test(`Russian mobile landing has no horizontal overflow at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 844 });
     await page.goto("/");
-    await page.evaluate(() => {
-      window.localStorage.setItem("outreachai.locale", "ru");
-      document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
-    });
-    await page.reload({ waitUntil: "networkidle" });
+    await visibleLanguageSelect(page).selectOption("ru");
 
     await expect(page.getByRole("heading", { name: "AI сотрудник продаж для поиска B2B клиентов" })).toBeVisible();
-    await expect(page.getByTestId("hero-start-free-trial")).toBeVisible();
+    await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("Something went wrong");
 
     const metrics = await page.evaluate(() => {
@@ -77,14 +78,10 @@ test("Russian landing works in Telegram-like in-app mobile browser", async ({ br
   });
   const page = await context.newPage();
   await page.goto("/");
-  await page.evaluate(() => {
-    window.localStorage.setItem("outreachai.locale", "ru");
-    document.cookie = "outreachai_locale=ru; path=/; max-age=31536000; SameSite=Lax";
-  });
-  await page.reload({ waitUntil: "networkidle" });
+  await visibleLanguageSelect(page).selectOption("ru");
 
   await expect(page.getByRole("heading", { name: "AI сотрудник продаж для поиска B2B клиентов" })).toBeVisible();
-  await expect(page.getByTestId("hero-start-free-trial")).toBeVisible();
+  await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
   const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1 || document.body.scrollWidth > window.innerWidth + 1);
   expect(hasOverflow).toBe(false);
   await context.close();
@@ -92,9 +89,10 @@ test("Russian landing works in Telegram-like in-app mobile browser", async ({ br
 
 test("start free trial opens the real sign-up flow instead of a demo dashboard", async ({ page }) => {
   await page.goto("/");
+  const primaryCta = page.getByRole("main").getByTestId("hero-start-free-trial");
   await Promise.all([
     page.waitForURL("**/sign-up?plan=Starter", { timeout: 15000 }),
-    page.getByTestId("hero-start-free-trial").click()
+    primaryCta.click()
   ]);
   await expect(page.locator("main")).toBeVisible();
   await expect(page.locator("main")).not.toContainText("Loading OutreachAI");

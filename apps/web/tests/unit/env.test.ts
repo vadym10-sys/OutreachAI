@@ -8,6 +8,7 @@ async function loadEnv() {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   process.env = { ...originalEnv };
   vi.resetModules();
 });
@@ -31,6 +32,18 @@ describe("environment safety", () => {
     const env = await loadEnv();
 
     expect(env.isProductionRuntime).toBe(false);
+    expect(env.isClerkE2EBypass).toBe(true);
+  });
+
+  it("allows the Clerk E2E bypass for production-like Playwright builds only in the test app environment", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.NEXT_PUBLIC_APP_ENV = "test";
+    process.env.CLERK_E2E_BYPASS = "true";
+    process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS = "true";
+
+    const env = await loadEnv();
+
+    expect(env.isProductionRuntime).toBe(true);
     expect(env.isClerkE2EBypass).toBe(true);
   });
 

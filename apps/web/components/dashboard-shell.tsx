@@ -2,7 +2,7 @@
 
 import { Component, useCallback, useEffect, useMemo, useState, type ErrorInfo, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
 import { ArrowRight, BarChart3, Bot, Building2, CheckCircle2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
@@ -200,7 +200,6 @@ function profileInitials(email: string, workspaceLabel: string) {
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
   const { t } = useI18n();
   const { clerkEnabled } = useAuthRuntime();
   const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
@@ -344,10 +343,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     }
   }
 
-  function navigateFromMobileMenu(href: string) {
+  function closeMobileMenu() {
     setMobileMenuOpen(false);
-    if (pathname !== href) {
-      router.push(href);
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
     }
   }
 
@@ -373,10 +372,45 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-64">
         <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div className="relative lg:hidden">
-              <button type="button" onClick={() => setMobileMenuOpen((open) => !open)} className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300 bg-white text-slate-700" aria-label={t("nav.open")} aria-expanded={mobileMenuOpen}>
+            <div className="group relative lg:hidden">
+              <button
+                type="button"
+                onFocus={() => setMobileMenuOpen(true)}
+                onMouseDown={() => setMobileMenuOpen(true)}
+                onPointerDown={() => setMobileMenuOpen(true)}
+                onTouchStart={() => setMobileMenuOpen(true)}
+                onClick={() => setMobileMenuOpen(true)}
+                className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300 bg-white text-slate-700"
+                aria-label={t("nav.open")}
+                aria-expanded={mobileMenuOpen}
+              >
                 <Menu size={20} aria-hidden="true" />
               </button>
+              <div className={`${mobileMenuOpen ? "block" : "hidden group-focus-within:block"} fixed inset-0 z-50 lg:hidden`}>
+                <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-950/20" onClick={closeMobileMenu} />
+                <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),20rem)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+                  <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="truncate text-sm font-bold text-ink">{workspaceLabel}</p>
+                    <p className="mt-1 truncate text-xs font-semibold text-slate-500">{accountLabel}</p>
+                    <div className="mt-3 min-[430px]:hidden">
+                      <LanguageSwitcher compact />
+                    </div>
+                  </div>
+                  <nav className="space-y-1" aria-label={t("nav.open")}>
+                    {visibleNav.map((item) => {
+                      const Icon = item.icon;
+                      const active = pathname === item.href;
+                      const label = t(item.labelKey);
+                      return (
+                        <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
+                          <Icon size={18} aria-hidden="true" />
+                          {label}
+                        </Link>
+                      );
+                    })}
+                  </nav>
+                </div>
+              </div>
             </div>
             <div className="min-w-0">
               <span className="block truncate text-sm font-semibold text-slate-700">{workspaceLabel}</span>
@@ -407,36 +441,6 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
         </header>
-        {mobileMenuOpen && (
-          <div className="fixed inset-0 z-50 lg:hidden">
-            <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-950/20" onClick={() => setMobileMenuOpen(false)} />
-            <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),20rem)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
-              <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <p className="truncate text-sm font-bold text-ink">{workspaceLabel}</p>
-                <p className="mt-1 truncate text-xs font-semibold text-slate-500">{accountLabel}</p>
-                <div className="mt-3 min-[430px]:hidden">
-                  <LanguageSwitcher compact />
-                </div>
-              </div>
-              <nav className="space-y-1" aria-label={t("nav.open")}>
-                {visibleNav.map((item) => {
-                  const Icon = item.icon;
-                  const active = pathname === item.href;
-                  const label = t(item.labelKey);
-                  return (
-                    <Link key={item.href} href={item.href} onClick={(event) => {
-                      event.preventDefault();
-                      navigateFromMobileMenu(item.href);
-                    }} className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
-                      <Icon size={18} aria-hidden="true" />
-                      {label}
-                    </Link>
-                  );
-                })}
-              </nav>
-            </div>
-          </div>
-        )}
         <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
           {showWorkspaceSetupPanel && <section className="mb-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <div className="grid gap-5 lg:grid-cols-[1.1fr_1.4fr] lg:items-start">

@@ -148,10 +148,17 @@ async function fulfillJson(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
-export async function mockWorkspaceApi(page: Page) {
+type MockOverride = {
+  status?: number;
+  body: unknown;
+};
+
+export async function mockWorkspaceApi(page: Page, overrides: Record<string, MockOverride> = {}) {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
+    const override = overrides[`${route.request().method()} ${apiPath}`] || overrides[apiPath];
+    if (override) return fulfillJson(route, override.body, override.status || 200);
     if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, {
       id: "99999999-9999-9999-9999-999999999999",
       name: "QA Private Workspace",
