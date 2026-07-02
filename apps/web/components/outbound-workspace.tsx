@@ -7,7 +7,7 @@ import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
 import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
-import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
@@ -452,7 +452,7 @@ function integrationStatusClasses(status: WorkspaceIntegrationStatus["status"]) 
 }
 
 function redirectToSignIn() {
-  if (typeof window === "undefined" || !hasClerkPublishableKey || isClerkE2EBypass) return;
+  if (typeof window === "undefined" || isClerkE2EBypass) return;
   const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
   window.location.assign(`/sign-in?redirect_url=${redirectUrl}`);
 }
@@ -467,8 +467,17 @@ async function devApi<T>(path: string, init: ClientApiInit = {}) {
 
 function useTokenApi(): { api: ApiFn; ready: boolean } {
   const { clerkEnabled } = useAuthRuntime();
-  if (!clerkEnabled || isClerkE2EBypass) {
+  if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
     return { api: devApi, ready: true };
+  }
+  if (!clerkEnabled) {
+    return {
+      api: async () => {
+        redirectToSignIn();
+        throw new Error("Please sign in again before continuing.");
+      },
+      ready: false
+    };
   }
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const { getToken, isLoaded, isSignedIn } = useAuth();

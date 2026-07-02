@@ -43,4 +43,14 @@ describe("environment safety", () => {
     expect(env.hasClerkPublishableKey).toBe(false);
     expect(env.hasClerkRuntimeConfig).toBe(false);
   });
+
+  it("accepts real Clerk publishable keys with the Clerk terminator suffix", async () => {
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsuZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk";
+    process.env.CLERK_SECRET_KEY = "sk_live_example_secret";
+
+    const env = await loadEnv();
+
+    expect(env.hasClerkPublishableKey).toBe(true);
+    expect(env.hasClerkRuntimeConfig).toBe(true);
+  });
 });

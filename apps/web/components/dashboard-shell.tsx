@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
 import { ArrowRight, BarChart3, Bot, Building2, CheckCircle2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
-import { e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
+import { e2eUserEmail, isClerkE2EBypass, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useAuthRuntime } from "@/components/app-providers";
@@ -44,7 +44,7 @@ function delay(ms: number) {
 }
 
 function redirectToSignIn() {
-  if (typeof window === "undefined" || !hasClerkPublishableKey || isClerkE2EBypass) return;
+  if (typeof window === "undefined" || isClerkE2EBypass) return;
   const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
   window.location.assign(`/sign-in?redirect_url=${redirectUrl}`);
 }
@@ -81,7 +81,7 @@ function useDashboardIdentity() {
     return undefined;
   }, [clerkEnabled]);
 
-  if (!clerkEnabled || isClerkE2EBypass) {
+  if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
     return {
       isOwner: testEmail.trim().toLowerCase() === ownerEmail,
       userId: testEmail ? `e2e:${testEmail}` : "e2e-user",
@@ -89,6 +89,17 @@ function useDashboardIdentity() {
       workspaceId: "e2e-workspace",
       ready: true,
       getAuthToken: getE2EAuthToken
+    };
+  }
+
+  if (!clerkEnabled) {
+    return {
+      isOwner: false,
+      userId: "anonymous",
+      email: "",
+      workspaceId: "unknown-workspace",
+      ready: false,
+      getAuthToken: async () => null
     };
   }
 
