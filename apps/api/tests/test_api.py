@@ -341,6 +341,36 @@ def test_workspace_app_manual_company_save_persists_and_dedupes() -> None:
     assert filtered.json()[0]["id"] == company["id"]
 
 
+def test_workspace_app_manual_company_save_survives_crm_sync_failure(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-degraded@example.com"}
+
+    def broken_sync(*args, **kwargs):
+        raise RuntimeError("simulated crm sync failure")
+
+    monkeypatch.setattr("app.api.usage._sync_lead_to_crm", broken_sync)
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={
+            "name": "Usage Degraded Builders",
+            "website": "https://usage-degraded-builders.example",
+            "country": "Germany",
+            "city": "Berlin",
+            "industry": "Construction",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "created"
+    assert payload["company"]["name"] == "Usage Degraded Builders"
+    assert payload["company"]["crm_stage"] == "New Lead"
+
+    refreshed = client.get("/api/workspace-app/companies?search=Usage%20Degraded", headers=headers)
+    assert refreshed.status_code == 200
+    assert len(refreshed.json()) == 1
+    assert refreshed.json()[0]["id"] == payload["company"]["id"]
+
+
 def test_workspace_app_company_data_is_private_between_users() -> None:
     user_a = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-a@example.com"}
     user_b = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-b@example.com"}

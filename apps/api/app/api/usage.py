@@ -16,6 +16,7 @@ from app.api.routes import (
     _add_lead_activity,
     _analyze_lead_if_possible,
     _crm_company_out,
+    _company_duplicate_stmt,
     _current_workspace,
     _ensure_crm_backfilled,
     _existing_duplicate_lead,
@@ -117,6 +118,71 @@ class UsageIntegrationStatus(BaseModel):
 
 class UsageIntegrationStatusOut(BaseModel):
     integrations: list[UsageIntegrationStatus]
+
+
+def _minimal_crm_company_out(company: Company) -> CrmCompanyOut:
+    now = company.updated_at or company.created_at or datetime.utcnow()
+    return CrmCompanyOut(
+        id=company.id,
+        lead_id=company.lead_id,
+        name=company.name,
+        website=company.website,
+        domain=company.domain,
+        phone=company.phone,
+        email=company.email,
+        address=company.address,
+        city=company.city,
+        country=company.country,
+        industry=company.industry,
+        google_rating=float(company.google_rating) if company.google_rating is not None else None,
+        place_id=company.place_id,
+        source=company.source or "manual",
+        ai_summary=company.ai_summary or "",
+        suggested_offer=company.suggested_offer or "",
+        outreach_strategy=company.outreach_strategy or "",
+        sales_angle=company.sales_angle or "",
+        expected_reply_rate=company.expected_reply_rate or "",
+        email_status=company.email_status or "Not prepared",
+        crm_stage=company.crm_stage or "New Lead",
+        created_at=company.created_at or now,
+        updated_at=now,
+        found_at=company.created_at or now,
+        saved_to_crm_at=company.created_at or now,
+        last_activity_at=now,
+    )
+
+
+def _ensure_minimal_company(db: Session, user_id: str, workspace, lead: Lead, metadata: dict[str, Any]) -> Company:
+    company = db.scalar(_company_duplicate_stmt(workspace, user_id, lead))
+    now = datetime.utcnow()
+    if company is None:
+        company = Company(user_id=user_id, workspace_id=workspace.id, lead_id=lead.id, name=lead.company)
+        db.add(company)
+    company.lead_id = company.lead_id or lead.id
+    company.name = lead.company or company.name
+    company.website = lead.website or company.website
+    company.domain = str(metadata.get("domain") or company.domain or "") or None
+    company.phone = lead.phone or company.phone
+    company.email = lead.email or company.email
+    company.address = str(metadata.get("address") or company.address or "") or None
+    company.city = lead.city or company.city
+    company.country = lead.country or company.country
+    company.industry = lead.industry or lead.niche or company.industry
+    company.source = str(metadata.get("source") or company.source or "manual")
+    company.email_status = "Found" if lead.email else "Not prepared"
+    company.crm_stage = "Contact Found" if lead.email else "New Lead"
+    company.metadata_json = {**(company.metadata_json or {}), **metadata}
+    company.updated_at = now
+    db.flush()
+    return company
+
+
+def _safe_company_out(db: Session, workspace, user_id: str, company: Company) -> CrmCompanyOut:
+    try:
+        return _crm_company_out(db, workspace, user_id, company)
+    except Exception as exc:
+        capture_provider_exception(exc, provider="postgresql", endpoint="workspace_app.company_output")
+        return _minimal_crm_company_out(company)
 
 
 def _workspace_counts(db: Session, workspace_id: UUID) -> UsageCounts:
@@ -293,7 +359,7 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
         return UsageCompanyCreateOut(
             status="reused",
             message="This company already exists in your private workspace.",
-            company=_crm_company_out(db, workspace, user.user_id, existing_company),
+            company=_safe_company_out(db, workspace, user.user_id, existing_company),
         )
 
     normalized_website = None
@@ -324,12 +390,17 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
     )
     existing_lead = _existing_duplicate_lead(db, workspace, user.user_id, lead_out)
     if existing_lead:
-        company = _sync_lead_to_crm(db, user.user_id, workspace, existing_lead)
+        company = _ensure_minimal_company(db, user.user_id, workspace, existing_lead, metadata)
+        try:
+            with db.begin_nested():
+                company = _sync_lead_to_crm(db, user.user_id, workspace, existing_lead)
+        except Exception as exc:
+            capture_provider_exception(exc, provider="postgresql", endpoint="workspace_app.company_sync_existing")
         db.commit()
         return UsageCompanyCreateOut(
             status="reused",
             message="This company already exists in your private workspace.",
-            company=_crm_company_out(db, workspace, user.user_id, company),
+            company=_safe_company_out(db, workspace, user.user_id, company),
         )
 
     lead = Lead(
@@ -347,8 +418,13 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
     )
     db.add(lead)
     db.flush()
-    _add_lead_activity(db, request, user.user_id, workspace, "lead.saved_to_crm", lead, {"source": payload.source or "manual"})
-    company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    company = _ensure_minimal_company(db, user.user_id, workspace, lead, metadata)
+    try:
+        with db.begin_nested():
+            _add_lead_activity(db, request, user.user_id, workspace, "lead.saved_to_crm", lead, {"source": payload.source or "manual"})
+            company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    except Exception as exc:
+        capture_provider_exception(exc, provider="postgresql", endpoint="workspace_app.company_sync")
     if payload.address:
         company.address = payload.address
     db.commit()
@@ -356,7 +432,7 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
     return UsageCompanyCreateOut(
         status="created",
         message="Company saved to your private workspace.",
-        company=_crm_company_out(db, workspace, user.user_id, company),
+        company=_safe_company_out(db, workspace, user.user_id, company),
     )
 
 
