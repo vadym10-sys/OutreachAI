@@ -52,13 +52,17 @@ export function I18nProvider({ children, initialLocale: serverLocale = 'en' }: {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const id = window.setTimeout(() => {
+    let active = true;
+    window.queueMicrotask(() => {
+      if (!active) return;
       const next = initialLocale();
       setLocaleState(next);
       persistLocale(next);
       setLoaded(true);
-    }, 0);
-    return () => window.clearTimeout(id);
+    });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {

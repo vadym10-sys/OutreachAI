@@ -274,11 +274,12 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const rawWorkspaceName = workspace?.name?.trim() || "";
   const isGenericWorkspaceName = !rawWorkspaceName || ["outreach workspace", "private workspace"].includes(rawWorkspaceName.toLowerCase());
   const rawWorkspaceLabel = !isGenericWorkspaceName ? rawWorkspaceName : workspace?.company?.trim();
+  const fallbackWorkspaceLabel = isClerkE2EBypass ? "QA Private Workspace" : t("shell.privateWorkspace");
   const workspaceLabel = rawWorkspaceLabel
     ? rawWorkspaceLabel
     : workspace
       ? t("shell.privateWorkspace")
-      : t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
+      : fallbackWorkspaceLabel;
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
   const accountInitials = profileInitials(workspaceOwnerEmail || email, workspaceLabel);

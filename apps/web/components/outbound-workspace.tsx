@@ -601,11 +601,12 @@ function priorityScore(copilot?: SalesCopilot) {
 
 function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action?: React.ReactNode }) {
   const { t } = useI18n();
+  const translatedTitle = t(title);
   return (
     <header className="min-w-0 max-w-full overflow-hidden rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6 lg:flex lg:items-end lg:justify-between lg:gap-6">
       <div className="min-w-0 max-w-3xl">
         <p className="text-sm font-bold uppercase tracking-wide text-brand">{t(eyebrow)}</p>
-        <h1 className="mt-2 text-[clamp(2rem,7vw,3.5rem)] font-black leading-[0.98] tracking-tight text-ink">{t(title)}</h1>
+        <h1 aria-label={translatedTitle} className="mt-2 text-[clamp(2rem,7vw,3.5rem)] font-black leading-[0.98] tracking-tight text-ink">{translatedTitle}</h1>
         <p className="mt-3 text-sm leading-6 text-slate-600 min-[390px]:text-base">{t(copy)}</p>
       </div>
       {action && <div className="mt-5 min-w-0 max-w-full shrink-0 [&>a]:w-full [&>button]:w-full min-[430px]:[&>a]:w-auto min-[430px]:[&>button]:w-auto lg:mt-0">{action}</div>}
@@ -1000,6 +1001,11 @@ function useDashboardData() {
       setLoading(true);
       setError("");
       setSupportingError("");
+      const slowDashboardTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        setLoading(false);
+        setSupportingError("Some dashboard details are temporarily unavailable. Your core workspace is still loaded.");
+      }, 4500);
       const cached = readCachedDashboardData();
       if (cached && !cancelled) {
         setMetrics(cached.metrics);
@@ -1051,6 +1057,10 @@ function useDashboardData() {
         const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
         if (failed.length) {
           failed.forEach((result) => reportWidgetFailure(result.reason, "dashboard-supporting-data", { endpoint_group: "dashboard-campaigns-employees-activity" }));
+          const firstFailure = failed[0]?.reason;
+          setSupportingError(friendlyErrorMessage(firstFailure, "Some dashboard details are temporarily unavailable. Your core workspace is still loaded."));
+        } else {
+          setSupportingError("");
         }
       } catch (err) {
         reportWidgetFailure(err, "dashboard-critical-data", { endpoint: "/api/workspace-app/bootstrap" });
@@ -1062,6 +1072,7 @@ function useDashboardData() {
           setSupportingError(friendlyErrorMessage(err, "Dashboard is temporarily unavailable. You can still use Lead Finder, CRM, Campaigns, Billing and Settings."));
         }
       } finally {
+        window.clearTimeout(slowDashboardTimer);
         if (!cancelled) setLoading(false);
       }
     }
@@ -1495,7 +1506,7 @@ export function LeadFinderPage() {
       }
       const reason = userMessage(err, "Lead search could not be completed.", t);
       setSearchResults([]);
-      setSearchSteps([t("Search stopped"), reason]);
+      setSearchSteps([t("Search stopped")]);
       setMessage(reason);
       trackEvent("lead_finder_search_failed", {
         country: payload.country,

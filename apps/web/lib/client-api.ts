@@ -5,6 +5,7 @@ import { apiProxyUrl, publicBackendApiUrl } from '@/lib/env';
 import { sanitizeUserMessage } from '@/lib/safe-errors';
 
 const isProduction = process.env.NODE_ENV === 'production';
+const debugApiLogging = process.env.NEXT_PUBLIC_DEBUG_API === 'true';
 
 export function friendlyErrorMessage(error: unknown, fallback: string) {
   if (!(error instanceof Error)) return fallback;
@@ -29,8 +30,8 @@ async function logApiFailure(path: string, response: Response, requestId: string
   } catch {
     detail = 'Response body could not be read.';
   }
-  if (!isProduction) {
-    console.error('OutreachAI API request failed', { path, status: response.status, request_id: requestId, detail });
+  if (!isProduction && debugApiLogging) {
+    console.info('OutreachAI API request failed', { path, status: response.status, request_id: requestId });
   }
   Sentry.addBreadcrumb({
     category: 'api',
