@@ -1969,7 +1969,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
             {current.activity.slice(0, 4).map((item) => <div key={item.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[2rem_10rem_1fr]">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-700"><FileText size={16} /></div>
               <div>
-                <p className="font-bold text-ink">{activityLabel(item.action)}</p>
+                <p className="font-bold text-ink">{t(activityLabel(item.action))}</p>
                 <p className="mt-1 text-xs text-slate-500">{new Date(item.created_at).toLocaleString()}</p>
               </div>
               <p className="text-sm leading-6 text-slate-600">{t("Workspace activity was recorded for this company.")}</p>
