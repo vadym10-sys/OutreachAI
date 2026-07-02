@@ -5,7 +5,7 @@ import { useSignIn } from '@clerk/nextjs/legacy';
 import * as Sentry from '@sentry/nextjs';
 import Link from 'next/link';
 import { CheckCircle2, Loader2, Mail, ShieldCheck } from 'lucide-react';
-import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
+import { useAuthRuntime } from '@/components/app-providers';
 import { captureLogRocketException } from '@/lib/logrocket';
 import {
   clerkPasswordResetErrorCode,
@@ -27,7 +27,9 @@ function reportPasswordResetError(stage: 'request' | 'complete', error: unknown)
 }
 
 export function PasswordResetClient() {
-  if (!hasClerkPublishableKey || isClerkE2EBypass) {
+  const { clerkEnabled } = useAuthRuntime();
+
+  if (!clerkEnabled) {
     return <PasswordResetUnavailable />;
   }
 
