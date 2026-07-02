@@ -42,4 +42,11 @@ describe("i18n", () => {
       expect(translateVisibleText(phrase, "ru")).not.toBe(phrase);
     }
   });
+
+  it("localizes customer recovery states instead of showing English fallback copy", () => {
+    expect(translate("Something went wrong. Please refresh or sign in again.", "ru")).toBe("Что-то пошло не так. Обновите страницу или войдите снова.");
+    expect(translate("common.recoveryCopy", "ru")).toBe("Если это повторяется, выйдите и войдите снова. Данные вашего рабочего пространства сохранены.");
+    expect(translate("common.globalLoadCopy", "fr")).toBe("OutreachAI n’a pas pu terminer le chargement dans cette session de navigateur.");
+    expect(translate("common.tryAgain", "pl")).toBe("Spróbuj ponownie");
+  });
 });

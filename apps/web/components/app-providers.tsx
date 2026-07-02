@@ -21,13 +21,21 @@ export function useAuthRuntime() {
   return useContext(AuthRuntimeContext);
 }
 
-function StabilityFallback({ title = "Something went wrong. Please refresh or sign in again." }: { title?: string }) {
+function StabilityFallback({
+  title = "Something went wrong. Please refresh or sign in again.",
+  copy = "common.recoveryCopy"
+}: {
+  title?: string;
+  copy?: string;
+}) {
+  const { t } = useI18n();
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
       <section className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 text-center shadow-soft">
-        <h1 className="text-xl font-bold text-ink">{title}</h1>
+        <h1 className="text-xl font-bold text-ink">{t(title)}</h1>
         <p className="mt-3 text-sm leading-6 text-slate-600">
-          If this keeps happening, sign out and sign in again. Your workspace data is safe.
+          {t(copy)}
         </p>
         <div className="mt-5 flex flex-col gap-2 min-[390px]:flex-row min-[390px]:justify-center">
           <button
@@ -35,13 +43,13 @@ function StabilityFallback({ title = "Something went wrong. Please refresh or si
             onClick={() => window.location.reload()}
             className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white"
           >
-            Refresh
+            {t("common.refresh")}
           </button>
           <Link
             href="/sign-in"
             className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold"
           >
-            Sign in
+            {t("common.signIn")}
           </Link>
         </div>
       </section>
