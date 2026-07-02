@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState, type ButtonHTMLAttributes, type ErrorInfo } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
+import { useAuthRuntime } from "@/components/app-providers";
 import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
@@ -465,7 +466,8 @@ async function devApi<T>(path: string, init: ClientApiInit = {}) {
 }
 
 function useTokenApi(): { api: ApiFn; ready: boolean } {
-  if (!hasClerkPublishableKey || isClerkE2EBypass) {
+  const { clerkEnabled } = useAuthRuntime();
+  if (!clerkEnabled || isClerkE2EBypass) {
     return { api: devApi, ready: true };
   }
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -804,7 +806,7 @@ function useSalesData() {
   return { api, ready, leads, setLeads, campaigns, metrics, loading, error, refresh };
 }
 
-function IntegrationStatusPanel({ api }: { api: ApiFn }) {
+function IntegrationStatusPanel({ api, ready }: { api: ApiFn; ready: boolean }) {
   const { t } = useI18n();
   const [integrations, setIntegrations] = useState<WorkspaceIntegrationStatus[]>([]);
   const [loading, setLoading] = useState(true);
@@ -813,6 +815,7 @@ function IntegrationStatusPanel({ api }: { api: ApiFn }) {
   useEffect(() => {
     let cancelled = false;
     async function loadStatus() {
+      if (!ready) return;
       setLoading(true);
       setError("");
       try {
@@ -828,7 +831,7 @@ function IntegrationStatusPanel({ api }: { api: ApiFn }) {
     return () => {
       cancelled = true;
     };
-  }, [api, t]);
+  }, [api, ready, t]);
 
   if (loading) {
     return (
@@ -1329,7 +1332,7 @@ export function DashboardHome() {
 }
 
 export function LeadFinderPage() {
-  const { api, leads, setLeads, loading, error } = useSalesData();
+  const { api, ready, leads, setLeads, loading, error } = useSalesData();
   const [searchResults, setSearchResults] = useState<Lead[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [message, setMessage] = useState("");
@@ -1431,12 +1434,12 @@ export function LeadFinderPage() {
       const found = safeArray(result.companies).map(normalizeCrmCompany).map(leadFromCrmCompany);
       leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id });
       const warnings = safeArray(result.warnings);
-      setSearchSteps((items) => {
-        const nextSteps = [...items, t("Found companies count").replace("{count}", String(found.length))];
-        if (found.length) nextSteps.push(t("Saved to CRM"));
-        if (warnings.length) nextSteps.push(t("Partial data available"));
-        return nextSteps;
-      });
+      setSearchSteps([
+        t("Lead search finished"),
+        t("Found companies count").replace("{count}", String(found.length)),
+        ...(found.length ? [t("Saved to CRM")] : [t("No companies found")]),
+        ...(warnings.length ? [t("Partial data available")] : [])
+      ]);
       setLeads(found);
       setSearchResults(found);
       setMessage(workspaceSearchMessage(result, found.length, t));
@@ -1456,7 +1459,7 @@ export function LeadFinderPage() {
       }
       const reason = userMessage(err, "Lead search could not be completed.", t);
       setSearchResults([]);
-      setSearchSteps((items) => [...items, t("Search stopped")]);
+      setSearchSteps([t("Search stopped"), reason]);
       setMessage(reason);
       trackEvent("lead_finder_search_failed", {
         country: payload.country,
@@ -1491,7 +1494,7 @@ export function LeadFinderPage() {
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
-      <IntegrationStatusPanel api={api} />
+      <IntegrationStatusPanel api={api} ready={ready} />
       <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
       <form aria-label="Lead search" onSubmit={submit} className="space-y-5">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">
