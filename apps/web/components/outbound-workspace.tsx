@@ -1190,7 +1190,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         <div>
           <h2 className="text-xl font-bold text-ink">{lead.company}</h2>
           <p className="mt-1 break-all text-sm text-slate-500">{profile.website}</p>
-          <p className="mt-2 text-sm text-slate-600">{profile.industry} · {profile.location} · {profile.size}</p>
+          <p className="mt-2 text-sm text-slate-600">{profile.industry} · {profile.location} · {t(profile.size)}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t("Completion count").replace("{count}", String(completed))}</span>
@@ -1716,6 +1716,7 @@ function outreachTone(done: boolean, label: string) {
 }
 
 function activityLabel(action: string) {
+  if (action === "lead.saved_to_crm") return "Lead saved to CRM";
   return action.replaceAll(".", " ").replaceAll("_", " ");
 }
 
@@ -1857,8 +1858,8 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
           <InfoCell label="Assigned owner" value={owner === "Not assigned" ? null : owner} help="Assign an owner when a teammate takes responsibility." />
           <InfoCell label="Last activity" value={formatDateTime(current.last_activity_at || current.stage_changed_at || current.updated_at)} help="Activity appears after sales work is logged." />
           <div className="rounded-xl border border-teal-200 bg-teal-50 p-4">
-            <p className="text-xs font-bold uppercase text-brand">Next recommended action</p>
-          <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
+            <p className="text-xs font-bold uppercase text-brand">{t("Next recommended action")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
           </div>
         </div>
       </div>
