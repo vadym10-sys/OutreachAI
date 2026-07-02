@@ -21,20 +21,25 @@ from app.api.routes import (
     _existing_duplicate_lead,
     _hunter_enriched_leads,
     _lead_metadata,
+    _lead_out,
     _lead_trace,
     _merge_lead_metadata,
     _run_provider_with_deadline,
     _save_provider_leads,
     _sync_lead_to_crm,
     _workspace_out,
+    _enforce_usage,
 )
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.observability import capture_provider_exception
 from app.core.security import CurrentUserContext
 from app.models.entities import AuditLog, Campaign, Company, Deal, EmailMessage, Lead, LeadStatus
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
+from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, search_google_places
+from app.services.hunter import hunter_key_loaded
 from app.services.website import normalize_website_url
 
 logger = logging.getLogger("outreachai.workspace_app")
@@ -103,6 +108,17 @@ class UsageActionOut(BaseModel):
     email: Optional[EmailOut] = None
 
 
+class UsageIntegrationStatus(BaseModel):
+    key: str
+    label: str
+    status: Literal["connected", "missing_key", "needs_setup", "error"]
+    message: str
+
+
+class UsageIntegrationStatusOut(BaseModel):
+    integrations: list[UsageIntegrationStatus]
+
+
 def _workspace_counts(db: Session, workspace_id: UUID) -> UsageCounts:
     return UsageCounts(
         leads=db.scalar(select(func.count(Lead.id)).where(Lead.workspace_id == workspace_id)) or 0,
@@ -142,6 +158,15 @@ def _safe_provider_warning(exc: Exception) -> str:
     if isinstance(exc, ProviderRequestError):
         return "AI is temporarily unavailable. Try again in a moment."
     return "This step is temporarily unavailable. Try again in a moment."
+
+
+def _integration_status(key: str, label: str, configured: bool, ready_message: str, missing_message: str) -> UsageIntegrationStatus:
+    return UsageIntegrationStatus(
+        key=key,
+        label=label,
+        status="connected" if configured else "missing_key",
+        message=ready_message if configured else missing_message,
+    )
 
 
 def _scoped_company(db: Session, workspace_id: UUID, company_id: UUID) -> Company:
@@ -210,6 +235,53 @@ def bootstrap_workspace_app(user: CurrentUserContext, db: Session = Depends(get_
         next_action=_next_action(counts),
         recent_companies=[_crm_company_out(db, workspace, user.user_id, item) for item in recent],
         recent_activity=[_activity_out(item) for item in activity],
+    )
+
+
+@router.get("/integrations/status", response_model=UsageIntegrationStatusOut)
+def integration_status(user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageIntegrationStatusOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    settings = get_settings()
+    # Touching the workspace is intentional: it proves the status response is scoped to an authenticated private account.
+    _workspace_counts(db, workspace.id)
+    return UsageIntegrationStatusOut(
+        integrations=[
+            _integration_status(
+                "lead_search",
+                "Lead search",
+                bool(settings.google_maps_api_key),
+                "Connected. Lead Finder can search real companies.",
+                "Needs setup. Add lead search credentials or add companies manually.",
+            ),
+            _integration_status(
+                "contact_discovery",
+                "Contact discovery",
+                bool(settings.hunter_api_key),
+                "Connected. Contact discovery can verify business emails.",
+                "Needs setup. Add contact discovery credentials or add contacts manually.",
+            ),
+            _integration_status(
+                "ai_research",
+                "AI research and email",
+                bool(settings.openai_api_key),
+                "Connected. AI can analyze websites and draft outreach.",
+                "Needs setup. Add AI credentials before generating research or emails.",
+            ),
+            _integration_status(
+                "email_sending",
+                "Email sending",
+                bool(settings.resend_api_key and settings.resend_from_email),
+                "Connected. Approved emails can be sent.",
+                "Needs setup. Configure a verified sender before sending email.",
+            ),
+            _integration_status(
+                "billing",
+                "Billing",
+                bool(settings.stripe_secret_key and settings.stripe_starter_price_id and settings.stripe_pro_price_id and settings.stripe_agency_price_id),
+                "Connected. Plans and billing status can be managed.",
+                "Needs setup. Billing keys or monthly price IDs are missing.",
+            ),
+        ]
     )
 
 
@@ -422,6 +494,51 @@ def analyze_company(company_id: UUID, request: Request, user: CurrentUserContext
         return UsageActionOut(status="provider_unavailable", message=_safe_provider_warning(exc), company=_crm_company_out(db, workspace, user.user_id, company))
 
 
+@router.post("/companies/{company_id}/contacts", response_model=UsageActionOut)
+def discover_company_contacts(company_id: UUID, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+    if not company.lead_id:
+        return UsageActionOut(status="error", message="Save this company as a lead before finding contacts.", company=_crm_company_out(db, workspace, user.user_id, company))
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id))
+    if not lead:
+        return UsageActionOut(status="error", message="Save this company as a lead before finding contacts.", company=_crm_company_out(db, workspace, user.user_id, company))
+    if not hunter_key_loaded():
+        return UsageActionOut(status="provider_unavailable", message="Contact discovery needs setup. You can add a contact manually and continue.", company=_crm_company_out(db, workspace, user.user_id, company))
+
+    before_email = lead.email
+    try:
+        enriched = _hunter_enriched_leads(db, request, user.user_id, workspace, [_lead_out(lead)])
+    except Exception as exc:
+        capture_provider_exception(exc, provider="hunter", endpoint="workspace_app.company.contacts", workspace_id=workspace.id, lead_id=lead.id)
+        return UsageActionOut(status="provider_unavailable", message="Contact discovery is temporarily unavailable. You can add a contact manually and continue.", company=_crm_company_out(db, workspace, user.user_id, company))
+
+    enriched_lead = enriched[0] if enriched else _lead_out(lead)
+    metadata = _lead_metadata(enriched_lead)
+    lead.contact = enriched_lead.contact or lead.contact
+    lead.email = str(enriched_lead.email) if enriched_lead.email else lead.email
+    lead.phone = enriched_lead.phone or lead.phone
+    lead.linkedin = enriched_lead.linkedin or lead.linkedin
+    lead.notes = _merge_lead_metadata(
+        lead,
+        {
+            **metadata,
+            "contact_found_at": datetime.utcnow().isoformat() if enriched_lead.email or lead.email else _lead_metadata(lead).get("contact_found_at"),
+            "hunter_status": enriched_lead.hunter_status or metadata.get("hunter_status") or ("verified" if enriched_lead.email else "no_verified_email"),
+            "hunter_verified": bool(enriched_lead.hunter_verified or metadata.get("hunter_verified")),
+            "email_status": "Verified" if enriched_lead.hunter_verified or metadata.get("hunter_verified") else ("Found" if enriched_lead.email or lead.email else "No verified email"),
+        },
+    )
+    company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    if lead.email and lead.email != before_email:
+        _add_lead_activity(db, request, user.user_id, workspace, "contact.found", lead, {"source": "contact_discovery"})
+    db.commit()
+    db.refresh(company)
+    status: UsageStatus = "success" if lead.email else "empty"
+    message = "Verified contact saved to CRM." if lead.email else "No verified email was found. Add a contact manually or continue with company research."
+    return UsageActionOut(status=status, message=message, company=_crm_company_out(db, workspace, user.user_id, company))
+
+
 @router.post("/companies/{company_id}/email-draft", response_model=UsageActionOut)
 def generate_email_draft(company_id: UUID, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
@@ -499,3 +616,46 @@ def approve_email(email_id: UUID, request: Request, user: CurrentUserContext, db
         company=_crm_company_out(db, workspace, user.user_id, company) if company else None,
         email=EmailOut.model_validate(email),
     )
+
+
+@router.post("/emails/{email_id}/send", response_model=UsageActionOut)
+def send_approved_email(email_id: UUID, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
+    if not email:
+        raise HTTPException(status_code=404, detail="Email draft not found.")
+    if email.delivery_status == "sent":
+        return UsageActionOut(status="error", message="This email has already been sent.", email=EmailOut.model_validate(email))
+    if email.delivery_status != "approved":
+        return UsageActionOut(status="error", message="Approve the email before sending.", email=EmailOut.model_validate(email))
+    lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
+    if not lead or not lead.email:
+        return UsageActionOut(status="error", message="Add a verified recipient email before sending.", email=EmailOut.model_validate(email))
+
+    try:
+        _enforce_usage(db, user.user_id, workspace, "email_sends")
+        provider_response = send_email(to_email=lead.email, subject=email.subject, body=email.body)
+    except (EmailProviderConfigurationError, EmailProviderRequestError) as exc:
+        email.delivery_status = "failed"
+        _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id), "reason": str(exc)})
+        db.commit()
+        capture_provider_exception(exc, provider="resend", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
+        return UsageActionOut(status="provider_unavailable", message="Email sending needs setup or is temporarily unavailable. The approved draft is still saved.", email=EmailOut.model_validate(email))
+    except Exception as exc:
+        email.delivery_status = "failed"
+        _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id)})
+        db.commit()
+        capture_provider_exception(exc, provider="resend", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
+        return UsageActionOut(status="provider_unavailable", message="Email sending is temporarily unavailable. The approved draft is still saved.", email=EmailOut.model_validate(email))
+
+    email.sent_at = datetime.utcnow()
+    email.provider_message_id = str(provider_response.get("id"))
+    email.delivery_status = "sent"
+    lead.status = LeadStatus.contacted
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": email.sent_at.isoformat()})
+    _add_lead_activity(db, request, user.user_id, workspace, "email.sent", lead, {"email_id": str(email.id), "provider_message_id": email.provider_message_id})
+    company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    db.commit()
+    db.refresh(email)
+    db.refresh(company)
+    return UsageActionOut(status="success", message="Approved email was sent. CRM stage updated.", company=_crm_company_out(db, workspace, user.user_id, company), email=EmailOut.model_validate(email))

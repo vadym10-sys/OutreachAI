@@ -79,6 +79,17 @@ type WorkspaceAppActionResponse = {
   email?: Email | null;
 };
 
+type WorkspaceIntegrationStatus = {
+  key: string;
+  label: string;
+  status: "connected" | "missing_key" | "needs_setup" | "error";
+  message: string;
+};
+
+type WorkspaceIntegrationStatusResponse = {
+  integrations: WorkspaceIntegrationStatus[];
+};
+
 type WorkspaceAppBootstrapResponse = {
   workspace: {
     id: string;
@@ -424,6 +435,19 @@ function workspaceSearchMessage(result: WorkspaceAppLeadSearchResponse, count: n
 function workspaceManualSaveMessage(result: WorkspaceAppCompanyCreateResponse, company: Lead, t: (key: string) => string) {
   if (result.status === "reused") return t("This company already exists in your CRM.");
   return t("Company saved to CRM. Next: complete sales research.").replace("{company}", company.company);
+}
+
+function integrationStatusLabel(status: WorkspaceIntegrationStatus["status"]) {
+  if (status === "connected") return "Connected";
+  if (status === "missing_key") return "Missing key";
+  if (status === "needs_setup") return "Needs setup";
+  return "Error";
+}
+
+function integrationStatusClasses(status: WorkspaceIntegrationStatus["status"]) {
+  if (status === "connected") return "border-teal-200 bg-teal-50 text-brand";
+  if (status === "missing_key" || status === "needs_setup") return "border-amber-200 bg-amber-50 text-amber-800";
+  return "border-red-200 bg-red-50 text-red-700";
 }
 
 function redirectToSignIn() {
@@ -780,6 +804,74 @@ function useSalesData() {
   return { api, ready, leads, setLeads, campaigns, metrics, loading, error, refresh };
 }
 
+function IntegrationStatusPanel({ api }: { api: ApiFn }) {
+  const { t } = useI18n();
+  const [integrations, setIntegrations] = useState<WorkspaceIntegrationStatus[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadStatus() {
+      setLoading(true);
+      setError("");
+      try {
+        const response = await api<WorkspaceIntegrationStatusResponse>("/api/workspace-app/integrations/status");
+        if (!cancelled) setIntegrations(safeArray(response.integrations));
+      } catch (err) {
+        if (!cancelled) setError(userMessage(err, "Integration status is temporarily unavailable. Core CRM data is still available.", t));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void loadStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, t]);
+
+  if (loading) {
+    return (
+      <WidgetBoundary name="Integration status">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="h-20 animate-pulse rounded-xl bg-slate-100" />
+        </section>
+      </WidgetBoundary>
+    );
+  }
+
+  if (error) {
+    return (
+      <WidgetBoundary name="Integration status">
+        <WidgetErrorCard title={t("Integration status is temporarily unavailable")} copy={error} />
+      </WidgetBoundary>
+    );
+  }
+
+  return (
+    <WidgetBoundary name="Integration status">
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div>
+          <p className="text-sm font-bold uppercase text-brand">{t("Integration status")}</p>
+          <h2 className="mt-1 text-xl font-bold text-ink">{t("What is ready inside your workspace")}</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t("OutreachAI only shows an action as ready when the required service is connected. Missing services show a clear fallback instead of endless loading.")}</p>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {integrations.map((item) => (
+            <article key={item.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-bold text-ink">{t(item.label)}</h3>
+                <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${integrationStatusClasses(item.status)}`}>{t(integrationStatusLabel(item.status))}</span>
+              </div>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{t(item.message)}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+    </WidgetBoundary>
+  );
+}
+
 function useCrmData() {
   const { api, ready } = useTokenApi();
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
@@ -986,6 +1078,14 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
           setStatus(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
         }
       }
+      setStatus(t("Finding decision makers..."));
+      const contactResult = await api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/contacts`, { method: "POST" });
+      if (contactResult.company) {
+        onLeadUpdated?.(leadFromCrmCompany(normalizeCrmCompany(contactResult.company)));
+      }
+      if (contactResult.status !== "success" && contactResult.status !== "empty") {
+        setStatus(t(contactResult.message || "Contact discovery is temporarily unavailable. You can add a contact manually and continue."));
+      }
       setStatus(t("Preparing personalized first email..."));
       const draftResult = await api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/email-draft`, { method: "POST" });
       if (draftResult.company) {
@@ -1036,15 +1136,22 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       }
       setDraft(approved.email);
       setStatus(t("Sending approved email..."));
-      const sent = await withTimeout(
-        api<Email>(`/api/emails/${draft.id}/send`, { method: "POST" }),
+      const sentResult = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}/send`, { method: "POST" }),
         30000,
         "Email sending timed out. Please try again before approving another send."
       );
-      setDraft(sent);
+      if (!sentResult.email || sentResult.status !== "success") {
+        throw new Error(sentResult.message || "Email could not be sent.");
+      }
+      setDraft(sentResult.email);
       setReadyToSend(false);
       setStatus(t("Approved email was sent. CRM stage updated to Contacted."));
-      onLeadUpdated?.({ ...lead, status: "Contacted", email_approved_at: new Date().toISOString(), email_sent_at: sent.sent_at || new Date().toISOString() });
+      if (sentResult.company) {
+        onLeadUpdated?.(leadFromCrmCompany(normalizeCrmCompany(sentResult.company)));
+      } else {
+        onLeadUpdated?.({ ...lead, status: "Contacted", email_approved_at: new Date().toISOString(), email_sent_at: sentResult.email.sent_at || new Date().toISOString() });
+      }
       trackEvent("approved_email_sent", {
         lead_id: lead.id,
         email_id: draft.id,
@@ -1384,6 +1491,7 @@ export function LeadFinderPage() {
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
+      <IntegrationStatusPanel api={api} />
       <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
       <form aria-label="Lead search" onSubmit={submit} className="space-y-5">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">

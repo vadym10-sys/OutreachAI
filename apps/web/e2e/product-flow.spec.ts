@@ -193,6 +193,39 @@ test.beforeEach(async ({ page }) => {
       body = qualityDashboard;
     } else if (apiPath === "/api/admin/quality/tasks") {
       body = { id: "99999999-9999-9999-9999-999999999999", issue_id: null, title: "Repair: test issue", priority: "medium", status: "needs_approval", diagnosis: "Regression task", suggested_fix: "Add tests", required_tests: ["Playwright E2E test"], approval_required: true, created_at: new Date().toISOString() };
+    } else if (apiPath === "/api/workspace-app/bootstrap") {
+      body = {
+        workspace,
+        counts: { leads: 1, companies: 1, campaigns: 1, emails: 0, deals: 1 },
+        metrics: { leads: 1, companies: 1, contacts: 1, campaigns: 1, emails: 0, deals: 1 },
+        next_action: "Review the first prepared outreach email.",
+        recent_companies: [crmCompany],
+        recent_activity: [{ action: "lead.found", created_at: new Date().toISOString(), company: lead.company, message: "Lead found" }]
+      };
+    } else if (apiPath === "/api/workspace-app/integrations/status") {
+      body = {
+        integrations: [
+          { key: "lead_search", label: "Lead search", status: "connected", message: "Connected. Lead Finder can search real companies." },
+          { key: "contact_discovery", label: "Contact discovery", status: "connected", message: "Connected. Contact discovery can verify business emails." },
+          { key: "ai_research", label: "AI research and email", status: "connected", message: "Connected. AI can analyze websites and draft outreach." },
+          { key: "email_sending", label: "Email sending", status: "connected", message: "Connected. Approved emails can be sent." },
+          { key: "billing", label: "Billing", status: "connected", message: "Connected. Plans and billing status can be managed." }
+        ]
+      };
+    } else if (apiPath === "/api/workspace-app/companies") {
+      body = route.request().method() === "POST" ? { status: "created", message: "Company saved to CRM.", company: crmCompany } : [crmCompany];
+    } else if (apiPath === "/api/workspace-app/leads/search") {
+      body = { status: "success", request_id: "e2e-lead-search", message: "Found 1 companies and saved them to CRM.", companies_saved: 1, duplicates_skipped: 0, companies: [crmCompany], warnings: [] };
+    } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/analyze`) {
+      body = { status: "success", message: "Website analysis saved.", company: { ...crmCompany, crm_stage: "Website Analyzed", website_analyzed_at: new Date().toISOString() } };
+    } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/contacts`) {
+      body = { status: "success", message: "Verified contact saved to CRM.", company: { ...crmCompany, crm_stage: "Contact Found", contact_found_at: new Date().toISOString() } };
+    } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/email-draft`) {
+      body = { status: "success", message: "Email draft created for review. Nothing was sent.", company: { ...crmCompany, crm_stage: "Email Draft Ready", email_generated_at: new Date().toISOString() }, email: crmCompany.generated_emails[0] };
+    } else if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") {
+      body = { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: { ...crmCompany, crm_stage: "Approved", email_approved_at: new Date().toISOString() }, email: { ...crmCompany.generated_emails[0], delivery_status: "approved" } };
+    } else if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
+      body = { status: "success", message: "Approved email was sent. CRM stage updated.", company: { ...crmCompany, crm_stage: "Sent", email_sent_at: new Date().toISOString() }, email: { ...crmCompany.generated_emails[0], delivery_status: "sent", sent_at: new Date().toISOString() } };
     } else if (apiPath === "/api/leads/find") {
       body = [lead];
     } else if (apiPath === "/api/campaigns") {

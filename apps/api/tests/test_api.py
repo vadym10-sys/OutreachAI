@@ -408,7 +408,17 @@ def test_workspace_app_lead_search_provider_error_returns_structured_status(monk
     assert "temporarily unavailable" in data["message"]
 
 
-def test_workspace_app_email_draft_requires_approval(monkeypatch) -> None:
+def test_workspace_app_integration_status_is_private_and_actionable() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-integrations@example.com"}
+    response = client.get("/api/workspace-app/integrations/status", headers=headers)
+    assert response.status_code == 200
+    items = response.json()["integrations"]
+    assert {item["key"] for item in items} == {"lead_search", "contact_discovery", "ai_research", "email_sending", "billing"}
+    assert all(item["status"] in {"connected", "missing_key", "needs_setup", "error"} for item in items)
+    assert all("API_KEY" not in item["message"] for item in items)
+
+
+def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-email@example.com"}
     company_response = client.post(
         "/api/workspace-app/companies",
@@ -417,6 +427,24 @@ def test_workspace_app_email_draft_requires_approval(monkeypatch) -> None:
     )
     assert company_response.status_code == 200
     company_id = company_response.json()["company"]["id"]
+
+    def fake_hunter_enrichment(db, request, user_id, workspace, leads):
+        lead = leads[0].model_copy(update={
+            "contact": "Dana Owner",
+            "title": "Owner",
+            "email": "dana@usage-email.example",
+            "phone": "+49 30 000000",
+            "hunter_verified": True,
+            "hunter_status": "verified",
+        })
+        return [lead]
+
+    monkeypatch.setattr("app.api.usage._hunter_enriched_leads", fake_hunter_enrichment)
+    contacts = client.post(f"/api/workspace-app/companies/{company_id}/contacts", headers=headers)
+    assert contacts.status_code == 200
+    assert contacts.json()["status"] == "success"
+    assert contacts.json()["company"]["email"] == "dana@usage-email.example"
+    assert contacts.json()["company"]["crm_stage"] == "Contact Found"
 
     monkeypatch.setattr(
         "app.api.usage.personalize_email",
@@ -439,6 +467,13 @@ def test_workspace_app_email_draft_requires_approval(monkeypatch) -> None:
     assert approved.status_code == 200
     assert approved.json()["email"]["delivery_status"] == "approved"
     assert approved.json()["company"]["crm_stage"] == "Approved"
+
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: {"id": "workspace-app-send-1"})
+    sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert sent.status_code == 200
+    assert sent.json()["status"] == "success"
+    assert sent.json()["email"]["delivery_status"] == "sent"
+    assert sent.json()["company"]["crm_stage"] == "Sent"
 
 
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:

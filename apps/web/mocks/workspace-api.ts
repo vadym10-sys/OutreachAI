@@ -221,6 +221,17 @@ export async function mockWorkspaceApi(page: Page) {
         recent_activity: qaCompany.activity
       });
     }
+    if (apiPath === "/api/workspace-app/integrations/status") {
+      return fulfillJson(route, {
+        integrations: [
+          { key: "lead_search", label: "Lead search", status: "connected", message: "Connected. Lead Finder can search real companies." },
+          { key: "contact_discovery", label: "Contact discovery", status: "connected", message: "Connected. Contact discovery can verify business emails." },
+          { key: "ai_research", label: "AI research and email", status: "connected", message: "Connected. AI can analyze websites and draft outreach." },
+          { key: "email_sending", label: "Email sending", status: "connected", message: "Connected. Approved emails can be sent." },
+          { key: "billing", label: "Billing", status: "connected", message: "Connected. Plans and billing status can be managed." }
+        ]
+      });
+    }
     if (apiPath === "/api/workspace-app/leads/search") {
       return fulfillJson(route, {
         request_id: "qa-request",
@@ -270,6 +281,11 @@ export async function mockWorkspaceApi(page: Page) {
     }
     if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [qaCompany]);
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, qaCompany);
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/analyze`) return fulfillJson(route, { status: "success", message: "Website analysis saved.", company: { ...qaCompany, crm_stage: "Website Analyzed", website_analyzed_at: now } });
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/contacts`) return fulfillJson(route, { status: "success", message: "Verified contact saved to CRM.", company: { ...qaCompany, crm_stage: "Contact Found", contact_found_at: now } });
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/email-draft`) return fulfillJson(route, { status: "success", message: "Email draft created for review. Nothing was sent.", company: { ...qaCompany, crm_stage: "Email Draft Ready", email_generated_at: now }, email: qaCompany.generated_emails[0] });
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: { ...qaCompany, crm_stage: "Approved", email_approved_at: now }, email: { ...qaCompany.generated_emails[0], delivery_status: "approved" } });
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: { ...qaCompany, crm_stage: "Sent", email_sent_at: now }, email: { ...qaCompany.generated_emails[0], delivery_status: "sent", sent_at: now } });
     if (apiPath === "/api/dashboard") return fulfillJson(route, { leads: 1, campaigns: 1, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: "Starter", usage: { leads: 1, email_sends: 0 } });
     if (apiPath === "/api/campaigns") return fulfillJson(route, route.request().method() === "POST" ? qaCampaign : [qaCampaign]);
     if (apiPath === `/api/campaigns/${qaCampaign.id}/launch`) return fulfillJson(route, { ...qaCampaign, status: "Running" });
