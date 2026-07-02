@@ -3,8 +3,20 @@ from __future__ import annotations
 from functools import lru_cache
 import os
 
+from pydantic import Field
 from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _google_maps_api_key_default() -> str:
+    return (
+        os.getenv("GOOGLE_PLACES_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or os.getenv("MAPS_API_KEY")
+        or os.getenv("NEXT_PUBLIC_GOOGLE_MAPS_API_KEY")
+        or ""
+    )
 
 
 class Settings(BaseSettings):
@@ -24,7 +36,7 @@ class Settings(BaseSettings):
     resend_webhook_secret: str = ""
     apollo_api_key: str = ""
     hunter_api_key: str = ""
-    google_maps_api_key: str = ""
+    google_maps_api_key: str = Field(default_factory=_google_maps_api_key_default)
     clay_api_key: str = ""
     clay_workspace_id: str = ""
     crm_sync_webhook_url: str = ""
@@ -64,6 +76,12 @@ class Settings(BaseSettings):
         if value.startswith("postgres://"):
             return value.replace("postgres://", "postgresql+psycopg://", 1)
         return value
+
+    @model_validator(mode="after")
+    def load_google_maps_key_aliases(self) -> "Settings":
+        if not self.google_maps_api_key:
+            self.google_maps_api_key = _google_maps_api_key_default()
+        return self
 
     @property
     def allowed_origins(self) -> list[str]:

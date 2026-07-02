@@ -732,6 +732,19 @@ def test_google_maps_missing_key_blocks_lead_finder(monkeypatch) -> None:
     get_settings.cache_clear()
 
 
+def test_google_maps_key_alias_enables_lead_search(monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "places_alias_test")
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.google_maps_api_key == "places_alias_test"
+    response = client.get("/api/workspace-app/integrations/status", headers=AUTH)
+    assert response.status_code == 200
+    lead_search = next(item for item in response.json()["integrations"] if item["key"] == "lead_search")
+    assert lead_search["status"] == "connected"
+    get_settings.cache_clear()
+
+
 def test_google_maps_timeout_returns_user_safe_error(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes.search_google_places", lambda payload: (_ for _ in ()).throw(GoogleMapsRequestError("Google Maps is temporarily unavailable after retries.")))
     monkeypatch.setattr("app.api.routes.apollo_key_loaded", lambda: False)
