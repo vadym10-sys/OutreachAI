@@ -62,6 +62,7 @@ type WorkspaceAppLeadSearchResponse = {
   request_id: string;
   message: string;
   companies_saved: number;
+  saved_count?: number;
   duplicates_skipped: number;
   companies: CrmCompany[];
   warnings: string[];
@@ -178,6 +179,22 @@ const salesWorkflow = [
 
 function safeArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function leadKey(lead: Lead) {
+  return String(lead.crm_company_id || lead.id || lead.place_id || lead.website || lead.domain || `${lead.company}:${lead.city || ""}`).toLowerCase();
+}
+
+function mergeLeads(newLeads: Lead[], existingLeads: Lead[]) {
+  const seen = new Set<string>();
+  const merged: Lead[] = [];
+  for (const lead of [...newLeads, ...existingLeads]) {
+    const key = leadKey(lead);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(lead);
+  }
+  return merged;
 }
 
 function safeCampaign(value: Campaign): Campaign {
@@ -1385,6 +1402,7 @@ export function LeadFinderPage() {
   const [hasSearched, setHasSearched] = useState(false);
   const [message, setMessage] = useState("");
   const [searchSteps, setSearchSteps] = useState<string[]>([]);
+  const [searchSummary, setSearchSummary] = useState<{ found: number; saved: number; duplicates: number } | null>(null);
   const [searching, setSearching] = useState(false);
   const [lastSearchPayload, setLastSearchPayload] = useState<LeadSearchPayload | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
@@ -1429,6 +1447,7 @@ export function LeadFinderPage() {
     setManualBusy(true);
     setHasSearched(true);
     setLastSearchPayload(null);
+    setSearchSummary(null);
     setSearchResults([]);
     setMessage(t("Saving company to CRM..."));
     setSearchSteps([t("Saving company to CRM...")]);
@@ -1439,8 +1458,9 @@ export function LeadFinderPage() {
         "Company save timed out. Please try again."
       );
       const lead = leadFromCrmCompany(saved.company);
-      setLeads((items) => [lead, ...items.filter((item) => item.id !== lead.id)]);
-      setSearchResults((items) => [lead, ...items.filter((item) => item.id !== lead.id)]);
+      setLeads((items) => mergeLeads([lead], items));
+      setSearchResults((items) => mergeLeads([lead], items));
+      setSearchSummary({ found: 1, saved: saved.status === "reused" ? 0 : 1, duplicates: saved.status === "reused" ? 1 : 0 });
       setMessage(workspaceManualSaveMessage(saved, lead, t));
       setSearchSteps([t("Saved to CRM"), t("Ready for company research")]);
       form.reset();
@@ -1473,6 +1493,7 @@ export function LeadFinderPage() {
     setSearching(true);
     setHasSearched(true);
     setSearchResults([]);
+    setSearchSummary(null);
     setLastSearchPayload(payload);
     setSearchSteps([t("Connecting to lead sources...")]);
     setMessage(t("Searching companies..."));
@@ -1504,7 +1525,12 @@ export function LeadFinderPage() {
         ...(found.length ? [t("Saved to CRM")] : [t("No companies found")]),
         ...(warnings.length ? [t("Partial data available")] : [])
       ]);
-      setLeads(found);
+      setSearchSummary({
+        found: found.length,
+        saved: Number(result.companies_saved ?? result.saved_count ?? 0),
+        duplicates: Number(result.duplicates_skipped || 0)
+      });
+      setLeads((items) => mergeLeads(found, items));
       setSearchResults(found);
       setMessage(workspaceSearchMessage(result, found.length, t));
       trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
@@ -1523,6 +1549,7 @@ export function LeadFinderPage() {
       }
       const reason = userMessage(err, "Lead search could not be completed.", t);
       setSearchResults([]);
+      setSearchSummary({ found: 0, saved: 0, duplicates: 0 });
       setSearchSteps([t("Search stopped")]);
       setMessage(reason);
       trackEvent("lead_finder_search_failed", {
@@ -1595,6 +1622,18 @@ export function LeadFinderPage() {
               <Search size={16} /> {t("Retry search")}
             </button>
           )}
+        </div>}
+        {searchSummary && <div className="mt-4 grid gap-2 sm:grid-cols-3" aria-label={t("Lead search summary")}>
+          {[
+            ["Companies found", searchSummary.found],
+            ["Saved to CRM", searchSummary.saved],
+            ["Duplicates skipped", searchSummary.duplicates]
+          ].map(([label, value]) => (
+            <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-sm">
+              <p className="font-bold text-ink">{value}</p>
+              <p className="mt-1 text-slate-600">{t(String(label))}</p>
+            </div>
+          ))}
         </div>}
         {searchSteps.length > 0 && <ol className="mt-4 grid gap-2 text-sm sm:grid-cols-3" aria-label="Lead search progress">
           {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}

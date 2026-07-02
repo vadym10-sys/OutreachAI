@@ -177,6 +177,29 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("lead search shows saved CRM summary and keeps the result actionable", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+
+    await page.goto("/dashboard/leads", { waitUntil: "domcontentloaded" });
+    const leadSearch = page.getByRole("form", { name: "Lead search" });
+    await leadSearch.getByLabel("Country").fill("Germany");
+    await leadSearch.getByLabel("City").fill("Berlin");
+    await leadSearch.getByLabel("Industry").fill("Construction");
+    await leadSearch.getByLabel("Company size").fill("11-50");
+    await leadSearch.getByLabel("Number of leads").fill("10");
+    await leadSearch.getByRole("button", { name: "Find leads" }).click();
+
+    await expect(page.getByText("Found 1 companies. Saved to CRM.")).toBeVisible();
+    await expect(page.getByText("Companies found").first()).toBeVisible();
+    await expect(page.getByText("Saved to CRM").first()).toBeVisible();
+    await expect(page.getByText("Duplicates skipped").first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hill Country Build Co" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Complete sales research" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
   test("Russian mobile workspace pages do not show the English lead/settings copy", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.addInitScript(() => {
