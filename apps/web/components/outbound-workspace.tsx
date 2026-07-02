@@ -1858,7 +1858,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
           <InfoCell label="Last activity" value={formatDateTime(current.last_activity_at || current.stage_changed_at || current.updated_at)} help="Activity appears after sales work is logged." />
           <div className="rounded-xl border border-teal-200 bg-teal-50 p-4">
             <p className="text-xs font-bold uppercase text-brand">Next recommended action</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{nextAction}</p>
+          <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
           </div>
         </div>
       </div>
@@ -1882,7 +1882,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
             <InfoCell label="Map listing" value={current.place_id ? t("Available") : null} help="Run lead discovery to connect the local business listing." />
             <InfoCell label="Technologies" value={null} help="Technology data appears after website research detects it." />
             <InfoCell label="Rating" value={current.google_rating ? `${current.google_rating}/5` : null} help="Rating appears when available from the business listing." />
-            <InfoCell label="Data source" value={sourceLabel(current.source)} help="The source is shown as business-friendly verified data." />
+            <InfoCell label="Data source" value={t(sourceLabel(current.source))} help="The source is shown as business-friendly verified data." />
           </div>
           <div className="mt-4 rounded-2xl bg-slate-50 p-4">
             <p className="text-sm font-bold text-ink">{t("Company description")}</p>
@@ -1901,7 +1901,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
             <div className="grid gap-3">
               <InfoCell label="Estimated opportunity" value={estimatedOpportunity === "Not available" ? null : estimatedOpportunity} help="Deal value appears after qualification." />
               <InfoCell label="Confidence score" value={`${healthScore}%`} help="Based on profile completeness, contacts, AI research and outreach state." />
-              <InfoCell label="Recommended action" value={nextAction} help="The next safest step in the sales workflow." />
+              <InfoCell label="Recommended action" value={t(nextAction)} help="The next safest step in the sales workflow." />
             </div>
           </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -1961,7 +1961,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
               <div className={`flex h-8 w-8 items-center justify-center rounded-full ${value ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-400"}`}><Clock3 size={16} /></div>
               <div>
                 <p className="font-bold text-ink">{t(label)}</p>
-                <p className="mt-1 text-xs text-slate-500">{formatDateTime(value)}</p>
+                <p className="mt-1 text-xs text-slate-500">{t(formatDateTime(value))}</p>
               </div>
               <p className="text-sm leading-6 text-slate-600">{t(description)}</p>
             </div>)}

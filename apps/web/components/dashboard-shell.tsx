@@ -252,7 +252,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     });
   }, [email, pathname, userId, workspace?.id, workspaceId]);
 
-  const workspaceLabel = workspace?.name?.trim() || workspace?.company?.trim() || t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
+  const rawWorkspaceLabel = workspace?.name?.trim() || workspace?.company?.trim();
+  const workspaceLabel = rawWorkspaceLabel && rawWorkspaceLabel.toLowerCase() !== "private workspace"
+    ? rawWorkspaceLabel
+    : t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
   const workspaceReadyScore = useMemo(() => {
