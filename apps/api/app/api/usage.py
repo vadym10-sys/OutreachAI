@@ -33,7 +33,7 @@ from app.api.routes import (
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.observability import capture_provider_exception
-from app.core.security import CurrentUserContext
+from app.core.security import WorkspaceUserContext
 from app.models.entities import AuditLog, Campaign, Company, Deal, EmailMessage, Lead, LeadStatus
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
@@ -209,7 +209,7 @@ def _find_existing_company(db: Session, workspace_id: UUID, payload: UsageCompan
 
 
 @router.get("/bootstrap", response_model=UsageBootstrapOut)
-def bootstrap_workspace_app(user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageBootstrapOut:
+def bootstrap_workspace_app(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageBootstrapOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     _ensure_crm_backfilled(db, user.user_id, workspace)
     counts = _workspace_counts(db, workspace.id)
@@ -239,7 +239,7 @@ def bootstrap_workspace_app(user: CurrentUserContext, db: Session = Depends(get_
 
 
 @router.get("/integrations/status", response_model=UsageIntegrationStatusOut)
-def integration_status(user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageIntegrationStatusOut:
+def integration_status(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageIntegrationStatusOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     settings = get_settings()
     # Touching the workspace is intentional: it proves the status response is scoped to an authenticated private account.
@@ -286,7 +286,7 @@ def integration_status(user: CurrentUserContext, db: Session = Depends(get_db)) 
 
 
 @router.post("/companies", response_model=UsageCompanyCreateOut)
-def create_company(payload: UsageCompanyCreateIn, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageCompanyCreateOut:
+def create_company(payload: UsageCompanyCreateIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageCompanyCreateOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     existing_company = _find_existing_company(db, workspace.id, payload)
     if existing_company:
@@ -368,7 +368,7 @@ def _merge_lead_metadata_for_create(metadata: dict[str, Any]) -> str:
 
 
 @router.post("/leads/search", response_model=UsageLeadSearchOut)
-def search_leads(payload: LeadFinderRequest, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageLeadSearchOut:
+def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageLeadSearchOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     request_id = request.headers.get("x-request-id") or str(uuid4())
     warnings: list[str] = []
@@ -434,7 +434,7 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: CurrentUser
 
 @router.get("/companies", response_model=list[CrmCompanyOut])
 def list_companies(
-    user: CurrentUserContext,
+    user: WorkspaceUserContext,
     db: Session = Depends(get_db),
     search: str = "",
     city: str = "",
@@ -467,14 +467,14 @@ def list_companies(
 
 
 @router.get("/companies/{company_id}", response_model=CrmCompanyOut)
-def get_company(company_id: UUID, user: CurrentUserContext, db: Session = Depends(get_db)) -> CrmCompanyOut:
+def get_company(company_id: UUID, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> CrmCompanyOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
     return _crm_company_out(db, workspace, user.user_id, company)
 
 
 @router.post("/companies/{company_id}/analyze", response_model=UsageActionOut)
-def analyze_company(company_id: UUID, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+def analyze_company(company_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
     if not company.lead_id:
@@ -495,7 +495,7 @@ def analyze_company(company_id: UUID, request: Request, user: CurrentUserContext
 
 
 @router.post("/companies/{company_id}/contacts", response_model=UsageActionOut)
-def discover_company_contacts(company_id: UUID, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+def discover_company_contacts(company_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
     if not company.lead_id:
@@ -540,7 +540,7 @@ def discover_company_contacts(company_id: UUID, request: Request, user: CurrentU
 
 
 @router.post("/companies/{company_id}/email-draft", response_model=UsageActionOut)
-def generate_email_draft(company_id: UUID, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
     if not company.lead_id:
@@ -594,7 +594,7 @@ def generate_email_draft(company_id: UUID, request: Request, user: CurrentUserCo
 
 
 @router.post("/emails/{email_id}/approve", response_model=UsageActionOut)
-def approve_email(email_id: UUID, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
     if not email:
@@ -619,7 +619,7 @@ def approve_email(email_id: UUID, request: Request, user: CurrentUserContext, db
 
 
 @router.post("/emails/{email_id}/send", response_model=UsageActionOut)
-def send_approved_email(email_id: UUID, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
     if not email:

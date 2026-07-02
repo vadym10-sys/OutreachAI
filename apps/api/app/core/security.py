@@ -199,6 +199,28 @@ def get_current_user_context(
 CurrentUserContext = Annotated[AuthenticatedUser, Depends(get_current_user_context)]
 
 
+def get_current_workspace_user_context(
+    authorization: Annotated[Optional[str], Header()] = None,
+    x_test_user_email: Annotated[Optional[str], Header(alias="X-Test-User-Email")] = None,
+) -> AuthenticatedUser:
+    """Verify JWT and return a workspace user without requiring Clerk Management API email lookup."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+
+    token = authorization.removeprefix("Bearer ").strip()
+    settings = get_settings()
+
+    if settings.app_env == "development" and token == "dev":
+        test_user = (x_test_user_email or "").strip().lower()
+        return AuthenticatedUser(user_id=test_user or "dev_user", email=test_user)
+
+    claims = _verify_clerk_token(token)
+    return AuthenticatedUser(user_id=str(claims["sub"]), email=_email_from_claims(claims))
+
+
+WorkspaceUserContext = Annotated[AuthenticatedUser, Depends(get_current_workspace_user_context)]
+
+
 def is_owner(email: str) -> bool:
     return email.strip().lower() == OWNER_EMAIL
 
