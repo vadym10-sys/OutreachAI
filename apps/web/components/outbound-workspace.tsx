@@ -1685,8 +1685,8 @@ function timelineProgress(company: CrmCompany) {
   return steps;
 }
 
-function fieldValue(value?: string | number | null) {
-  if (value === undefined || value === null || value === "") return "Not available";
+function fieldValue(value?: string | number | null, missingLabel = "Not available") {
+  if (value === undefined || value === null || value === "") return missingLabel;
   return String(value);
 }
 
@@ -1720,22 +1720,24 @@ function activityLabel(action: string) {
 }
 
 function InfoCell({ label, value, help }: { label: string; value?: string | number | null; help: string }) {
+  const { t } = useI18n();
   const missing = value === undefined || value === null || value === "";
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <p className="text-xs font-bold uppercase text-slate-500">{label}</p>
-      <p className={`mt-2 text-sm font-semibold ${missing ? "text-slate-500" : "text-ink"}`}>{fieldValue(value)}</p>
-      {missing && <p className="mt-2 text-xs leading-5 text-slate-500">{help}</p>}
+      <p className="text-xs font-bold uppercase text-slate-500">{t(label)}</p>
+      <p className={`mt-2 text-sm font-semibold ${missing ? "text-slate-500" : "text-ink"}`}>{fieldValue(value, t("Not available"))}</p>
+      {missing && <p className="mt-2 text-xs leading-5 text-slate-500">{t(help)}</p>}
     </div>
   );
 }
 
 function WorkspaceSection({ id, title, copy, children }: { id: string; title: string; copy: string; children: ReactNode }) {
+  const { t } = useI18n();
   return (
     <section id={id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4">
-        <h3 className="text-lg font-bold text-ink">{title}</h3>
-        <p className="mt-1 text-sm leading-6 text-slate-600">{copy}</p>
+        <h3 className="text-lg font-bold text-ink">{t(title)}</h3>
+        <p className="mt-1 text-sm leading-6 text-slate-600">{t(copy)}</p>
       </div>
       {children}
     </section>
@@ -1743,6 +1745,7 @@ function WorkspaceSection({ id, title, copy, children }: { id: string; title: st
 }
 
 function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
+  const { t } = useI18n();
   const [current, setCurrent] = useState(company);
   const [stageValue, setStageValue] = useState(company.crm_stage);
   const [noteBody, setNoteBody] = useState("");
@@ -1780,7 +1783,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
     ["Meeting", current.crm_stage === "Meeting Scheduled" || current.crm_stage === "Won"],
     ["Won", current.crm_stage === "Won"]
   ] as const;
-  const lifecycle = [
+  const lifecycle: Array<[string, string | null | undefined, string]> = [
     ["Lead found", current.found_at, "Company was discovered and added to your workspace."],
     ["Saved to CRM", current.saved_to_crm_at || current.created_at, "The company is stored in your CRM."],
     ["Website analyzed", current.website_analyzed_at, "AI research created the company summary and sales angle."],
@@ -1790,7 +1793,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
     ["Email sent", current.email_sent_at, "Approved outreach was sent."],
     ["Email opened", current.opened_at, "The prospect opened the message."],
     ["Reply received", current.replied_at, "A reply was captured in the workspace."],
-    ["Stage changed", current.stage_changed_at, `Current stage is ${current.crm_stage}.`],
+    ["Stage changed", current.stage_changed_at, t("Current stage is {stage}.").replace("{stage}", t(current.crm_stage))],
   ];
 
   async function moveStage(nextStage = stageValue) {
@@ -1801,9 +1804,9 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
       const updated = await api<CrmCompany>(`/api/crm/companies/${current.id}/stage`, { method: "PATCH", body: JSON.stringify({ stage: nextStage }) });
       setCurrent(updated);
       setStageValue(updated.crm_stage);
-      setActionNotice(`CRM stage moved to ${updated.crm_stage}.`);
+      setActionNotice(t("CRM stage moved to {stage}.").replace("{stage}", t(updated.crm_stage)));
     } catch (err) {
-      setActionError(friendlyErrorMessage(err, "CRM stage could not be updated. Check your session and try again."));
+      setActionError(friendlyErrorMessage(err, t("CRM stage could not be updated. Check your session and try again.")));
     } finally {
       setActionBusy("");
     }
@@ -1812,7 +1815,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
     event.preventDefault();
     const body = noteBody.trim();
     if (!body) {
-      setActionError("Write a note before saving.");
+      setActionError(t("Write a note before saving."));
       return;
     }
     setActionBusy("note");
@@ -1822,9 +1825,9 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
       const note = await api<CrmCompany["notes"][number]>(`/api/crm/companies/${current.id}/notes`, { method: "POST", body: JSON.stringify({ body }) });
       setCurrent({ ...current, notes: [note, ...current.notes] });
       setNoteBody("");
-      setActionNotice("Note saved to the activity history.");
+      setActionNotice(t("Note saved to the activity history."));
     } catch (err) {
-      setActionError(friendlyErrorMessage(err, "Note could not be saved. Check your session and try again."));
+      setActionError(friendlyErrorMessage(err, t("Note could not be saved. Check your session and try again.")));
     } finally {
       setActionBusy("");
     }
@@ -1838,14 +1841,14 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <span className={`rounded-full border px-3 py-1 text-xs font-bold ${stageTone(current.crm_stage)}`}>{current.crm_stage}</span>
-              <span className="rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">AI Health {healthScore}%</span>
+              <span className={`rounded-full border px-3 py-1 text-xs font-bold ${stageTone(current.crm_stage)}`}>{t(current.crm_stage)}</span>
+              <span className="rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{t("AI Health")} {healthScore}%</span>
             </div>
             <h2 className="mt-3 text-2xl font-black tracking-tight text-ink sm:text-3xl">{current.name}</h2>
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-600">
-              <span className="inline-flex items-center gap-1.5"><Building2 size={16} />{fieldValue(current.industry)}</span>
-              <span className="inline-flex items-center gap-1.5"><MapPin size={16} />{[current.city, current.country].filter(Boolean).join(", ") || "Not available"}</span>
-              <span className="inline-flex items-center gap-1.5"><Globe2 size={16} />{current.website || current.domain ? <a className="break-all font-semibold text-brand hover:underline" href={current.website || `https://${current.domain}`} target="_blank" rel="noreferrer">{current.website || current.domain}</a> : "Not available"}</span>
+              <span className="inline-flex items-center gap-1.5"><Building2 size={16} />{fieldValue(current.industry, t("Not available"))}</span>
+              <span className="inline-flex items-center gap-1.5"><MapPin size={16} />{[current.city, current.country].filter(Boolean).join(", ") || t("Not available")}</span>
+              <span className="inline-flex items-center gap-1.5"><Globe2 size={16} />{current.website || current.domain ? <a className="break-all font-semibold text-brand hover:underline" href={current.website || `https://${current.domain}`} target="_blank" rel="noreferrer">{current.website || current.domain}</a> : t("Not available")}</span>
             </div>
           </div>
         </div>
@@ -1862,7 +1865,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
       <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {progress.map(([label, done]) => <div key={label} className={`rounded-xl border p-3 text-sm ${done ? "border-teal-200 bg-teal-50 text-brand" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
           <CheckCircle2 size={16} className={done ? "text-brand" : "text-slate-300"} />
-          <p className="mt-2 font-bold">{label}</p>
+          <p className="mt-2 font-bold">{t(label)}</p>
         </div>)}
       </div>
     </div>
@@ -1876,24 +1879,24 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
             <InfoCell label="Email" value={current.email || primaryContact?.email} help="Verify a business contact or add one manually." />
             <InfoCell label="Website" value={current.website || current.domain} help="Add a website to run company research." />
             <InfoCell label="LinkedIn" value={primaryContact?.linkedin} help="Add a public company or decision-maker profile." />
-            <InfoCell label="Map listing" value={current.place_id ? "Available" : null} help="Run lead discovery to connect the local business listing." />
+            <InfoCell label="Map listing" value={current.place_id ? t("Available") : null} help="Run lead discovery to connect the local business listing." />
             <InfoCell label="Technologies" value={null} help="Technology data appears after website research detects it." />
             <InfoCell label="Rating" value={current.google_rating ? `${current.google_rating}/5` : null} help="Rating appears when available from the business listing." />
             <InfoCell label="Data source" value={sourceLabel(current.source)} help="The source is shown as business-friendly verified data." />
           </div>
           <div className="mt-4 rounded-2xl bg-slate-50 p-4">
-            <p className="text-sm font-bold text-ink">Company description</p>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{current.ai_summary || "Not available. Run company research to create a clear description before outreach."}</p>
+            <p className="text-sm font-bold text-ink">{t("Company description")}</p>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{current.ai_summary || t("Not available. Run company research to create a clear description before outreach.")}</p>
           </div>
         </WorkspaceSection>
 
         <WorkspaceSection id={`insights-${current.id}`} title="AI Insights" copy="A sales-ready summary of why this company matters and what to do next.">
           <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
             <div className="rounded-2xl bg-teal-50 p-4">
-              <p className="text-sm font-bold text-brand">AI summary</p>
-              <p className="mt-2 text-sm leading-6 text-slate-800">{current.ai_summary || "Not available. Analyze the company website to generate the summary, pain points and sales angle."}</p>
-              <p className="mt-4 text-sm font-bold text-ink">Why this company is interesting</p>
-              <p className="mt-2 text-sm leading-6 text-slate-700">{current.sales_angle || current.outreach_strategy || "Not available. Complete sales research to identify the strongest outreach angle."}</p>
+              <p className="text-sm font-bold text-brand">{t("AI summary")}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-800">{current.ai_summary || t("Not available. Analyze the company website to generate the summary, pain points and sales angle.")}</p>
+              <p className="mt-4 text-sm font-bold text-ink">{t("Why this company is interesting")}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{current.sales_angle || current.outreach_strategy || t("Not available. Complete sales research to identify the strongest outreach angle.")}</p>
             </div>
             <div className="grid gap-3">
               <InfoCell label="Estimated opportunity" value={estimatedOpportunity === "Not available" ? null : estimatedOpportunity} help="Deal value appears after qualification." />
@@ -1903,12 +1906,12 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
           </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-sm font-bold text-ink">Buying signals</p>
-              <div className="mt-3 space-y-2">{buyingSignals.length ? buyingSignals.map((signal) => <p key={signal} className="flex items-center gap-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand"><ShieldCheck size={16} />{signal}</p>) : <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">Not available. Analyze the website and find contacts to reveal buying signals.</p>}</div>
+              <p className="text-sm font-bold text-ink">{t("Buying signals")}</p>
+              <div className="mt-3 space-y-2">{buyingSignals.length ? buyingSignals.map((signal) => <p key={signal} className="flex items-center gap-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand"><ShieldCheck size={16} />{t(signal)}</p>) : <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">{t("Not available. Analyze the website and find contacts to reveal buying signals.")}</p>}</div>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
-              <p className="text-sm font-bold text-ink">Risks</p>
-              <div className="mt-3 space-y-2">{risks.length ? risks.map((risk) => <p key={risk} className="flex items-center gap-2 rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-800"><AlertTriangle size={16} />{risk}</p>) : <p className="rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">No major missing steps detected for the current stage.</p>}</div>
+              <p className="text-sm font-bold text-ink">{t("Risks")}</p>
+              <div className="mt-3 space-y-2">{risks.length ? risks.map((risk) => <p key={risk} className="flex items-center gap-2 rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-800"><AlertTriangle size={16} />{t(risk)}</p>) : <p className="rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{t("No major missing steps detected for the current stage.")}</p>}</div>
             </div>
           </div>
         </WorkspaceSection>
@@ -1918,25 +1921,25 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
             {current.contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h4 className="font-bold text-ink">{contact.name || "Not available"}</h4>
-                  <p className="mt-1 text-sm text-slate-600">{contact.title || "Role not available"}</p>
+                  <h4 className="font-bold text-ink">{contact.name || t("Not available")}</h4>
+                  <p className="mt-1 text-sm text-slate-600">{contact.title || t("Role not available")}</p>
                 </div>
-                <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{contact.confidence || "Not available"} confidence</span>
+                <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{contact.confidence || t("Not available")} {t("confidence")}</span>
               </div>
               <div className="mt-4 grid gap-2 text-sm">
-                <p className="flex items-center gap-2 text-slate-700"><Mail size={16} />{contact.email || "Not available"}</p>
-                <p className="flex items-center gap-2 text-slate-700"><Phone size={16} />{contact.phone || "Not available"}</p>
-                <p className="flex items-center gap-2 text-slate-700"><ExternalLink size={16} />{contact.linkedin || "Not available"}</p>
-                <p className="text-xs font-bold uppercase text-slate-500">Data: {sourceLabel(contact.source)}</p>
+                <p className="flex items-center gap-2 text-slate-700"><Mail size={16} />{contact.email || t("Not available")}</p>
+                <p className="flex items-center gap-2 text-slate-700"><Phone size={16} />{contact.phone || t("Not available")}</p>
+                <p className="flex items-center gap-2 text-slate-700"><ExternalLink size={16} />{contact.linkedin || t("Not available")}</p>
+                <p className="text-xs font-bold uppercase text-slate-500">{t("Data")}: {t(sourceLabel(contact.source))}</p>
               </div>
             </article>)}
           </div> : <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5">
-            <p className="font-bold text-ink">No decision makers yet.</p>
-            <p className="mt-2 text-sm leading-6 text-slate-600">Use the outreach research action to find or add a verified contact. Emails are never invented.</p>
+            <p className="font-bold text-ink">{t("No decision makers yet.")}</p>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{t("Use the outreach research action to find or add a verified contact. Emails are never invented.")}</p>
           </div>}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><UserRoundSearch size={17} /> Review outreach workflow</a>
-            <a href={`#notes-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Plus size={17} /> Add contact note</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><UserRoundSearch size={17} /> {t("Review outreach workflow")}</a>
+            <a href={`#notes-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Plus size={17} /> {t("Add contact note")}</a>
           </div>
         </WorkspaceSection>
 
@@ -1944,11 +1947,11 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
           <div className="grid gap-2 sm:grid-cols-4 xl:grid-cols-8">
             {outreachSteps.map(([label, done]) => <div key={label} className={`rounded-xl border p-3 text-sm font-bold ${outreachTone(Boolean(done), label)}`}>
               <CheckCircle2 size={16} className={done ? "" : "text-slate-300"} />
-              <p className="mt-2">{label}</p>
+              <p className="mt-2">{t(label)}</p>
             </div>)}
           </div>
           <div className="mt-5">
-            {current.lead_id ? <OpportunityCard lead={lead} api={api} /> : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">Reconnect this company to a lead before generating outreach.</p>}
+            {current.lead_id ? <OpportunityCard lead={lead} api={api} /> : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
           </div>
         </WorkspaceSection>
 
@@ -1957,10 +1960,10 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
             {lifecycle.map(([label, value, description]) => <div key={label} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[2rem_10rem_1fr]">
               <div className={`flex h-8 w-8 items-center justify-center rounded-full ${value ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-400"}`}><Clock3 size={16} /></div>
               <div>
-                <p className="font-bold text-ink">{label}</p>
+                <p className="font-bold text-ink">{t(label)}</p>
                 <p className="mt-1 text-xs text-slate-500">{formatDateTime(value)}</p>
               </div>
-              <p className="text-sm leading-6 text-slate-600">{description}</p>
+              <p className="text-sm leading-6 text-slate-600">{t(description)}</p>
             </div>)}
             {current.activity.slice(0, 4).map((item) => <div key={item.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[2rem_10rem_1fr]">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-700"><FileText size={16} /></div>
@@ -1968,7 +1971,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
                 <p className="font-bold text-ink">{activityLabel(item.action)}</p>
                 <p className="mt-1 text-xs text-slate-500">{new Date(item.created_at).toLocaleString()}</p>
               </div>
-              <p className="text-sm leading-6 text-slate-600">Workspace activity was recorded for this company.</p>
+              <p className="text-sm leading-6 text-slate-600">{t("Workspace activity was recorded for this company.")}</p>
             </div>)}
           </div>
         </WorkspaceSection>
@@ -1976,41 +1979,41 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
 
       <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="text-sm font-bold text-ink">Quick Actions</p>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Important actions stay within reach. Nothing is sent without approval.</p>
+          <p className="text-sm font-bold text-ink">{t("Quick Actions")}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{t("Important actions stay within reach. Nothing is sent without approval.")}</p>
           <div className="mt-4 grid gap-2">
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Sparkles size={17} /> Review AI research</a>
-            <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> Review contacts</a>
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> Review email draft</a>
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Send size={17} /> Review approval path</a>
-            <button type="button" onClick={() => moveStage("Meeting Scheduled")} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} Book meeting</button>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Sparkles size={17} /> {t("Review AI research")}</a>
+            <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> {t("Review contacts")}</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> {t("Review email draft")}</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Send size={17} /> {t("Review approval path")}</a>
+            <button type="button" onClick={() => moveStage("Meeting Scheduled")} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} {t("Book meeting")}</button>
           </div>
         </section>
 
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="text-sm font-bold text-ink">Move stage</p>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Update the pipeline when the sales situation changes.</p>
+          <p className="text-sm font-bold text-ink">{t("Move stage")}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{t("Update the pipeline when the sales situation changes.")}</p>
           <div className="mt-3 grid gap-2">
             <select value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
-              {crmStages.map((stage) => <option key={stage} value={stage}>{stage}</option>)}
+              {crmStages.map((stage) => <option key={stage} value={stage}>{t(stage)}</option>)}
             </select>
-            <button type="button" onClick={() => moveStage()} disabled={actionBusy === "stage" || stageValue === current.crm_stage} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" && <Loader2 className="animate-spin" size={16} />} Move stage</button>
+            <button type="button" onClick={() => moveStage()} disabled={actionBusy === "stage" || stageValue === current.crm_stage} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
           </div>
         </section>
 
         <section id={`notes-${current.id}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="text-sm font-bold text-ink">Notes</p>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Use short notes, checklists, mentions or attachment links. Rich formatting can be pasted into the note.</p>
+          <p className="text-sm font-bold text-ink">{t("Notes")}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{t("Use short notes, checklists, mentions or attachment links. Rich formatting can be pasted into the note.")}</p>
           <form onSubmit={addNote} className="mt-3 space-y-2">
-            <label className="sr-only" htmlFor={`note-${current.id}`}>Add note</label>
-            <textarea id={`note-${current.id}`} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder="Example: @Alex follow up next Tuesday&#10;- [ ] Send pricing&#10;- [ ] Confirm meeting time" className="min-h-28 w-full rounded-md border border-slate-300 bg-white p-3 text-sm" />
-            <button type="submit" disabled={actionBusy === "note" || !noteBody.trim()} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "note" && <Loader2 className="animate-spin" size={16} />} Add note</button>
+            <label className="sr-only" htmlFor={`note-${current.id}`}>{t("Add note")}</label>
+            <textarea id={`note-${current.id}`} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder={t("Example: follow up next Tuesday")} className="min-h-28 w-full rounded-md border border-slate-300 bg-white p-3 text-sm" />
+            <button type="submit" disabled={actionBusy === "note" || !noteBody.trim()} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "note" && <Loader2 className="animate-spin" size={16} />} {t("Add note")}</button>
           </form>
           <div className="mt-4 space-y-2">
             {current.notes.length ? current.notes.slice(0, 5).map((note) => <div key={note.id} className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
               <p className="whitespace-pre-line">{note.body}</p>
               <p className="mt-2 text-xs text-slate-500">{formatDateTime(note.created_at)}</p>
-            </div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">No notes yet. Add the next customer conversation or internal follow-up.</p>}
+            </div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No notes yet. Add the next customer conversation or internal follow-up.")}</p>}
           </div>
         </section>
 
@@ -2052,7 +2055,8 @@ export function WebsiteAnalyzerPage() {
 
 export function ContactsPage() {
   const { contacts, loading, error, filters, setFilters } = useCrmData();
-  return <div className="space-y-6"><PageHeader eyebrow="Contacts" title="Decision makers and verified emails." copy="Contacts come from verified contact discovery, local business data, or manual lead import. Missing emails are not invented." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading contacts" copy="Checking saved CRM contacts." /> : error ? <EmptyState title="Contacts unavailable" copy={error} /> : contacts.length ? <section className="grid gap-4 lg:grid-cols-3">{contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{contact.name || "Decision maker unavailable"}</h2><p className="mt-1 text-sm text-slate-600">{contact.title || "Role unavailable"} · {contact.company}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold">{contact.email || "No verified email available"}</p><p className="mt-3 text-sm text-slate-600">{contact.email_status} · {sourceLabel(contact.source)}</p></article>)}</section> : <EmptyState title="No decision makers yet" copy="Find contacts or add one manually. OutreachAI will not create fake contacts." />}</div>;
+  const { t } = useI18n();
+  return <div className="space-y-6"><PageHeader eyebrow="Contacts" title="Decision makers and verified emails." copy="Contacts come from verified contact discovery, local business data, or manual lead import. Missing emails are not invented." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading contacts" copy="Checking saved CRM contacts." /> : error ? <EmptyState title="Contacts unavailable" copy={error} /> : contacts.length ? <section className="grid gap-4 lg:grid-cols-3">{contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{contact.name || t("Decision maker unavailable")}</h2><p className="mt-1 text-sm text-slate-600">{contact.title || t("Role unavailable")} · {contact.company}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold">{contact.email || t("No verified email available")}</p><p className="mt-3 text-sm text-slate-600">{t(contact.email_status)} · {t(sourceLabel(contact.source))}</p></article>)}</section> : <EmptyState title="No decision makers yet" copy="Find contacts or add one manually. OutreachAI will not create fake contacts." />}</div>;
 }
 
 export function CampaignsPage() {
@@ -2162,7 +2166,7 @@ export function InboxPage() {
 export function CrmPipelinePage() {
   const { pipeline, loading, error } = useCrmData();
   const { t } = useI18n();
-  return <div className="space-y-6"><PageHeader eyebrow="CRM Pipeline" title="Move real leads from research to revenue." copy="Pipeline stages update from saved companies, AI research, email drafts and customer replies." action={<Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Review companies")}</Link>} />{loading ? <EmptyState title="Loading pipeline" copy="Reading CRM stages." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : <section className="grid gap-4 xl:grid-cols-3 2xl:grid-cols-4">{pipeline.stages.map((stage) => { const items = pipeline.companies.filter((company) => company.crm_stage === stage); return <article key={stage} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-3"><h2 className="font-bold text-ink">{t(stage)}</h2><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{items.length}</span></div><div className="mt-4 space-y-3">{items.length ? items.map((company) => <div key={company.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-semibold text-slate-800">{company.name}</p><p className="mt-1 text-slate-600">{t(company.email_status)} · {sourceLabel(company.source)}</p><p className="mt-2 text-xs font-semibold text-brand">{t(companyNextAction(company))}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">{t("No companies in this stage. Move a company here when the sales situation changes.")}</p>}</div></article>; })}</section>}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="CRM Pipeline" title="Move real leads from research to revenue." copy="Pipeline stages update from saved companies, AI research, email drafts and customer replies." action={<Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Review companies")}</Link>} />{loading ? <EmptyState title="Loading pipeline" copy="Reading CRM stages." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : <section className="grid gap-4 xl:grid-cols-3 2xl:grid-cols-4">{pipeline.stages.map((stage) => { const items = pipeline.companies.filter((company) => company.crm_stage === stage); return <article key={stage} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-3"><h2 className="font-bold text-ink">{t(stage)}</h2><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{items.length}</span></div><div className="mt-4 space-y-3">{items.length ? items.map((company) => <div key={company.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-semibold text-slate-800">{company.name}</p><p className="mt-1 text-slate-600">{t(company.email_status)} · {t(sourceLabel(company.source))}</p><p className="mt-2 text-xs font-semibold text-brand">{t(companyNextAction(company))}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">{t("No companies in this stage. Move a company here when the sales situation changes.")}</p>}</div></article>; })}</section>}</div>;
 }
 
 export function DealsPage() {
