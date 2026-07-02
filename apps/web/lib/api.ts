@@ -1,6 +1,7 @@
 import { auth } from "@clerk/nextjs/server";
+import { backendApiUrl } from "@/lib/backend-url";
 
-const backendUrl = process.env.BACKEND_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const backendUrl = backendApiUrl();
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { getToken } = await auth();
