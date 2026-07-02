@@ -252,16 +252,20 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     });
   }, [email, pathname, userId, workspace?.id, workspaceId]);
 
-  const rawWorkspaceLabel = workspace?.name?.trim() || workspace?.company?.trim();
-  const workspaceLabel = rawWorkspaceLabel && rawWorkspaceLabel.toLowerCase() !== "private workspace"
+  const rawWorkspaceName = workspace?.name?.trim() || "";
+  const isGenericWorkspaceName = !rawWorkspaceName || ["outreach workspace", "private workspace"].includes(rawWorkspaceName.toLowerCase());
+  const rawWorkspaceLabel = !isGenericWorkspaceName ? rawWorkspaceName : workspace?.company?.trim();
+  const workspaceLabel = rawWorkspaceLabel
     ? rawWorkspaceLabel
-    : t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
+    : workspace
+      ? t("shell.privateWorkspace")
+      : t(workspaceLoadFailed ? "shell.privateWorkspace" : "shell.loadingWorkspace");
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
   const workspaceReadyScore = useMemo(() => {
     if (!workspace) return 0;
-    return [workspace.name, workspace.company, workspace.industry, workspace.target_country, workspace.target_customer].filter((item) => String(item || "").trim()).length;
-  }, [workspace]);
+    return [isGenericWorkspaceName ? "" : workspace.name, workspace.company, workspace.industry, workspace.target_country, workspace.target_customer].filter((item) => String(item || "").trim()).length;
+  }, [isGenericWorkspaceName, workspace]);
   const workspaceNeedsSetup = Boolean(workspace && workspaceReadyScore < 4);
   const showWorkspaceSetupPanel = workspaceNeedsSetup;
 
