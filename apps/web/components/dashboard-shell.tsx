@@ -2,7 +2,7 @@
 
 import { Component, useCallback, useEffect, useMemo, useState, type ErrorInfo, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
 import { ArrowRight, BarChart3, Bot, Building2, CheckCircle2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
@@ -200,6 +200,7 @@ function profileInitials(email: string, workspaceLabel: string) {
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { t } = useI18n();
   const { clerkEnabled } = useAuthRuntime();
   const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
@@ -343,6 +344,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     }
   }
 
+  function navigateFromMobileMenu(href: string) {
+    setMobileMenuOpen(false);
+    if (pathname !== href) {
+      router.push(href);
+    }
+  }
+
   return (
     <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
       <CheckoutContinuation />
@@ -416,7 +424,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   const active = pathname === item.href;
                   const label = t(item.labelKey);
                   return (
-                    <Link key={item.href} href={item.href} onClick={() => setMobileMenuOpen(false)} className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
+                    <Link key={item.href} href={item.href} onClick={(event) => {
+                      event.preventDefault();
+                      navigateFromMobileMenu(item.href);
+                    }} className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
                       <Icon size={18} aria-hidden="true" />
                       {label}
                     </Link>

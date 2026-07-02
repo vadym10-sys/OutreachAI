@@ -2,7 +2,7 @@
 
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
-import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState, type ButtonHTMLAttributes, type ErrorInfo } from "react";
+import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ErrorInfo } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
@@ -1291,7 +1291,6 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
 export function DashboardHome() {
   const { metrics, leads, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
   const { t } = useI18n();
-  if (loading) return <LoadingSkeleton title="Loading your private workspace" />;
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
   const nextStep = dashboardNextStep(metrics, leads, campaigns);
   const completedSteps = completedWorkflowSteps(metrics, leads, campaigns);
@@ -1309,6 +1308,7 @@ export function DashboardHome() {
         copy={t(hasAnyData ? "OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system." : "This is your private account. Leads, CRM, campaigns, billing and settings are visible only to your workspace. Start with one real company or a focused lead search.")}
         action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={17} /></Link>}
       />
+      {loading && <WidgetErrorCard title="Loading your private workspace" copy="Your dashboard is opening. You can already use the main actions below." />}
       {supportingError && <WidgetErrorCard title={cachedAt ? "Updating workspace data" : "Dashboard details are temporarily unavailable"} copy={supportingError} />}
       {error && <WidgetErrorCard title="Dashboard metrics could not update" copy={error} />}
       {!hasAnyData && <WidgetBoundary name="Private workspace onboarding"><section className="rounded-3xl border border-teal-100 bg-gradient-to-br from-white to-teal-50/70 p-5 shadow-sm sm:p-6">
@@ -1380,6 +1380,7 @@ export function DashboardHome() {
 
 export function LeadFinderPage() {
   const { api, ready, leads, setLeads, loading, error } = useSalesData();
+  const leadSearchFormRef = useRef<HTMLFormElement>(null);
   const [searchResults, setSearchResults] = useState<Lead[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [message, setMessage] = useState("");
@@ -1389,6 +1390,22 @@ export function LeadFinderPage() {
   const [manualBusy, setManualBusy] = useState(false);
   const { t } = useI18n();
   const visibleMessage = message;
+
+  function payloadFromForm(form: HTMLFormElement): LeadSearchPayload {
+    const data = new FormData(form);
+    return {
+      country: String(data.get("country") || ""),
+      city: String(data.get("city") || ""),
+      industry: String(data.get("industry") || ""),
+      category: String(data.get("category") || data.get("industry") || ""),
+      keyword: String(data.get("keyword") || ""),
+      company_size: String(data.get("company_size") || ""),
+      keywords: splitList(String(data.get("keywords") || "")),
+      technologies: splitList(String(data.get("technology") || "")),
+      radius: Number(data.get("radius") || 10000),
+      limit: Number(data.get("limit") || 10)
+    };
+  }
 
   async function addManualLead(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1523,27 +1540,24 @@ export function LeadFinderPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     leadFinderDebug("FORM_VALID");
-    const data = new FormData(event.currentTarget);
-    const payload: LeadSearchPayload = {
-      country: String(data.get("country") || ""),
-      city: String(data.get("city") || ""),
-      industry: String(data.get("industry") || ""),
-      category: String(data.get("category") || data.get("industry") || ""),
-      keyword: String(data.get("keyword") || ""),
-      company_size: String(data.get("company_size") || ""),
-      keywords: splitList(String(data.get("keywords") || "")),
-      technologies: splitList(String(data.get("technology") || "")),
-      radius: Number(data.get("radius") || 10000),
-      limit: Number(data.get("limit") || 10)
-    };
-    await runLeadSearch(payload);
+    await runLeadSearch(payloadFromForm(event.currentTarget));
   }
+
+  async function clickLeadSearch() {
+    leadFinderDebug("BUTTON_CLICKED");
+    const form = leadSearchFormRef.current;
+    if (!form || searching) return;
+    if (!form.reportValidity()) return;
+    leadFinderDebug("FORM_VALID");
+    await runLeadSearch(payloadFromForm(form));
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
       <IntegrationStatusPanel api={api} ready={ready} />
       <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
-      <form aria-label="Lead search" onSubmit={submit} className="space-y-5">
+      <form ref={leadSearchFormRef} aria-label="Lead search" onSubmit={submit} className="space-y-5">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">
           <p className="text-sm font-bold text-brand">{t("Step 1 of 3 · Choose a focused market")}</p>
           <p className="mt-1 text-sm leading-6 text-slate-700">{t("Use one country, one city and one industry. A narrower search creates better opportunities faster.")}</p>
@@ -1568,7 +1582,7 @@ export function LeadFinderPage() {
           </div>
         </details>
         <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
-          <PrimaryButton type="submit" disabled={searching} onClick={() => leadFinderDebug("BUTTON_CLICKED")}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
+          <PrimaryButton type="button" disabled={searching} onClick={clickLeadSearch}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
           <p className="text-sm text-slate-600">{t("Expected time: 20-30 seconds. Saved companies will stay after refresh.")}</p>
         </div>
         {visibleMessage && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
