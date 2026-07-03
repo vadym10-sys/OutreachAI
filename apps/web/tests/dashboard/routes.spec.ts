@@ -200,6 +200,26 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("CRM pipeline opens the selected company workspace", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+
+    await page.goto("/dashboard/crm", { waitUntil: "domcontentloaded" });
+    await expect(page.getByText("Next sales action")).toBeVisible();
+    await expect(page.getByText("Need action")).toBeVisible();
+    const openCompany = page.getByRole("link", { name: "Open company workspace" });
+    await expect(openCompany).toBeVisible();
+    await openCompany.click();
+
+    await expect(page).toHaveURL(/\/dashboard\/companies\?company=44444444-4444-4444-4444-444444444444$/);
+    await expect(page.getByText("Opened from CRM pipeline")).toBeVisible();
+    const highlightedCompany = page.locator('[id="company-44444444-4444-4444-4444-444444444444"]');
+    await expect(highlightedCompany).toContainText("Hill Country Build Co");
+    await expect(page.getByText("Continue with the highlighted company")).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
   test("Russian mobile workspace pages do not show the English lead/settings copy", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.addInitScript(() => {
@@ -228,6 +248,8 @@ test.describe("customer workspace routes", () => {
       await expect(body).not.toContainText("Subscription and usage.");
       await expect(body).not.toContainText("Make the workspace ready for your first campaign.");
       await expect(body).not.toContainText("Your session has expired. Please sign in again.");
+      await expect(body).not.toContainText("employees");
+      await expect(body).not.toContainText("verified email");
       await expect(routePage.getByRole("main")).not.toContainText("Something went wrong");
       await expectNoHorizontalOverflow(routePage);
       await routeGuards.assertClean();

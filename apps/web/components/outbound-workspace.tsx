@@ -2,6 +2,7 @@
 
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ErrorInfo } from "react";
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
@@ -575,9 +576,10 @@ function leadProfile(lead: Lead) {
     website: leadWebsite(lead) || unavailable,
     industry: lead.industry || lead.niche || unavailable,
     location: lead.address || [lead.city, lead.country].filter(Boolean).join(", ") || unavailable,
-    size: lead.employee_count ? `${lead.employee_count} employees` : lead.revenue_range || unavailable,
+    size: lead.employee_count || lead.revenue_range || unavailable,
+    sizeUnit: lead.employee_count ? "employees" : "",
     decisionMaker: [lead.contact, lead.title].filter(Boolean).join(", ") || unavailable,
-    verifiedEmail: lead.email ? `${lead.email}${lead.hunter_verified ? " · verified email" : ""}` : lead.hunter_status === "no_verified_email" ? "No verified email found yet." : unavailable,
+    verifiedEmail: lead.email || (lead.hunter_status === "no_verified_email" ? "No verified email yet" : unavailable),
     phone: lead.phone || unavailable,
     linkedin: lead.linkedin || unavailable,
     websiteAnalysis: lead.ai_summary || text(metadata.ai_summary),
@@ -614,6 +616,11 @@ function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, 
 function priorityScore(copilot?: SalesCopilot) {
   if (!copilot) return null;
   return Math.round((copilot.probability_to_reply * 0.45) + (copilot.probability_to_buy * 0.45) + Math.min(copilot.estimated_revenue / 1000, 10));
+}
+
+function profileSizeText(profile: ReturnType<typeof leadProfile>, t: (key: string) => string) {
+  if (profile.size === unavailable) return t(unavailable);
+  return profile.sizeUnit ? `${profile.size} ${t(profile.sizeUnit)}` : profile.size;
 }
 
 function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action?: React.ReactNode }) {
@@ -1245,7 +1252,7 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         <div>
           <h2 className="text-xl font-bold text-ink">{lead.company}</h2>
           <p className="mt-1 break-all text-sm text-slate-500">{profile.website}</p>
-          <p className="mt-2 text-sm text-slate-600">{profile.industry} · {profile.location} · {t(profile.size)}</p>
+          <p className="mt-2 text-sm text-slate-600">{profile.industry} · {profile.location} · {profileSizeText(profile, t)}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t("Completion count").replace("{count}", String(completed))}</span>
@@ -1762,6 +1769,20 @@ function companyNextAction(company: CrmCompany) {
   return "Keep notes updated and close the outcome.";
 }
 
+function emailStatusLabel(status?: string | null) {
+  if (!status) return "Not prepared";
+  const normalized = status.toLowerCase().replace(/[_-]+/g, " ").trim();
+  if (normalized === "not prepared") return "Not prepared";
+  if (normalized === "draft ready") return "Draft ready";
+  if (normalized === "no verified email") return "No verified email";
+  return status;
+}
+
+function pipelineReadiness(company: CrmCompany) {
+  const ready = timelineProgress(company).filter(([, value]) => Boolean(value)).length;
+  return `${ready}/8`;
+}
+
 function timelineProgress(company: CrmCompany) {
   const steps = [
     ["Saved", company.saved_to_crm_at || company.created_at],
@@ -1836,7 +1857,7 @@ function WorkspaceSection({ id, title, copy, children }: { id: string; title: st
   );
 }
 
-function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
+function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCompany; api: ApiFn; highlighted?: boolean }) {
   const { t } = useI18n();
   const [current, setCurrent] = useState(company);
   const [stageValue, setStageValue] = useState(company.crm_stage);
@@ -1924,7 +1945,7 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
       setActionBusy("");
     }
   }
-  return <article className="overflow-hidden rounded-3xl border border-slate-200 bg-slate-50 shadow-sm">
+  return <article id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden rounded-3xl border bg-slate-50 shadow-sm ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
     <div className="border-b border-slate-200 bg-white p-5 sm:p-6">
       <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
         <div className="flex min-w-0 gap-4">
@@ -2119,7 +2140,22 @@ function CrmCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
 export function CompaniesPage() {
   const { api, companies, loading, error, filters, setFilters } = useCrmData();
   const { t } = useI18n();
-  return <div className="space-y-6"><PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." /> <CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : companies.length ? <div className="grid gap-5">{companies.map((company) => <WidgetBoundary key={company.id} name={`Company workspace: ${company.name}`}><CrmCompanyCard company={company} api={api} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
+  const searchParams = useSearchParams();
+  const focusedCompanyId = searchParams.get("company") || "";
+  const focusedCompany = companies.find((company) => company.id === focusedCompanyId);
+  const visibleCompanies = focusedCompany
+    ? [focusedCompany, ...companies.filter((company) => company.id !== focusedCompany.id)]
+    : companies;
+
+  return <div className="space-y-6">
+    <PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." />
+    {focusedCompany && <section className="rounded-2xl border border-teal-200 bg-teal-50 p-4 text-sm text-slate-700">
+      <p className="font-bold text-brand">{t("Opened from CRM pipeline")}</p>
+      <p className="mt-1">{t("Continue with the highlighted company, or clear the focus to view the full CRM list.")}</p>
+      <Link href="/dashboard/companies" className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-teal-300 bg-white px-3 text-xs font-bold text-brand">{t("Clear focus")}</Link>
+    </section>}
+    <CrmFilters filters={filters} setFilters={setFilters} />
+    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : visibleCompanies.length ? <div className="grid gap-5">{visibleCompanies.map((company) => <WidgetBoundary key={company.id} name={`Company workspace: ${company.name}`}><CrmCompanyCard company={company} api={api} highlighted={company.id === focusedCompanyId} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
 }
 
 export function WebsiteAnalyzerPage() {
@@ -2237,13 +2273,13 @@ export function CampaignsPage() {
         <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">Review before send</span>
       </div>
       <div className="mt-5 grid gap-4 md:grid-cols-2">
-        <label className="text-sm font-semibold text-slate-700">Campaign name<input name="name" required placeholder={`${leads[0]?.industry || "Outbound"} campaign`} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-        <label className="text-sm font-semibold text-slate-700">Industry<input name="industry" defaultValue={leads[0]?.industry || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-        <label className="text-sm font-semibold text-slate-700">Country<input name="country" defaultValue={leads[0]?.country || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-        <label className="text-sm font-semibold text-slate-700">City<input name="city" defaultValue={leads[0]?.city || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-        <label className="text-sm font-semibold text-slate-700 md:col-span-2">Offer<textarea name="offer" defaultValue={leads[0]?.suggested_offer || ""} placeholder="What should the email offer?" className="mt-2 min-h-24 w-full rounded-md border border-slate-300 p-3 text-sm" /></label>
-        <label className="text-sm font-semibold text-slate-700">CTA<input name="cta" placeholder="Open to a quick review?" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-        <label className="text-sm font-semibold text-slate-700">Signature<input name="signature" placeholder="Your name" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">{t("Campaign name")}<input name="name" required placeholder={`${leads[0]?.industry || t("Outbound")} ${t("campaign")}`} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" defaultValue={leads[0]?.industry || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" defaultValue={leads[0]?.country || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" defaultValue={leads[0]?.city || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700 md:col-span-2">{t("Offer")}<textarea name="offer" defaultValue={leads[0]?.suggested_offer || ""} placeholder={t("What should the email offer?")} className="mt-2 min-h-24 w-full rounded-md border border-slate-300 p-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">{t("CTA")}<input name="cta" placeholder={t("Open to a quick review?")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">{t("Signature")}<input name="signature" placeholder={t("Your name")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
       </div>
       <div className="mt-5"><PrimaryButton type="submit" disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} Create campaign</PrimaryButton></div>
     </form>}
@@ -2258,12 +2294,65 @@ export function InboxPage() {
 export function CrmPipelinePage() {
   const { pipeline, loading, error } = useCrmData();
   const { t } = useI18n();
-  return <div className="space-y-6"><PageHeader eyebrow="CRM Pipeline" title="Move real leads from research to revenue." copy="Pipeline stages update from saved companies, AI research, email drafts and customer replies." action={<Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Review companies")}</Link>} />{loading ? <EmptyState title="Loading pipeline" copy="Reading CRM stages." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : <section className="grid gap-4 xl:grid-cols-3 2xl:grid-cols-4">{pipeline.stages.map((stage) => { const items = pipeline.companies.filter((company) => company.crm_stage === stage); return <article key={stage} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-3"><h2 className="font-bold text-ink">{t(stage)}</h2><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{items.length}</span></div><div className="mt-4 space-y-3">{items.length ? items.map((company) => <div key={company.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-semibold text-slate-800">{company.name}</p><p className="mt-1 text-slate-600">{t(company.email_status)} · {t(sourceLabel(company.source))}</p><p className="mt-2 text-xs font-semibold text-brand">{t(companyNextAction(company))}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">{t("No companies in this stage. Move a company here when the sales situation changes.")}</p>}</div></article>; })}</section>}</div>;
+  const totalCompanies = pipeline.companies.length;
+  const companiesWithNextStep = pipeline.companies.filter((company) => companyNextAction(company) !== "Keep notes updated and close the outcome.");
+  const nextCompany = companiesWithNextStep[0] || pipeline.companies[0];
+
+  return <div className="space-y-6">
+    <PageHeader
+      eyebrow="CRM Pipeline"
+      title="Move real leads from research to revenue."
+      copy="Pipeline stages update from saved companies, AI research, email drafts and customer replies."
+      action={<Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Review companies")}</Link>}
+    />
+    {loading ? <EmptyState title="Loading pipeline" copy="Reading CRM stages." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : totalCompanies ? <>
+      <section className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
+        <article className="rounded-2xl border border-teal-200 bg-teal-50 p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-wide text-brand">{t("Next sales action")}</p>
+          <h2 className="mt-2 text-xl font-black text-ink">{nextCompany ? nextCompany.name : t("No company selected")}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-700">{nextCompany ? t(companyNextAction(nextCompany)) : t("Find companies first, then move them through the CRM.")}</p>
+          <div className="mt-4 flex flex-col gap-2 min-[430px]:flex-row">
+            <Link href={nextCompany ? `/dashboard/companies?company=${encodeURIComponent(nextCompany.id)}` : "/dashboard/companies"} className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Open company workspace")}</Link>
+            <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md border border-teal-300 bg-white px-4 text-sm font-bold text-brand">{t("Find more leads")}</Link>
+          </div>
+        </article>
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{t("Pipeline health")}</p>
+          <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+            <p className="rounded-xl bg-slate-50 p-3"><span className="text-2xl font-black text-ink">{totalCompanies}</span><br />{t("Companies in CRM")}</p>
+            <p className="rounded-xl bg-slate-50 p-3"><span className="text-2xl font-black text-ink">{companiesWithNextStep.length}</span><br />{t("Need action")}</p>
+          </div>
+        </article>
+      </section>
+      <section className="grid gap-4 xl:grid-cols-3 2xl:grid-cols-4">
+        {pipeline.stages.map((stage) => {
+          const items = pipeline.companies.filter((company) => company.crm_stage === stage);
+          return <article key={stage} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="font-bold text-ink">{t(stage)}</h2>
+              <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{items.length}</span>
+            </div>
+            <div className="mt-4 space-y-3">
+              {items.length ? items.map((company) => <div key={company.id} className="rounded-xl bg-slate-50 p-3 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="font-semibold text-slate-800">{company.name}</p>
+                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[11px] font-bold text-slate-600">{pipelineReadiness(company)}</span>
+                </div>
+                <p className="mt-1 text-slate-600">{t(emailStatusLabel(company.email_status))} · {t(sourceLabel(company.source))}</p>
+                <p className="mt-2 text-xs font-semibold text-brand">{t(companyNextAction(company))}</p>
+                <Link href={`/dashboard/companies?company=${encodeURIComponent(company.id)}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-bold text-ink">{t("Open company")}</Link>
+              </div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">{t("No companies in this stage. Move a company here when the sales situation changes.")}</p>}
+            </div>
+          </article>;
+        })}
+      </section>
+    </> : <EmptyState title="No companies in CRM yet" copy="Find or add your first company. OutreachAI will save it here and show the next sales action." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}</div>;
 }
 
 export function DealsPage() {
   const { deals, loading, error, filters, setFilters } = useCrmData();
-  return <div className="space-y-6"><PageHeader eyebrow="Deals" title="Revenue opportunities from saved companies." copy="Every saved company gets a CRM deal so you can track the next step toward a meeting or customer." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading deals" copy="Reading CRM opportunities." /> : error ? <EmptyState title="Deals unavailable" copy={error} /> : deals.length ? <section className="grid gap-4 lg:grid-cols-3">{deals.map((deal) => <article key={deal.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold uppercase text-brand">{deal.stage}</p><h2 className="mt-2 font-bold text-ink">{deal.name}</h2><p className="mt-1 text-sm text-slate-600">{deal.company}</p><div className="mt-4 grid grid-cols-2 gap-2 text-sm"><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">Value</span><br />€{Math.round(deal.value || 0).toLocaleString()}</p><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">Probability</span><br />{deal.probability}%</p></div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{deal.next_step || "Review the company and prepare outreach."}</p></article>)}</section> : <EmptyState title="No deals yet" copy="Saved companies automatically create CRM deals. Start with Lead Finder to build your first opportunity list." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find companies</Link>} />}</div>;
+  const { t } = useI18n();
+  return <div className="space-y-6"><PageHeader eyebrow="Deals" title="Revenue opportunities from saved companies." copy="Every saved company gets a CRM deal so you can track the next step toward a meeting or customer." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading deals" copy="Reading CRM opportunities." /> : error ? <EmptyState title="Deals unavailable" copy={error} /> : deals.length ? <section className="grid gap-4 lg:grid-cols-3">{deals.map((deal) => <article key={deal.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold uppercase text-brand">{t(deal.stage)}</p><h2 className="mt-2 font-bold text-ink">{deal.name}</h2><p className="mt-1 text-sm text-slate-600">{deal.company}</p><div className="mt-4 grid grid-cols-2 gap-2 text-sm"><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">{t("Value")}</span><br />€{Math.round(deal.value || 0).toLocaleString()}</p><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">{t("Probability")}</span><br />{deal.probability}%</p></div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{t(deal.next_step || "Review the company and prepare outreach.")}</p></article>)}</section> : <EmptyState title="No deals yet" copy="Saved companies automatically create CRM deals. Start with Lead Finder to build your first opportunity list." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
 }
 
 export function AnalyticsPage() {
@@ -2291,5 +2380,6 @@ export function BillingPage() {
 
 export function AiEmployeesPage() {
   const { leads, api, loading, error } = useSalesData();
-  return <div className="space-y-6"><PageHeader eyebrow="AI Sales Employee" title="One click should replace hours of manual sales research." copy="The AI employee uses real source data only. Missing fields stay visible as unavailable until verified information is available." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">Find or research leads</Link>} />{loading ? <EmptyState title="Loading AI work" copy="Reading saved leads." /> : error ? <EmptyState title="AI employee unavailable" copy={error} /> : leads.length ? <div className="grid gap-5">{leads.slice(0, 3).map((lead) => <OpportunityCard key={lead.id || lead.company} lead={lead} api={api} />)}</div> : <EmptyState title="No AI work yet" copy="Find or add real companies first. The AI employee will not show invented results." />}</div>;
+  const { t } = useI18n();
+  return <div className="space-y-6"><PageHeader eyebrow="AI Sales Employee" title="One click should replace hours of manual sales research." copy="The AI employee uses real source data only. Missing fields stay visible as unavailable until verified information is available." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find or research leads")}</Link>} />{loading ? <EmptyState title="Loading AI work" copy="Reading saved leads." /> : error ? <EmptyState title="AI employee unavailable" copy={error} /> : leads.length ? <div className="grid gap-5">{leads.slice(0, 3).map((lead) => <OpportunityCard key={lead.id || lead.company} lead={lead} api={api} />)}</div> : <EmptyState title="No AI work yet" copy="Find or add real companies first. The AI employee will not show invented results." />}</div>;
 }
