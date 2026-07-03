@@ -1959,8 +1959,33 @@ function outreachTone(done: boolean, label: string) {
 }
 
 function activityLabel(action: string) {
-  if (action === "lead.saved_to_crm") return "Lead saved to CRM";
-  return action.replaceAll(".", " ").replaceAll("_", " ");
+  const normalized = String(action || "").trim().toLowerCase().replaceAll("_", ".");
+  const labels: Record<string, string> = {
+    "workspace.created": "Workspace created",
+    "lead.created": "Lead found",
+    "lead.saved.to.crm": "Lead saved to CRM",
+    "company.created": "Company saved",
+    "company.updated": "Company updated",
+    "website.analyzed": "Website analyzed",
+    "contact.found": "Contact found",
+    "contacts.found": "Contact found",
+    "email.generated": "Email generated",
+    "email.approved": "Email approved",
+    "email.sent": "Email sent",
+    "email.delivered": "Email delivered",
+    "email.opened": "Email opened",
+    "email.bounced": "Email bounced",
+    "email.failed": "Email failed",
+    "reply.received": "Reply received",
+    "email.replied": "Reply received",
+    "meeting.booked": "Meeting booked",
+    "stage.changed": "Stage changed",
+    "note.added": "Note added",
+    "campaign.created": "Campaign created",
+    "campaign.paused": "Campaign paused",
+    "campaign.resumed": "Campaign resumed"
+  };
+  return labels[normalized] || action.replaceAll(".", " ").replaceAll("_", " ");
 }
 
 function InfoCell({ label, value, help }: { label: string; value?: string | number | null; help: string }) {
