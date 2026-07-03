@@ -283,6 +283,19 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
   const accountInitials = profileInitials(workspaceOwnerEmail || email, workspaceLabel);
+
+  useEffect(() => {
+    const label = t("shell.account");
+    const updateClerkUserButtonLabel = () => {
+      document.querySelectorAll(".dashboard-user-button button").forEach((button) => {
+        button.setAttribute("aria-label", label);
+        button.setAttribute("title", label);
+      });
+    };
+    updateClerkUserButtonLabel();
+    const timeoutId = window.setTimeout(updateClerkUserButtonLabel, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [t, workspaceOwnerEmail, email]);
   const workspaceReadyScore = useMemo(() => {
     if (!workspace) return 0;
     return [isGenericWorkspaceName ? "" : workspace.name, workspace.company, workspace.industry, workspace.target_country, workspace.target_customer].filter((item) => String(item || "").trim()).length;
@@ -430,6 +443,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 appearance={{
                   elements: {
                     avatarBox: "size-10",
+                    userButtonTrigger: "size-10",
                     userButtonPopoverCard: "shadow-soft border border-slate-200"
                   }
                 }}

@@ -2266,11 +2266,11 @@ export function CampaignsPage() {
     {!loading && !error && leads.length > 0 && <form onSubmit={createCampaign} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-sm font-bold uppercase text-brand">Next step</p>
-          <h2 className="mt-1 text-xl font-bold text-ink">Create a campaign from saved leads</h2>
-          <p className="mt-2 text-sm text-slate-600">Expected time: 1 minute. You can review every email before anything is sent.</p>
+          <p className="text-sm font-bold uppercase text-brand">{t("Next step")}</p>
+          <h2 className="mt-1 text-xl font-bold text-ink">{t("Create a campaign from saved leads")}</h2>
+          <p className="mt-2 text-sm text-slate-600">{t("Expected time: 1 minute. You can review every email before anything is sent.")}</p>
         </div>
-        <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">Review before send</span>
+        <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t("Review before send")}</span>
       </div>
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <label className="text-sm font-semibold text-slate-700">{t("Campaign name")}<input name="name" required placeholder={`${leads[0]?.industry || t("Outbound")} ${t("campaign")}`} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
@@ -2281,7 +2281,7 @@ export function CampaignsPage() {
         <label className="text-sm font-semibold text-slate-700">{t("CTA")}<input name="cta" placeholder={t("Open to a quick review?")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
         <label className="text-sm font-semibold text-slate-700">{t("Signature")}<input name="signature" placeholder={t("Your name")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
       </div>
-      <div className="mt-5"><PrimaryButton type="submit" disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} Create campaign</PrimaryButton></div>
+      <div className="mt-5"><PrimaryButton type="submit" disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Create campaign")}</PrimaryButton></div>
     </form>}
     {loading ? <EmptyState title="Loading campaigns" copy="Reading saved campaigns." /> : error ? <EmptyState title="Campaign data unavailable" copy={error} /> : campaigns.length ? <section className="grid gap-4 lg:grid-cols-2">{campaigns.map((campaign) => <article key={campaign.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{campaign.name}</h2><p className="mt-2 text-sm text-slate-600">{campaign.leads} {t("leads")} · {campaign.sent} {t("sent")} · {campaign.replies} {t("replies")} · {t(campaign.status)}</p><div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `${t("Email")} ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || t("Subject unavailable until AI draft is reviewed")}</p><p className="mt-1 text-xs font-semibold text-slate-500">{t("Delay")}: {step.delay_days} {t("days")}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No sequence saved yet.")}</p>}</div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("Review before send: enabled")}</p><div className="mt-4 grid gap-2 min-[430px]:grid-cols-2"><SecondaryButton onClick={() => campaignAction(campaign.id, "pause")} disabled={actionBusy === `${campaign.id}:pause`}><Pause size={17} /> {t("Pause")}</SecondaryButton><PrimaryButton onClick={() => campaignAction(campaign.id, campaign.status === "Paused" ? "resume" : "launch")} disabled={actionBusy === `${campaign.id}:launch` || actionBusy === `${campaign.id}:resume`}>{actionBusy.startsWith(campaign.id) ? <Loader2 className="animate-spin" size={17} /> : <Play size={17} />} {campaign.status === "Paused" ? t("Resume") : t("Launch after approval")}</PrimaryButton></div></article>)}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} action={leads.length ? undefined : <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}
   </div>;

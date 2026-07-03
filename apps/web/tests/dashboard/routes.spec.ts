@@ -227,7 +227,7 @@ test.describe("customer workspace routes", () => {
     });
     await page.context().addCookies([{ name: "outreachai_locale", value: "ru", url: "http://127.0.0.1:3000" }]);
 
-    const russianRoutes = ["/dashboard/leads", "/dashboard/companies", "/dashboard/crm", "/dashboard/billing", "/dashboard/settings"];
+    const russianRoutes = ["/dashboard/leads", "/dashboard/companies", "/dashboard/campaigns", "/dashboard/crm", "/dashboard/billing", "/dashboard/settings"];
 
     for (const route of russianRoutes) {
       const routePage = await page.context().newPage();
@@ -250,6 +250,11 @@ test.describe("customer workspace routes", () => {
       await expect(body).not.toContainText("Your session has expired. Please sign in again.");
       await expect(body).not.toContainText("employees");
       await expect(body).not.toContainText("verified email");
+      await expect(body).not.toContainText("Next step");
+      await expect(body).not.toContainText("Create a campaign from saved leads");
+      await expect(body).not.toContainText("Review before send");
+      await expect(body).not.toContainText("Create campaign");
+      await expect(body.locator('[aria-label="Open user menu"]')).toHaveCount(0);
       await expect(routePage.getByRole("main")).not.toContainText("Something went wrong");
       await expectNoHorizontalOverflow(routePage);
       await routeGuards.assertClean();
