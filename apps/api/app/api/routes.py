@@ -320,7 +320,7 @@ def _ensure_default_trial(settings: AppSettings, workspace: Workspace) -> bool:
     if billing.get("status") or billing.get("stripeSubscriptionId"):
         return False
     trial_started = workspace.created_at or datetime.utcnow()
-    trial_end = trial_started + timedelta(days=14)
+    trial_end = _workspace_trial_end(workspace)
     billing.update(
         {
             "plan": billing.get("plan") or "Starter",
@@ -332,6 +332,14 @@ def _ensure_default_trial(settings: AppSettings, workspace: Workspace) -> bool:
     )
     settings.billing = billing
     return True
+
+
+def _workspace_trial_end(workspace: Workspace) -> datetime:
+    return (workspace.created_at or datetime.utcnow()) + timedelta(days=14)
+
+
+def _workspace_trial_is_active(workspace: Workspace) -> bool:
+    return _workspace_trial_end(workspace) > datetime.utcnow()
 
 
 def _parse_billing_datetime(value: Any) -> datetime | None:
@@ -392,6 +400,8 @@ def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str
     subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
     if subscription and subscription.status in {"active", "trialing"}:
         return subscription.status
+    if _workspace_trial_is_active(workspace):
+        return "trialing"
 
     billing_status = str(billing.get("status") or "inactive")
     billing_trial_end = _parse_billing_datetime(billing.get("trialEnd"))

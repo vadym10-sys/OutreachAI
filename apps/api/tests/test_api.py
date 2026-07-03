@@ -357,6 +357,54 @@ def test_workspace_trial_status_survives_legacy_inactive_subscription(monkeypatc
         monkeypatch.setattr(app_settings, "app_env", original_env)
 
 
+def test_workspace_trial_status_survives_inactive_stripe_metadata(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "legacy-inactive-stripe@example.com"}
+    workspace_response = client.get("/api/workspace/me", headers=headers)
+    assert workspace_response.status_code == 200
+    workspace_id = UUID(workspace_response.json()["id"])
+
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = db.get(Workspace, workspace_id)
+        assert workspace is not None
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=workspace.owner_user_id, workspace_id=workspace.id)
+        settings.billing = {
+            "plan": "Starter",
+            "renewal": "monthly",
+            "status": "inactive",
+            "stripeSubscriptionId": "sub_legacy_inactive",
+        }
+        user = User(clerk_user_id="legacy-inactive-stripe", email="legacy-inactive-stripe@example.com")
+        db.add(user)
+        db.flush()
+        db.add(
+            Subscription(
+                user_id=user.id,
+                workspace_id=workspace_id,
+                stripe_subscription_id="sub_legacy_inactive",
+                plan="Starter",
+                status="inactive",
+                plan_limits={},
+            )
+        )
+        db.add(settings)
+        db.commit()
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "production")
+    try:
+        with SessionLocal() as db:
+            workspace = db.get(Workspace, workspace_id)
+            assert workspace is not None
+            assert _subscription_status_for_workspace(db, workspace) == "trialing"
+            _require_active_subscription(db, workspace)
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
 def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> None:
     SessionLocal = get_sessionmaker()
     user_email = "workspace-owner@example.com"
