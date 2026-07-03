@@ -6,7 +6,7 @@ import io
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from uuid import UUID
 from uuid import uuid4
@@ -315,19 +315,55 @@ def _workspace_stmt(model, workspace: Workspace, user_id: str):
     return model.workspace_id == workspace.id
 
 
+def _ensure_default_trial(settings: AppSettings, workspace: Workspace) -> bool:
+    billing = dict(settings.billing or {})
+    if billing.get("status") or billing.get("stripeSubscriptionId"):
+        return False
+    trial_started = workspace.created_at or datetime.utcnow()
+    trial_end = trial_started + timedelta(days=14)
+    billing.update(
+        {
+            "plan": billing.get("plan") or "Starter",
+            "renewal": billing.get("renewal") or "monthly",
+            "status": "trialing" if trial_end > datetime.utcnow() else "inactive",
+            "trialStartedAt": trial_started.isoformat(),
+            "trialEnd": trial_end.isoformat(),
+        }
+    )
+    settings.billing = billing
+    return True
+
+
+def _parse_billing_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
 def _settings_for_workspace(db: Session, user_id: str, workspace: Workspace) -> AppSettings:
     settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
     if settings is None:
         settings = db.scalar(select(AppSettings).where(AppSettings.user_id == user_id, AppSettings.workspace_id.is_(None)))
     if settings is None:
         settings = AppSettings(user_id=user_id, workspace_id=workspace.id, **_default_settings())
+        _ensure_default_trial(settings, workspace)
         db.add(settings)
         db.commit()
         db.refresh(settings)
     elif settings.workspace_id is None:
         settings.workspace_id = workspace.id
+        _ensure_default_trial(settings, workspace)
         db.add(settings)
         db.commit()
+    elif _ensure_default_trial(settings, workspace):
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
     return settings
 
 
@@ -4440,8 +4476,8 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
     settings = _settings_for_workspace(db, user_id, workspace)
     billing = settings.billing or {}
     status = subscription.status if subscription else str(billing.get("status") or "inactive")
-    trial_end = subscription.trial_end if subscription else None
-    current_period_end = subscription.current_period_end if subscription else None
+    trial_end = subscription.trial_end if subscription else _parse_billing_datetime(billing.get("trialEnd"))
+    current_period_end = subscription.current_period_end if subscription else _parse_billing_datetime(billing.get("currentPeriodEnd"))
     trial_days_remaining = 0
     if trial_end:
         trial_days_remaining = max(0, (trial_end.date() - datetime.utcnow().date()).days)

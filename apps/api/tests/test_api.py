@@ -271,6 +271,20 @@ def test_workspace_me_creates_private_workspace_with_owner_email() -> None:
     assert second.json()["id"] == data["id"]
 
 
+def test_new_private_workspace_gets_fourteen_day_trial_status() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "trial-owner@example.com"}
+    workspace_response = client.get("/api/workspace/me", headers=headers)
+    assert workspace_response.status_code == 200
+
+    status_response = client.get("/api/billing/status", headers=headers)
+    assert status_response.status_code == 200
+    status = status_response.json()
+    assert status["plan"] == "Starter"
+    assert status["status"] == "trialing"
+    assert status["trial_end"] is not None
+    assert status["trial_days_remaining"] >= 13
+
+
 def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> None:
     SessionLocal = get_sessionmaker()
     user_email = "workspace-owner@example.com"
