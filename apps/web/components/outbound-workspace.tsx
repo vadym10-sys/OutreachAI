@@ -443,6 +443,14 @@ function leadFinderDebug(step: string, details?: Record<string, unknown>) {
 }
 
 function workspaceSearchMessage(result: WorkspaceAppLeadSearchResponse, count: number, t: (key: string) => string) {
+  const saved = Number(result.companies_saved ?? 0);
+  const duplicates = Number(result.duplicates_skipped ?? 0);
+  if (count > 0 && saved === 0 && duplicates > 0) {
+    return t("Found companies already in CRM").replace("{count}", String(count));
+  }
+  if (count > 0 && saved > 0 && duplicates > 0) {
+    return t("Found companies added and reused").replace("{count}", String(count)).replace("{saved}", String(saved)).replace("{duplicates}", String(duplicates));
+  }
   if (count > 0) return t("Found companies saved to CRM").replace("{count}", String(count));
   if (result.status === "empty") return t("No results. Try a broader city, industry, radius, or fewer filters.");
   if (result.status === "timeout") return t("Lead search timed out. Try a smaller radius or broader filters.");
