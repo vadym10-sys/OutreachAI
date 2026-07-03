@@ -561,6 +561,42 @@ def test_workspace_app_lead_search_success_saves_to_crm(monkeypatch) -> None:
     assert len(persisted.json()) == 1
 
 
+def test_workspace_app_lead_search_reports_reused_duplicates(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-search-duplicates@example.com"}
+    monkeypatch.setattr("app.api.usage._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    result = GooglePlacesSearchResult(
+        leads=[
+            LeadOut(
+                company="Usage Duplicate GmbH",
+                website="https://usage-duplicate.example",
+                industry="Construction",
+                country="Germany",
+                city="Berlin",
+                notes='{"source":"google_maps","domain":"usage-duplicate.example","place_id":"usage-duplicate-1"}',
+                domain="usage-duplicate.example",
+                place_id="usage-duplicate-1",
+                source="google_maps",
+            )
+        ],
+        raw_count=1,
+        duration_ms=8,
+    )
+    monkeypatch.setattr("app.api.usage.search_google_places", lambda payload: result)
+
+    first = client.post("/api/workspace-app/leads/search", headers=headers, json={"industry": "Construction", "country": "Germany", "city": "Berlin", "limit": 10})
+    second = client.post("/api/workspace-app/leads/search", headers=headers, json={"industry": "Construction", "country": "Germany", "city": "Berlin", "limit": 10})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_data = first.json()
+    second_data = second.json()
+    assert first_data["companies_saved"] == 1
+    assert first_data["duplicates_skipped"] == 0
+    assert second_data["companies_saved"] == 0
+    assert second_data["duplicates_skipped"] == 1
+    assert "already in your CRM" in second_data["message"]
+
+
 def test_workspace_app_lead_search_provider_error_returns_structured_status(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-provider-error@example.com"}
     monkeypatch.setattr("app.api.usage.search_google_places", lambda payload: (_ for _ in ()).throw(GoogleMapsRequestError("provider outage")))

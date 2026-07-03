@@ -481,6 +481,7 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
         warnings.append("Contacts could not be verified right now. Companies were saved without verified emails.")
         enriched = found
 
+    duplicates_skipped = sum(1 for item in enriched if _existing_duplicate_lead(db, workspace, user.user_id, item) is not None)
     saved = _save_provider_leads(
         db,
         request,
@@ -495,14 +496,20 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
     )
     companies = [_crm_company_out(db, workspace, user.user_id, _sync_lead_to_crm(db, user.user_id, workspace, lead)) for lead in saved]
     db.commit()
-    saved_count = sum(1 for lead in saved if lead.created_at == lead.updated_at)
+    new_saved_count = max(0, len(enriched) - duplicates_skipped)
     status: UsageStatus = "partial_success" if warnings else "success"
+    if new_saved_count and duplicates_skipped:
+        message = f"Found {len(companies)} companies. Added {new_saved_count} new and reused {duplicates_skipped} already in your CRM."
+    elif duplicates_skipped:
+        message = f"Found {len(companies)} companies. They were already in your CRM."
+    else:
+        message = f"Found and saved {len(companies)} companies to your CRM."
     return UsageLeadSearchOut(
         status=status,
         request_id=request_id,
-        message=f"Found and saved {len(companies)} companies to your CRM.",
-        companies_saved=len(companies),
-        duplicates_skipped=max(0, len(enriched) - saved_count),
+        message=message,
+        companies_saved=new_saved_count,
+        duplicates_skipped=duplicates_skipped,
         companies=companies,
         warnings=warnings,
     )
