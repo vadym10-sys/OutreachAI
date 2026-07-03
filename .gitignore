@@ -15,3 +15,4 @@ artifacts
 *.tsbuildinfo
 postgres_data
 outreachai.db
+startup-check.db

@@ -4,6 +4,10 @@ import LogRocket from "logrocket";
 import { logRocketAppId } from "@/lib/env";
 
 type RuntimeConfig = {
+  session_replay?: {
+    enabled?: boolean;
+    app_id?: string;
+  };
   logrocket?: {
     enabled?: boolean;
     app_id?: string;
@@ -75,8 +79,9 @@ async function loadRuntimeConfig() {
     });
     if (!response.ok) return false;
     const config = (await response.json()) as RuntimeConfig;
-    if (config.logrocket?.enabled && config.logrocket.app_id) {
-      runtimeAppId = config.logrocket.app_id;
+    const sessionReplay = config.session_replay || config.logrocket;
+    if (sessionReplay?.enabled && sessionReplay.app_id) {
+      runtimeAppId = sessionReplay.app_id;
       runtimeRelease = config.app?.release || runtimeRelease;
       runtimeEnvironment = config.app?.environment || runtimeEnvironment;
       window.__OUTREACHAI_LOGROCKET__ = {

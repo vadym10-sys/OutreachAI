@@ -36,6 +36,11 @@ declare global {
 }
 
 type ClientConfig = {
+  analytics?: {
+    enabled?: boolean;
+    key?: string;
+    host?: string;
+  };
   posthog?: {
     enabled?: boolean;
     key?: string;
@@ -81,9 +86,10 @@ async function loadRuntimeConfig() {
     }
 
     const config = (await response.json()) as ClientConfig;
-    if (config.posthog?.enabled && config.posthog.key) {
-      runtimePostHogKey = config.posthog.key;
-      runtimePostHogHost = config.posthog.host || runtimePostHogHost;
+    const analytics = config.analytics || config.posthog;
+    if (analytics?.enabled && analytics.key) {
+      runtimePostHogKey = analytics.key;
+      runtimePostHogHost = analytics.host || runtimePostHogHost;
       runtimeRelease = config.app?.release || runtimeRelease;
       runtimeEnvironment = config.app?.environment || runtimeEnvironment;
       window.__OUTREACHAI_POSTHOG__ = {
