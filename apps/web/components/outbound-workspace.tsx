@@ -1427,8 +1427,28 @@ export function LeadFinderPage() {
   const [searching, setSearching] = useState(false);
   const [lastSearchPayload, setLastSearchPayload] = useState<LeadSearchPayload | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
+  const [leadSearchStatus, setLeadSearchStatus] = useState<WorkspaceIntegrationStatus["status"] | "unknown">("unknown");
   const { t } = useI18n();
   const visibleMessage = message;
+  const automaticSearchReady = leadSearchStatus === "connected";
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadLeadSearchStatus() {
+      if (!ready) return;
+      try {
+        const response = await api<WorkspaceIntegrationStatusResponse>("/api/workspace-app/integrations/status");
+        const status = safeArray(response.integrations).find((item) => item.key === "lead_search")?.status || "missing_key";
+        if (!cancelled) setLeadSearchStatus(status);
+      } catch {
+        if (!cancelled) setLeadSearchStatus("error");
+      }
+    }
+    void loadLeadSearchStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, ready]);
 
   function payloadFromForm(form: HTMLFormElement): LeadSearchPayload {
     const data = new FormData(form);
@@ -1505,6 +1525,14 @@ export function LeadFinderPage() {
   }
 
   async function runLeadSearch(payload: LeadSearchPayload) {
+    if (!automaticSearchReady) {
+      setHasSearched(true);
+      setSearchResults([]);
+      setSearchSummary({ found: 0, saved: 0, duplicates: 0 });
+      setSearchSteps([t("Automatic search is waiting for setup")]);
+      setMessage(t("Automatic company search needs a key. Add one company manually and continue with CRM, research and outreach."));
+      return;
+    }
     leadFinderDebug("SUBMIT_STARTED", {
       country: payload.country,
       city: payload.city,
@@ -1609,21 +1637,33 @@ export function LeadFinderPage() {
         <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-700">{t("You only need a company name and website to start. OutreachAI saves it to CRM, then you can analyze the website, find contacts and prepare an email for review.")}</p>
         <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row">
           <Link href="#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t("Add company manually")}</Link>
-          <Link href="#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-teal-300 bg-white px-4 text-sm font-black text-brand shadow-sm">{t("Search market")}</Link>
+          {automaticSearchReady ? <Link href="#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-teal-300 bg-white px-4 text-sm font-black text-brand shadow-sm">{t("Search market")}</Link> : <Link href="#lead-search-setup" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-amber-300 bg-white px-4 text-sm font-black text-amber-900 shadow-sm">{t("Automatic search setup")}</Link>}
         </div>
       </section>
+      <IntegrationStatusPanel api={api} ready={ready} />
       <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
+      {!automaticSearchReady && (
+        <div id="lead-search-setup" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-sm font-black uppercase text-amber-800">{t("Automatic search setup")}</p>
+          <h2 className="mt-2 text-lg font-black text-ink">{t("Automatic search is waiting for setup")}</h2>
+          <p className="mt-2 text-sm leading-6 text-amber-900">{t("Automatic company search needs a key. Add one company manually and continue with CRM, research and outreach.")}</p>
+          <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row">
+            <Link href="#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t("Add company manually")}</Link>
+            <Link href="/dashboard/settings#lead-search-key" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-amber-300 bg-white px-4 text-sm font-black text-amber-900 shadow-sm">{t("Add key")}</Link>
+          </div>
+        </div>
+      )}
       <form id="lead-search-form" ref={leadSearchFormRef} aria-label="Lead search" onSubmit={submit} className="space-y-5">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">
           <p className="text-sm font-bold text-brand">{t("Step 1 of 3 · Choose a focused market")}</p>
           <p className="mt-1 text-sm leading-6 text-slate-700">{t("Use one country, one city and one industry. A narrower search creates better opportunities faster.")}</p>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" required placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" required placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" required placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">{t("Company size")}<input name="company_size" placeholder="11-50" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          <label className="text-sm font-semibold text-slate-700">{t("Number of leads")}<input name="limit" type="number" min="1" max="25" defaultValue="10" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" required disabled={!automaticSearchReady} placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" required disabled={!automaticSearchReady} placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" required disabled={!automaticSearchReady} placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Company size")}<input name="company_size" disabled={!automaticSearchReady} placeholder="11-50" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+          <label className="text-sm font-semibold text-slate-700">{t("Number of leads")}<input name="limit" type="number" min="1" max="25" defaultValue="10" disabled={!automaticSearchReady} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
         </div>
         <details className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
           <summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary>
@@ -1638,7 +1678,7 @@ export function LeadFinderPage() {
           </div>
         </details>
         <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
-          <PrimaryButton type="button" disabled={searching} onClick={clickLeadSearch}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
+          <PrimaryButton type="button" disabled={searching || !automaticSearchReady} onClick={clickLeadSearch}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
           <p className="text-sm text-slate-600">{t("Expected time: 20-30 seconds. Saved companies will stay after refresh.")}</p>
         </div>
         {visibleMessage && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1700,7 +1740,6 @@ export function LeadFinderPage() {
           </div>
         </form>
       </section>
-      <IntegrationStatusPanel api={api} ready={ready} />
       {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
         setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
         setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
