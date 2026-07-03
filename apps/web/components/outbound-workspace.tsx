@@ -899,38 +899,52 @@ function IntegrationStatusPanel({ api, ready }: { api: ApiFn; ready: boolean }) 
   if (error) {
     return (
       <WidgetBoundary name="Integration status">
-        <WidgetErrorCard title={t("Integration status is temporarily unavailable")} copy={error} />
+        <WidgetErrorCard title={t("Lead Finder setup is temporarily unavailable")} copy={error} />
       </WidgetBoundary>
     );
   }
 
+  const leadSearch = integrations.find((item) => item.key === "lead_search");
+  const leadSearchReady = leadSearch?.status === "connected";
+  const connectedCount = integrations.filter((item) => item.status === "connected").length;
+
   return (
     <WidgetBoundary name="Integration status">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div>
-          <p className="text-sm font-bold uppercase text-brand">{t("Integration status")}</p>
-          <h2 className="mt-1 text-xl font-bold text-ink">{t("What is ready inside your workspace")}</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t("OutreachAI only shows an action as ready when the required service is connected. Missing services show a clear fallback instead of endless loading.")}</p>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-bold uppercase text-brand">{t("Lead Finder setup")}</p>
+            <h2 className="mt-1 text-xl font-bold text-ink">{t(leadSearchReady ? "Ready to find companies" : "Add the search key or add a company manually")}</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t(leadSearchReady ? "Your company search is connected. Start with one narrow market and save results to CRM." : "Company search needs a key before automatic search works. You can still add a company manually and continue with CRM, analysis and outreach.")}</p>
+          </div>
+          <span className={`w-fit shrink-0 rounded-full border px-3 py-1 text-xs font-bold ${integrationStatusClasses(leadSearch?.status || "missing_key")}`}>{t(leadSearchReady ? "Connected" : "Key needed")}</span>
         </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          {integrations.map((item) => {
-            const action = integrationRecoveryAction(item);
-            return (
-              <article key={item.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-bold text-ink">{t(item.label)}</h3>
-                  <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${integrationStatusClasses(item.status)}`}>{t(integrationStatusLabel(item.status))}</span>
-                </div>
-                <p className="mt-2 text-sm leading-6 text-slate-600">{t(item.message)}</p>
-                {action && (
-                  <Link href={action.href} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-black text-ink shadow-sm">
-                    {t(action.label)}
-                  </Link>
-                )}
-              </article>
-            );
-          })}
+        <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row">
+          <Link href={leadSearchReady ? "#lead-search-form" : "#manual-company"} className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t(leadSearchReady ? "Start search" : "Add company manually")}</Link>
+          {!leadSearchReady && <Link href="/dashboard/settings" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-black text-ink shadow-sm">{t("Add key")}</Link>}
         </div>
+        <details className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <summary className="cursor-pointer text-sm font-bold text-slate-700">{t("Show technical status")} · {connectedCount}/{integrations.length}</summary>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {integrations.map((item) => {
+              const action = integrationRecoveryAction(item);
+              return (
+                <article key={item.key} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-bold text-ink">{t(item.label)}</h3>
+                    <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${integrationStatusClasses(item.status)}`}>{t(integrationStatusLabel(item.status))}</span>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{t(item.message)}</p>
+                  {action && (
+                    <Link href={action.href} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-xs font-black text-ink shadow-sm">
+                      {t(action.label)}
+                    </Link>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </details>
       </section>
     </WidgetBoundary>
   );
@@ -1591,7 +1605,7 @@ export function LeadFinderPage() {
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search your target market, verify available contacts, and enrich each company with AI research. Missing data is shown clearly instead of invented." />
       <IntegrationStatusPanel api={api} ready={ready} />
       <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
-      <form ref={leadSearchFormRef} aria-label="Lead search" onSubmit={submit} className="space-y-5">
+      <form id="lead-search-form" ref={leadSearchFormRef} aria-label="Lead search" onSubmit={submit} className="space-y-5">
         <div className="mb-5 rounded-xl bg-teal-50 p-4">
           <p className="text-sm font-bold text-brand">{t("Step 1 of 3 · Choose a focused market")}</p>
           <p className="mt-1 text-sm leading-6 text-slate-700">{t("Use one country, one city and one industry. A narrower search creates better opportunities faster.")}</p>
