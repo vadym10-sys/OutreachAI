@@ -277,7 +277,8 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.goto("/dashboard/leads");
     await page.getByRole("button", { name: "Find leads" }).first().click();
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
-    await expect(page.getByText("jane@example.com · verified email")).toBeVisible();
+    await expect(page.getByText("Verified email").first()).toBeVisible();
+    await expect(page.getByText("jane@example.com").first()).toBeVisible();
     await page.getByRole("button", { name: /Complete sales research/ }).click();
     await expect(page.getByText("Review this draft before sending. No email has been sent yet.")).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Quick idea for Hill Country Build Co")).toBeVisible();

@@ -1155,50 +1155,83 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       company: lead.company,
       has_website: Boolean(lead.website || lead.domain)
     });
+    const warnings: string[] = [];
+    let latestLead: Lead | null = null;
     try {
       if (lead.website || lead.domain) {
         setStatus(t("Analyzing website..."));
-        const analysisResult = await api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/analyze`, { method: "POST" });
-        if (analysisResult.company) {
-          onLeadUpdated?.(leadFromCrmCompany(normalizeCrmCompany(analysisResult.company)));
-        }
-        if (analysisResult.status !== "success") {
-          setStatus(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
+        try {
+          const analysisResult = await withTimeout(
+            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/analyze`, { method: "POST", timeoutMs: 22000 }),
+            24000,
+            "Website analysis took too long. The lead stays saved in CRM, and you can retry research."
+          );
+          if (analysisResult.company) {
+            latestLead = leadFromCrmCompany(normalizeCrmCompany(analysisResult.company));
+            onLeadUpdated?.(latestLead);
+          }
+          if (analysisResult.status !== "success") {
+            warnings.push(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
+          }
+        } catch (err) {
+          warnings.push(friendlyErrorMessage(err, "Website analysis is temporarily unavailable. The lead stays saved in CRM."));
         }
       }
       setStatus(t("Finding decision makers..."));
-      const contactResult = await api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/contacts`, { method: "POST" });
-      if (contactResult.company) {
-        onLeadUpdated?.(leadFromCrmCompany(normalizeCrmCompany(contactResult.company)));
-      }
-      if (contactResult.status !== "success" && contactResult.status !== "empty") {
-        setStatus(t(contactResult.message || "Contact discovery is temporarily unavailable. You can add a contact manually and continue."));
+      try {
+        const contactResult = await withTimeout(
+          api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/contacts`, { method: "POST", timeoutMs: 18000 }),
+          20000,
+          "Contact discovery took too long. Continue with the saved company or retry contacts later."
+        );
+        if (contactResult.company) {
+          latestLead = leadFromCrmCompany(normalizeCrmCompany(contactResult.company));
+          onLeadUpdated?.(latestLead);
+        }
+        if (contactResult.status !== "success") {
+          warnings.push(t(contactResult.message || "No verified contact was found yet. You can add an email manually and continue."));
+        }
+      } catch (err) {
+        warnings.push(friendlyErrorMessage(err, "Contact discovery is temporarily unavailable. You can add a contact manually and continue."));
       }
       setStatus(t("Preparing personalized first email..."));
-      const draftResult = await api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/email-draft`, { method: "POST" });
+      const draftResult = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/email-draft`, { method: "POST", timeoutMs: 35000 }),
+        37000,
+        "Email draft took too long. Your CRM research was saved; try generating the email again."
+      );
       if (draftResult.company) {
-        onLeadUpdated?.(leadFromCrmCompany(normalizeCrmCompany(draftResult.company)));
+        latestLead = leadFromCrmCompany(normalizeCrmCompany(draftResult.company));
+        onLeadUpdated?.(latestLead);
       }
       if (!draftResult.email) {
         throw new Error(draftResult.message || "Email draft could not be created.");
       }
       const nextDraft = draftResult.email;
-      setStatus(t("Email draft is ready. Review it below, then approve the send when you are ready."));
+      setStatus([
+        t("Email draft is ready. Review it below, then approve the send when you are ready."),
+        ...warnings.slice(0, 2)
+      ].join(" "));
       setDraft(nextDraft);
       setReadyToSend(true);
       trackEvent("sales_research_completed", {
         lead_id: lead.id,
-        company: lead.company,
-        has_verified_email: Boolean(lead.email && lead.hunter_verified)
+        company: latestLead?.company || lead.company,
+        has_verified_email: Boolean((latestLead || lead).email && (latestLead || lead).hunter_verified),
+        warnings: warnings.length
       });
     } catch (err) {
       const reason = friendlyErrorMessage(err, "Research could not be completed. Please check the lead details and try again.");
       setReadyToSend(false);
       setError(reason);
+      if (warnings.length) {
+        setStatus(warnings.slice(0, 2).join(" "));
+      }
       trackEvent("sales_research_failed", {
         lead_id: lead.id,
         company: lead.company,
-        reason
+        reason,
+        warnings: warnings.length
       });
     } finally {
       setBusy(false);
