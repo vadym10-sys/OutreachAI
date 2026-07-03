@@ -929,7 +929,6 @@ function IntegrationStatusPanel({ api, ready }: { api: ApiFn; ready: boolean }) 
         </div>
         <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row">
           <Link href={leadSearchReady ? "#lead-search-form" : "#manual-company"} className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t(leadSearchReady ? "Start search" : "Add company manually")}</Link>
-          {!leadSearchReady && <Link href="/dashboard/settings#lead-search-key" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-black text-ink shadow-sm">{t("Add key")}</Link>}
         </div>
         <details className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
           <summary className="cursor-pointer text-sm font-bold text-slate-700">{t("Show setup details")} · {connectedCount}/{integrations.length}</summary>
@@ -1131,7 +1130,17 @@ function useDashboardData() {
   return { metrics, leads, campaigns, employees, activity, loading, error, supportingError, cachedAt };
 }
 
-function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn; onLeadUpdated?: (lead: Lead) => void }) {
+function OpportunityCard({
+  lead,
+  api,
+  onLeadUpdated,
+  onCompanyUpdated
+}: {
+  lead: Lead;
+  api: ApiFn;
+  onLeadUpdated?: (lead: Lead) => void;
+  onCompanyUpdated?: (company: CrmCompany) => void;
+}) {
   const { t } = useI18n();
   const [copilot, setCopilot] = useState<SalesCopilot | undefined>();
   const [audit, setAudit] = useState<WebsiteAudit | undefined>();
@@ -1175,7 +1184,9 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
             "Website analysis took too long. The lead stays saved in CRM, and you can retry research."
           );
           if (analysisResult.company) {
-            latestLead = leadFromCrmCompany(normalizeCrmCompany(analysisResult.company));
+            const updatedCompany = normalizeCrmCompany(analysisResult.company);
+            latestLead = leadFromCrmCompany(updatedCompany);
+            onCompanyUpdated?.(updatedCompany);
             onLeadUpdated?.(latestLead);
           }
           if (analysisResult.status !== "success") {
@@ -1193,7 +1204,9 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
           "Contact discovery took too long. Continue with the saved company or retry contacts later."
         );
         if (contactResult.company) {
-          latestLead = leadFromCrmCompany(normalizeCrmCompany(contactResult.company));
+          const updatedCompany = normalizeCrmCompany(contactResult.company);
+          latestLead = leadFromCrmCompany(updatedCompany);
+          onCompanyUpdated?.(updatedCompany);
           onLeadUpdated?.(latestLead);
         }
         if (contactResult.status !== "success") {
@@ -1209,7 +1222,9 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
         "Email draft took too long. Your CRM research was saved; try generating the email again."
       );
       if (draftResult.company) {
-        latestLead = leadFromCrmCompany(normalizeCrmCompany(draftResult.company));
+        const updatedCompany = normalizeCrmCompany(draftResult.company);
+        latestLead = leadFromCrmCompany(updatedCompany);
+        onCompanyUpdated?.(updatedCompany);
         onLeadUpdated?.(latestLead);
       }
       if (!draftResult.email) {
@@ -1277,7 +1292,9 @@ function OpportunityCard({ lead, api, onLeadUpdated }: { lead: Lead; api: ApiFn;
       setReadyToSend(false);
       setStatus(t("Approved email was sent. CRM stage updated to Contacted."));
       if (sentResult.company) {
-        onLeadUpdated?.(leadFromCrmCompany(normalizeCrmCompany(sentResult.company)));
+        const updatedCompany = normalizeCrmCompany(sentResult.company);
+        onCompanyUpdated?.(updatedCompany);
+        onLeadUpdated?.(leadFromCrmCompany(updatedCompany));
       } else {
         onLeadUpdated?.({ ...lead, status: "Contacted", email_approved_at: new Date().toISOString(), email_sent_at: sentResult.email.sent_at || new Date().toISOString() });
       }
@@ -1766,14 +1783,14 @@ export function LeadFinderPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <label className="text-sm font-semibold text-slate-700">{t("Company name")}<input name="company" required placeholder="Acme Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
             <label className="text-sm font-semibold text-slate-700">{t("Website")}<input name="website" placeholder="https://company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+            <label className="text-sm font-semibold text-slate-700 md:col-span-2">{t("Industry")}<input name="industry" placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
           </div>
           <details className="rounded-xl border border-slate-200 bg-slate-50 p-4">
             <summary className="cursor-pointer text-sm font-bold text-ink">{t("Optional details")}</summary>
-            <p className="mt-2 text-sm text-slate-600">{t("Add these only if you already know them. You can fill missing data later from the company card.")}</p>
+            <p className="mt-2 text-sm text-slate-600">{t("Add contact details only if you already know them. You can fill missing data later from the company card.")}</p>
             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
-              <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
-              <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
               <label className="text-sm font-semibold text-slate-700">{t("Decision maker")}<input name="contact" placeholder="Owner or founder" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
               <label className="text-sm font-semibold text-slate-700">{t("Email")}<input name="email" type="email" placeholder="name@company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
               <label className="text-sm font-semibold text-slate-700">{t("Phone")}<input name="phone" placeholder="+49..." className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
@@ -2023,6 +2040,11 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     ["Stage changed", current.stage_changed_at, t("Current stage is {stage}.").replace("{stage}", t(current.crm_stage))],
   ];
 
+  function applyCompanyUpdate(updatedCompany: CrmCompany) {
+    setCurrent(updatedCompany);
+    setStageValue(updatedCompany.crm_stage);
+  }
+
   async function moveStage(nextStage = stageValue) {
     setActionBusy("stage");
     setActionError("");
@@ -2178,7 +2200,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             </div>)}
           </div>
           <div className="mt-5">
-            {current.lead_id ? <OpportunityCard lead={lead} api={api} /> : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
+            {current.lead_id ? <OpportunityCard lead={lead} api={api} onCompanyUpdated={applyCompanyUpdate} /> : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
           </div>
         </WorkspaceSection>
 
