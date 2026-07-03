@@ -353,6 +353,15 @@ def _parse_billing_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _fit_db_text(value: str | None, max_length: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
 def _settings_for_workspace(db: Session, user_id: str, workspace: Workspace) -> AppSettings:
     settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
     if settings is None:
@@ -1317,12 +1326,12 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
         user_id=user_id,
         workspace_id=workspace.id,
         lead_id=lead.id,
-        company=result.company or lead.company,
-        website=result.website or lead.website,
+        company=_fit_db_text(result.company or lead.company, 220) or lead.company,
+        website=_fit_db_text(result.website or lead.website, 500) or "",
         description=result.description,
-        industry=result.industry,
-        location=result.location,
-        niche=result.niche,
+        industry=_fit_db_text(result.industry, 160),
+        location=_fit_db_text(result.location, 160),
+        niche=_fit_db_text(result.niche, 120),
         products_services=result.products_services,
         services=result.services,
         technologies=result.technologies,
@@ -3830,12 +3839,12 @@ def lead_website_audit(lead_id: UUID, request: Request, user_id: CurrentUser, db
             user_id=user_id,
             workspace_id=workspace.id,
             lead_id=lead.id,
-            company=lead.company,
-            website=lead.website or "",
+            company=_fit_db_text(lead.company, 220) or lead.company,
+            website=_fit_db_text(lead.website, 500) or "",
             description="AI website audit",
-            industry=lead.industry,
-            location=" ".join(part for part in [lead.city, lead.country] if part),
-            niche=lead.niche,
+            industry=_fit_db_text(lead.industry, 160),
+            location=_fit_db_text(" ".join(part for part in [lead.city, lead.country] if part), 160),
+            niche=_fit_db_text(lead.niche, 120),
             products_services=[],
             services=[],
             technologies=[],
@@ -3962,12 +3971,12 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
         user_id=user_id,
         workspace_id=workspace.id,
         lead_id=lead.id if lead else None,
-        company=result.company,
-        website=result.website,
+        company=_fit_db_text(result.company, 220) or result.company,
+        website=_fit_db_text(result.website, 500) or result.website,
         description=result.description,
-        industry=result.industry,
-        location=result.location,
-        niche=result.niche,
+        industry=_fit_db_text(result.industry, 160),
+        location=_fit_db_text(result.location, 160),
+        niche=_fit_db_text(result.niche, 120),
         products_services=result.products_services,
         services=result.services,
         technologies=result.technologies,
@@ -3977,8 +3986,8 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
     )
     db.add(analysis)
     if lead:
-        lead.industry = lead.industry or result.industry
-        lead.niche = lead.niche or result.niche
+        lead.industry = lead.industry or _fit_db_text(result.industry, 160)
+        lead.niche = lead.niche or _fit_db_text(result.niche, 120)
         lead.notes = _merge_lead_metadata(lead, _analysis_metadata(result, result.icp_score), _analysis_readable_notes(result, result.icp_score))
     log_event(db, request, user_id, "website.analyzed", {"company": result.company, "website": result.website})
     db.commit()

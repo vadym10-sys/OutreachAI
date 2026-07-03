@@ -35,6 +35,15 @@ from app.services.ai import analyze_company_website
 logger = logging.getLogger("outreachai.acquisition")
 
 
+def _fit_db_text(value: str | None, max_length: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
 @dataclass
 class WorkspaceAutomationResult:
     workspace_id: str
@@ -273,12 +282,12 @@ def _analyze_website(db: Session, workspace: Workspace, lead: Lead) -> None:
             user_id=workspace.owner_user_id,
             workspace_id=workspace.id,
             lead_id=lead.id,
-            company=analysis.company or lead.company,
-            website=analysis.website or lead.website,
+            company=_fit_db_text(analysis.company or lead.company, 220) or lead.company,
+            website=_fit_db_text(analysis.website or lead.website, 500) or "",
             description=analysis.description,
-            industry=analysis.industry,
-            location=analysis.location,
-            niche=analysis.niche,
+            industry=_fit_db_text(analysis.industry, 160),
+            location=_fit_db_text(analysis.location, 160),
+            niche=_fit_db_text(analysis.niche, 120),
             products_services=analysis.products_services,
             services=analysis.services,
             technologies=analysis.technologies,
@@ -287,8 +296,8 @@ def _analyze_website(db: Session, workspace: Workspace, lead: Lead) -> None:
             summary=f"ICP score: {analysis.icp_score}/100. {analysis.summary}",
         )
     )
-    lead.industry = lead.industry or analysis.industry
-    lead.niche = lead.niche or analysis.niche
+    lead.industry = lead.industry or _fit_db_text(analysis.industry, 160)
+    lead.niche = lead.niche or _fit_db_text(analysis.niche, 120)
     lead.notes = "\n".join(part for part in [lead.notes or "", f"ICP score: {analysis.icp_score}/100", analysis.summary] if part)
 
 

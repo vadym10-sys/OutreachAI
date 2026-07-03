@@ -42,12 +42,12 @@ from app.core.config import get_settings  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription, User, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
-from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteValidationError, normalize_website_url  # noqa: E402
+from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
 from app.main import app  # noqa: E402
 
 Base.metadata.create_all(bind=get_engine())
@@ -1432,6 +1432,55 @@ def test_ai_analyze_skips_unreachable_website_without_failing_saved_lead(monkeyp
     company = crm_response.json()[0]
     assert company["ai_summary"] == WEBSITE_UNREACHABLE_MESSAGE
     assert company["crm_stage"] != "Website Analyzed"
+
+
+def test_ai_analyze_truncates_long_ai_fields_before_database_save(monkeypatch) -> None:
+    long_niche = "Construction and real estate business development support for international buyers in Berlin and Germany with project management and renovation services"
+
+    monkeypatch.setattr(
+        "app.api.routes.collect_website",
+        lambda url: WebsiteSnapshot(
+            url="https://long-ai-fields.example",
+            title="Long AI Fields",
+            meta_description="Construction services",
+            text="Construction project management in Berlin.",
+            technologies=["Next.js"],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.analyze_company_website",
+        lambda **kwargs: AnalysisOut(
+            company="Long AI Fields GmbH",
+            website="https://long-ai-fields.example",
+            description="Reliable construction project support.",
+            industry="Construction, Real Estate, Project Management",
+            location="Berlin, Germany",
+            niche=long_niche,
+            products_services=["Renovation", "Project management"],
+            services=["Website analysis"],
+            technologies=["Next.js"],
+            strengths=["Clear positioning"],
+            weaknesses=["Long niche text"],
+            icp_score=78,
+            summary="Useful prospect for outbound.",
+        ),
+    )
+
+    response = client.post(
+        "/api/ai/analyze",
+        headers=AUTH,
+        json={"company": "Long AI Fields GmbH", "website": "https://long-ai-fields.example", "niche": "Construction"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["niche"] == long_niche
+
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        analysis = db.scalar(select(WebsiteAnalysis).where(WebsiteAnalysis.company == "Long AI Fields GmbH"))
+        assert analysis is not None
+        assert analysis.niche is not None
+        assert len(analysis.niche) <= 120
 
 
 def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
