@@ -374,17 +374,36 @@ def _plan_for_workspace(db: Session, user_id: str, workspace: Workspace) -> str:
 
 
 def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str:
-    subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
-    if subscription:
-        return subscription.status
     settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
+    billing: dict[str, Any] = {}
+    if settings is None:
+        settings = AppSettings(user_id=workspace.owner_user_id, workspace_id=workspace.id, **_default_settings())
+        _ensure_default_trial(settings, workspace)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
     if settings:
         if _ensure_default_trial(settings, workspace):
             db.add(settings)
             db.commit()
             db.refresh(settings)
-        return str((settings.billing or {}).get("status") or "inactive")
-    return "inactive"
+        billing = settings.billing or {}
+
+    subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
+    if subscription and subscription.status in {"active", "trialing"}:
+        return subscription.status
+
+    billing_status = str(billing.get("status") or "inactive")
+    billing_trial_end = _parse_billing_datetime(billing.get("trialEnd"))
+    has_stripe_subscription = bool(billing.get("stripeSubscriptionId"))
+    if billing_status == "trialing" and not has_stripe_subscription:
+        if billing_trial_end is None or billing_trial_end > datetime.utcnow():
+            return "trialing"
+    if billing_status == "active" and not has_stripe_subscription:
+        return "active"
+    if subscription:
+        return subscription.status
+    return billing_status
 
 
 def _has_active_subscription(db: Session, workspace: Workspace) -> bool:

@@ -42,7 +42,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription, User, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -308,6 +308,48 @@ def test_existing_workspace_without_billing_status_gets_trial_before_production_
     try:
         with SessionLocal() as db:
             workspace = db.get(Workspace, UUID(workspace_id))
+            assert workspace is not None
+            assert _subscription_status_for_workspace(db, workspace) == "trialing"
+            _require_active_subscription(db, workspace)
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
+def test_workspace_trial_status_survives_legacy_inactive_subscription(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "legacy-inactive-subscription@example.com"}
+    workspace_response = client.get("/api/workspace/me", headers=headers)
+    assert workspace_response.status_code == 200
+    workspace_id = UUID(workspace_response.json()["id"])
+
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = db.get(Workspace, workspace_id)
+        assert workspace is not None
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=workspace.owner_user_id, workspace_id=workspace.id)
+        settings.billing = {"plan": "Starter", "renewal": "monthly"}
+        user = User(clerk_user_id="legacy-inactive-subscription", email="legacy-inactive-subscription@example.com")
+        db.add(user)
+        db.flush()
+        db.add(
+            Subscription(
+                user_id=user.id,
+                workspace_id=workspace_id,
+                plan="Starter",
+                status="inactive",
+                plan_limits={},
+            )
+        )
+        db.add(settings)
+        db.commit()
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "production")
+    try:
+        with SessionLocal() as db:
+            workspace = db.get(Workspace, workspace_id)
             assert workspace is not None
             assert _subscription_status_for_workspace(db, workspace) == "trialing"
             _require_active_subscription(db, workspace)
