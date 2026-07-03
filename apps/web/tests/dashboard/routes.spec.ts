@@ -254,6 +254,8 @@ test.describe("customer workspace routes", () => {
       await expect(body).not.toContainText("Create a campaign from saved leads");
       await expect(body).not.toContainText("Review before send");
       await expect(body).not.toContainText("Create campaign");
+      await expect(body).not.toContainText("LOADING SAVED COMPANIES");
+      await expect(body).not.toContainText("Loading saved companies");
       await expect(body.locator('[aria-label="Open user menu"]')).toHaveCount(0);
       await expect(routePage.getByRole("main")).not.toContainText("Something went wrong");
       await expectNoHorizontalOverflow(routePage);
