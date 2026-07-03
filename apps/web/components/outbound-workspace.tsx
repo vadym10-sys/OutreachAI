@@ -1609,16 +1609,19 @@ export function LeadFinderPage() {
       const found = safeArray(result.companies).map(normalizeCrmCompany).map(leadFromCrmCompany);
       leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id });
       const warnings = safeArray(result.warnings);
+      const savedCount = Number(result.companies_saved ?? 0);
+      const duplicateCount = Number(result.duplicates_skipped ?? 0);
+      const persistenceStep = found.length && savedCount === 0 && duplicateCount > 0 ? t("Already in CRM") : found.length ? t("Saved to CRM") : t("No companies found");
       setSearchSteps([
         t("Lead search finished"),
         t("Found companies count").replace("{count}", String(found.length)),
-        ...(found.length ? [t("Saved to CRM")] : [t("No companies found")]),
+        persistenceStep,
         ...(warnings.length ? [t("Partial data available")] : [])
       ]);
       setSearchSummary({
         found: found.length,
-        saved: Number(result.companies_saved ?? result.saved_count ?? 0),
-        duplicates: Number(result.duplicates_skipped || 0)
+        saved: savedCount,
+        duplicates: duplicateCount
       });
       setLeads((items) => mergeLeads(found, items));
       setSearchResults(found);
