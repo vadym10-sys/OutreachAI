@@ -228,6 +228,22 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("manual company entry keeps the first action simple on mobile", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+
+    await page.goto("/dashboard/leads", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Add one real company first." })).toBeVisible();
+    const manualForm = page.getByRole("form", { name: "Manual company entry" });
+    await expect(manualForm.getByLabel("Company name")).toBeVisible();
+    await expect(manualForm.getByLabel("Website")).toBeVisible();
+    await expect(manualForm.getByText("Optional details")).toBeVisible();
+    await expect(manualForm.getByLabel("Country")).toBeHidden();
+    await expect(manualForm.getByLabel("Email")).toBeHidden();
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
   test("CRM pipeline opens the selected company workspace", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const guards = installQaGuards(page, testInfo);
