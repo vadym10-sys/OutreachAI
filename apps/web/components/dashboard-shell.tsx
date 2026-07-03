@@ -399,7 +399,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               >
                 <Menu size={20} aria-hidden="true" />
               </button>
-              <div className={`${mobileMenuOpen ? "block" : "hidden group-focus-within:block"} fixed inset-0 z-50 lg:hidden`}>
+              <div className={`${mobileMenuOpen ? "block" : "hidden"} fixed inset-0 z-50 lg:hidden`}>
                 <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-950/20" onClick={closeMobileMenu} />
                 <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),20rem)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
                   <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -430,7 +430,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               <span className="block max-w-[58vw] truncate text-xs font-medium text-slate-500 sm:max-w-none">{accountLabel}</span>
             </div>
           </div>
-          <div className="hidden shrink-0 min-[430px]:block">
+          <div className="hidden shrink-0 min-[360px]:block">
             <LanguageSwitcher compact />
           </div>
           <div className="hidden min-w-0 shrink-0 text-right md:block">
