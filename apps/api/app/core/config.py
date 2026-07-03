@@ -104,22 +104,16 @@ class Settings(BaseSettings):
         return self.stripe_publishable_key
 
     @property
-    def missing_optional_services(self) -> list[str]:
+    def missing_customer_integrations(self) -> list[str]:
         missing = []
         if not self.openai_api_key:
             missing.append("OPENAI_API_KEY")
         if not self.resend_api_key:
             missing.append("RESEND_API_KEY")
-        if not self.apollo_api_key:
-            missing.append("APOLLO_API_KEY")
         if not self.hunter_api_key:
             missing.append("HUNTER_API_KEY")
         if not self.google_maps_api_key:
             missing.append("GOOGLE_MAPS_API_KEY")
-        if not (self.upstash_redis_rest_url and self.upstash_redis_rest_token):
-            missing.append("UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN")
-        if not self.clay_api_key:
-            missing.append("CLAY_API_KEY")
         if not self.stripe_secret_key:
             missing.append("STRIPE_SECRET_KEY")
         if not self.stripe_webhook_secret:
@@ -131,6 +125,10 @@ class Settings(BaseSettings):
         if not self.stripe_agency_price_id:
             missing.append("STRIPE_AGENCY_PRICE_ID")
         return missing
+
+    @property
+    def missing_optional_services(self) -> list[str]:
+        return self.missing_customer_integrations
 
 
 @lru_cache

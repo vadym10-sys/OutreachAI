@@ -172,9 +172,9 @@ def startup() -> None:
             "Startup diagnostics: registered routes=%s",
             ", ".join(f"{route.path}:{','.join(sorted(route.methods or []))}" for route in app.routes)
         )
-        missing = settings.missing_optional_services
+        missing = settings.missing_customer_integrations
         if missing:
-            logger.warning("Optional backend integrations not configured: %s", ", ".join(missing))
+            logger.warning("Customer-facing integrations not configured: %s", ", ".join(missing))
 
         if not settings.auto_create_tables:
             logger.info("Database table auto-creation disabled; /api/health is available without database connectivity")
