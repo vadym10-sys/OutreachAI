@@ -103,12 +103,16 @@ def _text_query(payload: LeadFinderRequest) -> str:
 
 
 def _google_places_post(body: dict[str, Any], operation: str) -> dict[str, Any]:
-    api_key = get_settings().google_maps_api_key
+    settings = get_settings()
+    api_key = settings.google_maps_api_key
     if not api_key:
         raise GoogleMapsConfigurationError("Google Maps is not connected yet. Add GOOGLE_MAPS_API_KEY to the backend environment and redeploy.")
 
+    app_origin = settings.public_app_url.rstrip("/")
     headers = {
         "Content-Type": "application/json",
+        "Origin": app_origin,
+        "Referer": f"{app_origin}/",
         "X-Goog-Api-Key": api_key,
         "X-Goog-FieldMask": GOOGLE_PLACES_FIELD_MASK,
     }
