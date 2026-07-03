@@ -200,6 +200,34 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("missing lead search key points users to the exact setup section", async ({ page }, testInfo) => {
+    await mockWorkspaceApi(page, {
+      "/api/workspace-app/integrations/status": {
+        body: {
+          integrations: [
+            { key: "lead_search", label: "Lead search", status: "missing_key", message: "Company search needs setup. Add companies manually until it is connected." },
+            { key: "contact_discovery", label: "Contact discovery", status: "connected", message: "Connected. Contact discovery can verify business emails." },
+            { key: "ai_research", label: "AI research and email", status: "connected", message: "Connected. AI can analyze websites and draft outreach." },
+            { key: "email_sending", label: "Email sending", status: "connected", message: "Connected. Approved emails can be sent." },
+            { key: "billing", label: "Billing", status: "connected", message: "Connected. Plans and billing status can be managed." }
+          ]
+        }
+      }
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+
+    await page.goto("/dashboard/leads", { waitUntil: "domcontentloaded" });
+    const addKey = page.getByRole("link", { name: "Add key" });
+    await expect(addKey).toBeVisible();
+    await expect(addKey).toHaveAttribute("href", "/dashboard/settings#lead-search-key");
+    await addKey.click();
+    await expect(page).toHaveURL(/\/dashboard\/settings#lead-search-key$/);
+    await expect(page.getByRole("heading", { name: "Automatic company search needs one setup step" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
   test("CRM pipeline opens the selected company workspace", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const guards = installQaGuards(page, testInfo);
