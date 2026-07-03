@@ -41,7 +41,7 @@ from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
-from app.api.routes import _audit_log_lead_id_clause  # noqa: E402
+from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
@@ -283,6 +283,36 @@ def test_new_private_workspace_gets_fourteen_day_trial_status() -> None:
     assert status["status"] == "trialing"
     assert status["trial_end"] is not None
     assert status["trial_days_remaining"] >= 13
+
+
+def test_existing_workspace_without_billing_status_gets_trial_before_production_ai_gate(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "legacy-trial-owner@example.com"}
+    workspace_response = client.get("/api/workspace/me", headers=headers)
+    assert workspace_response.status_code == 200
+    workspace_id = workspace_response.json()["id"]
+
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = db.get(Workspace, UUID(workspace_id))
+        assert workspace is not None
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace_id)))
+        if settings is None:
+            settings = AppSettings(user_id="legacy-trial-owner@example.com", workspace_id=workspace.id)
+        settings.billing = {"plan": "Starter", "renewal": "monthly"}
+        db.add(settings)
+        db.commit()
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "production")
+    try:
+        with SessionLocal() as db:
+            workspace = db.get(Workspace, UUID(workspace_id))
+            assert workspace is not None
+            assert _subscription_status_for_workspace(db, workspace) == "trialing"
+            _require_active_subscription(db, workspace)
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
 
 
 def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> None:

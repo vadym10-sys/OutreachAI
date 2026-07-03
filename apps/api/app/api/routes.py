@@ -378,7 +378,13 @@ def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str
     if subscription:
         return subscription.status
     settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
-    return str((settings.billing or {}).get("status") or "inactive") if settings else "inactive"
+    if settings:
+        if _ensure_default_trial(settings, workspace):
+            db.add(settings)
+            db.commit()
+            db.refresh(settings)
+        return str((settings.billing or {}).get("status") or "inactive")
+    return "inactive"
 
 
 def _has_active_subscription(db: Session, workspace: Workspace) -> bool:
