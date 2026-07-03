@@ -2013,6 +2013,12 @@ function WorkspaceSection({ id, title, copy, children }: { id: string; title: st
   );
 }
 
+function contactConfidenceLabel(confidence: CrmContact["confidence"], t: (key: string) => string) {
+  if (confidence === undefined || confidence === null || confidence === "") return t("Confidence not available");
+  const value = typeof confidence === "number" ? `${confidence}%` : String(confidence).trim();
+  return t("Confidence: {value}").replace("{value}", value);
+}
+
 function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCompany; api: ApiFn; highlighted?: boolean }) {
   const { t } = useI18n();
   const [current, setCurrent] = useState(company);
@@ -2198,7 +2204,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
                   <h4 className="font-bold text-ink">{contact.name || t("Not available")}</h4>
                   <p className="mt-1 text-sm text-slate-600">{contact.title || t("Role not available")}</p>
                 </div>
-                <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{contact.confidence || t("Not available")} {t("confidence")}</span>
+                <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{contactConfidenceLabel(contact.confidence, t)}</span>
               </div>
               <div className="mt-4 grid gap-2 text-sm">
                 <p className="flex items-center gap-2 text-slate-700"><Mail size={16} />{contact.email || t("Not available")}</p>
