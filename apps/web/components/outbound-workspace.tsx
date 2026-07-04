@@ -12,7 +12,7 @@ import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
-import type { Activity, AISalesEmployee, Campaign, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
+import type { Activity, AISalesEmployee, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
 
@@ -2845,6 +2845,15 @@ function campaignReadiness(campaign: Campaign) {
   };
 }
 
+function campaignStepLabel(step: CampaignSequence, translate: (value: string) => string) {
+  const rawName = text(step.name).trim();
+  if (/^email\s*#?1$/i.test(rawName) || step.step_order === 1) return `${translate("First email")}`;
+  const followUpMatch = rawName.match(/follow[-\s]?up\s*#?(\d+)/i);
+  if (followUpMatch) return `${translate("Follow-up")} #${followUpMatch[1]}`;
+  if (step.step_order > 1 && !rawName) return `${translate("Follow-up")} #${step.step_order - 1}`;
+  return translate(rawName || "Email");
+}
+
 export function CampaignsPage() {
   const { api, campaigns, leads, loading, error, refresh } = useSalesData();
   const [notice, setNotice] = useState("");
@@ -2936,7 +2945,7 @@ export function CampaignsPage() {
         <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" defaultValue={leads[0]?.country || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
         <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" defaultValue={leads[0]?.city || ""} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
         <label className="text-sm font-semibold text-slate-700 md:col-span-2">{t("Offer")}<textarea name="offer" defaultValue={leads[0]?.suggested_offer || ""} placeholder={t("What should the email offer?")} className="mt-2 min-h-24 w-full rounded-md border border-slate-300 p-3 text-sm" /></label>
-        <label className="text-sm font-semibold text-slate-700">{t("CTA")}<input name="cta" placeholder={t("Open to a quick review?")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+        <label className="text-sm font-semibold text-slate-700">{t("Call to action")}<input name="cta" placeholder={t("Open to a quick review?")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
         <label className="text-sm font-semibold text-slate-700">{t("Signature")}<input name="signature" placeholder={t("Your name")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
       </div>
       <div className="mt-5"><PrimaryButton type="submit" disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Create campaign")}</PrimaryButton></div>
@@ -2967,7 +2976,7 @@ export function CampaignsPage() {
           <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t("Daily limit")}</p><p className="mt-1 font-bold text-ink">{campaign.daily_send_limit || 0}</p></div>
           <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t("Working hours")}</p><p className="mt-1 font-bold text-ink">{campaign.working_hours || t("Not available")}</p></div>
         </div>
-        <div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `${t("Email")} ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || t("Subject unavailable until AI draft is reviewed")}</p><p className="mt-1 text-xs font-semibold text-slate-500">{t("Delay")}: {step.delay_days} {t("days")}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No sequence saved yet.")}</p>}</div>
+        <div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{campaignStepLabel(step, t)}</p><p className="mt-1 text-sm text-slate-600">{step.subject || t("Subject unavailable until AI draft is reviewed")}</p><p className="mt-1 text-xs font-semibold text-slate-500">{t("Delay")}: {step.delay_days} {t("days")}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No sequence saved yet.")}</p>}</div>
         <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-bold text-slate-700">{t("Review before send: enabled")}</p>
       </article>;
     })}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} action={leads.length ? undefined : <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}
