@@ -945,6 +945,9 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     replied_at = max([email.replied_at for email in emails if email.replied_at], default=None)
     latest_activity_at = _latest_audit_time(db, workspace, user_id, company.lead_id)
     last_activity_at = max([value for value in [company.updated_at, found_at, saved_to_crm_at, website_analyzed_at, contact_found_at, email_generated_at, email_approved_at, email_sent_at, delivered_at, opened_at, replied_at, latest_activity_at] if value], default=company.updated_at)
+    company_metadata = company.metadata_json or {}
+    contact_search_checked_at = _datetime_or_none(company_metadata.get("contact_search_checked_at"))
+    roles_searched = company_metadata.get("decision_maker_roles_searched")
     return CrmCompanyOut(
         id=company.id,
         lead_id=company.lead_id,
@@ -986,6 +989,10 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         replied_at=replied_at,
         last_activity_at=last_activity_at,
         stage_changed_at=company.updated_at,
+        contact_search_checked_at=contact_search_checked_at,
+        contact_search_status=str(company_metadata.get("contact_search_status") or "") or None,
+        contact_search_message=str(company_metadata.get("contact_search_message") or "") or None,
+        decision_maker_roles_searched=[str(role) for role in roles_searched] if isinstance(roles_searched, list) else [],
     )
 
 

@@ -110,6 +110,10 @@ export type Lead = {
   replied_at?: string | null;
   last_activity_at?: string | null;
   stage_changed_at?: string | null;
+  contact_search_checked_at?: string | null;
+  contact_search_status?: string | null;
+  contact_search_message?: string | null;
+  decision_maker_roles_searched?: string[];
 };
 
 export type CrmContact = {
@@ -192,6 +196,10 @@ export type CrmCompany = {
   replied_at?: string | null;
   last_activity_at?: string | null;
   stage_changed_at?: string | null;
+  contact_search_checked_at?: string | null;
+  contact_search_status?: string | null;
+  contact_search_message?: string | null;
+  decision_maker_roles_searched?: string[];
 };
 
 export type CrmPipeline = {

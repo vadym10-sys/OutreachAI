@@ -609,6 +609,18 @@ function leadProfile(lead: Lead) {
   };
 }
 
+function contactSearchDetails(lead: Lead) {
+  const metadata = parseNotes(lead.notes);
+  const roles = Array.isArray(metadata.decision_maker_roles_searched) ? metadata.decision_maker_roles_searched.map((role) => text(role)).filter(Boolean) : [];
+  const status = text(metadata.contact_search_status || lead.hunter_status);
+  return {
+    checked: Boolean(metadata.contact_search_checked_at || status),
+    status,
+    message: text(metadata.contact_search_message),
+    roles
+  };
+}
+
 function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, followUps?: FollowUpSequence, audit?: WebsiteAudit) {
   const profile = leadProfile(lead);
   const noOpenFollowUps = safeArray(followUps?.no_open);
@@ -1202,6 +1214,8 @@ function OpportunityCard({
   const visibleStatus = status;
   const companyId = lead.crm_company_id || null;
   const nextStep = opportunityNextStep(lead, draft);
+  const contactSearch = contactSearchDetails(lead);
+  const contactNeedsManualStep = !lead.email && (contactSearch.checked || lead.hunter_status === "no_verified_email");
 
   async function completeResearch() {
     if (!companyId) {
@@ -1460,6 +1474,18 @@ function OpportunityCard({
       <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {coverage.map(([label, done]) => <span key={label} className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold ${done ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-500"}`}><CheckCircle2 size={15} />{t(label)}</span>)}
       </div>
+
+      {contactNeedsManualStep && <section className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-amber-700">{t("Contact needed")}</p>
+            <h3 className="mt-2 text-lg font-black text-ink">{t("No verified email was found yet")}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{t(contactSearch.message || "No verified business email was found. Add a decision maker manually or continue with research.")}</p>
+            {contactSearch.roles.length ? <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">{t("Roles searched")}: <span className="normal-case tracking-normal text-slate-700">{contactSearch.roles.map((role) => t(role)).join(", ")}</span></p> : null}
+          </div>
+          {companyId ? <a href={`#contacts-${companyId}`} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><Plus size={17} />{t("Add contact manually")}</a> : null}
+        </div>
+      </section>}
 
       {draft && (readyToSend || draft.delivery_status === "approved" || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">{t("Personalized first email")}</p>
@@ -1919,6 +1945,13 @@ export function LeadFinderPage() {
 }
 
 function leadFromCrmCompany(company: CrmCompany): Lead {
+  const contactMetadata = {
+    contact_search_checked_at: company.contact_search_checked_at || undefined,
+    contact_search_status: company.contact_search_status || undefined,
+    contact_search_message: company.contact_search_message || undefined,
+    decision_maker_roles_searched: company.decision_maker_roles_searched?.length ? company.decision_maker_roles_searched : undefined
+  };
+  const noteMetadata = Object.values(contactMetadata).some(Boolean) ? JSON.stringify(contactMetadata) : company.notes[0]?.body || null;
   return {
     id: company.lead_id || undefined,
     crm_company_id: company.id,
@@ -1933,7 +1966,7 @@ function leadFromCrmCompany(company: CrmCompany): Lead {
     phone: company.phone || company.contacts[0]?.phone || null,
     linkedin: company.contacts[0]?.linkedin || null,
     status: company.crm_stage,
-    notes: company.notes[0]?.body || null,
+    notes: noteMetadata,
     google_rating: company.google_rating,
     place_id: company.place_id,
     hunter_verified: company.contacts.some((contact) => contact.source === "hunter" && contact.email_status === "Verified"),

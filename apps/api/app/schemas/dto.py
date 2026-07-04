@@ -195,6 +195,10 @@ class LeadOut(BaseModel):
     replied_at: Optional[datetime] = None
     last_activity_at: Optional[datetime] = None
     stage_changed_at: Optional[datetime] = None
+    contact_search_checked_at: Optional[datetime] = None
+    contact_search_status: Optional[str] = None
+    contact_search_message: Optional[str] = None
+    decision_maker_roles_searched: list[str] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -289,6 +293,10 @@ class CrmCompanyOut(BaseModel):
     replied_at: Optional[datetime] = None
     last_activity_at: Optional[datetime] = None
     stage_changed_at: Optional[datetime] = None
+    contact_search_checked_at: Optional[datetime] = None
+    contact_search_status: Optional[str] = None
+    contact_search_message: Optional[str] = None
+    decision_maker_roles_searched: list[str] = Field(default_factory=list)
 
     class Config:
         from_attributes = True

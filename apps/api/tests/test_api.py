@@ -676,6 +676,35 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent.json()["company"]["crm_stage"] == "Sent"
 
 
+def test_workspace_app_contact_discovery_empty_persists_search_state(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-contact-empty@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Contact Empty", "website": "https://usage-contact-empty.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    def fake_hunter_empty(db, request, user_id, workspace, leads):
+        return [leads[0].model_copy(update={"hunter_verified": False, "hunter_status": "no_verified_email", "notes": '{"hunter_status":"no_verified_email"}'})]
+
+    monkeypatch.setattr("app.api.usage._hunter_enriched_leads", fake_hunter_empty)
+    response = client.post(f"/api/workspace-app/companies/{company_id}/contacts", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "empty"
+    assert data["company"]["email"] is None
+    assert data["company"]["email_status"] == "No verified email"
+    assert data["company"]["contact_search_status"] == "no_verified_email"
+    assert data["company"]["contact_search_checked_at"]
+    assert "CEO" in data["company"]["decision_maker_roles_searched"]
+
+    refreshed = client.get(f"/api/workspace-app/companies/{company_id}", headers=headers)
+    assert refreshed.status_code == 200
+    assert refreshed.json()["contact_search_status"] == "no_verified_email"
+
+
 def test_workspace_app_blocks_placeholder_recipient_before_send(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-placeholder-send@example.com"}
     company_response = client.post(

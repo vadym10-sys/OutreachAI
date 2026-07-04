@@ -40,7 +40,7 @@ from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut,
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, search_google_places
-from app.services.hunter import hunter_key_loaded
+from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
 from app.services.website import normalize_website_url
 
 logger = logging.getLogger("outreachai.workspace_app")
@@ -614,6 +614,14 @@ def discover_company_contacts(company_id: UUID, request: Request, user: Workspac
 
     enriched_lead = enriched[0] if enriched else _lead_out(lead)
     metadata = _lead_metadata(enriched_lead)
+    contact_search_checked_at = datetime.utcnow().isoformat()
+    has_verified_contact = bool(enriched_lead.email or lead.email)
+    contact_search_status = "verified_email_found" if has_verified_contact else "no_verified_email"
+    contact_search_message = (
+        "Verified contact saved to CRM."
+        if has_verified_contact
+        else "No verified business email was found. Add a decision maker manually or continue with research."
+    )
     lead.contact = enriched_lead.contact or lead.contact
     lead.email = str(enriched_lead.email) if enriched_lead.email else lead.email
     lead.phone = enriched_lead.phone or lead.phone
@@ -622,7 +630,11 @@ def discover_company_contacts(company_id: UUID, request: Request, user: Workspac
         lead,
         {
             **metadata,
-            "contact_found_at": datetime.utcnow().isoformat() if enriched_lead.email or lead.email else _lead_metadata(lead).get("contact_found_at"),
+            "contact_found_at": contact_search_checked_at if has_verified_contact else _lead_metadata(lead).get("contact_found_at"),
+            "contact_search_checked_at": contact_search_checked_at,
+            "contact_search_status": contact_search_status,
+            "contact_search_message": contact_search_message,
+            "decision_maker_roles_searched": list(DECISION_MAKER_TITLES),
             "hunter_status": enriched_lead.hunter_status or metadata.get("hunter_status") or ("verified" if enriched_lead.email else "no_verified_email"),
             "hunter_verified": bool(enriched_lead.hunter_verified or metadata.get("hunter_verified")),
             "email_status": "Verified" if enriched_lead.hunter_verified or metadata.get("hunter_verified") else ("Found" if enriched_lead.email or lead.email else "No verified email"),
@@ -631,10 +643,12 @@ def discover_company_contacts(company_id: UUID, request: Request, user: Workspac
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     if lead.email and lead.email != before_email:
         _add_lead_activity(db, request, user.user_id, workspace, "contact.found", lead, {"source": "contact_discovery"})
+    elif not lead.email:
+        _add_lead_activity(db, request, user.user_id, workspace, "contact.search_empty", lead, {"source": "contact_discovery", "roles_searched": list(DECISION_MAKER_TITLES)})
     db.commit()
     db.refresh(company)
     status: UsageStatus = "success" if lead.email else "empty"
-    message = "Verified contact saved to CRM." if lead.email else "No verified email was found. Add a contact manually or continue with company research."
+    message = "Verified contact saved to CRM." if lead.email else contact_search_message
     return UsageActionOut(status=status, message=message, company=_crm_company_out(db, workspace, user.user_id, company))
 
 
