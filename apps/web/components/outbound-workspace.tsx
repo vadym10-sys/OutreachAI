@@ -2142,7 +2142,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     ["Contact found", current.contact_found_at, "A decision maker or business contact was added."],
     ["Email generated", current.email_generated_at, "A personalized draft was prepared for review."],
     ["Email approved", current.email_approved_at, "A user approved the draft before sending."],
-    ["Email sent", currentSentAt, currentSentAt ? "Approved outreach was sent." : "Current approved email has not been sent yet."],
+    [currentSentAt ? "Email sent" : "Email not sent yet", currentSentAt, currentSentAt ? "Approved outreach was sent." : "Current approved email has not been sent yet."],
     ["Email opened", current.opened_at, "The prospect opened the message."],
     ["Reply received", current.replied_at, "A reply was captured in the workspace."],
     ["Stage changed", current.stage_changed_at, t("Current stage is {stage}.").replace("{stage}", t(current.crm_stage))],
