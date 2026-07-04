@@ -2027,6 +2027,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const [actionBusy, setActionBusy] = useState("");
   const [actionNotice, setActionNotice] = useState("");
   const [actionError, setActionError] = useState("");
+  const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lead = leadFromCrmCompany(current);
   const healthScore = companyHealthScore(current);
   const nextAction = companyNextAction(current);
@@ -2085,12 +2086,27 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
       setCurrent(updated);
       setStageValue(updated.crm_stage);
       setActionNotice(t("CRM stage moved to {stage}.").replace("{stage}", t(updated.crm_stage)));
+      return true;
     } catch (err) {
       setActionError(friendlyErrorMessage(err, t("CRM stage could not be updated. Check your session and try again.")));
+      return false;
     } finally {
       setActionBusy("");
     }
   }
+
+  async function prepareMeeting() {
+    const template = t("Meeting note template").replace("{company}", current.name);
+    if (!noteBody.trim()) {
+      setNoteBody(template);
+      window.setTimeout(() => noteTextareaRef.current?.focus(), 0);
+    }
+    const updated = await moveStage("Meeting Scheduled");
+    if (updated) {
+      setActionNotice(t("Meeting step prepared. Add the date, time and calendar link in the note, then save it."));
+    }
+  }
+
   async function addNote(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const body = noteBody.trim();
@@ -2103,7 +2119,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     setActionNotice("");
     try {
       const note = await api<CrmCompany["notes"][number]>(`/api/crm/companies/${current.id}/notes`, { method: "POST", body: JSON.stringify({ body }) });
-      setCurrent({ ...current, notes: [note, ...current.notes] });
+      setCurrent((previous) => ({ ...previous, notes: [note, ...previous.notes] }));
       setNoteBody("");
       setActionNotice(t("Note saved to the activity history."));
     } catch (err) {
@@ -2266,7 +2282,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> {t("Review contacts")}</a>
             <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> {t("Review email draft")}</a>
             <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Send size={17} /> {t("Review approval path")}</a>
-            <button type="button" onClick={() => moveStage("Meeting Scheduled")} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} {t("Book meeting")}</button>
+            <button type="button" onClick={prepareMeeting} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} {t("Prepare meeting")}</button>
           </div>
         </section>
 
@@ -2286,7 +2302,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <p className="mt-1 text-xs leading-5 text-slate-500">{t("Use short notes, checklists, mentions or attachment links. Rich formatting can be pasted into the note.")}</p>
           <form onSubmit={addNote} className="mt-3 space-y-2">
             <label className="sr-only" htmlFor={`note-${current.id}`}>{t("Add note")}</label>
-            <textarea id={`note-${current.id}`} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder={t("Example: follow up next Tuesday")} className="min-h-28 w-full rounded-md border border-slate-300 bg-white p-3 text-sm" />
+            <textarea ref={noteTextareaRef} id={`note-${current.id}`} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder={t("Example: follow up next Tuesday")} className="min-h-28 w-full rounded-md border border-slate-300 bg-white p-3 text-sm" />
             <button type="submit" disabled={actionBusy === "note" || !noteBody.trim()} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "note" && <Loader2 className="animate-spin" size={16} />} {t("Add note")}</button>
           </form>
           <div className="mt-4 space-y-2">
