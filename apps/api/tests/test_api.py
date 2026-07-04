@@ -42,7 +42,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, Company, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, Company, Contact, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -445,18 +445,19 @@ def test_customer_facing_workspace_hides_internal_qa_records() -> None:
 
     SessionLocal = get_sessionmaker()
     with SessionLocal() as db:
+        real_company = Company(
+            user_id="qa-cleanup-owner@example.com",
+            workspace_id=workspace_id,
+            name="Real Berlin Construction GmbH",
+            website="https://real-berlin-builder.de",
+            domain="real-berlin-builder.de",
+            city="Berlin",
+            country="Germany",
+            industry="Construction",
+        )
         db.add_all(
             [
-                Company(
-                    user_id="qa-cleanup-owner@example.com",
-                    workspace_id=workspace_id,
-                    name="Real Berlin Construction GmbH",
-                    website="https://real-berlin-builder.de",
-                    domain="real-berlin-builder.de",
-                    city="Berlin",
-                    country="Germany",
-                    industry="Construction",
-                ),
+                real_company,
                 Company(
                     user_id="qa-cleanup-owner@example.com",
                     workspace_id=workspace_id,
@@ -485,17 +486,34 @@ def test_customer_facing_workspace_hides_internal_qa_records() -> None:
                 ),
             ]
         )
+        db.flush()
+        db.add(
+            Contact(
+                user_id="qa-cleanup-owner@example.com",
+                workspace_id=workspace_id,
+                company_id=real_company.id,
+                name="QA Contact",
+                title="Tester",
+                email="qa-contact@example.com",
+                source="manual",
+            )
+        )
         db.commit()
 
     workspace_companies = client.get("/api/workspace-app/companies", headers=headers)
     assert workspace_companies.status_code == 200
     assert [item["name"] for item in workspace_companies.json()] == ["Real Berlin Construction GmbH"]
+    assert workspace_companies.json()[0]["contacts"] == []
 
     pipeline = client.get("/api/crm/pipeline", headers=headers)
     assert pipeline.status_code == 200
     pipeline_names = [item["name"] for item in pipeline.json()["companies"]]
     assert "Real Berlin Construction GmbH" in pipeline_names
     assert "Premium Test Construction Berlin" not in pipeline_names
+
+    contacts = client.get("/api/crm/contacts", headers=headers)
+    assert contacts.status_code == 200
+    assert contacts.json() == []
 
     campaigns = client.get("/api/campaigns", headers=headers)
     assert campaigns.status_code == 200
@@ -844,7 +862,8 @@ def test_workspace_app_blocks_placeholder_recipient_before_send(monkeypatch) -> 
         json={"name": "QA Contact", "title": "Owner", "email": "qa@example.com"},
     )
     assert contact.status_code == 200
-    assert contact.json()["company"]["email"] == "qa@example.com"
+    assert contact.json()["company"]["email"] is None
+    assert contact.json()["company"]["contacts"] == []
 
     monkeypatch.setattr(
         "app.api.usage.personalize_email",

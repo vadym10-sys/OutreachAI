@@ -327,12 +327,34 @@ def _domain_from_company_value(value: str | None) -> str:
     return clean.split("/", 1)[0].strip()
 
 
+def _is_placeholder_email(value: str | None) -> bool:
+    if not value or "@" not in value:
+        return False
+    domain = value.rsplit("@", 1)[1].strip().lower()
+    return domain in INTERNAL_TEST_DOMAINS
+
+
 def _is_customer_visible_company(company: Company) -> bool:
     domain = _domain_from_company_value(company.domain or company.website)
     name = (company.name or "").strip().lower()
     if domain in INTERNAL_TEST_DOMAINS:
         return False
     return not any(name.startswith(prefix) for prefix in INTERNAL_TEST_NAME_PREFIXES)
+
+
+def _is_customer_visible_contact(contact: Contact) -> bool:
+    name = (contact.name or "").strip().lower()
+    if _is_placeholder_email(contact.email):
+        return False
+    return not any(name.startswith(prefix) for prefix in INTERNAL_TEST_NAME_PREFIXES)
+
+
+def _is_customer_visible_email(message: EmailMessage) -> bool:
+    tags = message.tags or {}
+    for key in ("to_email", "recipient_email", "email"):
+        if _is_placeholder_email(str(tags.get(key) or "")):
+            return False
+    return True
 
 
 def _is_customer_visible_campaign(campaign: Campaign) -> bool:
@@ -952,10 +974,10 @@ def _latest_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id:
 
 
 def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: Company) -> CrmCompanyOut:
-    contacts = list(db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id).order_by(Contact.created_at.desc())).all())
+    contacts = [contact for contact in db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id).order_by(Contact.created_at.desc())).all() if _is_customer_visible_contact(contact)]
     deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc())).all())
     notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc()).limit(20)).all())
-    emails = list(db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc()).limit(10)).all()) if company.lead_id else []
+    emails = [email for email in db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc()).limit(20)).all() if _is_customer_visible_email(email)][:10] if company.lead_id else []
     activity = list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
     lead = db.get(Lead, company.lead_id) if company.lead_id else None
     found_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"lead.found", "lead.imported", "google_maps.company_search", "apollo.company_search", "apollo.contact_search"}) or (lead.created_at if lead else company.created_at)
@@ -980,7 +1002,7 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         website=company.website,
         domain=company.domain,
         phone=company.phone,
-        email=company.email,
+        email=None if _is_placeholder_email(company.email) else company.email,
         address=company.address,
         city=company.city,
         country=company.country,
@@ -3735,7 +3757,7 @@ def crm_contacts(
         return []
     contacts = list(db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id.in_(company_ids)).order_by(Contact.updated_at.desc()).limit(200)).all())
     names = {company.id: company.name for company in companies}
-    return [_crm_contact_out(contact, names.get(contact.company_id, "")) for contact in contacts]
+    return [_crm_contact_out(contact, names.get(contact.company_id, "")) for contact in contacts if _is_customer_visible_contact(contact)]
 
 
 @router.get("/crm/deals", response_model=list[CrmDealOut])
