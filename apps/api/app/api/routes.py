@@ -3273,6 +3273,24 @@ def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: C
     mapping = {"launch": CampaignStatus.running, "resume": CampaignStatus.running, "pause": CampaignStatus.paused, "stop": CampaignStatus.stopped}
     if action not in mapping:
         raise HTTPException(status_code=400, detail="Unsupported campaign action")
+    if action in {"launch", "resume"}:
+        lead_ids = list(db.scalars(select(Lead.id).where(Lead.campaign_id == campaign.id, _workspace_stmt(Lead, workspace, user_id))).all())
+        if not lead_ids:
+            raise HTTPException(status_code=400, detail="Add at least one lead before launching this campaign.")
+        approved_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(EmailMessage)
+                .where(
+                    _workspace_stmt(EmailMessage, workspace, user_id),
+                    EmailMessage.lead_id.in_(lead_ids),
+                    EmailMessage.delivery_status.in_(["approved", "sent"]),
+                )
+            )
+            or 0
+        )
+        if approved_count == 0:
+            raise HTTPException(status_code=400, detail="Approve at least one email draft before launching this campaign.")
     campaign.status = mapping[action]
     log_event(db, request, user_id, f"campaign.{action}", {"campaign_id": str(campaign.id)})
     _notify(db, user_id, NotificationKind.info, "Campaign updated", f"{campaign.name} is now {campaign.status.value}.")
@@ -3797,6 +3815,12 @@ def update_lead(lead_id: UUID, payload: LeadUpdate, request: Request, user_id: C
         if key == "status" and value:
             value = _status(value)
         setattr(lead, key, value)
+    if payload.campaign_id:
+        db.query(EmailMessage).filter(
+            EmailMessage.workspace_id == workspace.id,
+            EmailMessage.lead_id == lead.id,
+            EmailMessage.campaign_id.is_(None),
+        ).update({"campaign_id": payload.campaign_id}, synchronize_session=False)
     _sync_lead_to_crm(db, user_id, workspace, lead)
     log_event(db, request, user_id, "lead.updated", {"lead_id": str(lead.id)})
     db.commit()

@@ -2572,7 +2572,7 @@ export function CampaignsPage() {
       trackEvent("campaign_status_updated", { campaign_id: campaignId, action, status: updated.status });
       await refresh();
     } catch (err) {
-      setNotice(friendlyErrorMessage(err, "Campaign status could not be updated."));
+      setNotice(t(friendlyErrorMessage(err, "Campaign status could not be updated.")));
     } finally {
       setActionBusy("");
     }
