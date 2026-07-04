@@ -202,6 +202,12 @@ function latestCompanyEmail(company: CrmCompany): Email | undefined {
   return safeArray(company.generated_emails)[0];
 }
 
+function currentEmailSentAt(company: CrmCompany) {
+  const latest = latestCompanyEmail(company);
+  if (latest) return latest.delivery_status === "sent" ? (latest.sent_at || company.email_sent_at) : null;
+  return company.email_sent_at;
+}
+
 function safeCampaign(value: Campaign): Campaign {
   return {
     ...value,
@@ -1931,6 +1937,7 @@ function CrmFilters({ filters, setFilters }: { filters: Record<string, string>; 
 }
 
 function companyHealthScore(company: CrmCompany) {
+  const sentAt = currentEmailSentAt(company);
   const checks = [
     Boolean(company.website || company.domain),
     Boolean(company.address || company.city || company.country),
@@ -1941,7 +1948,7 @@ function companyHealthScore(company: CrmCompany) {
     Boolean(company.suggested_offer || company.sales_angle),
     Boolean(company.generated_emails.length),
     Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent")),
-    Boolean(company.email_sent_at || company.generated_emails.some((email) => email.delivery_status === "sent")),
+    Boolean(sentAt),
     Boolean(company.replied_at || company.crm_stage === "Replied" || company.crm_stage === "Meeting Scheduled" || company.crm_stage === "Won"),
     Boolean(company.notes.length || company.activity.length),
   ];
@@ -1949,10 +1956,11 @@ function companyHealthScore(company: CrmCompany) {
 }
 
 function companyNextAction(company: CrmCompany) {
+  const sentAt = currentEmailSentAt(company);
   const hasContact = Boolean(company.email || company.contacts.some((contact) => contact.email));
   const hasDraft = Boolean(company.generated_emails.length);
   const hasApproved = Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"));
-  const hasSent = Boolean(company.email_sent_at || company.generated_emails.some((email) => email.delivery_status === "sent"));
+  const hasSent = Boolean(sentAt);
   if (!company.website && !company.domain) return "Add a website so OutreachAI can research this company.";
   if (!company.ai_summary) return "Run company research to create the sales angle.";
   if (!hasContact) return "Find or add a decision maker before preparing outreach.";
@@ -1979,13 +1987,14 @@ function pipelineReadiness(company: CrmCompany) {
 }
 
 function timelineProgress(company: CrmCompany) {
+  const sentAt = currentEmailSentAt(company);
   const steps = [
     ["Saved", company.saved_to_crm_at || company.created_at],
     ["Researched", company.website_analyzed_at || company.ai_summary],
     ["Contact", company.contact_found_at || company.email || company.contacts.length],
     ["Draft", company.email_generated_at || company.generated_emails.length],
     ["Approved", company.email_approved_at],
-    ["Sent", company.email_sent_at],
+    ["Sent", sentAt],
     ["Reply", company.replied_at],
     ["Outcome", company.crm_stage === "Won" || company.crm_stage === "Lost"],
   ] as const;
@@ -2094,11 +2103,12 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const contactFormRef = useRef<HTMLFormElement | null>(null);
   const lead = leadFromCrmCompany(current);
+  const currentDraft = latestCompanyEmail(current);
+  const currentSentAt = currentEmailSentAt(current);
   const healthScore = companyHealthScore(current);
   const nextAction = companyNextAction(current);
   const progress = timelineProgress(current);
   const primaryContact = current.contacts[0];
-  const currentDraft = latestCompanyEmail(current);
   const firstDeal = current.deals[0];
   const owner = "Not assigned";
   const companySize = "Not available";
@@ -2118,7 +2128,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const outreachSteps = [
     ["Draft", Boolean(current.email_generated_at || current.generated_emails.length)],
     ["Approved", Boolean(current.email_approved_at || current.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"))],
-    ["Sent", Boolean(current.email_sent_at || current.generated_emails.some((email) => email.delivery_status === "sent"))],
+    ["Sent", Boolean(currentSentAt)],
     ["Delivered", Boolean(current.delivered_at)],
     ["Opened", Boolean(current.opened_at)],
     ["Replied", Boolean(current.replied_at)],
@@ -2132,7 +2142,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     ["Contact found", current.contact_found_at, "A decision maker or business contact was added."],
     ["Email generated", current.email_generated_at, "A personalized draft was prepared for review."],
     ["Email approved", current.email_approved_at, "A user approved the draft before sending."],
-    ["Email sent", current.email_sent_at, "Approved outreach was sent."],
+    ["Email sent", currentSentAt, currentSentAt ? "Approved outreach was sent." : "Current approved email has not been sent yet."],
     ["Email opened", current.opened_at, "The prospect opened the message."],
     ["Reply received", current.replied_at, "A reply was captured in the workspace."],
     ["Stage changed", current.stage_changed_at, t("Current stage is {stage}.").replace("{stage}", t(current.crm_stage))],
@@ -2377,14 +2387,18 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               </div>
               <p className="text-sm leading-6 text-slate-600">{t(description)}</p>
             </div>)}
-            {current.activity.slice(0, 4).map((item) => <div key={item.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[2rem_10rem_1fr]">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-700"><FileText size={16} /></div>
-              <div>
-                <p className="font-bold text-ink">{t(activityLabel(item.action))}</p>
-                <p className="mt-1 text-xs text-slate-500">{new Date(item.created_at).toLocaleString()}</p>
-              </div>
-              <p className="text-sm leading-6 text-slate-600">{t("Workspace activity was recorded for this company.")}</p>
-            </div>)}
+            {current.activity.slice(0, 4).map((item) => {
+              const label = activityLabel(item.action);
+              const isPreviousSend = label === "Email sent" && currentDraft?.delivery_status !== "sent";
+              return <div key={item.id} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[2rem_10rem_1fr]">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-700"><FileText size={16} /></div>
+                <div>
+                  <p className="font-bold text-ink">{t(isPreviousSend ? "Previous email sent" : label)}</p>
+                  <p className="mt-1 text-xs text-slate-500">{new Date(item.created_at).toLocaleString()}</p>
+                </div>
+                <p className="text-sm leading-6 text-slate-600">{t(isPreviousSend ? "This is a previous activity event. The current draft still needs confirmation before sending." : "Workspace activity was recorded for this company.")}</p>
+              </div>;
+            })}
           </div>
         </WorkspaceSection>
       </div>
