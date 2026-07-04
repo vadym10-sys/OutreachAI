@@ -198,6 +198,10 @@ function mergeLeads(newLeads: Lead[], existingLeads: Lead[]) {
   return merged;
 }
 
+function latestCompanyEmail(company: CrmCompany): Email | undefined {
+  return safeArray(company.generated_emails)[0];
+}
+
 function safeCampaign(value: Campaign): Campaign {
   return {
     ...value,
@@ -1134,19 +1138,21 @@ function OpportunityCard({
   lead,
   api,
   onLeadUpdated,
-  onCompanyUpdated
+  onCompanyUpdated,
+  initialDraft
 }: {
   lead: Lead;
   api: ApiFn;
   onLeadUpdated?: (lead: Lead) => void;
   onCompanyUpdated?: (company: CrmCompany) => void;
+  initialDraft?: Email | null;
 }) {
   const { t } = useI18n();
   const [copilot, setCopilot] = useState<SalesCopilot | undefined>();
   const [audit, setAudit] = useState<WebsiteAudit | undefined>();
   const [followUps, setFollowUps] = useState<FollowUpSequence | undefined>();
-  const [draft, setDraft] = useState<Email | undefined>();
-  const [readyToSend, setReadyToSend] = useState(false);
+  const [draft, setDraft] = useState<Email | undefined>(() => initialDraft || undefined);
+  const [readyToSend, setReadyToSend] = useState(() => Boolean(initialDraft && initialDraft.delivery_status !== "approved" && initialDraft.delivery_status !== "sent"));
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [status, setStatus] = useState("");
@@ -1415,7 +1421,7 @@ function OpportunityCard({
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Complete sales research")}</PrimaryButton>
-        <SecondaryButton onClick={approveDraft} disabled={!readyToSend || busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve draft")}</SecondaryButton>
+        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve draft")}</SecondaryButton>
         <SecondaryButton onClick={sendApprovedEmail} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </article>
@@ -2072,6 +2078,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const nextAction = companyNextAction(current);
   const progress = timelineProgress(current);
   const primaryContact = current.contacts[0];
+  const currentDraft = latestCompanyEmail(current);
   const firstDeal = current.deals[0];
   const owner = "Not assigned";
   const companySize = "Not available";
@@ -2336,7 +2343,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             </div>)}
           </div>
           <div className="mt-5">
-            {current.lead_id ? <OpportunityCard lead={lead} api={api} onCompanyUpdated={applyCompanyUpdate} /> : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
+            {current.lead_id ? <OpportunityCard key={`${current.id}:${currentDraft?.id || "no-draft"}:${currentDraft?.delivery_status || ""}`} lead={lead} api={api} onCompanyUpdated={applyCompanyUpdate} initialDraft={currentDraft} /> : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
           </div>
         </WorkspaceSection>
 
