@@ -2280,6 +2280,8 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const progressPercent = Math.round((completedProgress / progress.length) * 100);
   const nextMissingStep = progress.find(([, done]) => !done)?.[0] || "Outcome";
   const primaryContact = current.contacts[0];
+  const sendRecipient = current.email || primaryContact?.email || "";
+  const approvedDraftReady = Boolean(currentDraft?.delivery_status === "approved" && !currentSentAt);
   const firstDeal = current.deals[0];
   const owner = "Not assigned";
   const companySize = "Not available";
@@ -2474,6 +2476,14 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             <p className="text-xs font-bold uppercase text-brand">{t("Next recommended action")}</p>
             <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
             <p className="mt-1 text-xs leading-5 text-slate-600">{t(primaryAction.copy)}</p>
+            {approvedDraftReady && <div className="mt-3 rounded-xl border border-teal-200 bg-white p-3">
+              <p className="text-xs font-bold uppercase text-brand">{t("Ready to send safely")}</p>
+              <div className="mt-2 grid gap-2 text-xs text-slate-700">
+                <p><span className="font-bold text-ink">{t("Recipient")}:</span> {sendRecipient || t("Not available")}</p>
+                <p><span className="font-bold text-ink">{t("Approved draft")}:</span> {currentDraft?.subject || t("Not available")}</p>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-slate-600">{t("The email is approved, but it will not be sent until you open the approval area and confirm.")}</p>
+            </div>}
             {primaryAction.action ? (
               <button
                 type="button"
