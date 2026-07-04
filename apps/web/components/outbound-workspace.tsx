@@ -2784,6 +2784,67 @@ export function ContactsPage() {
   return <div className="space-y-6"><PageHeader eyebrow="Contacts" title="Decision makers and verified emails." copy="Contacts come from verified contact discovery, local business data, or manual lead import. Missing emails are not invented." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading contacts" copy="Checking saved CRM contacts." /> : error ? <EmptyState title="Contacts unavailable" copy={error} /> : contacts.length ? <section className="grid gap-4 lg:grid-cols-3">{contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{contact.name || t("Decision maker unavailable")}</h2><p className="mt-1 text-sm text-slate-600">{contact.title || t("Role unavailable")} · {contact.company}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold">{contact.email || t("No verified email available")}</p><p className="mt-3 text-sm text-slate-600">{t(contact.email_status)} · {t(sourceLabel(contact.source))}</p></article>)}</section> : <EmptyState title="No decision makers yet" copy="Find contacts or add one manually. OutreachAI will not create fake contacts." />}</div>;
 }
 
+function campaignReadiness(campaign: Campaign) {
+  const hasLeads = Number(campaign.leads || 0) > 0;
+  const hasSequence = safeArray(campaign.sequence).length > 0;
+  const hasReviewedDraft = safeArray(campaign.sequence).some((step) => Boolean(step.subject || step.body));
+  const status = text(campaign.status).toLowerCase();
+  const isPaused = status === "paused";
+  const isRunning = status === "running" || status === "scheduled";
+  if (!hasLeads) {
+    return {
+      state: "Needs leads",
+      copy: "Add at least one saved company before this campaign can move forward.",
+      action: "Add leads",
+      href: "/dashboard/leads",
+      variant: "warning" as const
+    };
+  }
+  if (!hasSequence) {
+    return {
+      state: "Needs sequence",
+      copy: "Create the email and follow-up steps before launch.",
+      action: "Create sequence",
+      href: "/dashboard/companies",
+      variant: "warning" as const
+    };
+  }
+  if (!hasReviewedDraft) {
+    return {
+      state: "Review required",
+      copy: "Generate or review the first email draft before launching.",
+      action: "Review emails",
+      href: "/dashboard/companies",
+      variant: "warning" as const
+    };
+  }
+  if (isPaused) {
+    return {
+      state: "Paused safely",
+      copy: "This campaign is paused. Resume only when the reviewed emails are ready.",
+      action: "Resume",
+      href: "",
+      variant: "ready" as const
+    };
+  }
+  if (isRunning) {
+    return {
+      state: "Running",
+      copy: "Outreach is active. Watch replies and pause anytime.",
+      action: "Pause",
+      href: "",
+      variant: "ready" as const
+    };
+  }
+  return {
+    state: "Ready for approval",
+    copy: "Reviewed outreach is ready. Launch only when you approve the send.",
+    action: "Launch after approval",
+    href: "",
+    variant: "ready" as const
+  };
+}
+
 export function CampaignsPage() {
   const { api, campaigns, leads, loading, error, refresh } = useSalesData();
   const [notice, setNotice] = useState("");
@@ -2880,7 +2941,36 @@ export function CampaignsPage() {
       </div>
       <div className="mt-5"><PrimaryButton type="submit" disabled={actionBusy === "create"}>{actionBusy === "create" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Create campaign")}</PrimaryButton></div>
     </form>}
-    {loading ? <EmptyState title="Loading campaigns" copy="Reading saved campaigns." /> : error ? <EmptyState title="Campaign data unavailable" copy={error} /> : campaigns.length ? <section className="grid gap-4 lg:grid-cols-2">{campaigns.map((campaign) => <article key={campaign.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{campaign.name}</h2><p className="mt-2 text-sm text-slate-600">{campaign.leads} {t("leads")} · {campaign.sent} {t("sent")} · {campaign.replies} {t("replies")} · {t(campaign.status)}</p><div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `${t("Email")} ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || t("Subject unavailable until AI draft is reviewed")}</p><p className="mt-1 text-xs font-semibold text-slate-500">{t("Delay")}: {step.delay_days} {t("days")}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No sequence saved yet.")}</p>}</div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("Review before send: enabled")}</p><div className="mt-4 grid gap-2 min-[430px]:grid-cols-2"><SecondaryButton onClick={() => campaignAction(campaign.id, "pause")} disabled={actionBusy === `${campaign.id}:pause`}><Pause size={17} /> {t("Pause")}</SecondaryButton><PrimaryButton onClick={() => campaignAction(campaign.id, campaign.status === "Paused" ? "resume" : "launch")} disabled={actionBusy === `${campaign.id}:launch` || actionBusy === `${campaign.id}:resume`}>{actionBusy.startsWith(campaign.id) ? <Loader2 className="animate-spin" size={17} /> : <Play size={17} />} {campaign.status === "Paused" ? t("Resume") : t("Launch after approval")}</PrimaryButton></div></article>)}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} action={leads.length ? undefined : <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}
+    {loading ? <EmptyState title="Loading campaigns" copy="Reading saved campaigns." /> : error ? <EmptyState title="Campaign data unavailable" copy={error} /> : campaigns.length ? <section className="grid gap-4 lg:grid-cols-2">{campaigns.map((campaign) => {
+      const readiness = campaignReadiness(campaign);
+      const busy = actionBusy.startsWith(campaign.id);
+      const canRunAction = !readiness.href;
+      const runAction = readiness.action === "Pause" ? "pause" : readiness.action === "Resume" ? "resume" : "launch";
+      return <article key={campaign.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="font-bold text-ink">{campaign.name}</h2>
+            <p className="mt-2 text-sm text-slate-600">{campaign.leads} {t("leads")} · {campaign.sent} {t("sent")} · {campaign.replies} {t("replies")}</p>
+          </div>
+          <span className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${readiness.variant === "ready" ? "bg-teal-50 text-brand" : "bg-amber-50 text-amber-800"}`}>{t(readiness.state)}</span>
+        </div>
+        <div className={`mt-4 rounded-2xl border p-4 ${readiness.variant === "ready" ? "border-teal-100 bg-teal-50" : "border-amber-100 bg-amber-50"}`}>
+          <p className="text-sm font-bold uppercase text-brand">{t("Next step")}</p>
+          <p className="mt-2 text-lg font-black text-ink">{t(readiness.action)}</p>
+          <p className="mt-2 text-sm leading-6 text-slate-700">{t(readiness.copy)}</p>
+          <div className="mt-4">
+            {canRunAction ? <PrimaryButton onClick={() => campaignAction(campaign.id, runAction)} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : runAction === "pause" ? <Pause size={17} /> : <Play size={17} />} {t(readiness.action)}</PrimaryButton> : <Link href={readiness.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm">{t(readiness.action)} <ArrowRight size={17} /></Link>}
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t("Status")}</p><p className="mt-1 font-bold text-ink">{t(campaign.status)}</p></div>
+          <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t("Daily limit")}</p><p className="mt-1 font-bold text-ink">{campaign.daily_send_limit || 0}</p></div>
+          <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t("Working hours")}</p><p className="mt-1 font-bold text-ink">{campaign.working_hours || t("Not available")}</p></div>
+        </div>
+        <div className="mt-4 space-y-3">{campaign.sequence.length ? campaign.sequence.map((step) => <div key={step.step_order} className="rounded-xl bg-slate-50 p-3"><p className="font-bold">{step.name || `${t("Email")} ${step.step_order}`}</p><p className="mt-1 text-sm text-slate-600">{step.subject || t("Subject unavailable until AI draft is reviewed")}</p><p className="mt-1 text-xs font-semibold text-slate-500">{t("Delay")}: {step.delay_days} {t("days")}</p></div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No sequence saved yet.")}</p>}</div>
+        <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-bold text-slate-700">{t("Review before send: enabled")}</p>
+      </article>;
+    })}</section> : <EmptyState title="No campaigns yet" copy={leads.length ? "Create a campaign from selected opportunities before sending." : "Find leads first, then create a campaign. No sample campaigns are shown."} action={leads.length ? undefined : <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}
   </div>;
 }
 
