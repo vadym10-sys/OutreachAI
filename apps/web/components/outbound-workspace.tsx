@@ -1358,7 +1358,7 @@ function OpportunityCard({
       });
     } catch (err) {
       const reason = friendlyErrorMessage(err, "Email could not be sent. Check the recipient email, plan limits, and try again.");
-      setError(reason);
+      setError(t(reason));
       setStatus("");
       trackEvent("approved_email_send_failed", {
         lead_id: lead.id,
