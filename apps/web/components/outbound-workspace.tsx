@@ -122,6 +122,14 @@ type WorkspaceAppBootstrapResponse = {
   recent_activity: Array<{ action: string; created_at: string; company?: string; message?: string }>;
 };
 
+type OpportunityReadiness = {
+  total: number;
+  researched: number;
+  contacts: number;
+  drafts: number;
+  ready: number;
+};
+
 const emptyMetrics: DashboardMetrics = {
   leads: 0,
   campaigns: 0,
@@ -356,6 +364,17 @@ function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
     replied_at: value.replied_at || null,
     last_activity_at: value.last_activity_at || null,
     stage_changed_at: value.stage_changed_at || null
+  };
+}
+
+function opportunityReadinessFromCompanies(companies: CrmCompany[]): OpportunityReadiness {
+  const normalized = companies.map(normalizeCrmCompany);
+  return {
+    total: normalized.length,
+    researched: normalized.filter((company) => Boolean(company.website_analyzed_at || company.ai_summary || company.suggested_offer || company.sales_angle)).length,
+    contacts: normalized.filter((company) => Boolean(company.email || company.contact_found_at || company.contacts.some((contact) => contact.email))).length,
+    drafts: normalized.filter((company) => Boolean(company.email_generated_at || company.generated_emails.length)).length,
+    ready: normalized.filter((company) => Boolean((company.website_analyzed_at || company.ai_summary) && (company.email || company.contacts.some((contact) => contact.email)) && (company.email_generated_at || company.generated_emails.length))).length
   };
 }
 
@@ -1643,6 +1662,7 @@ export function LeadFinderPage() {
   const [message, setMessage] = useState("");
   const [searchSteps, setSearchSteps] = useState<string[]>([]);
   const [searchSummary, setSearchSummary] = useState<{ found: number; saved: number; duplicates: number } | null>(null);
+  const [opportunityReadiness, setOpportunityReadiness] = useState<OpportunityReadiness | null>(null);
   const [searching, setSearching] = useState(false);
   const [lastSearchPayload, setLastSearchPayload] = useState<LeadSearchPayload | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
@@ -1697,6 +1717,7 @@ export function LeadFinderPage() {
       currentLead = leadFromCrmCompany(currentCompany);
       setLeads((items) => mergeLeads([currentLead], items));
       setSearchResults((items) => mergeLeads([currentLead], items));
+      setOpportunityReadiness(opportunityReadinessFromCompanies([currentCompany]));
     };
 
     if (currentCompany.website || currentCompany.domain) {
@@ -1780,6 +1801,7 @@ export function LeadFinderPage() {
     setHasSearched(true);
     setLastSearchPayload(null);
     setSearchSummary(null);
+    setOpportunityReadiness(null);
     setSearchResults([]);
     setMessage(t("Saving company to CRM..."));
     setSearchSteps([t("Saving company to CRM...")]);
@@ -1793,6 +1815,7 @@ export function LeadFinderPage() {
       setLeads((items) => mergeLeads([lead], items));
       setSearchResults((items) => mergeLeads([lead], items));
       setSearchSummary({ found: 1, saved: saved.status === "reused" ? 0 : 1, duplicates: saved.status === "reused" ? 1 : 0 });
+      setOpportunityReadiness(opportunityReadinessFromCompanies([saved.company]));
       setMessage(t("Company saved. OutreachAI is preparing research, contacts and the first email automatically."));
       setSearchSteps([t("Saved to CRM"), t("Preparing sales opportunity...")]);
       form.reset();
@@ -1821,6 +1844,7 @@ export function LeadFinderPage() {
       setHasSearched(true);
       setSearchResults([]);
       setSearchSummary({ found: 0, saved: 0, duplicates: 0 });
+      setOpportunityReadiness(null);
       setSearchSteps([t("Automatic search is waiting for setup")]);
       setMessage(t("Automatic company search needs a key. Add one company manually and continue with CRM, research and outreach."));
       return;
@@ -1835,6 +1859,7 @@ export function LeadFinderPage() {
     setHasSearched(true);
     setSearchResults([]);
     setSearchSummary(null);
+    setOpportunityReadiness(null);
     setLastSearchPayload(payload);
     setSearchSteps([t("Connecting to lead sources...")]);
     setMessage(t("Searching companies..."));
@@ -1857,7 +1882,9 @@ export function LeadFinderPage() {
         36000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
-      const found = safeArray(result.companies).map(normalizeCrmCompany).map(leadFromCrmCompany);
+      const companies = safeArray(result.companies).map(normalizeCrmCompany);
+      const found = companies.map(leadFromCrmCompany);
+      const readiness = opportunityReadinessFromCompanies(companies);
       leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id });
       const warnings = safeArray(result.warnings);
       const savedCount = Number(result.companies_saved ?? 0);
@@ -1867,13 +1894,15 @@ export function LeadFinderPage() {
         t("Lead search finished"),
         t("Found companies count").replace("{count}", String(found.length)),
         persistenceStep,
+        found.length ? t("AI preparation checked") : "",
         ...(warnings.length ? [t("Partial data available")] : [])
-      ]);
+      ].filter(Boolean));
       setSearchSummary({
         found: found.length,
         saved: savedCount,
         duplicates: duplicateCount
       });
+      setOpportunityReadiness(readiness);
       setLeads((items) => mergeLeads(found, items));
       setSearchResults(found);
       setMessage(workspaceSearchMessage(result, found.length, t));
@@ -1894,6 +1923,7 @@ export function LeadFinderPage() {
       const reason = userMessage(err, "Lead search could not be completed.", t);
       setSearchResults([]);
       setSearchSummary({ found: 0, saved: 0, duplicates: 0 });
+      setOpportunityReadiness(null);
       setSearchSteps([t("Search stopped")]);
       setMessage(reason);
       trackEvent("lead_finder_search_failed", {
@@ -1999,6 +2029,34 @@ export function LeadFinderPage() {
             </div>
           ))}
         </div>}
+        {opportunityReadiness && opportunityReadiness.total > 0 && <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label={t("Opportunity readiness")}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Automatic preparation")}</p>
+              <h3 className="mt-2 text-lg font-black text-ink">
+                {t("OutreachAI prepared what it could from real data.")}
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                {t("Review one company, fill missing contact details if needed, then approve the email before anything is sent.")}
+              </p>
+            </div>
+            <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">
+              {opportunityReadiness.ready}/{opportunityReadiness.total} {t("ready for review")}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-2 sm:grid-cols-3">
+            {[
+              ["Website research", opportunityReadiness.researched],
+              ["Contacts found", opportunityReadiness.contacts],
+              ["Email drafts", opportunityReadiness.drafts]
+            ].map(([label, value]) => (
+              <div key={String(label)} className="rounded-xl bg-slate-50 p-3 text-sm">
+                <p className="font-black text-ink">{value}/{opportunityReadiness.total}</p>
+                <p className="mt-1 text-slate-600">{t(String(label))}</p>
+              </div>
+            ))}
+          </div>
+        </section>}
         {hasSearched && !searching && searchResults.length > 0 && <section className="mt-4 rounded-2xl border border-teal-200 bg-teal-50 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
