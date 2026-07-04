@@ -27,6 +27,13 @@ describe("client API errors", () => {
     );
   });
 
+  it("keeps campaign readiness guidance instead of replacing it with a generic AI error", () => {
+    const error = new Error("REQUEST_FAILED:Approve at least one email draft before launching this campaign.");
+    expect(friendlyErrorMessage(error, "Campaign status could not be updated.")).toBe(
+      "Approve at least one email draft before launching this campaign."
+    );
+  });
+
   it("uses a safe fallback for unknown raw technical failures", () => {
     expect(sanitizeUserMessage("Traceback: SQLAlchemy failed with HTTP 500", "Please try again.")).toBe("Please try again.");
   });

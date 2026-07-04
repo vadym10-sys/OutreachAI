@@ -29,6 +29,12 @@ export function sanitizeUserMessage(value: unknown, fallback = genericErrorMessa
   if (lower.includes("timeout") || lower.includes("timed out")) {
     return "This is taking longer than expected. Please try again with a smaller request.";
   }
+  if (lower.includes("approve at least one email draft before launching this campaign")) {
+    return "Approve at least one email draft before launching this campaign.";
+  }
+  if (lower.includes("add at least one lead before launching this campaign")) {
+    return "Add at least one lead before launching this campaign.";
+  }
   if (lower.includes("lead") || lower.includes("company") || lower.includes("places") || lower.includes("maps") || lower.includes("apollo") || lower.includes("hunter")) {
     return "Lead search is temporarily unavailable. Please try again later.";
   }
