@@ -2066,6 +2066,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const [actionNotice, setActionNotice] = useState("");
   const [actionError, setActionError] = useState("");
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const contactFormRef = useRef<HTMLFormElement | null>(null);
   const lead = leadFromCrmCompany(current);
   const healthScore = companyHealthScore(current);
   const nextAction = companyNextAction(current);
@@ -2166,6 +2167,39 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
       setActionBusy("");
     }
   }
+
+  async function addManualContact(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const payload = {
+      name: String(data.get("name") || "").trim(),
+      title: String(data.get("title") || "").trim(),
+      email: String(data.get("email") || "").trim() || undefined,
+      phone: String(data.get("phone") || "").trim(),
+      linkedin: String(data.get("linkedin") || "").trim()
+    };
+    if (!payload.name && !payload.title && !payload.email && !payload.phone && !payload.linkedin) {
+      setActionError(t("Add at least one contact detail before saving."));
+      return;
+    }
+    setActionBusy("contact");
+    setActionError("");
+    setActionNotice("");
+    try {
+      const result = await api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/contacts/manual`, { method: "POST", body: JSON.stringify(payload) });
+      if (result.company) {
+        applyCompanyUpdate(normalizeCrmCompany(result.company));
+      }
+      form.reset();
+      setActionNotice(t(result.message || "Contact saved to CRM."));
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, t("Contact could not be saved. Check the details and try again.")));
+    } finally {
+      setActionBusy("");
+    }
+  }
+
   return <article id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden rounded-3xl border bg-slate-50 shadow-sm ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
     <div className="border-b border-slate-200 bg-white p-5 sm:p-6">
       <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
@@ -2275,6 +2309,23 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><UserRoundSearch size={17} /> {t("Review outreach workflow")}</a>
             <a href={`#notes-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Plus size={17} /> {t("Add contact note")}</a>
           </div>
+          <form ref={contactFormRef} onSubmit={addManualContact} className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-bold text-ink">{t("Add decision maker manually")}</p>
+                <p className="mt-1 text-sm leading-6 text-slate-600">{t("Use this when contact discovery cannot verify an email. Manual contacts stay private in your CRM.")}</p>
+              </div>
+              <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-600">{t("Private CRM")}</span>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <label className="text-sm font-semibold text-slate-700">{t("Name")}<input name="name" placeholder={t("Decision maker")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Role")}<input name="title" placeholder={t("CEO, Founder, Owner")} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Email")}<input name="email" type="email" placeholder="name@company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Phone")}<input name="phone" placeholder="+49..." className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+              <label className="text-sm font-semibold text-slate-700 md:col-span-2">{t("LinkedIn")}<input name="linkedin" placeholder="https://linkedin.com/in/..." className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+            </div>
+            <button type="submit" disabled={actionBusy === "contact"} className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto">{actionBusy === "contact" ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Save contact")}</button>
+          </form>
         </WorkspaceSection>
 
         <WorkspaceSection id={`outreach-${current.id}`} title="Outreach Center" copy="Every email moves through review before anything is sent. The timeline below shows the exact state.">

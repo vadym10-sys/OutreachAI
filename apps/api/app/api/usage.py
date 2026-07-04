@@ -35,7 +35,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
-from app.models.entities import AuditLog, Campaign, Company, Deal, EmailMessage, Lead, LeadStatus
+from app.models.entities import AuditLog, Campaign, Company, Contact, Deal, EmailMessage, Lead, LeadStatus
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
@@ -90,6 +90,14 @@ class UsageCompanyCreateOut(BaseModel):
     status: Literal["created", "reused"]
     message: str
     company: CrmCompanyOut
+
+
+class UsageContactCreateIn(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=180)
+    title: Optional[str] = Field(default=None, max_length=180)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(default=None, max_length=80)
+    linkedin: Optional[str] = Field(default=None, max_length=500)
 
 
 class UsageLeadSearchOut(BaseModel):
@@ -620,6 +628,70 @@ def discover_company_contacts(company_id: UUID, request: Request, user: Workspac
     status: UsageStatus = "success" if lead.email else "empty"
     message = "Verified contact saved to CRM." if lead.email else "No verified email was found. Add a contact manually or continue with company research."
     return UsageActionOut(status=status, message=message, company=_crm_company_out(db, workspace, user.user_id, company))
+
+
+@router.post("/companies/{company_id}/contacts/manual", response_model=UsageActionOut)
+def add_manual_company_contact(company_id: UUID, payload: UsageContactCreateIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+    clean_name = (payload.name or "").strip()
+    clean_title = (payload.title or "").strip()
+    clean_email = str(payload.email).strip() if payload.email else ""
+    clean_phone = (payload.phone or "").strip()
+    clean_linkedin = (payload.linkedin or "").strip()
+    if not any([clean_name, clean_title, clean_email, clean_phone, clean_linkedin]):
+        return UsageActionOut(status="error", message="Add at least one contact detail before saving.", company=_crm_company_out(db, workspace, user.user_id, company))
+
+    contact = None
+    if clean_email:
+        contact = db.scalar(select(Contact).where(Contact.workspace_id == workspace.id, Contact.email == clean_email).order_by(Contact.updated_at.desc()))
+    if contact is None and clean_name:
+        contact = db.scalar(
+            select(Contact)
+            .where(Contact.workspace_id == workspace.id, Contact.company_id == company.id, Contact.name == clean_name)
+            .order_by(Contact.updated_at.desc())
+        )
+    if contact is None:
+        contact = Contact(user_id=user.user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id if lead else None)
+        db.add(contact)
+
+    contact.company_id = company.id
+    contact.lead_id = contact.lead_id or (lead.id if lead else None)
+    contact.name = clean_name or contact.name or ""
+    contact.title = clean_title or contact.title or ""
+    contact.email = clean_email or contact.email
+    contact.phone = clean_phone or contact.phone
+    contact.linkedin = clean_linkedin or contact.linkedin
+    contact.source = "manual"
+    contact.confidence = "Manual"
+    contact.email_status = "Found" if contact.email else "Unknown"
+    contact.metadata_json = {**(contact.metadata_json or {}), "source": "manual", "updated_from": "company_workspace"}
+    contact.updated_at = datetime.utcnow()
+
+    company.email = contact.email or company.email
+    company.phone = contact.phone or company.phone
+    company.email_status = "Found" if contact.email else company.email_status
+    company.crm_stage = "Contact Found" if contact.email else company.crm_stage
+    company.updated_at = datetime.utcnow()
+    if lead:
+        lead.contact = contact.name or lead.contact
+        lead.email = contact.email or lead.email
+        lead.phone = contact.phone or lead.phone
+        lead.linkedin = contact.linkedin or lead.linkedin
+        lead.notes = _merge_lead_metadata(
+            lead,
+            {
+                "contact_found_at": datetime.utcnow().isoformat(),
+                "email_status": "Found" if contact.email else _lead_metadata(lead).get("email_status", "No verified email"),
+                "manual_contact_added": True,
+            },
+        )
+        _add_lead_activity(db, request, user.user_id, workspace, "contact.found", lead, {"source": "manual", "email_status": contact.email_status})
+        company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    db.commit()
+    db.refresh(company)
+    return UsageActionOut(status="success", message="Contact saved to CRM.", company=_crm_company_out(db, workspace, user.user_id, company))
 
 
 @router.post("/companies/{company_id}/email-draft", response_model=UsageActionOut)
