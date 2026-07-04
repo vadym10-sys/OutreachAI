@@ -2276,6 +2276,8 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const primaryAction = companyPrimaryAction(current);
   const PrimaryActionIcon = primaryAction.icon;
   const progress = timelineProgress(current);
+  const completedProgress = progress.filter(([, done]) => Boolean(done)).length;
+  const progressPercent = Math.round((completedProgress / progress.length) * 100);
   const primaryContact = current.contacts[0];
   const firstDeal = current.deals[0];
   const owner = "Not assigned";
@@ -2491,7 +2493,19 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           </div>
         </div>
       </div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase text-brand">{t("Path to first meeting")}</p>
+            <p className="mt-1 text-sm leading-6 text-slate-700">{t("Complete the next missing step to move this company from research to revenue.")}</p>
+          </div>
+          <div className="rounded-full bg-white px-4 py-2 text-sm font-black text-ink shadow-sm">{completedProgress}/{progress.length} · {progressPercent}%</div>
+        </div>
+        <div className="mt-4 h-3 overflow-hidden rounded-full bg-white">
+          <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${progressPercent}%` }} />
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {progress.map(([label, done]) => <div key={label} className={`rounded-xl border p-3 text-sm ${done ? "border-teal-200 bg-teal-50 text-brand" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
           <CheckCircle2 size={16} className={done ? "text-brand" : "text-slate-300"} />
           <p className="mt-2 font-bold">{t(label)}</p>
