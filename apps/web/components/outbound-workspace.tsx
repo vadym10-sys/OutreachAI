@@ -2044,6 +2044,85 @@ function companyNextAction(company: CrmCompany) {
   return "Keep notes updated and close the outcome.";
 }
 
+function companyPrimaryAction(company: CrmCompany) {
+  const sentAt = currentEmailSentAt(company);
+  const hasContact = Boolean(company.email || company.contacts.some((contact) => contact.email));
+  const hasDraft = Boolean(company.generated_emails.length);
+  const hasApproved = Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"));
+  if (!company.website && !company.domain) {
+    return {
+      label: "Add website details",
+      copy: "Add a website or domain first so company research can stay accurate.",
+      target: `#profile-${company.id}`,
+      icon: Globe2
+    };
+  }
+  if (!company.ai_summary) {
+    return {
+      label: "Run company research",
+      copy: "Analyze the website, sales angle and first outreach draft from one place.",
+      target: `#outreach-${company.id}`,
+      icon: Sparkles
+    };
+  }
+  if (!hasContact) {
+    return {
+      label: "Find decision maker",
+      copy: "Look for a verified contact. If none is found, add one manually and continue.",
+      action: "discover-contact",
+      target: `#contacts-${company.id}`,
+      icon: UserRoundSearch
+    };
+  }
+  if (!hasDraft) {
+    return {
+      label: "Create first email",
+      copy: "Generate a personalized email and follow-ups for human review.",
+      target: `#outreach-${company.id}`,
+      icon: Mail
+    };
+  }
+  if (!hasApproved) {
+    return {
+      label: "Review and approve",
+      copy: "Check the recipient, offer and message before anything can be sent.",
+      target: `#outreach-${company.id}`,
+      icon: CheckCircle2
+    };
+  }
+  if (!sentAt) {
+    return {
+      label: "Send approved email",
+      copy: "Open the approval area and confirm the send only when you are ready.",
+      target: `#outreach-${company.id}`,
+      icon: Send
+    };
+  }
+  if (!company.replied_at) {
+    return {
+      label: "Track reply status",
+      copy: "Watch delivery and replies, then move the opportunity when the prospect responds.",
+      target: `#timeline-${company.id}`,
+      icon: Inbox
+    };
+  }
+  if (company.crm_stage !== "Meeting Scheduled" && company.crm_stage !== "Won") {
+    return {
+      label: "Move CRM stage",
+      copy: "Update the stage so the pipeline reflects the current sales situation.",
+      action: "move-stage",
+      target: `#timeline-${company.id}`,
+      icon: Target
+    };
+  }
+  return {
+    label: "Add next note",
+    copy: "Keep the workspace current with the latest outcome or next follow-up.",
+    target: `#notes-${company.id}`,
+    icon: FileText
+  };
+}
+
 function emailStatusLabel(status?: string | null) {
   if (!status) return "Not prepared";
   const normalized = status.toLowerCase().replace(/[_-]+/g, " ").trim();
@@ -2179,6 +2258,8 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const currentSentAt = currentEmailSentAt(current);
   const healthScore = companyHealthScore(current);
   const nextAction = companyNextAction(current);
+  const primaryAction = companyPrimaryAction(current);
+  const PrimaryActionIcon = primaryAction.icon;
   const progress = timelineProgress(current);
   const primaryContact = current.contacts[0];
   const firstDeal = current.deals[0];
@@ -2337,6 +2418,16 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     }
   }
 
+  function runPrimaryAction() {
+    if (primaryAction.action === "discover-contact") {
+      void discoverContacts();
+      return;
+    }
+    if (primaryAction.action === "move-stage") {
+      void moveStage();
+    }
+  }
+
   return <article id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden rounded-3xl border bg-slate-50 shadow-sm ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
     <div className="border-b border-slate-200 bg-white p-5 sm:p-6">
       <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
@@ -2361,9 +2452,27 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <InfoCell label="Company size" value={companySize === "Not available" ? null : companySize} help="Add company size from lead discovery or manual research." />
           <InfoCell label="Assigned owner" value={owner === "Not assigned" ? null : owner} help="Assign an owner when a teammate takes responsibility." />
           <InfoCell label="Last activity" value={formatDateTime(current.last_activity_at || current.stage_changed_at || current.updated_at)} help="Activity appears after sales work is logged." />
-          <div className="rounded-xl border border-teal-200 bg-teal-50 p-4">
+          <div className="rounded-xl border border-teal-200 bg-teal-50 p-4 sm:col-span-2">
             <p className="text-xs font-bold uppercase text-brand">{t("Next recommended action")}</p>
             <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">{t(primaryAction.copy)}</p>
+            {primaryAction.action ? (
+              <button
+                type="button"
+                onClick={runPrimaryAction}
+                disabled={(primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
+                className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+              >
+                {(primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
+                {t(primaryAction.label)}
+              </button>
+            ) : (
+              <a href={primaryAction.target} className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white sm:w-auto">
+                <PrimaryActionIcon size={17} />
+                {t(primaryAction.label)}
+                <ArrowRight size={16} />
+              </a>
+            )}
           </div>
         </div>
       </div>
