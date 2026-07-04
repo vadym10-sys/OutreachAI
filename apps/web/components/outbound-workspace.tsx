@@ -2197,6 +2197,9 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     !current.ai_summary ? "Company research is incomplete" : "",
     !current.generated_emails.length ? "No approved outreach draft yet" : ""
   ].filter(Boolean);
+  const contactSearchAttempted = Boolean(current.contact_search_checked_at || current.contact_search_status);
+  const contactSearchEmpty = !current.email && !current.contacts.some((contact) => contact.email) && current.contact_search_status === "no_verified_email";
+  const contactRolesSearched = safeArray(current.decision_maker_roles_searched).filter(Boolean);
   const outreachSteps = [
     ["Draft", Boolean(current.email_generated_at || current.generated_emails.length)],
     ["Approved", Boolean(current.email_approved_at || current.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"))],
@@ -2309,6 +2312,31 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     }
   }
 
+  async function discoverContacts() {
+    if (!current.lead_id) {
+      setActionError(t("Reconnect this company to a lead before finding contacts."));
+      return;
+    }
+    setActionBusy("discover-contact");
+    setActionError("");
+    setActionNotice("");
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
+        22000,
+        "Contact search took too long. The company is still saved, and you can add a contact manually."
+      );
+      if (result.company) {
+        applyCompanyUpdate(normalizeCrmCompany(result.company));
+      }
+      setActionNotice(t(result.message || "Contact search finished."));
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
+    } finally {
+      setActionBusy("");
+    }
+  }
+
   return <article id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden rounded-3xl border bg-slate-50 shadow-sm ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
     <div className="border-b border-slate-200 bg-white p-5 sm:p-6">
       <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
@@ -2394,6 +2422,20 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
         </WorkspaceSection>
 
         <WorkspaceSection id={`contacts-${current.id}`} title="Contact Center" copy="Decision makers, verified contact details and confidence in one place.">
+          <div className={`mb-4 rounded-2xl border p-4 ${contactSearchEmpty ? "border-amber-200 bg-amber-50" : current.contacts.length ? "border-teal-200 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className={`text-xs font-black uppercase tracking-wide ${contactSearchEmpty ? "text-amber-700" : "text-brand"}`}>{t(contactSearchEmpty ? "Contact needed" : current.contacts.length ? "Contact ready" : "Find a decision maker")}</p>
+                <h4 className="mt-2 text-lg font-black text-ink">{t(current.contacts.length ? "Decision maker saved" : contactSearchAttempted ? "Contact search completed" : "Search for verified contacts")}</h4>
+                <p className="mt-2 text-sm leading-6 text-slate-700">{t(contactSearchEmpty ? (current.contact_search_message || "No verified business email was found. Add a decision maker manually or continue with research.") : current.contacts.length ? "A contact is saved in your private CRM. Review it before sending outreach." : "Search for decision makers first. If no verified email is available, add the contact manually and continue.")}</p>
+                {contactRolesSearched.length ? <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">{t("Roles searched")}: <span className="normal-case tracking-normal text-slate-700">{contactRolesSearched.map((role) => t(role)).join(", ")}</span></p> : null}
+              </div>
+              <button type="button" onClick={discoverContacts} disabled={actionBusy === "discover-contact" || !current.lead_id} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
+                {actionBusy === "discover-contact" ? <Loader2 className="animate-spin" size={17} /> : <UserRoundSearch size={17} />}
+                {t("Find contacts")}
+              </button>
+            </div>
+          </div>
           {current.contacts.length ? <div className="grid gap-3 lg:grid-cols-2">
             {current.contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3">
@@ -2415,7 +2457,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             <p className="mt-2 text-sm leading-6 text-slate-600">{t("Use the outreach research action to find or add a verified contact. Emails are never invented.")}</p>
           </div>}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><UserRoundSearch size={17} /> {t("Review outreach workflow")}</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> {t("Review outreach workflow")}</a>
             <a href={`#notes-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Plus size={17} /> {t("Add contact note")}</a>
           </div>
           <form ref={contactFormRef} onSubmit={addManualContact} className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
