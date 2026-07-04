@@ -636,6 +636,37 @@ function priorityScore(copilot?: SalesCopilot) {
   return Math.round((copilot.probability_to_reply * 0.45) + (copilot.probability_to_buy * 0.45) + Math.min(copilot.estimated_revenue / 1000, 10));
 }
 
+function opportunityNextStep(lead: Lead, draft?: Email) {
+  if (!lead.crm_company_id) {
+    return {
+      title: "Save this company to CRM",
+      copy: "Save the company first so research, contacts and emails stay in your private workspace."
+    };
+  }
+  if (!draft) {
+    return {
+      title: "Complete sales research",
+      copy: "Analyze the website, find contacts and prepare the first email in one guided step."
+    };
+  }
+  if (draft.delivery_status === "approved") {
+    return {
+      title: "Send the approved email when you are ready.",
+      copy: "Review the recipient, confirm the send, and OutreachAI will update CRM automatically."
+    };
+  }
+  if (draft.delivery_status === "sent") {
+    return {
+      title: "Watch for replies and follow up from the inbox.",
+      copy: "Track delivery, replies and the next CRM stage from this company workspace."
+    };
+  }
+  return {
+    title: "Review and approve the prepared email.",
+    copy: "Read the draft, adjust it if needed, then approve it before any sending can happen."
+  };
+}
+
 function profileSizeText(profile: ReturnType<typeof leadProfile>, t: (key: string) => string) {
   if (profile.size === unavailable) return t(unavailable);
   return profile.sizeUnit ? `${profile.size} ${t(profile.sizeUnit)}` : profile.size;
@@ -1170,6 +1201,7 @@ function OpportunityCard({
   const priority = priorityScore(copilot);
   const visibleStatus = status;
   const companyId = lead.crm_company_id || null;
+  const nextStep = opportunityNextStep(lead, draft);
 
   async function completeResearch() {
     if (!companyId) {
@@ -1404,6 +1436,13 @@ function OpportunityCard({
           ["Priority score", priority === null ? unavailable : `${priority}/100`]
         ].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t(label)}</p><p className="mt-1 text-sm font-semibold text-slate-800">{t(value)}</p></div>)}
       </div>
+
+      <section className="mt-5 rounded-2xl border border-teal-200 bg-teal-50 p-4">
+        <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Next step")}</p>
+        <h3 className="mt-2 text-lg font-black text-ink">{t(nextStep.title)}</h3>
+        <p className="mt-2 text-sm leading-6 text-slate-700">{t(nextStep.copy)}</p>
+      </section>
+
       <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
         {[
           ["Found", lead.found_at || lead.created_at],
