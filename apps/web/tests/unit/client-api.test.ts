@@ -34,6 +34,11 @@ describe("client API errors", () => {
     );
   });
 
+  it("keeps recipient validation guidance instead of replacing it with a provider error", () => {
+    const error = new Error("REQUEST_FAILED:Use a real recipient email before sending.");
+    expect(friendlyErrorMessage(error, "Email could not be sent.")).toBe("Use a real recipient email before sending.");
+  });
+
   it("uses a safe fallback for unknown raw technical failures", () => {
     expect(sanitizeUserMessage("Traceback: SQLAlchemy failed with HTTP 500", "Please try again.")).toBe("Please try again.");
   });

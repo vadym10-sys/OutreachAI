@@ -1155,6 +1155,7 @@ function OpportunityCard({
   const [readyToSend, setReadyToSend] = useState(() => Boolean(initialDraft && initialDraft.delivery_status !== "approved" && initialDraft.delivery_status !== "sent"));
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const profile = leadProfile(lead);
@@ -1172,6 +1173,7 @@ function OpportunityCard({
     setBusy(true);
     setReadyToSend(false);
     setDraft(undefined);
+    setSendConfirmOpen(false);
     setError("");
     trackEvent("sales_research_started", {
       lead_id: lead.id,
@@ -1286,6 +1288,7 @@ function OpportunityCard({
       }
       setDraft(approved.email);
       setReadyToSend(false);
+      setSendConfirmOpen(false);
       setStatus(t("Email approved. Nothing was sent yet."));
       if (approved.company) {
         const updatedCompany = normalizeCrmCompany(approved.company);
@@ -1314,9 +1317,15 @@ function OpportunityCard({
     }
   }
 
-  async function sendApprovedEmail() {
+  async function sendApprovedEmail(confirmed = false) {
     if (!draft?.id || draft.delivery_status !== "approved") {
       setError(t("Approve the draft before sending."));
+      return;
+    }
+    if (!confirmed) {
+      setSendConfirmOpen(true);
+      setError("");
+      setStatus(t("Review recipient before sending. Nothing has been sent yet."));
       return;
     }
     setSending(true);
@@ -1333,6 +1342,7 @@ function OpportunityCard({
       }
       setDraft(sentResult.email);
       setReadyToSend(false);
+      setSendConfirmOpen(false);
       setStatus(t("Approved email was sent. CRM stage updated to Contacted."));
       if (sentResult.company) {
         const updatedCompany = normalizeCrmCompany(sentResult.company);
@@ -1417,12 +1427,22 @@ function OpportunityCard({
         </div>
       </section>}
 
+      {sendConfirmOpen && draft?.delivery_status === "approved" && <section className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+        <p className="text-sm font-bold text-ink">{t("Confirm before sending")}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-700">{t("This will send one email to the saved recipient. Nothing is sent until you confirm.")}</p>
+        <p className="mt-3 rounded-lg bg-white p-3 text-sm font-semibold text-slate-800">{t("Recipient")}: {lead.email || t("Not available")}</p>
+        <div className="mt-4 grid gap-2 min-[430px]:grid-cols-2">
+          <SecondaryButton type="button" onClick={() => setSendConfirmOpen(false)} disabled={sending}>{t("Cancel")}</SecondaryButton>
+          <PrimaryButton type="button" onClick={() => sendApprovedEmail(true)} disabled={sending}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {t("Confirm and send")}</PrimaryButton>
+        </div>
+      </section>}
+
       {visibleStatus && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Complete sales research")}</PrimaryButton>
         <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve draft")}</SecondaryButton>
-        <SecondaryButton onClick={sendApprovedEmail} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
+        <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </article>
   );

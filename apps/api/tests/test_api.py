@@ -676,6 +676,53 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent.json()["company"]["crm_stage"] == "Sent"
 
 
+def test_workspace_app_blocks_placeholder_recipient_before_send(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-placeholder-send@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Placeholder Send Build", "website": "https://placeholder-send.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    contact = client.post(
+        f"/api/workspace-app/companies/{company_id}/contacts/manual",
+        headers=headers,
+        json={"name": "QA Contact", "title": "Owner", "email": "qa@example.com"},
+    )
+    assert contact.status_code == 200
+    assert contact.json()["company"]["email"] == "qa@example.com"
+
+    monkeypatch.setattr(
+        "app.api.usage.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Idea for Placeholder Send Build",
+            preview="Quick idea",
+            full_email="Hi, I found a relevant opportunity for your team.",
+            cta="Book a quick call",
+            cold_email="Hi, I found a relevant opportunity for your team.",
+            follow_ups=["Following up once.", "Following up twice."],
+        ),
+    )
+    draft = client.post(f"/api/workspace-app/companies/{company_id}/email-draft", headers=headers)
+    assert draft.status_code == 200
+    email = draft.json()["email"]
+
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    def fail_send(**kwargs):
+        raise AssertionError("Placeholder recipient should not reach the email provider")
+
+    monkeypatch.setattr("app.api.usage.send_email", fail_send)
+    sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert sent.status_code == 200
+    assert sent.json()["status"] == "error"
+    assert sent.json()["message"] == "Use a real recipient email before sending."
+    assert sent.json()["email"]["delivery_status"] == "approved"
+
+
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:
     SessionLocal = get_sessionmaker()
     with SessionLocal() as db:

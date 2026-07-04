@@ -48,6 +48,7 @@ router = APIRouter()
 
 
 UsageStatus = Literal["success", "partial_success", "empty", "provider_unavailable", "timeout", "error"]
+PLACEHOLDER_EMAIL_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
 
 
 class UsageCounts(BaseModel):
@@ -232,6 +233,13 @@ def _safe_provider_warning(exc: Exception) -> str:
     if isinstance(exc, ProviderRequestError):
         return "AI is temporarily unavailable. Try again in a moment."
     return "This step is temporarily unavailable. Try again in a moment."
+
+
+def _is_placeholder_recipient(email: str | None) -> bool:
+    if not email or "@" not in email:
+        return True
+    domain = email.rsplit("@", 1)[1].strip().lower()
+    return domain in PLACEHOLDER_EMAIL_DOMAINS
 
 
 def _integration_status(key: str, label: str, configured: bool, ready_message: str, missing_message: str) -> UsageIntegrationStatus:
@@ -786,6 +794,8 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     if not lead or not lead.email:
         return UsageActionOut(status="error", message="Add a verified recipient email before sending.", email=EmailOut.model_validate(email))
+    if _is_placeholder_recipient(lead.email):
+        return UsageActionOut(status="error", message="Use a real recipient email before sending.", email=EmailOut.model_validate(email))
 
     try:
         _enforce_usage(db, user.user_id, workspace, "email_sends")

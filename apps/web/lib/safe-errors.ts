@@ -35,6 +35,9 @@ export function sanitizeUserMessage(value: unknown, fallback = genericErrorMessa
   if (lower.includes("add at least one lead before launching this campaign")) {
     return "Add at least one lead before launching this campaign.";
   }
+  if (lower.includes("use a real recipient email before sending")) {
+    return "Use a real recipient email before sending.";
+  }
   if (lower.includes("lead") || lower.includes("company") || lower.includes("places") || lower.includes("maps") || lower.includes("apollo") || lower.includes("hunter")) {
     return "Lead search is temporarily unavailable. Please try again later.";
   }
