@@ -1261,7 +1261,7 @@ function OpportunityCard({
     }
   }
 
-  async function approveAndSend() {
+  async function approveDraft() {
     if (!draft?.id) {
       setError(t("Generate and review the email before approving a send."));
       return;
@@ -1279,7 +1279,44 @@ function OpportunityCard({
         throw new Error(approved.message || "Email approval could not be completed.");
       }
       setDraft(approved.email);
-      setStatus(t("Sending approved email..."));
+      setReadyToSend(false);
+      setStatus(t("Email approved. Nothing was sent yet."));
+      if (approved.company) {
+        const updatedCompany = normalizeCrmCompany(approved.company);
+        onCompanyUpdated?.(updatedCompany);
+        onLeadUpdated?.(leadFromCrmCompany(updatedCompany));
+      } else {
+        onLeadUpdated?.({ ...lead, email_approved_at: new Date().toISOString() });
+      }
+      trackEvent("email_draft_approved", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company
+      });
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, "Email approval could not be completed. Check the draft and try again.");
+      setError(reason);
+      setStatus("");
+      trackEvent("email_draft_approval_failed", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company,
+        reason
+      });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function sendApprovedEmail() {
+    if (!draft?.id || draft.delivery_status !== "approved") {
+      setError(t("Approve the draft before sending."));
+      return;
+    }
+    setSending(true);
+    setError("");
+    setStatus(t("Sending approved email..."));
+    try {
       const sentResult = await withTimeout(
         api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}/send`, { method: "POST" }),
         30000,
@@ -1363,9 +1400,9 @@ function OpportunityCard({
         {coverage.map(([label, done]) => <span key={label} className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold ${done ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-500"}`}><CheckCircle2 size={15} />{t(label)}</span>)}
       </div>
 
-      {draft && (readyToSend || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+      {draft && (readyToSend || draft.delivery_status === "approved" || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">{t("Personalized first email")}</p>
-        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Contacted.") : t("Review this draft before sending. No email has been sent yet.")}</p>
+        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Contacted.") : draft.delivery_status === "approved" ? t("Email approved. Nothing was sent yet.") : t("Review this draft before sending. No email has been sent yet.")}</p>
         <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
         <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{draft.body}</p>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -1378,7 +1415,8 @@ function OpportunityCard({
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Complete sales research")}</PrimaryButton>
-        <SecondaryButton onClick={approveAndSend} disabled={!readyToSend || busy || !draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Approve & send")}</SecondaryButton>
+        <SecondaryButton onClick={approveDraft} disabled={!readyToSend || busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve draft")}</SecondaryButton>
+        <SecondaryButton onClick={sendApprovedEmail} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </article>
   );
