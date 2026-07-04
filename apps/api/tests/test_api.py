@@ -529,6 +529,32 @@ def test_workspace_app_company_data_is_private_between_users() -> None:
 def test_workspace_app_lead_search_success_saves_to_crm(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-search@example.com"}
     monkeypatch.setattr("app.api.usage._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    def fake_analyze(db, user_id, workspace, lead):
+        metadata = json.loads((lead.notes or "{}").splitlines()[0])
+        metadata.update(
+            {
+                "ai_summary": "Usage Search helps Berlin construction buyers evaluate new partners.",
+                "sales_angle": "Lead with faster partner sourcing for B2B construction projects.",
+                "suggested_offer": "Offer a reviewed B2B partnership pipeline.",
+                "outreach_strategy": "Reference their local construction focus and invite a short fit review.",
+                "expected_reply_rate": "8-12%",
+                "website_analyzed_at": datetime.utcnow().isoformat(),
+            }
+        )
+        lead.notes = json.dumps(metadata, sort_keys=True)
+
+    monkeypatch.setattr("app.api.usage._analyze_lead_if_possible", fake_analyze)
+    monkeypatch.setattr(
+        "app.api.usage.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="B2B partnership idea for Usage Search",
+            preview="Quick partnership idea",
+            full_email="Hi, I found a relevant partnership opportunity for your team.",
+            cta="Open to a quick review?",
+            cold_email="Hi, I found a relevant partnership opportunity for your team.",
+            follow_ups=["Worth a quick look?", "Should I send details?"],
+        ),
+    )
     monkeypatch.setattr(
         "app.api.usage.search_google_places",
         lambda payload: GooglePlacesSearchResult(
@@ -555,6 +581,10 @@ def test_workspace_app_lead_search_success_saves_to_crm(monkeypatch) -> None:
     assert data["status"] == "success"
     assert data["companies_saved"] == 1
     assert data["companies"][0]["name"] == "Usage Search GmbH"
+    assert data["companies"][0]["ai_summary"] == "Usage Search helps Berlin construction buyers evaluate new partners."
+    assert data["companies"][0]["suggested_offer"] == "Offer a reviewed B2B partnership pipeline."
+    assert data["companies"][0]["expected_reply_rate"] == "8-12%"
+    assert data["companies"][0]["generated_emails"][0]["delivery_status"] == "draft"
 
     persisted = client.get("/api/workspace-app/companies?search=Usage%20Search", headers=headers)
     assert persisted.status_code == 200
@@ -564,6 +594,32 @@ def test_workspace_app_lead_search_success_saves_to_crm(monkeypatch) -> None:
 def test_workspace_app_lead_search_reports_reused_duplicates(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-search-duplicates@example.com"}
     monkeypatch.setattr("app.api.usage._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    def fake_analyze(db, user_id, workspace, lead):
+        metadata = json.loads((lead.notes or "{}").splitlines()[0])
+        metadata.update(
+            {
+                "ai_summary": "Usage Duplicate is a reusable CRM opportunity.",
+                "sales_angle": "Show duplicate-safe partner research.",
+                "suggested_offer": "Offer a duplicate-safe B2B research workflow.",
+                "outreach_strategy": "Keep one clean company workspace.",
+                "expected_reply_rate": "6-10%",
+                "website_analyzed_at": datetime.utcnow().isoformat(),
+            }
+        )
+        lead.notes = json.dumps(metadata, sort_keys=True)
+
+    monkeypatch.setattr("app.api.usage._analyze_lead_if_possible", fake_analyze)
+    monkeypatch.setattr(
+        "app.api.usage.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Idea for Usage Duplicate",
+            preview="Quick idea",
+            full_email="Hi, one clean opportunity workspace could help.",
+            cta="Open to a quick review?",
+            cold_email="Hi, one clean opportunity workspace could help.",
+            follow_ups=["Worth a quick look?", "Should I send details?"],
+        ),
+    )
     result = GooglePlacesSearchResult(
         leads=[
             LeadOut(

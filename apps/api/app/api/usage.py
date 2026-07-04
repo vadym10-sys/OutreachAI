@@ -49,6 +49,7 @@ router = APIRouter()
 
 UsageStatus = Literal["success", "partial_success", "empty", "provider_unavailable", "timeout", "error"]
 PLACEHOLDER_EMAIL_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
+MAX_TURNKEY_RESEARCH_LEADS = 10
 
 
 class UsageCounts(BaseModel):
@@ -240,6 +241,105 @@ def _is_placeholder_recipient(email: str | None) -> bool:
         return True
     domain = email.rsplit("@", 1)[1].strip().lower()
     return domain in PLACEHOLDER_EMAIL_DOMAINS
+
+
+def _needs_ai_research(lead: Lead) -> bool:
+    metadata = _lead_metadata(lead)
+    return not all(
+        [
+            metadata.get("ai_summary"),
+            metadata.get("sales_angle"),
+            metadata.get("suggested_offer"),
+            metadata.get("expected_reply_rate"),
+        ]
+    )
+
+
+def _existing_review_draft(db: Session, workspace_id: UUID, lead_id: UUID) -> EmailMessage | None:
+    return db.scalar(
+        select(EmailMessage)
+        .where(EmailMessage.workspace_id == workspace_id, EmailMessage.lead_id == lead_id)
+        .order_by(EmailMessage.created_at.desc())
+        .limit(1)
+    )
+
+
+def _create_review_email_draft(db: Session, request: Request, user_id: str, workspace, lead: Lead) -> EmailMessage | None:
+    existing = _existing_review_draft(db, workspace.id, lead.id)
+    if existing:
+        return existing
+    metadata = _lead_metadata(lead)
+    variant = personalize_email(
+        PersonalizeRequest(
+            company=lead.company,
+            niche=lead.industry or lead.niche or "",
+            website_summary=str(metadata.get("ai_summary") or ""),
+            offer=str(metadata.get("suggested_offer") or workspace.company or "AI-powered B2B lead generation"),
+            cta=str(metadata.get("recommended_cta") or "Book a quick call"),
+            tone=str(metadata.get("recommended_tone") or "Professional"),
+            language=workspace.language or "English",
+            signature="",
+        )
+    )
+    email = EmailMessage(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        lead_id=lead.id,
+        subject=variant.subject or f"Quick idea for {lead.company}",
+        preview=variant.preview,
+        body=variant.full_email or variant.cold_email,
+        cta=variant.cta,
+        follow_up_1=variant.follow_ups[0] if len(variant.follow_ups) > 0 else "",
+        follow_up_2=variant.follow_ups[1] if len(variant.follow_ups) > 1 else "",
+        tags={"requires_approval": True, "source": "turnkey_lead_research"},
+        delivery_status="draft",
+    )
+    db.add(email)
+    lead.status = LeadStatus.email_generated
+    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
+    _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"source": "turnkey_lead_research"})
+    return email
+
+
+def _complete_turnkey_b2b_research(
+    db: Session,
+    request: Request,
+    user_id: str,
+    workspace,
+    leads: list[Lead],
+    request_id: str,
+) -> list[str]:
+    warnings: list[str] = []
+    for index, lead in enumerate(leads[:MAX_TURNKEY_RESEARCH_LEADS], start=1):
+        _lead_trace(request_id, "turnkey_research_started", lead_id=str(lead.id), company=lead.company, index=index)
+        try:
+            if _needs_ai_research(lead):
+                _analyze_lead_if_possible(db, user_id, workspace, lead)
+                metadata = _lead_metadata(lead)
+                if metadata.get("ai_summary") or metadata.get("suggested_offer") or metadata.get("expected_reply_rate"):
+                    _add_lead_activity(db, request, user_id, workspace, "website.analyzed", lead, {"source": "turnkey_lead_research"})
+                else:
+                    warnings.append(f"{lead.company}: AI research could not complete yet.")
+                    _lead_trace(request_id, "turnkey_ai_research_partial", lead_id=str(lead.id), company=lead.company)
+            _sync_lead_to_crm(db, user_id, workspace, lead)
+        except Exception as exc:
+            capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_research", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id})
+            warnings.append(f"{lead.company}: AI research is temporarily unavailable.")
+            _lead_trace(request_id, "turnkey_ai_research_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
+            continue
+
+        try:
+            _create_review_email_draft(db, request, user_id, workspace, lead)
+            _sync_lead_to_crm(db, user_id, workspace, lead)
+        except Exception as exc:
+            capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_email_draft", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id})
+            warnings.append(f"{lead.company}: email draft could not be prepared yet.")
+            _lead_trace(request_id, "turnkey_email_draft_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
+            continue
+        _lead_trace(request_id, "turnkey_research_finished", lead_id=str(lead.id), company=lead.company)
+    if len(leads) > MAX_TURNKEY_RESEARCH_LEADS:
+        warnings.append(f"Prepared the first {MAX_TURNKEY_RESEARCH_LEADS} opportunities. Open the rest to complete research.")
+    return warnings
 
 
 def _integration_status(key: str, label: str, configured: bool, ready_message: str, missing_message: str) -> UsageIntegrationStatus:
@@ -510,8 +610,18 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
         request_id=request_id,
         run_inline_analysis=False,
     )
+    _lead_trace(request_id, "turnkey_research_batch_started", leads=len(saved))
+    warnings.extend(_complete_turnkey_b2b_research(db, request, user.user_id, workspace, saved, request_id))
     companies = [_crm_company_out(db, workspace, user.user_id, _sync_lead_to_crm(db, user.user_id, workspace, lead)) for lead in saved]
     db.commit()
+    _lead_trace(
+        request_id,
+        "turnkey_research_batch_finished",
+        companies=len(companies),
+        ai_ready=sum(1 for company in companies if company.ai_summary and company.suggested_offer),
+        drafts_ready=sum(1 for company in companies if company.generated_emails),
+        warnings=len(warnings),
+    )
     new_saved_count = max(0, len(enriched) - duplicates_skipped)
     status: UsageStatus = "partial_success" if warnings else "success"
     if new_saved_count and duplicates_skipped:
@@ -519,7 +629,7 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
     elif duplicates_skipped:
         message = f"Found {len(companies)} companies. They were already in your CRM."
     else:
-        message = f"Found and saved {len(companies)} companies to your CRM."
+        message = f"Found, researched and saved {len(companies)} companies to your CRM."
     return UsageLeadSearchOut(
         status=status,
         request_id=request_id,
