@@ -2320,15 +2320,54 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   </article>;
 }
 
+function CompactCompanyCard({ company }: { company: CrmCompany }) {
+  const { t } = useI18n();
+  const healthScore = companyHealthScore(company);
+  const nextAction = companyNextAction(company);
+  const contactCount = company.contacts.length;
+  const emailCount = company.generated_emails.length;
+  const website = company.website || company.domain || "";
+  const primaryContact = company.contacts.find((contact) => contact.email) || company.contacts[0];
+
+  return <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md">
+    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`rounded-full border px-3 py-1 text-xs font-bold ${stageTone(company.crm_stage)}`}>{t(company.crm_stage)}</span>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-700">{t("AI Health")} {healthScore}%</span>
+        </div>
+        <h2 className="mt-3 break-words text-xl font-black tracking-tight text-ink">{company.name}</h2>
+        <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2 xl:grid-cols-4">
+          <span className="inline-flex min-w-0 items-center gap-1.5"><Building2 className="shrink-0" size={16} /> <span className="truncate">{company.industry || t("Not available")}</span></span>
+          <span className="inline-flex min-w-0 items-center gap-1.5"><MapPin className="shrink-0" size={16} /> <span className="truncate">{[company.city, company.country].filter(Boolean).join(", ") || t("Not available")}</span></span>
+          <span className="inline-flex min-w-0 items-center gap-1.5"><UserRound className="shrink-0" size={16} /> <span className="truncate">{contactCount ? `${contactCount} ${t(contactCount === 1 ? "contact" : "contacts")}` : t("No contacts yet")}</span></span>
+          <span className="inline-flex min-w-0 items-center gap-1.5"><Mail className="shrink-0" size={16} /> <span className="truncate">{emailCount ? `${emailCount} ${t(emailCount === 1 ? "email draft" : "email drafts")}` : t("No email draft yet")}</span></span>
+        </div>
+        {website && <a className="mt-3 inline-flex max-w-full items-center gap-1.5 break-all text-sm font-bold text-brand hover:underline" href={website.startsWith("http") ? website : `https://${website}`} target="_blank" rel="noreferrer"><Globe2 className="shrink-0" size={16} />{website}</a>}
+        <div className="mt-4 rounded-xl bg-slate-50 p-3">
+          <p className="text-xs font-bold uppercase text-slate-500">{t("Next recommended action")}</p>
+          <p className="mt-1 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
+        </div>
+      </div>
+      <div className="grid shrink-0 gap-2 lg:w-56">
+        <Link href={`/dashboard/companies?company=${encodeURIComponent(company.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><ArrowRight size={17} /> {t("Open company workspace")}</Link>
+        <Link href={`/dashboard/crm`} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("View pipeline")}</Link>
+      </div>
+    </div>
+    <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 text-sm sm:grid-cols-3">
+      <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Last activity")}</span><span className="font-semibold text-ink">{formatDateTime(company.last_activity_at || company.stage_changed_at || company.updated_at)}</span></p>
+      <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Decision maker")}</span><span className="font-semibold text-ink">{primaryContact?.name || primaryContact?.title || t("Not available")}</span></p>
+      <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Verified email")}</span><span className="font-semibold text-ink">{company.email || primaryContact?.email || t("Not available")}</span></p>
+    </div>
+  </article>;
+}
+
 export function CompaniesPage() {
   const { api, companies, loading, error, filters, setFilters } = useCrmData();
   const { t } = useI18n();
   const searchParams = useSearchParams();
   const focusedCompanyId = searchParams.get("company") || "";
   const focusedCompany = companies.find((company) => company.id === focusedCompanyId);
-  const visibleCompanies = focusedCompany
-    ? [focusedCompany, ...companies.filter((company) => company.id !== focusedCompany.id)]
-    : companies;
 
   return <div className="space-y-6">
     <PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." />
@@ -2338,7 +2377,7 @@ export function CompaniesPage() {
       <Link href="/dashboard/companies" className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-teal-300 bg-white px-3 text-xs font-bold text-brand">{t("Clear focus")}</Link>
     </section>}
     <CrmFilters filters={filters} setFilters={setFilters} />
-    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : visibleCompanies.length ? <div className="grid gap-5">{visibleCompanies.map((company) => <WidgetBoundary key={company.id} name={`Company workspace: ${company.name}`}><CrmCompanyCard company={company} api={api} highlighted={company.id === focusedCompanyId} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
+    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : focusedCompany ? <WidgetBoundary name={`Company workspace: ${focusedCompany.name}`}><CrmCompanyCard company={focusedCompany} api={api} highlighted /></WidgetBoundary> : companies.length ? <div className="grid gap-4">{companies.map((company) => <WidgetBoundary key={company.id} name={`Company summary: ${company.name}`}><CompactCompanyCard company={company} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
 }
 
 export function WebsiteAnalyzerPage() {
