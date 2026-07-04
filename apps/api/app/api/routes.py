@@ -4429,7 +4429,12 @@ def update_profile(payload: ProfileUpdate, request: Request, user_id: CurrentUse
     profile = db.scalar(select(WorkspaceProfile).where(WorkspaceProfile.workspace_id == workspace.id)) or WorkspaceProfile(user_id=user_id, workspace_id=workspace.id)
     for key, value in payload.model_dump().items():
         setattr(profile, key, value)
+    workspace.name = payload.workspace or workspace.name
+    workspace.company = payload.company or workspace.company
+    workspace.timezone = payload.timezone or workspace.timezone
+    workspace.language = payload.language or workspace.language
     db.add(profile)
+    db.add(workspace)
     log_event(db, request, user_id, "profile.updated", {})
     db.commit()
     db.refresh(profile)

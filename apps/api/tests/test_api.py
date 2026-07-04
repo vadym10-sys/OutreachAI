@@ -132,6 +132,27 @@ def test_request_id_is_echoed_for_traceability() -> None:
     assert response.headers.get("x-response-time-ms")
 
 
+def test_profile_language_updates_private_workspace_language() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "profile-language@example.com"}
+    profile = client.put(
+        "/api/profile",
+        headers=headers,
+        json={
+            "workspace": "Profile Language Workspace",
+            "company": "Profile Language Co",
+            "avatar_url": None,
+            "timezone": "Europe/Warsaw",
+            "language": "Russian",
+        },
+    )
+    assert profile.status_code == 200
+    assert profile.json()["language"] == "Russian"
+
+    bootstrap = client.get("/api/workspace-app/bootstrap", headers=headers)
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["workspace"]["language"] == "Russian"
+
+
 def test_redis_cache_unavailable_fails_open(monkeypatch) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "upstash_redis_rest_url", "https://redis.example.com")
@@ -815,6 +836,36 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent.json()["status"] == "success"
     assert sent.json()["email"]["delivery_status"] == "sent"
     assert sent.json()["company"]["crm_stage"] == "Sent"
+
+
+def test_workspace_app_email_draft_uses_current_ui_locale(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-locale@example.com", "X-OutreachAI-Locale": "ru"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Locale Build", "website": "https://usage-locale.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+    captured: dict[str, str] = {}
+
+    def fake_personalize(payload):
+        captured["language"] = payload.language
+        return EmailVariantOut(
+            subject="Идея для Usage Locale Build",
+            preview="Короткая идея",
+            full_email="Здравствуйте, у меня есть релевантная идея для вашей команды.",
+            cta="Обсудить на коротком звонке",
+            cold_email="Здравствуйте, у меня есть релевантная идея для вашей команды.",
+            follow_ups=["Напоминаю о письме.", "Повторно возвращаюсь к идее."],
+        )
+
+    monkeypatch.setattr("app.api.usage.personalize_email", fake_personalize)
+    draft = client.post(f"/api/workspace-app/companies/{company_id}/email-draft", headers=headers)
+    assert draft.status_code == 200
+    assert draft.json()["status"] == "success"
+    assert captured["language"] == "Russian"
+    assert "Здравствуйте" in draft.json()["email"]["body"]
 
 
 def test_workspace_app_contact_discovery_empty_persists_search_state(monkeypatch) -> None:

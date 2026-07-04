@@ -51,6 +51,15 @@ router = APIRouter()
 UsageStatus = Literal["success", "partial_success", "empty", "provider_unavailable", "timeout", "error"]
 PLACEHOLDER_EMAIL_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
 MAX_TURNKEY_RESEARCH_LEADS = 10
+LOCALE_LANGUAGE_NAMES = {
+    "en": "English",
+    "en-US": "American English",
+    "ru": "Russian",
+    "es": "Spanish",
+    "fr": "French",
+    "it": "Italian",
+    "pl": "Polish",
+}
 
 
 class UsageCounts(BaseModel):
@@ -59,6 +68,13 @@ class UsageCounts(BaseModel):
     campaigns: int = 0
     emails: int = 0
     deals: int = 0
+
+
+def _workspace_language(request: Request, workspace) -> str:
+    locale = (request.headers.get("x-outreachai-locale") or "").strip()
+    if locale in LOCALE_LANGUAGE_NAMES:
+        return LOCALE_LANGUAGE_NAMES[locale]
+    return workspace.language or "English"
 
 
 class UsageActivityOut(BaseModel):
@@ -278,7 +294,7 @@ def _create_review_email_draft(db: Session, request: Request, user_id: str, work
             offer=str(metadata.get("suggested_offer") or workspace.company or "AI-powered B2B lead generation"),
             cta=str(metadata.get("recommended_cta") or "Book a quick call"),
             tone=str(metadata.get("recommended_tone") or "Professional"),
-            language=workspace.language or "English",
+            language=_workspace_language(request, workspace),
             signature="",
         )
     )
@@ -846,7 +862,7 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
                 offer=company.suggested_offer or workspace.company or "AI-powered lead generation and outbound growth",
                 cta="Book a quick call",
                 tone="Professional",
-                language=workspace.language or "English",
+                language=_workspace_language(request, workspace),
                 signature="",
             )
         )

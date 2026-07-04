@@ -6,6 +6,7 @@ import { sanitizeUserMessage } from '@/lib/safe-errors';
 
 const isProduction = process.env.NODE_ENV === 'production';
 const debugApiLogging = process.env.NEXT_PUBLIC_DEBUG_API === 'true';
+const localeStorageKey = 'outreachai.locale';
 
 export function friendlyErrorMessage(error: unknown, fallback: string) {
   if (!(error instanceof Error)) return fallback;
@@ -21,6 +22,15 @@ function createRequestId() {
     return crypto.randomUUID();
   }
   return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function currentLocaleHeader() {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(localeStorageKey) || document.documentElement.lang || '';
+  } catch {
+    return document.documentElement.lang || '';
+  }
 }
 
 async function logApiFailure(path: string, response: Response, requestId: string) {
@@ -91,6 +101,10 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   const headers = new Headers(requestInit.headers);
   headers.set('Content-Type', headers.get('Content-Type') || 'application/json');
   headers.set('X-Request-ID', headers.get('X-Request-ID') || requestId);
+  const locale = currentLocaleHeader();
+  if (locale && !headers.has('X-OutreachAI-Locale')) {
+    headers.set('X-OutreachAI-Locale', locale);
+  }
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
