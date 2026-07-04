@@ -190,6 +190,10 @@ function safeArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [];
 }
 
+function safeStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
+}
+
 function leadKey(lead: Lead) {
   return String(lead.crm_company_id || lead.id || lead.place_id || lead.website || lead.domain || `${lead.company}:${lead.city || ""}`).toLowerCase();
 }
@@ -339,9 +343,16 @@ function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
     place_id: value.place_id || null,
     source: value.source || "workspace",
     ai_summary: value.ai_summary || "",
+    pain_points: safeArray(value.pain_points),
+    services: safeArray(value.services),
+    weaknesses: safeArray(value.weaknesses),
+    icp_score: value.icp_score ?? null,
+    value_proposition: value.value_proposition || "",
     suggested_offer: value.suggested_offer || "",
     outreach_strategy: value.outreach_strategy || "",
     sales_angle: value.sales_angle || "",
+    recommended_cta: value.recommended_cta || "",
+    follow_up_strategy: value.follow_up_strategy || "",
     expected_reply_rate: value.expected_reply_rate || "",
     email_status: value.email_status || "Not available",
     crm_stage: value.crm_stage || "New Lead",
@@ -634,6 +645,11 @@ function leadWebsite(lead: Lead) {
 
 function leadProfile(lead: Lead) {
   const metadata = parseNotes(lead.notes);
+  const painPoints = safeArray(lead.pain_points).length ? safeArray(lead.pain_points) : safeStringArray(metadata.pain_points);
+  const weaknesses = safeArray(lead.weaknesses).length ? safeArray(lead.weaknesses) : safeStringArray(metadata.weaknesses);
+  const services = safeArray(lead.services).length ? safeArray(lead.services) : safeStringArray(metadata.services);
+  const valueProposition = lead.value_proposition || text(metadata.value_proposition);
+  const recommendedCta = lead.recommended_cta || text(metadata.recommended_cta);
   return {
     company: lead.company,
     website: leadWebsite(lead) || unavailable,
@@ -646,10 +662,12 @@ function leadProfile(lead: Lead) {
     phone: lead.phone || unavailable,
     linkedin: lead.linkedin || unavailable,
     websiteAnalysis: lead.ai_summary || text(metadata.ai_summary),
-    painAnalysis: text(metadata.pain_points || metadata.weaknesses || lead.notes),
-    opportunityAnalysis: lead.sales_angle || lead.outreach_strategy || text(metadata.sales_angle || metadata.outreach_strategy),
-    offer: lead.suggested_offer || text(metadata.suggested_offer),
-    expectedReplyRate: lead.expected_reply_rate || text(metadata.expected_reply_rate),
+    painAnalysis: painPoints.join(", ") || weaknesses.join(", ") || text(metadata.website_audit_actions) || unavailable,
+    opportunityAnalysis: lead.sales_angle || lead.outreach_strategy || valueProposition || text(metadata.sales_angle || metadata.outreach_strategy) || unavailable,
+    offer: lead.suggested_offer || recommendedCta || text(metadata.suggested_offer) || unavailable,
+    expectedReplyRate: lead.expected_reply_rate || text(metadata.expected_reply_rate) || unavailable,
+    services: services.join(", "),
+    icpScore: lead.icp_score ?? metadata.icp_score ?? null,
     source: lead.source || text(metadata.source)
   };
 }
@@ -677,13 +695,13 @@ function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, 
     ["Website analysis", profile.websiteAnalysis !== unavailable || Boolean(audit?.improvement_report)],
     ["Decision makers", profile.decisionMaker !== unavailable],
     ["Verified emails", Boolean(lead.email && lead.hunter_verified)],
-    ["AI pain analysis", profile.painAnalysis !== unavailable || Boolean(audit?.priority_actions?.length)],
-    ["AI opportunity analysis", profile.opportunityAnalysis !== unavailable || Boolean(copilot?.reasoning?.length)],
-    ["Personalized offer", profile.offer !== unavailable],
+    ["AI pain analysis", Boolean(profile.painAnalysis && profile.painAnalysis !== unavailable) || Boolean(audit?.priority_actions?.length)],
+    ["AI opportunity analysis", Boolean(profile.opportunityAnalysis && profile.opportunityAnalysis !== unavailable) || Boolean(copilot?.reasoning?.length)],
+    ["Personalized offer", Boolean(profile.offer && profile.offer !== unavailable)],
     ["Personalized first email", Boolean(draft?.subject && draft.body)],
     ["Follow-up sequence", Boolean(followUps && (noOpenFollowUps.length || openedFollowUps.length || repliedFollowUps.length || clickedFollowUps.length))],
     ["Confidence score", Boolean(copilot)],
-    ["Expected reply rate", profile.expectedReplyRate !== unavailable || Boolean(copilot)],
+    ["Expected reply rate", Boolean(profile.expectedReplyRate && profile.expectedReplyRate !== unavailable) || Boolean(copilot)],
     ["Priority score", Boolean(copilot)]
   ] as const;
 }
@@ -2119,7 +2137,14 @@ function leadFromCrmCompany(company: CrmCompany): Lead {
     contact_search_checked_at: company.contact_search_checked_at || undefined,
     contact_search_status: company.contact_search_status || undefined,
     contact_search_message: company.contact_search_message || undefined,
-    decision_maker_roles_searched: company.decision_maker_roles_searched?.length ? company.decision_maker_roles_searched : undefined
+    decision_maker_roles_searched: company.decision_maker_roles_searched?.length ? company.decision_maker_roles_searched : undefined,
+    pain_points: company.pain_points?.length ? company.pain_points : undefined,
+    services: company.services?.length ? company.services : undefined,
+    weaknesses: company.weaknesses?.length ? company.weaknesses : undefined,
+    icp_score: company.icp_score ?? undefined,
+    value_proposition: company.value_proposition || undefined,
+    recommended_cta: company.recommended_cta || undefined,
+    follow_up_strategy: company.follow_up_strategy || undefined
   };
   const noteMetadata = Object.values(contactMetadata).some(Boolean) ? JSON.stringify(contactMetadata) : company.notes[0]?.body || null;
   return {
@@ -2142,9 +2167,16 @@ function leadFromCrmCompany(company: CrmCompany): Lead {
     hunter_verified: company.contacts.some((contact) => contact.source === "hunter" && contact.email_status === "Verified"),
     source: company.source,
     ai_summary: company.ai_summary,
+    pain_points: company.pain_points,
+    services: company.services,
+    weaknesses: company.weaknesses,
+    icp_score: company.icp_score,
+    value_proposition: company.value_proposition,
     suggested_offer: company.suggested_offer,
     outreach_strategy: company.outreach_strategy,
     sales_angle: company.sales_angle,
+    recommended_cta: company.recommended_cta,
+    follow_up_strategy: company.follow_up_strategy,
     expected_reply_rate: company.expected_reply_rate,
     created_at: company.created_at,
     found_at: company.found_at,

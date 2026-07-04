@@ -640,9 +640,16 @@ def test_workspace_app_lead_search_success_saves_to_crm(monkeypatch) -> None:
         metadata.update(
             {
                 "ai_summary": "Usage Search helps Berlin construction buyers evaluate new partners.",
+                "services": ["B2B construction sourcing"],
+                "weaknesses": ["Manual partner discovery"],
+                "pain_points": ["Manual partner discovery"],
+                "icp_score": 86,
+                "value_proposition": "Reviewed local partner pipeline",
                 "sales_angle": "Lead with faster partner sourcing for B2B construction projects.",
                 "suggested_offer": "Offer a reviewed B2B partnership pipeline.",
                 "outreach_strategy": "Reference their local construction focus and invite a short fit review.",
+                "recommended_cta": "Book a fit review",
+                "follow_up_strategy": "Follow up with one local proof point.",
                 "expected_reply_rate": "8-12%",
                 "website_analyzed_at": datetime.utcnow().isoformat(),
             }
@@ -688,7 +695,14 @@ def test_workspace_app_lead_search_success_saves_to_crm(monkeypatch) -> None:
     assert data["companies_saved"] == 1
     assert data["companies"][0]["name"] == "Usage Search GmbH"
     assert data["companies"][0]["ai_summary"] == "Usage Search helps Berlin construction buyers evaluate new partners."
+    assert data["companies"][0]["pain_points"] == ["Manual partner discovery"]
+    assert data["companies"][0]["services"] == ["B2B construction sourcing"]
+    assert data["companies"][0]["weaknesses"] == ["Manual partner discovery"]
+    assert data["companies"][0]["icp_score"] == 86
+    assert data["companies"][0]["value_proposition"] == "Reviewed local partner pipeline"
     assert data["companies"][0]["suggested_offer"] == "Offer a reviewed B2B partnership pipeline."
+    assert data["companies"][0]["recommended_cta"] == "Book a fit review"
+    assert data["companies"][0]["follow_up_strategy"] == "Follow up with one local proof point."
     assert data["companies"][0]["expected_reply_rate"] == "8-12%"
     assert data["companies"][0]["generated_emails"][0]["delivery_status"] == "draft"
 

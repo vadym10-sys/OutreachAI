@@ -268,9 +268,16 @@ class CrmCompanyOut(BaseModel):
     place_id: Optional[str] = None
     source: str = "manual"
     ai_summary: str = ""
+    pain_points: list[str] = Field(default_factory=list)
+    services: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    icp_score: Optional[int] = None
+    value_proposition: str = ""
     suggested_offer: str = ""
     outreach_strategy: str = ""
     sales_angle: str = ""
+    recommended_cta: str = ""
+    follow_up_strategy: str = ""
     expected_reply_rate: str = ""
     email_status: str = "Not prepared"
     crm_stage: str = "New Lead"
