@@ -21,6 +21,7 @@ from app.api.routes import (
     _ensure_crm_backfilled,
     _existing_duplicate_lead,
     _hunter_enriched_leads,
+    _is_customer_visible_company,
     _lead_metadata,
     _lead_out,
     _lead_trace,
@@ -400,9 +401,10 @@ def bootstrap_workspace_app(user: WorkspaceUserContext, db: Session = Depends(ge
             select(Company)
             .where(Company.workspace_id == workspace.id)
             .order_by(Company.updated_at.desc())
-            .limit(5)
+            .limit(20)
         ).all()
     )
+    recent = [item for item in recent if _is_customer_visible_company(item)][:5]
     activity = list(
         db.scalars(
             select(AuditLog)
@@ -671,7 +673,7 @@ def list_companies(
         stmt = stmt.where(Company.email_status == email_status)
     if source:
         stmt = stmt.where(Company.source == source)
-    companies = list(db.scalars(stmt.order_by(Company.updated_at.desc()).limit(100)).all())
+    companies = [company for company in db.scalars(stmt.order_by(Company.updated_at.desc()).limit(200)).all() if _is_customer_visible_company(company)][:100]
     return [_crm_company_out(db, workspace, user.user_id, company) for company in companies]
 
 

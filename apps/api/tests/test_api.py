@@ -42,7 +42,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, Company, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -435,6 +435,73 @@ def test_workspace_app_bootstrap_creates_private_workspace() -> None:
     assert data["workspace"]["members"][0]["role"] == "Owner"
     assert data["counts"]["companies"] == 0
     assert "Add your first company" in data["next_action"]
+
+
+def test_customer_facing_workspace_hides_internal_qa_records() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "qa-cleanup-owner@example.com"}
+    workspace_response = client.get("/api/workspace/me", headers=headers)
+    assert workspace_response.status_code == 200
+    workspace_id = UUID(workspace_response.json()["id"])
+
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                Company(
+                    user_id="qa-cleanup-owner@example.com",
+                    workspace_id=workspace_id,
+                    name="Real Berlin Construction GmbH",
+                    website="https://real-berlin-builder.de",
+                    domain="real-berlin-builder.de",
+                    city="Berlin",
+                    country="Germany",
+                    industry="Construction",
+                ),
+                Company(
+                    user_id="qa-cleanup-owner@example.com",
+                    workspace_id=workspace_id,
+                    name="Premium Test Construction Berlin",
+                    website="https://example.com",
+                    domain="example.com",
+                    city="Berlin",
+                    country="Germany",
+                    industry="Construction",
+                ),
+                Campaign(
+                    user_id="qa-cleanup-owner@example.com",
+                    workspace_id=workspace_id,
+                    name="QA Campaign 123",
+                    industry="Construction",
+                    countries=["Germany"],
+                    cities=["Berlin"],
+                ),
+                Campaign(
+                    user_id="qa-cleanup-owner@example.com",
+                    workspace_id=workspace_id,
+                    name="Berlin Construction Outreach",
+                    industry="Construction",
+                    countries=["Germany"],
+                    cities=["Berlin"],
+                ),
+            ]
+        )
+        db.commit()
+
+    workspace_companies = client.get("/api/workspace-app/companies", headers=headers)
+    assert workspace_companies.status_code == 200
+    assert [item["name"] for item in workspace_companies.json()] == ["Real Berlin Construction GmbH"]
+
+    pipeline = client.get("/api/crm/pipeline", headers=headers)
+    assert pipeline.status_code == 200
+    pipeline_names = [item["name"] for item in pipeline.json()["companies"]]
+    assert "Real Berlin Construction GmbH" in pipeline_names
+    assert "Premium Test Construction Berlin" not in pipeline_names
+
+    campaigns = client.get("/api/campaigns", headers=headers)
+    assert campaigns.status_code == 200
+    campaign_names = [item["name"] for item in campaigns.json()]
+    assert "Berlin Construction Outreach" in campaign_names
+    assert "QA Campaign 123" not in campaign_names
 
 
 def test_workspace_app_manual_company_save_persists_and_dedupes() -> None:

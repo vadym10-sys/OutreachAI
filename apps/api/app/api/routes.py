@@ -315,6 +315,31 @@ def _workspace_stmt(model, workspace: Workspace, user_id: str):
     return model.workspace_id == workspace.id
 
 
+INTERNAL_TEST_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
+INTERNAL_TEST_NAME_PREFIXES = ("qa ", "qa-", "qa_", "premium test", "test ", "demo ")
+
+
+def _domain_from_company_value(value: str | None) -> str:
+    if not value:
+        return ""
+    clean = value.strip().lower()
+    clean = clean.removeprefix("https://").removeprefix("http://").removeprefix("www.")
+    return clean.split("/", 1)[0].strip()
+
+
+def _is_customer_visible_company(company: Company) -> bool:
+    domain = _domain_from_company_value(company.domain or company.website)
+    name = (company.name or "").strip().lower()
+    if domain in INTERNAL_TEST_DOMAINS:
+        return False
+    return not any(name.startswith(prefix) for prefix in INTERNAL_TEST_NAME_PREFIXES)
+
+
+def _is_customer_visible_campaign(campaign: Campaign) -> bool:
+    name = (campaign.name or "").strip().lower()
+    return not any(name.startswith(prefix) for prefix in ("qa campaign", "test campaign", "demo campaign"))
+
+
 def _ensure_default_trial(settings: AppSettings, workspace: Workspace) -> bool:
     billing = dict(settings.billing or {})
     if billing.get("status") or billing.get("stripeSubscriptionId"):
@@ -3179,7 +3204,7 @@ def create_campaign(payload: CampaignCreate, request: Request, user_id: CurrentU
 def list_campaigns(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[CampaignOut]:
     workspace = _current_workspace(db, user_id)
     campaigns = db.scalars(select(Campaign).where(_workspace_stmt(Campaign, workspace, user_id)).order_by(Campaign.created_at.desc())).all()
-    return [_campaign_out(db, campaign) for campaign in campaigns]
+    return [_campaign_out(db, campaign) for campaign in campaigns if _is_customer_visible_campaign(campaign)]
 
 
 @router.put("/campaigns/{campaign_id}", response_model=CampaignOut)
@@ -3684,7 +3709,7 @@ def crm_companies(
     if cached:
         return [CrmCompanyOut.model_validate(item) for item in cached]
     _ensure_crm_backfilled(db, user_id, workspace)
-    companies = list(db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(100)).all())
+    companies = [company for company in db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(200)).all() if _is_customer_visible_company(company)][:100]
     output = [_crm_company_out(db, workspace, user_id, company) for company in companies]
     set_json(key, [item.model_dump(mode="json") for item in output], app_settings.cache_crm_ttl_seconds)
     return output
@@ -3704,7 +3729,7 @@ def crm_contacts(
 ) -> list[CrmContactOut]:
     workspace = _current_workspace(db, user_id)
     _ensure_crm_backfilled(db, user_id, workspace)
-    companies = list(db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(100)).all())
+    companies = [company for company in db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(200)).all() if _is_customer_visible_company(company)][:100]
     company_ids = [company.id for company in companies]
     if not company_ids:
         return []
@@ -3727,7 +3752,7 @@ def crm_deals(
 ) -> list[CrmDealOut]:
     workspace = _current_workspace(db, user_id)
     _ensure_crm_backfilled(db, user_id, workspace)
-    companies = list(db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(100)).all())
+    companies = [company for company in db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(200)).all() if _is_customer_visible_company(company)][:100]
     company_ids = [company.id for company in companies]
     if not company_ids:
         return []
@@ -3740,7 +3765,7 @@ def crm_deals(
 def crm_pipeline(user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmPipelineOut:
     workspace = _current_workspace(db, user_id)
     _ensure_crm_backfilled(db, user_id, workspace)
-    companies = list(db.scalars(_crm_company_query(workspace, user_id).limit(200)).all())
+    companies = [company for company in db.scalars(_crm_company_query(workspace, user_id).limit(300)).all() if _is_customer_visible_company(company)][:200]
     deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id)).order_by(Deal.updated_at.desc()).limit(300)).all())
     company_names = {company.id: company.name for company in companies}
     return CrmPipelineOut(
