@@ -3093,13 +3093,40 @@ export function AnalyticsPage() {
 
 export function SettingsPage() {
   const { t } = useI18n();
+  const { api, ready } = useTokenApi();
+  const [leadSearchStatus, setLeadSearchStatus] = useState<WorkspaceIntegrationStatus["status"] | "unknown">("unknown");
+  const [leadSearchStatusLoading, setLeadSearchStatusLoading] = useState(true);
   const readiness = [
     ["Company setup", "Tell OutreachAI what you sell so lead research and emails match your offer.", "Complete this before your first campaign."],
     ["Lead readiness", "Find or add companies, then save each valid opportunity into CRM.", "Missing data is shown clearly instead of guessed."],
     ["Outreach safety", "Every email stays in review until a person approves the send.", "Nothing external happens automatically."],
     ["Plan and limits", "Your plan controls how many leads, emails and workspaces can be used this month.", "Upgrade only when you hit a real limit."]
   ];
-  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} /><section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(copy)}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t(status)}</p></article>)}</section><section id="lead-search-key" className="scroll-mt-24 rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm"><p className="text-sm font-bold uppercase text-amber-800">{t("Lead search key")}</p><h2 className="mt-2 text-xl font-black text-ink">{t("Automatic company search needs one setup step")}</h2><p className="mt-2 text-sm leading-6 text-amber-900">{t("Ask the workspace owner to connect automatic company search. Until then, add companies manually and continue with CRM, research and outreach review.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Add company manually")}</Link><Link href="/dashboard/billing" className="inline-flex min-h-11 items-center justify-center rounded-md border border-amber-300 bg-white px-4 text-sm font-bold text-amber-900">{t("Check plan")}</Link></div></section><details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary><p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.")}</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["Billing", "Security", "Team access", "Sending preferences"].map((item) => <Link key={item} href={item === "Billing" ? "/dashboard/billing" : "/dashboard/settings"} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t(item)}</Link>)}</div></details></div>;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadLeadSearchStatus() {
+      if (!ready) return;
+      setLeadSearchStatusLoading(true);
+      try {
+        const response = await api<WorkspaceIntegrationStatusResponse>("/api/workspace-app/integrations/status");
+        const status = safeArray(response.integrations).find((item) => item.key === "lead_search")?.status || "missing_key";
+        if (!cancelled) setLeadSearchStatus(status);
+      } catch (err) {
+        reportWidgetFailure(err, "settings-integration-status", { endpoint: "/api/workspace-app/integrations/status" });
+        if (!cancelled) setLeadSearchStatus("error");
+      } finally {
+        if (!cancelled) setLeadSearchStatusLoading(false);
+      }
+    }
+    void loadLeadSearchStatus();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, ready]);
+
+  const leadSearchReady = leadSearchStatus === "connected";
+  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} /><section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(copy)}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t(status)}</p></article>)}</section><section id="lead-search-key" className={`scroll-mt-24 rounded-2xl border p-5 shadow-sm ${leadSearchReady ? "border-teal-200 bg-teal-50" : "border-amber-200 bg-amber-50"}`}><p className={`text-sm font-bold uppercase ${leadSearchReady ? "text-brand" : "text-amber-800"}`}>{t("Lead search key")}</p>{leadSearchStatusLoading ? <div className="mt-3 h-20 animate-pulse rounded-xl bg-white/70" /> : leadSearchReady ? <><h2 className="mt-2 text-xl font-black text-ink">{t("Ready to find companies")}</h2><p className="mt-2 text-sm leading-6 text-slate-700">{t("Your company search is connected. Start with one narrow market and save results to CRM.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Search market")}</Link><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md border border-teal-300 bg-white px-4 text-sm font-bold text-brand">{t("Add company manually")}</Link></div></> : <><h2 className="mt-2 text-xl font-black text-ink">{t("Automatic company search needs one setup step")}</h2><p className="mt-2 text-sm leading-6 text-amber-900">{t("Ask the workspace owner to connect automatic company search. Until then, add companies manually and continue with CRM, research and outreach review.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Add company manually")}</Link><Link href="/dashboard/billing" className="inline-flex min-h-11 items-center justify-center rounded-md border border-amber-300 bg-white px-4 text-sm font-bold text-amber-900">{t("Check plan")}</Link></div></>}</section><details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary><p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.")}</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["Billing", "Security", "Team access", "Sending preferences"].map((item) => <Link key={item} href={item === "Billing" ? "/dashboard/billing" : "/dashboard/settings"} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t(item)}</Link>)}</div></details></div>;
 }
 
 export function BillingPage() {
