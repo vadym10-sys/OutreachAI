@@ -1822,6 +1822,8 @@ const visiblePhraseTranslations: Record<string, Partial<Record<Locale, string>>>
   'Personalized offer': { ru: 'Персональное предложение', es: 'Oferta personalizada', 'en-US': 'Personalized offer', fr: 'Offre personnalisée', it: 'Offerta personalizzata', pl: 'Spersonalizowana oferta' },
   'Personalized first email': { ru: 'Первое персональное письмо', es: 'Primer email personalizado', 'en-US': 'Personalized first email', fr: 'Premier email personnalisé', it: 'Prima email personalizzata', pl: 'Pierwszy spersonalizowany email' },
   'Follow-up sequence': { ru: 'Цепочка повторных касаний', es: 'Secuencia de seguimiento', 'en-US': 'Follow-up sequence', fr: 'Séquence de relance', it: 'Sequenza follow-up', pl: 'Sekwencja follow-up' },
+  'Follow-up 1': { ru: 'Повторное касание 1', es: 'Seguimiento 1', 'en-US': 'Follow-up 1', fr: 'Relance 1', it: 'Follow-up 1', pl: 'Follow-up 1' },
+  'Follow-up 2': { ru: 'Повторное касание 2', es: 'Seguimiento 2', 'en-US': 'Follow-up 2', fr: 'Relance 2', it: 'Follow-up 2', pl: 'Follow-up 2' },
   'Expected reply rate': { ru: 'Ожидаемый процент ответов', es: 'Tasa de respuesta esperada', 'en-US': 'Expected reply rate', fr: 'Taux de réponse attendu', it: 'Tasso risposta previsto', pl: 'Oczekiwany wskaźnik odpowiedzi' },
   'Confidence score': { ru: 'Оценка уверенности', es: 'Puntuación de confianza', 'en-US': 'Confidence score', fr: 'Score de confiance', it: 'Punteggio fiducia', pl: 'Ocena pewności' },
   'Priority score': { ru: 'Оценка приоритета', es: 'Puntuación de prioridad', 'en-US': 'Priority score', fr: 'Score de priorité', it: 'Punteggio priorità', pl: 'Ocena priorytetu' },
