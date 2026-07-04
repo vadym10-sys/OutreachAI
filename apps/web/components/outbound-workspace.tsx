@@ -1624,6 +1624,8 @@ export function LeadFinderPage() {
   const { t } = useI18n();
   const visibleMessage = message;
   const automaticSearchReady = leadSearchStatus === "connected";
+  const firstSavedLead = searchResults.find((lead) => lead.crm_company_id || lead.id) || null;
+  const nextCompanyHref = firstSavedLead?.crm_company_id ? `/dashboard/companies?company=${firstSavedLead.crm_company_id}` : "/dashboard/companies";
 
   useEffect(() => {
     let cancelled = false;
@@ -1900,6 +1902,19 @@ export function LeadFinderPage() {
             </div>
           ))}
         </div>}
+        {hasSearched && !searching && searchResults.length > 0 && <section className="mt-4 rounded-2xl border border-teal-200 bg-teal-50 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Next step")}</p>
+              <h3 className="mt-2 text-lg font-black text-ink">{t("Continue with the first saved company")}</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{t("Open the company workspace to analyze the website, find contacts and prepare the first email for review.")}</p>
+            </div>
+            <Link href={nextCompanyHref} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm">
+              {t("Open company workspace")}
+              <ArrowRight size={16} />
+            </Link>
+          </div>
+        </section>}
         {searchSteps.length > 0 && <ol className="mt-4 grid gap-2 text-sm sm:grid-cols-3" aria-label="Lead search progress">
           {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
         </ol>}
