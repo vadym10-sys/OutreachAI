@@ -202,6 +202,37 @@ function latestCompanyEmail(company: CrmCompany): Email | undefined {
   return safeArray(company.generated_emails)[0];
 }
 
+function cleanGeneratedText(value?: string | null): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if ((raw.startsWith("{") && raw.endsWith("}")) || (raw.startsWith("[") && raw.endsWith("]"))) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return cleanGeneratedText(parsed[0]);
+      if (parsed && typeof parsed === "object") {
+        const record = parsed as Record<string, unknown>;
+        return cleanGeneratedText(String(record.email || record.body || record.text || record.message || record.subject || ""));
+      }
+    } catch {
+      const emailMatch = raw.match(/['"]email['"]\s*:\s*['"]([\s\S]*?)['"]\s*(?:,\s*['"]|})/);
+      if (emailMatch?.[1]) return cleanGeneratedText(emailMatch[1].replace(/\\n/g, "\n").replace(/\\'/g, "'").replace(/\\"/g, '"'));
+      const bodyMatch = raw.match(/['"](?:body|text|message)['"]\s*:\s*['"]([\s\S]*?)['"]\s*(?:,\s*['"]|})/);
+      if (bodyMatch?.[1]) return cleanGeneratedText(bodyMatch[1].replace(/\\n/g, "\n").replace(/\\'/g, "'").replace(/\\"/g, '"'));
+    }
+  }
+  return raw.replace(/\\n/g, "\n").trim();
+}
+
+function contactDisplayName(contact: CrmContact): string {
+  return contact.name || contact.title || contact.email || contact.phone || "Decision maker";
+}
+
+function contactRoleLine(contact: CrmContact): string {
+  if (contact.name && contact.title) return contact.title;
+  if (!contact.name && contact.title) return "Name not provided";
+  return contact.title || "Role not available";
+}
+
 function currentEmailSentAt(company: CrmCompany) {
   const latest = latestCompanyEmail(company);
   if (latest) return latest.delivery_status === "sent" ? (latest.sent_at || company.email_sent_at) : null;
@@ -1493,8 +1524,8 @@ function OpportunityCard({
         <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
         <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{draft.body}</p>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <div className="rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 1")}:</span> {draft.follow_up_1 || followUps?.no_open?.[0] || t(unavailable)}</div>
-          <div className="rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 2")}:</span> {draft.follow_up_2 || followUps?.opened?.[0] || t(unavailable)}</div>
+          <div className="whitespace-pre-line rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 1")}:</span> {cleanGeneratedText(draft.follow_up_1 || followUps?.no_open?.[0]) || t(unavailable)}</div>
+          <div className="whitespace-pre-line rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 2")}:</span> {cleanGeneratedText(draft.follow_up_2 || followUps?.opened?.[0]) || t(unavailable)}</div>
         </div>
       </section>}
 
@@ -2598,8 +2629,8 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             {current.contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h4 className="font-bold text-ink">{contact.name || t("Not available")}</h4>
-                  <p className="mt-1 text-sm text-slate-600">{contact.title || t("Role not available")}</p>
+                  <h4 className="break-words font-bold text-ink">{contact.name ? contact.name : t(contactDisplayName(contact))}</h4>
+                  <p className="mt-1 text-sm text-slate-600">{t(contactRoleLine(contact))}</p>
                 </div>
                 <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{contactConfidenceLabel(contact.confidence, t)}</span>
               </div>
