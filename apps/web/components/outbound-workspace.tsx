@@ -2278,6 +2278,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const progress = timelineProgress(current);
   const completedProgress = progress.filter(([, done]) => Boolean(done)).length;
   const progressPercent = Math.round((completedProgress / progress.length) * 100);
+  const nextMissingStep = progress.find(([, done]) => !done)?.[0] || "Outcome";
   const primaryContact = current.contacts[0];
   const firstDeal = current.deals[0];
   const owner = "Not assigned";
@@ -2504,12 +2505,21 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
         <div className="mt-4 h-3 overflow-hidden rounded-full bg-white">
           <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${progressPercent}%` }} />
         </div>
+        <div className="mt-4 rounded-xl border border-white bg-white/80 p-3">
+          <p className="text-xs font-bold uppercase text-slate-500">{t("Next missing step")}</p>
+          <p className="mt-1 text-sm font-black text-ink">{t(nextMissingStep)}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-600">{t("Complete this step to move the company closer to a meeting.")}</p>
+        </div>
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {progress.map(([label, done]) => <div key={label} className={`rounded-xl border p-3 text-sm ${done ? "border-teal-200 bg-teal-50 text-brand" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+        {progress.map(([label, done]) => {
+          const isNext = label === nextMissingStep && !done;
+          return <div key={label} className={`rounded-xl border p-3 text-sm ${done ? "border-teal-200 bg-teal-50 text-brand" : isNext ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
           <CheckCircle2 size={16} className={done ? "text-brand" : "text-slate-300"} />
           <p className="mt-2 font-bold">{t(label)}</p>
-        </div>)}
+          <p className="mt-1 text-xs font-semibold">{t(done ? "Done" : isNext ? "Next" : "Waiting")}</p>
+        </div>;
+        })}
       </div>
     </div>
 
