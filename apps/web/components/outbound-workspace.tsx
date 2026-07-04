@@ -2044,7 +2044,7 @@ export function LeadFinderPage() {
             </div>
           </details>
           <div>
-            <PrimaryButton type="submit" disabled={manualBusy}>{manualBusy ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Save company to CRM")}</PrimaryButton>
+            <PrimaryButton type="submit" disabled={manualBusy}>{manualBusy ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Save and prepare opportunity")}</PrimaryButton>
           </div>
         </form>
       </section>
