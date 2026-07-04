@@ -500,11 +500,6 @@ function workspaceSearchMessage(result: WorkspaceAppLeadSearchResponse, count: n
   return t("Lead search could not be completed.");
 }
 
-function workspaceManualSaveMessage(result: WorkspaceAppCompanyCreateResponse, company: Lead, t: (key: string) => string) {
-  if (result.status === "reused") return t("This company already exists in your CRM.");
-  return t("Company saved to CRM. Next: complete sales research.").replace("{company}", company.company);
-}
-
 function integrationStatusLabel(status: WorkspaceIntegrationStatus["status"]) {
   if (status === "connected") return "Connected";
   if (status === "missing_key") return "Missing key";
@@ -1692,6 +1687,76 @@ export function LeadFinderPage() {
     };
   }
 
+  async function prepareManualOpportunity(company: CrmCompany, initialLead: Lead) {
+    let currentCompany = normalizeCrmCompany(company);
+    let currentLead = initialLead;
+    const warnings: string[] = [];
+    const applyCompany = (nextCompany?: CrmCompany | null) => {
+      if (!nextCompany) return;
+      currentCompany = normalizeCrmCompany(nextCompany);
+      currentLead = leadFromCrmCompany(currentCompany);
+      setLeads((items) => mergeLeads([currentLead], items));
+      setSearchResults((items) => mergeLeads([currentLead], items));
+    };
+
+    if (currentCompany.website || currentCompany.domain) {
+      setSearchSteps([t("Saved to CRM"), t("Analyzing website...")]);
+      setMessage(t("OutreachAI is preparing this company automatically..."));
+      try {
+        const result = await withTimeout(
+          api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/analyze`, { method: "POST", timeoutMs: 18000 }),
+          20000,
+          "Website analysis took too long. The company is saved and you can retry later."
+        );
+        applyCompany(result.company);
+        if (result.status !== "success") warnings.push(t(result.message || "Website analysis is temporarily unavailable. The company stays saved."));
+      } catch (err) {
+        warnings.push(friendlyErrorMessage(err, "Website analysis is temporarily unavailable. The company stays saved."));
+      }
+    } else {
+      warnings.push(t("Add a website later to unlock deeper AI research."));
+    }
+
+    setSearchSteps([t("Saved to CRM"), t("Website analysis checked"), t("Finding decision makers...")]);
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/contacts`, { method: "POST", timeoutMs: 14000 }),
+        16000,
+        "Contact discovery took too long. The company is saved and you can add a contact manually."
+      );
+      applyCompany(result.company);
+      if (result.status !== "success") warnings.push(t(result.message || "No verified contact was found yet. You can add an email manually and continue."));
+    } catch (err) {
+      warnings.push(friendlyErrorMessage(err, "Contact discovery is temporarily unavailable. You can add a contact manually and continue."));
+    }
+
+    setSearchSteps([t("Saved to CRM"), t("Website analysis checked"), t("Contacts checked"), t("Preparing personalized first email...")]);
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/email-draft`, { method: "POST", timeoutMs: 25000 }),
+        27000,
+        "Email draft took too long. The company is saved and you can generate it later."
+      );
+      applyCompany(result.company);
+      if (result.status !== "success" || !result.email) warnings.push(t(result.message || "Email draft could not be prepared yet."));
+    } catch (err) {
+      warnings.push(friendlyErrorMessage(err, "Email draft is temporarily unavailable. The company stays saved."));
+    }
+
+    setSearchSteps([
+      t("Saved to CRM"),
+      t("Website analysis checked"),
+      t("Contacts checked"),
+      currentCompany.generated_emails?.length ? t("Email draft ready") : t("Email draft can be generated later")
+    ]);
+    setMessage(
+      warnings.length
+        ? `${t("Company saved. OutreachAI prepared everything available and shows what still needs attention.")} ${warnings.slice(0, 2).join(" ")}`
+        : t("Company saved and prepared. Review the opportunity, then approve the email when ready.")
+    );
+    return currentLead;
+  }
+
   async function addManualLead(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -1728,9 +1793,10 @@ export function LeadFinderPage() {
       setLeads((items) => mergeLeads([lead], items));
       setSearchResults((items) => mergeLeads([lead], items));
       setSearchSummary({ found: 1, saved: saved.status === "reused" ? 0 : 1, duplicates: saved.status === "reused" ? 1 : 0 });
-      setMessage(workspaceManualSaveMessage(saved, lead, t));
-      setSearchSteps([t("Saved to CRM"), t("Ready for company research")]);
+      setMessage(t("Company saved. OutreachAI is preparing research, contacts and the first email automatically."));
+      setSearchSteps([t("Saved to CRM"), t("Preparing sales opportunity...")]);
       form.reset();
+      await prepareManualOpportunity(saved.company, lead);
       trackEvent("manual_lead_created", {
         has_website: Boolean(lead.website || lead.domain),
         has_email: Boolean(lead.email),
