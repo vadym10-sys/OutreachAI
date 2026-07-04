@@ -2692,6 +2692,8 @@ function CompactCompanyCard({ company }: { company: CrmCompany }) {
   const { t } = useI18n();
   const healthScore = companyHealthScore(company);
   const nextAction = companyNextAction(company);
+  const primaryAction = companyPrimaryAction(company);
+  const PrimaryActionIcon = primaryAction.icon;
   const contactCount = company.contacts.length;
   const emailCount = company.generated_emails.length;
   const website = company.website || company.domain || "";
@@ -2712,13 +2714,18 @@ function CompactCompanyCard({ company }: { company: CrmCompany }) {
           <span className="inline-flex min-w-0 items-center gap-1.5"><Mail className="shrink-0" size={16} /> <span className="truncate">{emailCount ? `${emailCount} ${t(emailCount === 1 ? "email draft" : "email drafts")}` : t("No email draft yet")}</span></span>
         </div>
         {website && <a className="mt-3 inline-flex max-w-full items-center gap-1.5 break-all text-sm font-bold text-brand hover:underline" href={website.startsWith("http") ? website : `https://${website}`} target="_blank" rel="noreferrer"><Globe2 className="shrink-0" size={16} />{website}</a>}
-        <div className="mt-4 rounded-xl bg-slate-50 p-3">
+        <div className="mt-4 rounded-xl border border-teal-100 bg-teal-50 p-3">
           <p className="text-xs font-bold uppercase text-slate-500">{t("Next recommended action")}</p>
           <p className="mt-1 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-600">{t(primaryAction.copy)}</p>
         </div>
       </div>
       <div className="grid shrink-0 gap-2 lg:w-56">
-        <Link href={`/dashboard/companies?company=${encodeURIComponent(company.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><ArrowRight size={17} /> {t("Open company workspace")}</Link>
+        <Link href={`/dashboard/companies?company=${encodeURIComponent(company.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">
+          <PrimaryActionIcon size={17} />
+          {t("Continue work")}
+          <ArrowRight size={16} />
+        </Link>
         <Link href={`/dashboard/crm`} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("View pipeline")}</Link>
       </div>
     </div>
