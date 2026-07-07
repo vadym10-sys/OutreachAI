@@ -2289,8 +2289,18 @@ function companyPrimaryAction(company: CrmCompany) {
   }
   if (!company.ai_summary) {
     return {
-      label: "Run company research",
-      copy: "Analyze the website, sales angle and first outreach draft from one place.",
+      label: "Complete sales research",
+      copy: "Analyze the website, find contacts and prepare the first email in one guided step.",
+      action: "prepare-company",
+      target: `#outreach-${company.id}`,
+      icon: Sparkles
+    };
+  }
+  if (!hasDraft) {
+    return {
+      label: "Complete sales research",
+      copy: "Analyze the website, find contacts and prepare the first email in one guided step.",
+      action: "prepare-company",
       target: `#outreach-${company.id}`,
       icon: Sparkles
     };
@@ -2302,14 +2312,6 @@ function companyPrimaryAction(company: CrmCompany) {
       action: "discover-contact",
       target: `#contacts-${company.id}`,
       icon: UserRoundSearch
-    };
-  }
-  if (!hasDraft) {
-    return {
-      label: "Create first email",
-      copy: "Generate a personalized email and follow-ups for human review.",
-      target: `#outreach-${company.id}`,
-      icon: Mail
     };
   }
   if (!hasApproved) {
@@ -2657,7 +2659,95 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     }
   }
 
+  async function prepareCompanyOpportunity() {
+    if (!current.lead_id) {
+      setActionError(t("Reconnect this company to a lead before generating outreach."));
+      return;
+    }
+    setActionBusy("prepare-company");
+    setActionError("");
+    setActionNotice(t("Preparing company research, contacts and first email..."));
+    const warnings: string[] = [];
+    try {
+      let nextCompany = current;
+      if ((nextCompany.website || nextCompany.domain) && !nextCompany.ai_summary) {
+        try {
+          const analysisResult = await withTimeout(
+            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/analyze`, { method: "POST", timeoutMs: 22000 }),
+            24000,
+            "Website analysis took too long. The company stays saved in CRM."
+          );
+          if (analysisResult.company) {
+            nextCompany = normalizeCrmCompany(analysisResult.company);
+            applyCompanyUpdate(nextCompany);
+          }
+          if (analysisResult.status !== "success") warnings.push(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
+        } catch (err) {
+          warnings.push(friendlyErrorMessage(err, t("Website analysis is temporarily unavailable. The company stays saved in CRM.")));
+        }
+      }
+
+      const hasEmailBeforeContactSearch = Boolean(nextCompany.email || nextCompany.contacts.some((contact) => contact.email));
+      if (!hasEmailBeforeContactSearch) {
+        try {
+          const contactResult = await withTimeout(
+            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
+            22000,
+            "Contact search took too long. You can add a contact manually."
+          );
+          if (contactResult.company) {
+            nextCompany = normalizeCrmCompany(contactResult.company);
+            applyCompanyUpdate(nextCompany);
+          }
+          if (contactResult.status !== "success") warnings.push(t(contactResult.message || "No verified business email was found. Add a decision maker manually or continue with research."));
+        } catch (err) {
+          warnings.push(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
+        }
+      }
+
+      const hasDraftBeforeGeneration = Boolean(nextCompany.generated_emails.length);
+      if (!hasDraftBeforeGeneration) {
+        const draftResult = await withTimeout(
+          api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/email-draft`, { method: "POST", timeoutMs: 35000 }),
+          37000,
+          "Email draft took too long. Try again from the Outreach Center."
+        );
+        if (draftResult.company) {
+          nextCompany = normalizeCrmCompany(draftResult.company);
+          applyCompanyUpdate(nextCompany);
+        }
+        if (draftResult.status !== "success" || !draftResult.email) warnings.push(t(draftResult.message || "Email draft could not be prepared yet."));
+      }
+
+      setActionNotice(
+        warnings.length
+          ? `${t("Company preparation finished with missing data.")} ${warnings.slice(0, 2).join(" ")}`
+          : t("Company preparation is ready. Review the email before approving anything.")
+      );
+      trackEvent("company_preparation_completed", {
+        company_id: current.id,
+        company: current.name,
+        warnings: warnings.length
+      });
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, t("Company preparation could not be completed. Try again or continue manually."));
+      setActionError(reason);
+      setActionNotice("");
+      trackEvent("company_preparation_failed", {
+        company_id: current.id,
+        company: current.name,
+        reason
+      });
+    } finally {
+      setActionBusy("");
+    }
+  }
+
   function runPrimaryAction() {
+    if (primaryAction.action === "prepare-company") {
+      void prepareCompanyOpportunity();
+      return;
+    }
     if (primaryAction.action === "discover-contact") {
       void discoverContacts();
       return;
@@ -2707,10 +2797,10 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               <button
                 type="button"
                 onClick={runPrimaryAction}
-                disabled={(primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
+                disabled={(primaryAction.action === "prepare-company" && (actionBusy === "prepare-company" || !current.lead_id)) || (primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
                 className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
               >
-                {(primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
+                {(primaryAction.action === "prepare-company" && actionBusy === "prepare-company") || (primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
                 {t(primaryAction.label)}
               </button>
             ) : (
