@@ -2239,11 +2239,12 @@ function CrmFilters({ filters, setFilters }: { filters: Record<string, string>; 
 
 function companyHealthScore(company: CrmCompany) {
   const sentAt = currentEmailSentAt(company);
+  const hasVerifiedEmail = Boolean(company.email || company.contacts.some((contact) => contact.email));
   const checks = [
     Boolean(company.website || company.domain),
     Boolean(company.address || company.city || company.country),
     Boolean(company.phone),
-    Boolean(company.email || company.contacts.some((contact) => contact.email)),
+    hasVerifiedEmail,
     Boolean(company.contacts.length),
     Boolean(company.ai_summary),
     Boolean(company.suggested_offer || company.sales_angle),
@@ -2264,7 +2265,7 @@ function companyNextAction(company: CrmCompany) {
   const hasSent = Boolean(sentAt);
   if (!company.website && !company.domain) return "Add a website so OutreachAI can research this company.";
   if (!company.ai_summary) return "Run company research to create the sales angle.";
-  if (!hasContact) return "Find or add a decision maker before preparing outreach.";
+  if (!hasContact) return "Find or add a verified email before preparing outreach.";
   if (!hasDraft) return "Generate a personalized email for review.";
   if (!hasApproved) return "Review and approve the prepared email.";
   if (!hasSent) return "Send the approved email when you are ready.";
@@ -2297,7 +2298,7 @@ function companyPrimaryAction(company: CrmCompany) {
   if (!hasContact) {
     return {
       label: "Find decision maker",
-      copy: "Look for a verified contact. If none is found, add one manually and continue.",
+      copy: "Look for a verified email. If none is found, add one manually and continue.",
       action: "discover-contact",
       target: `#contacts-${company.id}`,
       icon: UserRoundSearch
@@ -2368,10 +2369,11 @@ function pipelineReadiness(company: CrmCompany) {
 
 function timelineProgress(company: CrmCompany) {
   const sentAt = currentEmailSentAt(company);
+  const hasVerifiedEmail = Boolean(company.email || company.contacts.some((contact) => contact.email));
   const steps = [
     ["Saved", company.saved_to_crm_at || company.created_at],
     ["Researched", company.website_analyzed_at || company.ai_summary],
-    ["Contact", company.contact_found_at || company.email || company.contacts.length],
+    ["Verified email", hasVerifiedEmail],
     ["Draft", company.email_generated_at || company.generated_emails.length],
     ["Approved", company.email_approved_at],
     ["Sent", sentAt],
@@ -2500,15 +2502,17 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const owner = "Not assigned";
   const companySize = "Not available";
   const estimatedOpportunity = firstDeal?.value ? `€${Math.round(firstDeal.value).toLocaleString()}` : "Not available";
+  const hasVerifiedEmail = Boolean(current.email || current.contacts.some((contact) => contact.email));
   const buyingSignals = [
     current.website_analyzed_at ? "Website research completed" : "",
-    current.contact_found_at || current.contacts.length ? "Decision maker available" : "",
+    hasVerifiedEmail ? "Verified email available" : "",
+    !hasVerifiedEmail && current.contact_search_checked_at ? "Contact search checked" : "",
     current.generated_emails.length ? "Outreach draft prepared" : "",
     current.replied_at ? "Reply received" : "",
     current.google_rating ? "Public reputation signal available" : ""
   ].filter(Boolean);
   const risks = [
-    !current.email && !current.contacts.some((contact) => contact.email) ? "No verified email yet" : "",
+    !hasVerifiedEmail ? "No verified email yet" : "",
     !current.ai_summary ? "Company research is incomplete" : "",
     !current.generated_emails.length ? "No approved outreach draft yet" : ""
   ].filter(Boolean);
@@ -2529,7 +2533,8 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     ["Lead found", current.found_at, "Company was discovered and added to your workspace."],
     ["Saved to CRM", current.saved_to_crm_at || current.created_at, "The company is stored in your CRM."],
     ["Website analyzed", current.website_analyzed_at, "AI research created the company summary and sales angle."],
-    ["Contact found", current.contact_found_at, "A decision maker or business contact was added."],
+    ["Verified email found", hasVerifiedEmail ? current.contact_found_at || current.saved_to_crm_at || current.created_at : null, "A verified business email was saved."],
+    ["Contact search checked", !hasVerifiedEmail ? current.contact_search_checked_at : null, "Contact discovery ran, but no verified email was available."],
     ["Email generated", current.email_generated_at, "A personalized draft was prepared for review."],
     ["Email approved", current.email_approved_at, "A user approved the draft before sending."],
     [currentSentAt ? "Email sent" : "Email not sent yet", currentSentAt, currentSentAt ? "Approved outreach was sent." : "Current approved email has not been sent yet."],
