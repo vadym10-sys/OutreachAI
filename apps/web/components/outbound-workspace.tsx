@@ -125,7 +125,7 @@ type WorkspaceAppBootstrapResponse = {
 type OpportunityReadiness = {
   total: number;
   researched: number;
-  contacts: number;
+  verifiedEmails: number;
   drafts: number;
   ready: number;
 };
@@ -380,12 +380,13 @@ function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
 
 function opportunityReadinessFromCompanies(companies: CrmCompany[]): OpportunityReadiness {
   const normalized = companies.map(normalizeCrmCompany);
+  const hasVerifiedEmail = (company: CrmCompany) => Boolean(company.email || company.contacts.some((contact) => contact.email));
   return {
     total: normalized.length,
     researched: normalized.filter((company) => Boolean(company.website_analyzed_at || company.ai_summary || company.suggested_offer || company.sales_angle)).length,
-    contacts: normalized.filter((company) => Boolean(company.email || company.contact_found_at || company.contacts.some((contact) => contact.email))).length,
+    verifiedEmails: normalized.filter(hasVerifiedEmail).length,
     drafts: normalized.filter((company) => Boolean(company.email_generated_at || company.generated_emails.length)).length,
-    ready: normalized.filter((company) => Boolean((company.website_analyzed_at || company.ai_summary) && (company.email || company.contacts.some((contact) => contact.email)) && (company.email_generated_at || company.generated_emails.length))).length
+    ready: normalized.filter((company) => Boolean((company.website_analyzed_at || company.ai_summary) && hasVerifiedEmail(company) && (company.email_generated_at || company.generated_emails.length))).length
   };
 }
 
@@ -2091,7 +2092,7 @@ export function LeadFinderPage() {
           <div className="mt-4 grid gap-2 sm:grid-cols-3">
             {[
               ["Website research", opportunityReadiness.researched],
-              ["Contacts found", opportunityReadiness.contacts],
+              ["Verified emails", opportunityReadiness.verifiedEmails],
               ["Email drafts", opportunityReadiness.drafts]
             ].map(([label, value]) => (
               <div key={String(label)} className="rounded-xl bg-slate-50 p-3 text-sm">
