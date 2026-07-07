@@ -85,6 +85,44 @@ def test_website_url_normalization_adds_https_and_rejects_invalid_domains() -> N
         normalize_website_url("localhost")
 
 
+def test_website_analysis_passes_requested_language_to_ai(monkeypatch) -> None:
+    from app.services import ai as ai_service
+
+    captured_payload: dict[str, object] = {}
+
+    def fake_completion(system: str, payload: dict[str, object]) -> dict[str, object]:
+        captured_payload.update(payload)
+        return {
+            "company": "Example",
+            "description": "Компания помогает B2B-командам.",
+            "industry": "SaaS",
+            "niche": "B2B",
+            "services": ["Поиск клиентов"],
+            "strengths": ["Понятное предложение"],
+            "weaknesses": ["Мало доверия"],
+            "icp_score": 80,
+            "summary": "Русское резюме",
+            "sales_angle": "Русский угол продаж",
+            "suggested_offer": "Русское предложение",
+            "expected_reply_rate": "6-10%",
+        }
+
+    monkeypatch.setattr(ai_service, "_json_completion", fake_completion)
+    result = ai_service.analyze_company_website(
+        company="Example",
+        website="https://example.com",
+        niche="SaaS",
+        page_title="Example",
+        meta_description="B2B SaaS",
+        page_text="B2B sales workspace",
+        technologies=[],
+        language="Russian",
+    )
+
+    assert captured_payload["requested_language"] == "Russian"
+    assert result.sales_angle == "Русский угол продаж"
+
+
 def stripe_signature(payload: dict) -> tuple[str, str]:
     raw = json.dumps(payload, separators=(",", ":"))
     timestamp = str(int(time.time()))

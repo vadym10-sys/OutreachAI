@@ -710,7 +710,7 @@ def analyze_company(company_id: UUID, request: Request, user: WorkspaceUserConte
     if not lead:
         return UsageActionOut(status="error", message="This company needs a saved lead before analysis.", company=_crm_company_out(db, workspace, user.user_id, company))
     try:
-        _analyze_lead_if_possible(db, user.user_id, workspace, lead)
+        _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
         _add_lead_activity(db, request, user.user_id, workspace, "website.analyzed", lead, {"source": "workspace_app"})
         db.commit()
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)

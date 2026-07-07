@@ -102,6 +102,7 @@ def analyze_company_website(
     meta_description: str,
     page_text: str,
     technologies: list[str],
+    language: str = "English",
 ) -> AnalysisOut:
     system = (
         "You are OutreachAI's production website analyst. Return only JSON with keys "
@@ -112,11 +113,13 @@ def analyze_company_website(
         "recommended_cta, follow_up_strategy, expected_reply_rate. icp_score must be "
         "an integer from 0 to 100. expected_reply_rate should be a realistic percentage "
         "range like 6-10%. Do not invent contact details. Mark unknown fields as empty "
-        "strings or empty arrays."
+        "strings or empty arrays. Write every human-readable value in the requested "
+        "language, except company names, URLs, technologies, and email-related fields."
     )
     data = _json_completion(
         system,
         {
+            "requested_language": language or "English",
             "company_hint": company,
             "website": website,
             "niche_hint": niche,

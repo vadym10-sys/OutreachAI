@@ -684,6 +684,28 @@ function contactSearchDetails(lead: Lead) {
   };
 }
 
+function draftHasFollowUps(draft?: Email) {
+  if (!draft) return false;
+  const text = [draft.follow_up_1, draft.follow_up_2, draft.body].filter(Boolean).join(" ").toLowerCase();
+  return /follow[- ]?up|повторн|касани|relance|seguimiento|follow-up/i.test(text);
+}
+
+function parseReplyRate(value: string) {
+  const matches = value.match(/\d+(?:[.,]\d+)?/g);
+  if (!matches?.length) return null;
+  const values = matches.map((item) => Number(item.replace(",", "."))).filter((item) => Number.isFinite(item));
+  if (!values.length) return null;
+  return Math.round(values.reduce((sum, item) => sum + item, 0) / values.length);
+}
+
+function confidenceLabel(profile: ReturnType<typeof leadProfile>, copilot: SalesCopilot | undefined, t: (key: string) => string) {
+  if (copilot) return t("Purchase probability").replace("{count}", String(copilot.probability_to_buy));
+  if (typeof profile.icpScore === "number" && profile.icpScore > 0) return t("ICP fit score").replace("{count}", String(profile.icpScore));
+  const replyRate = parseReplyRate(profile.expectedReplyRate);
+  if (replyRate !== null) return t("Estimated from reply forecast").replace("{count}", String(replyRate));
+  return unavailable;
+}
+
 function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, followUps?: FollowUpSequence, audit?: WebsiteAudit) {
   const profile = leadProfile(lead);
   const noOpenFollowUps = safeArray(followUps?.no_open);
@@ -699,16 +721,20 @@ function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, 
     ["AI opportunity analysis", Boolean(profile.opportunityAnalysis && profile.opportunityAnalysis !== unavailable) || Boolean(copilot?.reasoning?.length)],
     ["Personalized offer", Boolean(profile.offer && profile.offer !== unavailable)],
     ["Personalized first email", Boolean(draft?.subject && draft.body)],
-    ["Follow-up sequence", Boolean(followUps && (noOpenFollowUps.length || openedFollowUps.length || repliedFollowUps.length || clickedFollowUps.length))],
-    ["Confidence score", Boolean(copilot)],
+    ["Follow-up sequence", Boolean(followUps && (noOpenFollowUps.length || openedFollowUps.length || repliedFollowUps.length || clickedFollowUps.length)) || draftHasFollowUps(draft)],
+    ["Confidence score", Boolean(copilot) || Boolean(typeof profile.icpScore === "number" && profile.icpScore > 0) || parseReplyRate(profile.expectedReplyRate) !== null],
     ["Expected reply rate", Boolean(profile.expectedReplyRate && profile.expectedReplyRate !== unavailable) || Boolean(copilot)],
-    ["Priority score", Boolean(copilot)]
+    ["Priority score", Boolean(copilot) || Boolean(typeof profile.icpScore === "number" && profile.icpScore > 0) || Boolean(draft?.subject && profile.expectedReplyRate !== unavailable)]
   ] as const;
 }
 
-function priorityScore(copilot?: SalesCopilot) {
-  if (!copilot) return null;
-  return Math.round((copilot.probability_to_reply * 0.45) + (copilot.probability_to_buy * 0.45) + Math.min(copilot.estimated_revenue / 1000, 10));
+function priorityScore(profile: ReturnType<typeof leadProfile>, copilot?: SalesCopilot, draft?: Email) {
+  if (copilot) return Math.round((copilot.probability_to_reply * 0.45) + (copilot.probability_to_buy * 0.45) + Math.min(copilot.estimated_revenue / 1000, 10));
+  const icp = typeof profile.icpScore === "number" ? profile.icpScore : 0;
+  const replyRate = parseReplyRate(profile.expectedReplyRate) ?? 0;
+  if (!icp && !replyRate && !draft) return null;
+  const draftBonus = draft?.subject && draft.body ? 10 : 0;
+  return Math.max(0, Math.min(100, Math.round(icp * 0.7 + replyRate * 1.5 + draftBonus)));
 }
 
 function opportunityNextStep(lead: Lead, draft?: Email) {
@@ -1273,7 +1299,7 @@ function OpportunityCard({
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
-  const priority = priorityScore(copilot);
+  const priority = priorityScore(profile, copilot, draft);
   const visibleStatus = status;
   const companyId = lead.crm_company_id || null;
   const nextStep = opportunityNextStep(lead, draft);
@@ -1509,7 +1535,7 @@ function OpportunityCard({
           ["AI opportunity analysis", safeArray(copilot?.reasoning).join(" ") || profile.opportunityAnalysis],
           ["Personalized offer", profile.offer],
           ["Expected reply rate", copilot ? `${copilot.probability_to_reply}%` : profile.expectedReplyRate],
-          ["Confidence score", copilot ? t("Purchase probability").replace("{count}", String(copilot.probability_to_buy)) : unavailable],
+          ["Confidence score", confidenceLabel(profile, copilot, t)],
           ["Priority score", priority === null ? unavailable : `${priority}/100`]
         ].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t(label)}</p><p className="mt-1 text-sm font-semibold text-slate-800">{t(value)}</p></div>)}
       </div>

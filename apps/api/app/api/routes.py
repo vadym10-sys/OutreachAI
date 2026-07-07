@@ -1334,7 +1334,7 @@ def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Cam
     }
 
 
-def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, lead: Lead) -> None:
+def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, lead: Lead, language: str | None = None) -> None:
     if not lead.website:
         logger.info("lead_finder_trace step=website_analysis_skipped data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "reason": "no_website"}, sort_keys=True))
         return
@@ -1352,6 +1352,7 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
             meta_description=snapshot.meta_description,
             page_text=snapshot.text,
             technologies=snapshot.technologies,
+            language=language or workspace.language or "English",
         )
     except WebsiteFetchError as exc:
         logger.warning(
