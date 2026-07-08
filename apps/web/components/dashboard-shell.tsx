@@ -288,8 +288,12 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     const label = t("shell.account");
     const updateClerkUserButtonLabel = () => {
       document.querySelectorAll(".dashboard-user-button button").forEach((button) => {
-        button.setAttribute("aria-label", label);
-        button.setAttribute("title", label);
+        if (button.getAttribute("aria-label") !== label) {
+          button.setAttribute("aria-label", label);
+        }
+        if (button.getAttribute("title") !== label) {
+          button.setAttribute("title", label);
+        }
       });
     };
     updateClerkUserButtonLabel();
