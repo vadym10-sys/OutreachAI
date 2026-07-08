@@ -644,13 +644,61 @@ function leadWebsite(lead: Lead) {
   return lead.website || (lead.domain ? `https://${lead.domain}` : "");
 }
 
+function hasCompanyContext(lead: Lead) {
+  return Boolean(lead.company || leadWebsite(lead) || lead.industry || lead.niche || lead.city || lead.country || lead.address);
+}
+
+function fallbackIcpScore(lead: Lead, metadata: Record<string, unknown>) {
+  const rawScore = lead.icp_score ?? metadata.icp_score;
+  if (typeof rawScore === "number" && Number.isFinite(rawScore)) return rawScore;
+  if (!hasCompanyContext(lead)) return null;
+  let score = 35;
+  if (leadWebsite(lead)) score += 15;
+  if (lead.industry || lead.niche || lead.business_category) score += 15;
+  if (lead.city || lead.country || lead.address) score += 10;
+  if (lead.email && lead.hunter_verified) score += 15;
+  if (lead.ai_summary || safeArray(lead.pain_points).length || safeArray(lead.services).length) score += 10;
+  return Math.min(score, 85);
+}
+
+function fallbackWebsiteAnalysis(lead: Lead) {
+  if (!hasCompanyContext(lead)) return unavailable;
+  if (leadWebsite(lead)) return "Website is saved. Run company research to extract services, weak points and personalization facts.";
+  return "Basic company profile is saved. Add a website to unlock deeper AI research.";
+}
+
+function fallbackPainAnalysis(lead: Lead) {
+  return hasCompanyContext(lead)
+    ? "Likely pain points: manual prospecting, weak website conversion and missed follow-ups. Run AI research to verify this for the company."
+    : unavailable;
+}
+
+function fallbackOpportunityAnalysis(lead: Lead) {
+  return hasCompanyContext(lead)
+    ? "Recommended angle: connect your offer to the company's market, website gaps and local growth goals before outreach."
+    : unavailable;
+}
+
+function fallbackOffer(lead: Lead) {
+  return hasCompanyContext(lead)
+    ? "Offer a short audit and one practical improvement the company can review before booking a call."
+    : unavailable;
+}
+
+function fallbackExpectedReplyRate(lead: Lead) {
+  if (!hasCompanyContext(lead)) return unavailable;
+  return lead.email && lead.hunter_verified
+    ? "Estimated 6-12% after verified contact and personalized review."
+    : "Estimated 4-8% until a verified decision maker is added.";
+}
+
 function leadProfile(lead: Lead) {
   const metadata = parseNotes(lead.notes);
   const painPoints = safeArray(lead.pain_points).length ? safeArray(lead.pain_points) : safeStringArray(metadata.pain_points);
   const weaknesses = safeArray(lead.weaknesses).length ? safeArray(lead.weaknesses) : safeStringArray(metadata.weaknesses);
   const services = safeArray(lead.services).length ? safeArray(lead.services) : safeStringArray(metadata.services);
-  const valueProposition = lead.value_proposition || text(metadata.value_proposition);
-  const recommendedCta = lead.recommended_cta || text(metadata.recommended_cta);
+  const valueProposition = lead.value_proposition || text(metadata.value_proposition, "");
+  const recommendedCta = lead.recommended_cta || text(metadata.recommended_cta, "");
   return {
     company: lead.company,
     website: leadWebsite(lead) || unavailable,
@@ -662,13 +710,13 @@ function leadProfile(lead: Lead) {
     verifiedEmail: lead.email || (lead.hunter_status === "no_verified_email" ? "No verified email yet" : unavailable),
     phone: lead.phone || unavailable,
     linkedin: lead.linkedin || unavailable,
-    websiteAnalysis: lead.ai_summary || text(metadata.ai_summary),
-    painAnalysis: painPoints.join(", ") || weaknesses.join(", ") || text(metadata.website_audit_actions) || unavailable,
-    opportunityAnalysis: lead.sales_angle || lead.outreach_strategy || valueProposition || text(metadata.sales_angle || metadata.outreach_strategy) || unavailable,
-    offer: lead.suggested_offer || recommendedCta || text(metadata.suggested_offer) || unavailable,
-    expectedReplyRate: lead.expected_reply_rate || text(metadata.expected_reply_rate) || unavailable,
+    websiteAnalysis: lead.ai_summary || text(metadata.ai_summary, "") || fallbackWebsiteAnalysis(lead),
+    painAnalysis: painPoints.join(", ") || weaknesses.join(", ") || text(metadata.website_audit_actions, "") || fallbackPainAnalysis(lead),
+    opportunityAnalysis: lead.sales_angle || lead.outreach_strategy || valueProposition || text(metadata.sales_angle || metadata.outreach_strategy, "") || fallbackOpportunityAnalysis(lead),
+    offer: lead.suggested_offer || recommendedCta || text(metadata.suggested_offer, "") || fallbackOffer(lead),
+    expectedReplyRate: lead.expected_reply_rate || text(metadata.expected_reply_rate, "") || fallbackExpectedReplyRate(lead),
     services: services.join(", "),
-    icpScore: lead.icp_score ?? metadata.icp_score ?? null,
+    icpScore: fallbackIcpScore(lead, metadata),
     source: lead.source || text(metadata.source)
   };
 }
