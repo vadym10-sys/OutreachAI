@@ -15,7 +15,6 @@ import {
   UserRoundSearch,
   Workflow
 } from "lucide-react";
-import { PricingCheckoutButton } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useI18n } from "@/lib/i18n/provider";
 
@@ -279,7 +278,9 @@ export function LandingPage() {
                   {plan.items.map((item) => <li key={item} className="flex gap-2"><CheckCircle2 size={18} className="mt-0.5 shrink-0 text-brand" />{t(item)}</li>)}
                 </ul>
                 <div className="mt-7">
-                  <PricingCheckoutButton plan={plan.name}>{t(plan.cta)}</PricingCheckoutButton>
+                  <AuthNavigationLink href={`/sign-up?plan=${encodeURIComponent(plan.name)}`} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-5 py-3 text-center text-sm font-semibold text-white shadow-soft transition hover:bg-slate-800">
+                    {t(plan.cta)}
+                  </AuthNavigationLink>
                 </div>
               </article>
             );
