@@ -19,22 +19,18 @@ type I18nContextValue = {
 
 const I18nContext = createContext<I18nContextValue | null>(null);
 
-function initialLocale(): Locale {
-  if (typeof window === 'undefined') return 'en';
+function storedLocale(): Locale | null {
+  if (typeof window === 'undefined') return null;
   try {
     const stored = window.localStorage.getItem(storageKey);
     if (isLocale(stored)) return stored;
     const cookie = document.cookie.split('; ').find((item) => item.startsWith(`${cookieKey}=`))?.split('=')[1];
     if (isLocale(cookie)) return cookie;
-    const browser = window.navigator.language;
-    if (isLocale(browser)) return browser;
-    const base = browser.split('-')[0];
-    if (isLocale(base)) return base;
   } catch {
     // Some mobile in-app browsers and private sessions block storage access.
     // Falling back to English is expected and should not create customer-visible noise.
   }
-  return 'en';
+  return null;
 }
 
 function persistLocale(locale: Locale) {
@@ -53,17 +49,20 @@ export function I18nProvider({ children, initialLocale: serverLocale = 'en' }: {
 
   useEffect(() => {
     let active = true;
-    window.queueMicrotask(() => {
+    const timer = window.setTimeout(() => {
       if (!active) return;
-      const next = initialLocale();
-      setLocaleState(next);
+      const next = storedLocale() ?? serverLocale;
+      if (next !== serverLocale) {
+        setLocaleState(next);
+      }
       persistLocale(next);
       setLoaded(true);
-    });
+    }, 0);
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
-  }, []);
+  }, [serverLocale]);
 
   useEffect(() => {
     if (!loaded) return;
