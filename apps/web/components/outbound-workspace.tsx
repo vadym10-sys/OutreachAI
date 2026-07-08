@@ -1087,7 +1087,7 @@ function useSalesData() {
     void refresh();
   }, [refresh]);
 
-  return { api, ready, leads, setLeads, campaigns, metrics, loading, error, refresh };
+  return { api, ready, leads, setLeads, campaigns, setCampaigns, metrics, loading, error, refresh };
 }
 
 function IntegrationStatusPanel({ api, ready }: { api: ApiFn; ready: boolean }) {
@@ -1380,6 +1380,7 @@ function OpportunityCard({
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
+  const missingCoverage = coverage.filter(([, done]) => !done).map(([label]) => label);
   const priority = priorityScore(profile, copilot, draft);
   const visibleStatus = status;
   const companyId = lead.crm_company_id || null;
@@ -1462,8 +1463,49 @@ function OpportunityCard({
         throw new Error(draftResult.message || "Email draft could not be created.");
       }
       const nextDraft = draftResult.email;
+      const aiLeadId = (latestLead?.id || lead.id || "").trim();
+      if (aiLeadId) {
+        setStatus(t("Calculating AI reply and priority scores..."));
+        try {
+          const result = await withTimeout(
+            api<SalesCopilot>(`/api/leads/${aiLeadId}/copilot`, { method: "POST", timeoutMs: 22000 }),
+            24000,
+            "AI scoring took too long. The company and email draft are still saved."
+          );
+          setCopilot(result);
+        } catch (err) {
+          warnings.push(friendlyErrorMessage(err, "AI scoring is temporarily unavailable. The opportunity stays saved."));
+        }
+
+        const leadForAudit = latestLead || lead;
+        if (leadForAudit.website || leadForAudit.domain) {
+          setStatus(t("Running AI website audit..."));
+          try {
+            const result = await withTimeout(
+              api<WebsiteAudit>(`/api/leads/${aiLeadId}/website-audit`, { method: "POST", timeoutMs: 26000 }),
+              28000,
+              "AI website audit took too long. The company and email draft are still saved."
+            );
+            setAudit(result);
+          } catch (err) {
+            warnings.push(friendlyErrorMessage(err, "AI website audit is temporarily unavailable. The opportunity stays saved."));
+          }
+        }
+
+        setStatus(t("Preparing follow-up sequence..."));
+        try {
+          const result = await withTimeout(
+            api<FollowUpSequence>(`/api/leads/${aiLeadId}/follow-ups`, { method: "POST", timeoutMs: 22000 }),
+            24000,
+            "Follow-up generation took too long. The first email draft is still ready for review."
+          );
+          setFollowUps(result);
+        } catch (err) {
+          warnings.push(friendlyErrorMessage(err, "Follow-up generation is temporarily unavailable. The first email draft is still ready."));
+        }
+      }
       setStatus([
-        t("Email draft is ready. Review it below, then approve the send when you are ready."),
+        t("AI enrichment finished. Review the opportunity below, then approve the email when ready."),
         ...warnings.slice(0, 2)
       ].join(" "));
       setDraft(nextDraft);
@@ -1629,6 +1671,29 @@ function OpportunityCard({
       </section>
 
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI autopilot")}</p>
+            <h3 className="mt-2 text-lg font-black text-ink">{t("One click fills the missing sales research.")}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-700">
+              {t("OutreachAI checks the website, contacts, AI scores, offer, first email and follow-ups. If a source cannot verify data, it shows exactly what is missing instead of inventing it.")}
+            </p>
+          </div>
+          <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">
+            {completed}/{coverage.length} {t("ready")}
+          </span>
+        </div>
+        {missingCoverage.length ? (
+          <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+            <p className="font-bold text-ink">{t("Still missing")}</p>
+            <p className="mt-1 leading-6">{missingCoverage.slice(0, 4).map((item) => t(item)).join(", ")}{missingCoverage.length > 4 ? ` +${missingCoverage.length - 4}` : ""}</p>
+          </div>
+        ) : (
+          <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("This opportunity has all required sales research.")}</p>
+        )}
+      </section>
+
+      <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Useful B2B data")}</p>
@@ -1703,7 +1768,7 @@ function OpportunityCard({
       {visibleStatus && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
-        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Complete sales research")}</PrimaryButton>
+        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Complete missing AI data" : "Refresh AI research")}</PrimaryButton>
         <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve draft")}</SecondaryButton>
         <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
@@ -3305,7 +3370,7 @@ function campaignStepLabel(step: CampaignSequence, translate: (value: string) =>
 }
 
 export function CampaignsPage() {
-  const { api, campaigns, leads, loading, error, refresh } = useSalesData();
+  const { api, campaigns, setCampaigns, leads, loading, error, refresh } = useSalesData();
   const [notice, setNotice] = useState("");
   const [actionBusy, setActionBusy] = useState("");
   const { t } = useI18n();
@@ -3342,6 +3407,7 @@ export function CampaignsPage() {
     setNotice("");
     try {
       const campaign = await api<Campaign>("/api/campaigns", { method: "POST", body: JSON.stringify(payload) });
+      setCampaigns((items) => [safeCampaign(campaign), ...items.filter((item) => item.id !== campaign.id)]);
       let attachWarning = "";
       if (lead?.id) {
         try {
@@ -3367,6 +3433,7 @@ export function CampaignsPage() {
     setNotice("");
     try {
       const updated = await api<Campaign>(`/api/campaigns/${campaignId}/${action}`, { method: "POST" });
+      setCampaigns((items) => items.map((item) => item.id === campaignId ? safeCampaign({ ...item, ...updated }) : item));
       setNotice(`${updated.name} is now ${updated.status}. Emails still require approved drafts before sending.`);
       trackEvent("campaign_status_updated", { campaign_id: campaignId, action, status: updated.status });
       await refresh();

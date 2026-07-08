@@ -154,6 +154,8 @@ type MockOverride = {
 };
 
 export async function mockWorkspaceApi(page: Page, overrides: Record<string, MockOverride> = {}) {
+  let manualCompany: any = null;
+  let currentCampaign: any = qaCampaign;
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
@@ -253,50 +255,81 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace-app/companies" && route.request().method() === "POST") {
       const body = route.request().postDataJSON() as Partial<typeof qaCompany>;
+      manualCompany = {
+        ...qaCompany,
+        id: "44444444-4444-4444-4444-444444444445",
+        name: body.name || "Manual Company",
+        website: body.website || null,
+        domain: body.website ? String(body.website).replace(/^https?:\/\//, "").replace(/\/.*$/, "") : null,
+        country: body.country || null,
+        city: body.city || null,
+        industry: body.industry || null,
+        phone: body.phone || null,
+        email: body.email || null,
+        source: "manual",
+        email_status: body.email ? "Manual" : "Not found",
+        crm_stage: "New Lead",
+        contacts: body.email ? qaCompany.contacts : [],
+        deals: [],
+        notes: [],
+        activity: [{ id: "88888888-8888-8888-8888-888888888889", action: "company.manual_created", metadata_json: {}, created_at: now }],
+        generated_emails: [],
+        created_at: now,
+        found_at: now,
+        saved_to_crm_at: now,
+        website_analyzed_at: null,
+        contact_found_at: body.email ? now : null,
+        email_generated_at: null,
+        last_activity_at: now,
+        stage_changed_at: now
+      };
       return fulfillJson(route, {
         status: "created",
-        company: {
-          ...qaCompany,
-          id: "44444444-4444-4444-4444-444444444445",
-          name: body.name || "Manual Company",
-          website: body.website || null,
-          country: body.country || null,
-          city: body.city || null,
-          industry: body.industry || null,
-          phone: body.phone || null,
-          email: body.email || null,
-          source: "manual",
-          email_status: body.email ? "Manual" : "Not found",
-          crm_stage: "New Lead",
-          contacts: body.email ? qaCompany.contacts : [],
-          deals: [],
-          notes: [],
-          activity: [{ id: "88888888-8888-8888-8888-888888888889", action: "company.manual_created", metadata_json: {}, created_at: now }],
-          generated_emails: [],
-          created_at: now,
-          found_at: now,
-          saved_to_crm_at: now,
-          website_analyzed_at: null,
-          contact_found_at: body.email ? now : null,
-          email_generated_at: null,
-          last_activity_at: now,
-          stage_changed_at: now
-        },
+        company: manualCompany,
         warnings: [],
         message: "Company saved to CRM."
       });
     }
     if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [qaCompany]);
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, qaCompany);
-    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/analyze`) return fulfillJson(route, { status: "success", message: "Website analysis saved.", company: { ...qaCompany, crm_stage: "Website Analyzed", website_analyzed_at: now } });
-    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/contacts`) return fulfillJson(route, { status: "success", message: "Verified contact saved to CRM.", company: { ...qaCompany, crm_stage: "Contact Found", contact_found_at: now } });
-    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/email-draft`) return fulfillJson(route, { status: "success", message: "Email draft created for review. Nothing was sent.", company: { ...qaCompany, crm_stage: "Email Draft Ready", email_generated_at: now }, email: qaCompany.generated_emails[0] });
+    const workspaceCompanyAction = apiPath.match(/^\/api\/workspace-app\/companies\/([^/]+)\/(analyze|contacts|email-draft)$/);
+    if (workspaceCompanyAction) {
+      const [, companyId, action] = workspaceCompanyAction;
+      const baseCompany = manualCompany?.id === companyId ? manualCompany : qaCompany;
+      if (action === "analyze") {
+        const company = { ...baseCompany, crm_stage: "Website Analyzed", website_analyzed_at: now, ai_summary: baseCompany.ai_summary || qaLead.ai_summary };
+        if (manualCompany?.id === companyId) manualCompany = company;
+        return fulfillJson(route, { status: "success", message: "Website analysis saved.", company });
+      }
+      if (action === "contacts") {
+        const company = { ...baseCompany, crm_stage: "Contact Found", contact_found_at: now, contacts: baseCompany.contacts?.length ? baseCompany.contacts : qaCompany.contacts, email: baseCompany.email || qaLead.email, email_status: "Verified" };
+        if (manualCompany?.id === companyId) manualCompany = company;
+        return fulfillJson(route, { status: "success", message: "Verified contact saved to CRM.", company });
+      }
+      const email = { ...qaCompany.generated_emails[0], lead_id: baseCompany.lead_id || qaLead.id, subject: `Quick idea for ${baseCompany.name}` };
+      const company = { ...baseCompany, crm_stage: "Email Draft Ready", email_generated_at: now, generated_emails: [email] };
+      if (manualCompany?.id === companyId) manualCompany = company;
+      return fulfillJson(route, { status: "success", message: "Email draft created for review. Nothing was sent.", company, email });
+    }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: { ...qaCompany, crm_stage: "Approved", email_approved_at: now }, email: { ...qaCompany.generated_emails[0], delivery_status: "approved" } });
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: { ...qaCompany, crm_stage: "Sent", email_sent_at: now }, email: { ...qaCompany.generated_emails[0], delivery_status: "sent", sent_at: now } });
     if (apiPath === "/api/dashboard") return fulfillJson(route, { leads: 1, campaigns: 1, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: "Starter", usage: { leads: 1, email_sends: 0 } });
-    if (apiPath === "/api/campaigns") return fulfillJson(route, route.request().method() === "POST" ? qaCampaign : [qaCampaign]);
-    if (apiPath === `/api/campaigns/${qaCampaign.id}/launch`) return fulfillJson(route, { ...qaCampaign, status: "Running" });
-    if (apiPath === `/api/campaigns/${qaCampaign.id}/pause`) return fulfillJson(route, { ...qaCampaign, status: "Paused" });
+    if (apiPath === "/api/campaigns") {
+      if (route.request().method() === "POST") {
+        const body = route.request().postDataJSON() as Partial<typeof qaCampaign>;
+        currentCampaign = { ...qaCampaign, name: body.name || qaCampaign.name };
+        return fulfillJson(route, currentCampaign);
+      }
+      return fulfillJson(route, [currentCampaign]);
+    }
+    if (apiPath === `/api/campaigns/${qaCampaign.id}/launch`) {
+      currentCampaign = { ...currentCampaign, status: "Running" };
+      return fulfillJson(route, currentCampaign);
+    }
+    if (apiPath === `/api/campaigns/${qaCampaign.id}/pause`) {
+      currentCampaign = { ...currentCampaign, status: "Paused" };
+      return fulfillJson(route, currentCampaign);
+    }
     if (apiPath === "/api/crm/companies") return fulfillJson(route, [qaCompany]);
     if (apiPath === `/api/crm/companies/${qaCompany.id}/stage`) {
       return fulfillJson(route, {
