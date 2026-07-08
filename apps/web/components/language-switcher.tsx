@@ -1,6 +1,7 @@
 'use client';
 
 import { useAuth } from '@clerk/nextjs';
+import { useAuthRuntime } from '@/components/app-providers';
 import { clientApi } from '@/lib/client-api';
 import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
 import { useI18n } from '@/lib/i18n/provider';
@@ -8,7 +9,9 @@ import { localeLanguageNames, localeNames, locales, type Locale } from '@/lib/i1
 import type { Profile } from '@/lib/types';
 
 function useOptionalAuth() {
-  if (!hasClerkPublishableKey || isClerkE2EBypass) {
+  const { clerkEnabled } = useAuthRuntime();
+
+  if (!clerkEnabled || !hasClerkPublishableKey || isClerkE2EBypass) {
     return { getToken: async () => isClerkE2EBypass ? 'dev' : null, ready: isClerkE2EBypass };
   }
   // eslint-disable-next-line react-hooks/rules-of-hooks
