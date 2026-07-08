@@ -804,6 +804,20 @@ function priorityScore(profile: ReturnType<typeof leadProfile>, copilot?: SalesC
   return Math.max(0, Math.min(100, Math.round(icp * 0.7 + replyRate * 1.5 + draftBonus)));
 }
 
+function opportunityDataFacts(lead: Lead, profile: ReturnType<typeof leadProfile>, t: (key: string) => string) {
+  return [
+    { label: "Website", value: profile.website, ready: profile.website !== unavailable },
+    { label: "Industry", value: profile.industry, ready: profile.industry !== unavailable },
+    { label: "Location", value: profile.location, ready: profile.location !== unavailable },
+    { label: "Company size", value: String(profileSizeText(profile, t)), ready: profile.size !== unavailable },
+    { label: "Phone", value: profile.phone, ready: profile.phone !== unavailable },
+    { label: "Google rating", value: lead.google_rating ? `${lead.google_rating}/5` : unavailable, ready: Boolean(lead.google_rating) },
+    { label: "Decision maker", value: profile.decisionMaker, ready: profile.decisionMaker !== unavailable },
+    { label: "Verified email", value: profile.verifiedEmail, ready: Boolean(lead.email && lead.hunter_verified) },
+    { label: "Source", value: sourceLabel(profile.source), ready: profile.source !== unavailable }
+  ];
+}
+
 function opportunityNextStep(lead: Lead, draft?: Email) {
   if (!lead.crm_company_id) {
     return {
@@ -1372,6 +1386,7 @@ function OpportunityCard({
   const nextStep = opportunityNextStep(lead, draft);
   const contactSearch = contactSearchDetails(lead);
   const contactNeedsManualStep = !lead.email && (contactSearch.checked || lead.hunter_status === "no_verified_email");
+  const dataFacts = opportunityDataFacts(lead, profile, t);
 
   async function completeResearch() {
     if (!companyId) {
@@ -1611,6 +1626,24 @@ function OpportunityCard({
         <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Next step")}</p>
         <h3 className="mt-2 text-lg font-black text-ink">{t(nextStep.title)}</h3>
         <p className="mt-2 text-sm leading-6 text-slate-700">{t(nextStep.copy)}</p>
+      </section>
+
+      <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Useful B2B data")}</p>
+            <h3 className="mt-1 text-lg font-black text-ink">{t("Most important facts for qualification and outreach.")}</h3>
+          </div>
+          <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+            {dataFacts.filter((fact) => fact.ready).length}/{dataFacts.length} {t("ready")}
+          </span>
+        </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {dataFacts.map((fact) => <div key={fact.label} className={`rounded-xl border p-3 ${fact.ready ? "border-teal-100 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
+            <p className={`text-xs font-bold uppercase ${fact.ready ? "text-brand" : "text-slate-500"}`}>{t(fact.label)}</p>
+            <p className="mt-1 break-words text-sm font-semibold text-slate-800">{t(fact.value)}</p>
+          </div>)}
+        </div>
       </section>
 
       <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
