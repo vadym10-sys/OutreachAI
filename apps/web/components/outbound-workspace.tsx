@@ -777,6 +777,24 @@ function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, 
   ] as const;
 }
 
+function opportunityCoverageHint(label: string) {
+  const hints: Record<string, string> = {
+    "Company profile": "Save the company with website, industry and location.",
+    "Website analysis": "Run company research to analyze the website.",
+    "Decision makers": "Find contacts or add a decision maker manually.",
+    "Verified emails": "Run contact discovery or add a verified email before sending.",
+    "AI pain analysis": "Run AI research to identify likely customer pains.",
+    "AI opportunity analysis": "Run AI research to find the strongest sales angle.",
+    "Personalized offer": "Run AI research to prepare a concrete offer.",
+    "Personalized first email": "Complete sales research to generate the first email.",
+    "Follow-up sequence": "Generate the email draft to prepare follow-ups.",
+    "Confidence score": "Research the company to calculate confidence.",
+    "Expected reply rate": "Generate outreach to estimate reply rate.",
+    "Priority score": "Complete research and email draft to calculate priority."
+  };
+  return hints[label] || "Complete sales research to fill this step.";
+}
+
 function priorityScore(profile: ReturnType<typeof leadProfile>, copilot?: SalesCopilot, draft?: Email) {
   if (copilot) return Math.round((copilot.probability_to_reply * 0.45) + (copilot.probability_to_buy * 0.45) + Math.min(copilot.estimated_revenue / 1000, 10));
   const icp = typeof profile.icpScore === "number" ? profile.icpScore : 0;
@@ -1610,7 +1628,10 @@ function OpportunityCard({
       </div>
 
       <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        {coverage.map(([label, done]) => <span key={label} className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold ${done ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-500"}`}><CheckCircle2 size={15} />{t(label)}</span>)}
+        {coverage.map(([label, done]) => <div key={label} className={`rounded-lg px-3 py-2 ${done ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-600"}`}>
+          <span className="inline-flex items-center gap-2 text-xs font-bold"><CheckCircle2 size={15} />{t(label)}</span>
+          {!done ? <p className="mt-1 text-xs leading-5 text-slate-500">{t(opportunityCoverageHint(label))}</p> : null}
+        </div>)}
       </div>
 
       {contactNeedsManualStep && <section className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
