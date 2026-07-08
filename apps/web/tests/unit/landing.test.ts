@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { locales, translate, translateVisibleText } from "../../lib/i18n/translations";
+import { locales, translate, translations, translateVisibleText, visiblePhraseTranslations } from "../../lib/i18n/translations";
 
 describe("pricing plans", () => {
   it("contains the required subscription tiers", () => {
@@ -40,6 +40,26 @@ describe("i18n", () => {
 
     for (const phrase of phrases) {
       expect(translateVisibleText(phrase, "ru")).not.toBe(phrase);
+    }
+  });
+
+  it("does not leak Cyrillic copy into non-Russian interface translations", () => {
+    const nonRussianLocales = locales.filter((locale) => locale !== "ru");
+    const cyrillic = /[А-Яа-яЁё]/;
+
+    for (const [locale, dictionary] of Object.entries(translations)) {
+      if (locale === "ru") continue;
+      for (const [key, value] of Object.entries(dictionary)) {
+        expect(value, `${locale}.${key}`).not.toMatch(cyrillic);
+      }
+    }
+
+    for (const [source, localized] of Object.entries(visiblePhraseTranslations)) {
+      for (const locale of nonRussianLocales) {
+        const value = localized[locale];
+        if (!value) continue;
+        expect(value, `${locale}.${source}`).not.toMatch(cyrillic);
+      }
     }
   });
 
