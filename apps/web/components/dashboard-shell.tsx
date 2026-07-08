@@ -294,7 +294,14 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     };
     updateClerkUserButtonLabel();
     const timeoutId = window.setTimeout(updateClerkUserButtonLabel, 250);
-    return () => window.clearTimeout(timeoutId);
+    const observer = new MutationObserver(updateClerkUserButtonLabel);
+    document.querySelectorAll(".dashboard-user-button").forEach((node) => {
+      observer.observe(node, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-label", "title"] });
+    });
+    return () => {
+      window.clearTimeout(timeoutId);
+      observer.disconnect();
+    };
   }, [t, workspaceOwnerEmail, email]);
   const workspaceReadyScore = useMemo(() => {
     if (!workspace) return 0;

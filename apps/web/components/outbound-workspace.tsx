@@ -2361,6 +2361,11 @@ function emailStatusLabel(status?: string | null) {
   if (normalized === "not prepared") return "Not prepared";
   if (normalized === "draft ready") return "Draft ready";
   if (normalized === "no verified email") return "No verified email";
+  if (normalized === "verified" || normalized === "verified email") return "Verified email";
+  if (normalized === "found" || normalized === "contact found") return "Contact found";
+  if (normalized === "not found" || normalized === "missing") return "No verified email";
+  if (normalized === "approved") return "Email approved";
+  if (normalized === "sent") return "Email sent";
   return status;
 }
 
