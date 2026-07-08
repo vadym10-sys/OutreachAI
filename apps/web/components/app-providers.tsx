@@ -389,6 +389,21 @@ export function AppProviders({
   clerkEnabled: boolean;
   initialLocale?: Locale;
 }) {
+  const pathname = usePathname();
+  const isPublicLanding = pathname === "/";
+
+  if (isPublicLanding) {
+    return (
+      <AuthRuntimeContext.Provider value={{ clerkEnabled: false }}>
+        <I18nProvider initialLocale={initialLocale}>
+          <ClientErrorBoundary>
+            {children}
+          </ClientErrorBoundary>
+        </I18nProvider>
+      </AuthRuntimeContext.Provider>
+    );
+  }
+
   if (!clerkEnabled || !clerkPublishableKey) {
     return (
       <AuthRuntimeContext.Provider value={{ clerkEnabled: false }}>
