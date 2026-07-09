@@ -3373,6 +3373,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
   const aiNextWork = aiWorkPlan.find((item) => !item.done)?.label || "Approval";
   const website = current.website || current.domain || "";
   const primaryContact = current.contacts.find((contact) => contact.email) || current.contacts[0];
+  const hasVerifiedContact = Boolean(current.email || current.contacts.some((contact) => contact.email));
 
   async function moveStage() {
     setBusy("stage");
@@ -3405,6 +3406,33 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
       setNotice(t("Note saved to the activity history."));
     } catch (err) {
       setError(friendlyErrorMessage(err, t("Note could not be saved. Please try again.")));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function findVerifiedEmail() {
+    if (!current.lead_id) {
+      setError(t("Reconnect this company to a lead before finding contacts."));
+      return;
+    }
+    setBusy("contacts");
+    setNotice("");
+    setError("");
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
+        22000,
+        "Contact search took too long. You can add a contact manually."
+      );
+      if (result.company) {
+        const normalized = normalizeCrmCompany(result.company);
+        setCurrent(normalized);
+        setStageValue(normalized.crm_stage);
+      }
+      setNotice(t(result.message || "Contact search finished."));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
     } finally {
       setBusy("");
     }
@@ -3447,6 +3475,12 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
         </div>
       </div>
       <div className="grid shrink-0 gap-2 lg:w-56">
+        {!hasVerifiedContact && (
+          <button type="button" onClick={findVerifiedEmail} disabled={busy === "contacts" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
+            {busy === "contacts" ? <Loader2 className="animate-spin" size={17} /> : <UserRoundSearch size={17} />}
+            {t("Find verified email")}
+          </button>
+        )}
         <Link href={`/dashboard/companies?company=${encodeURIComponent(current.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">
           <PrimaryActionIcon size={17} />
           {t("Continue work")}
