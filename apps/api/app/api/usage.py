@@ -787,8 +787,32 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
         run_inline_analysis=False,
     )
     _lead_trace(request_id, "turnkey_research_batch_started", leads=len(saved))
-    warnings.extend(_complete_turnkey_b2b_research(db, request, user.user_id, workspace, saved, request_id))
-    companies = [_crm_company_out(db, workspace, user.user_id, _sync_lead_to_crm(db, user.user_id, workspace, lead)) for lead in saved]
+    try:
+        warnings.extend(_complete_turnkey_b2b_research(db, request, user.user_id, workspace, saved, request_id))
+    except Exception as exc:
+        capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_research_batch", workspace_id=workspace.id, extra={"request_id": request_id})
+        warnings.append("Companies were saved. Some AI research is still being prepared and can be retried from the company profile.")
+        _lead_trace(request_id, "turnkey_research_batch_failed", reason=str(exc), error_type=type(exc).__name__)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+    companies: list[CrmCompanyOut] = []
+    for lead in saved:
+        try:
+            company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+            companies.append(_safe_company_out(db, workspace, user.user_id, company))
+        except Exception as exc:
+            capture_provider_exception(exc, provider="postgresql", endpoint="workspace_app.company_output_after_search", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id})
+            _lead_trace(request_id, "company_output_after_search_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc), error_type=type(exc).__name__)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            fallback_company = _ensure_minimal_company(db, user.user_id, workspace, lead, _lead_metadata(lead))
+            companies.append(_minimal_crm_company_out(fallback_company))
+
     db.commit()
     _lead_trace(
         request_id,
