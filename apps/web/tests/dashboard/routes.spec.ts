@@ -9,6 +9,8 @@ const customerRoutes = [
   ["/dashboard/leads", "Find real companies and turn each into a sales opportunity."],
   ["/dashboard/companies", "Open the next company to finish the opportunity."],
   ["/dashboard/campaigns", "Review real outreach before anything is sent."],
+  ["/dashboard/inbox", "Turn replies into meetings."],
+  ["/dashboard/analytics", "Measure what creates meetings."],
   ["/dashboard/crm", "Move real leads from research to revenue."],
   ["/dashboard/billing", "Subscription and usage."],
   ["/dashboard/settings", "Make the workspace ready for your first campaign."]

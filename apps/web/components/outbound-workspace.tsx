@@ -1043,15 +1043,16 @@ function completedWorkflowSteps(metrics: DashboardMetrics, leads: Lead[], campai
 
 const coreCustomerActions = [
   ["Find leads", "Search one focused market.", "/dashboard/leads"],
-  ["Open company", "Review saved companies and missing data.", "/dashboard/companies"],
-  ["Prepare email", "Let AI draft outreach for review.", "/dashboard/companies"],
-  ["Approve", "Approve only messages ready to send.", "/dashboard/campaigns"]
+  ["Personalize email", "Turn company research into a reviewed email.", "/dashboard/companies"],
+  ["Launch campaign", "Send only after approval.", "/dashboard/campaigns"],
+  ["Handle replies", "Classify replies and move deals forward.", "/dashboard/inbox"],
+  ["Measure results", "See what creates meetings.", "/dashboard/analytics"]
 ] as const;
 
 function CoreActionGrid({ activeHref }: { activeHref?: string }) {
   const { t } = useI18n();
   return (
-    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
       {coreCustomerActions.map(([title, copy, href], index) => {
         const active = activeHref === href || (!activeHref && index === 0);
         return (
@@ -3999,7 +4000,40 @@ export function CampaignsPage() {
 }
 
 export function InboxPage() {
-  return <div className="space-y-6"><PageHeader eyebrow="Inbox" title="Replies will appear here when campaigns receive real responses." copy="AI classification is available after reply events exist in the workspace." /><EmptyState title="No real replies yet" copy="OutreachAI will classify replies as Interested, Not interested, Later, Asked for pricing, Wants a call or Wrong person after replies are received." /></div>;
+  const { metrics, leads, campaigns, loading, error } = useSalesData();
+  const { t } = useI18n();
+  const approvedOrSent = leads.filter((lead) => lead.email_approved_at || lead.email_sent_at);
+  const repliedLeads = leads.filter((lead) => lead.replied_at);
+  const activeCampaigns = campaigns.filter((campaign) => ["running", "active", "sent"].includes(String(campaign.status || "").toLowerCase()));
+  const hasReplyData = metrics.replies > 0 || repliedLeads.length > 0;
+
+  return <div className="space-y-6">
+    <PageHeader
+      eyebrow="Inbox"
+      title="Turn replies into meetings."
+      copy="This is where OutreachAI keeps follow-up work simple: watch replies, classify intent and move the company to the next CRM step."
+      action={<Link href={approvedOrSent.length ? "/dashboard/campaigns" : "/dashboard/companies"} className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t(approvedOrSent.length ? "Review campaigns" : "Prepare email")}</Link>}
+    />
+    {loading ? <EmptyState title="Loading reply workspace" copy="Reading campaigns and reply events." /> : error ? <WidgetErrorCard title="Reply workspace unavailable" copy={error} /> : <>
+      <section className="grid gap-4 sm:grid-cols-3">
+        <MetricCard label="Approved emails" value={String(approvedOrSent.length)} help="Ready for reply tracking" />
+        <MetricCard label="Replies" value={String(metrics.replies || repliedLeads.length)} help="Real replies captured" />
+        <MetricCard label="Reply rate" value={`${metrics.reply_rate || 0}%`} help="From tracked campaigns" />
+      </section>
+      {hasReplyData ? <section className="grid gap-4 lg:grid-cols-2">
+        {repliedLeads.slice(0, 6).map((lead) => <article key={lead.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase text-brand">{t("Reply received")}</p>
+          <h2 className="mt-2 text-lg font-black text-ink">{lead.company}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{t("Review the reply, update CRM stage and decide the next follow-up.")}</p>
+          <Link href={lead.crm_company_id ? `/dashboard/companies?company=${encodeURIComponent(lead.crm_company_id)}` : "/dashboard/companies"} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Open company")}</Link>
+        </article>)}
+      </section> : <EmptyState
+        title={activeCampaigns.length ? "No replies yet" : "No active campaign replies yet"}
+        copy={activeCampaigns.length ? "Replies will appear here automatically after approved emails receive real responses." : "Approve an email and launch a campaign first. Then OutreachAI will classify replies and show the next sales action here."}
+        action={<Link href={approvedOrSent.length ? "/dashboard/campaigns" : "/dashboard/companies"} className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t(approvedOrSent.length ? "Review campaigns" : "Prepare email")}</Link>}
+      />}
+    </>}
+  </div>;
 }
 
 export function CrmPipelinePage() {
@@ -4068,8 +4102,13 @@ export function DealsPage() {
 
 export function AnalyticsPage() {
   const { metrics, loading, error } = useSalesData();
+  const { t } = useI18n();
   const cards = [["Leads found", metrics.leads], ["Websites analyzed", metrics.funnel?.find((item) => item.status === "analyzed")?.count || 0], ["Emails generated", metrics.emails_sent + metrics.delivered], ["Emails sent", metrics.emails_sent], ["Open rate", `${metrics.open_rate || 0}%`], ["Reply rate", `${metrics.reply_rate || 0}%`], ["Meetings booked", metrics.meetings], ["Clients won", metrics.conversion_rate ? `${metrics.conversion_rate}% conversion` : "0"], ["Estimated revenue", `€${Math.round(metrics.revenue_forecast || metrics.revenue || 0).toLocaleString()}`]];
-  return <div className="space-y-6"><PageHeader eyebrow="Analytics" title="Measure real outbound performance." copy="Metrics come from saved campaigns, email events and subscription activity." />{loading ? <EmptyState title="Loading analytics" copy="Reading real workspace metrics." /> : error ? <EmptyState title="Analytics unavailable" copy={error} /> : <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{cards.map(([label, value]) => <MetricCard key={String(label)} label={String(label)} value={String(value)} help="Real workspace metric" />)}</section>}</div>;
+  const visibleCards = cards.filter(([, value]) => {
+    const normalized = String(value);
+    return !["0", "0%", "€0"].includes(normalized);
+  });
+  return <div className="space-y-6"><PageHeader eyebrow="Analytics" title="Measure what creates meetings." copy="Analytics stays focused on the sales actions companies pay for: leads found, emails approved, campaigns sent, replies and meetings." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />{loading ? <EmptyState title="Loading analytics" copy="Reading real workspace metrics." /> : error ? <WidgetErrorCard title="Analytics unavailable" copy={error} /> : visibleCards.length ? <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{visibleCards.map(([label, value]) => <MetricCard key={String(label)} label={String(label)} value={String(value)} help="Real workspace metric" />)}</section> : <EmptyState title="No performance data yet" copy="Find leads, prepare emails and launch one approved campaign. Analytics will then show real conversion signals instead of placeholder numbers." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}</div>;
 }
 
 export function SettingsPage() {
