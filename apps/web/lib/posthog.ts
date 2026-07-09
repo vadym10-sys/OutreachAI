@@ -1,6 +1,7 @@
 "use client";
 
 import posthog, { type Properties } from "posthog-js";
+import { shouldUseHeavyClientTelemetry } from "@/lib/client-runtime";
 import { posthogHost, posthogKey } from "@/lib/env";
 
 const ignoredErrorPatterns = [
@@ -132,21 +133,27 @@ export function initializePostHog() {
     return true;
   }
 
+  const heavyTelemetryEnabled = shouldUseHeavyClientTelemetry();
+
   posthog.init(runtimePostHogKey, {
     api_host: runtimePostHogHost,
     defaults: "2025-05-24",
-    autocapture: {
-      dom_event_allowlist: ["click", "change", "submit"],
-      element_allowlist: ["a", "button", "form", "input", "select", "textarea"],
-      css_selector_ignorelist: [".ph-no-capture", "[data-ph-no-capture]"]
-    },
+    autocapture: heavyTelemetryEnabled
+      ? {
+          dom_event_allowlist: ["click", "change", "submit"],
+          element_allowlist: ["a", "button", "form", "input", "select", "textarea"],
+          css_selector_ignorelist: [".ph-no-capture", "[data-ph-no-capture]"]
+        }
+      : false,
     capture_pageview: false,
     capture_pageleave: true,
-    capture_performance: {
-      web_vitals: true,
-      network_timing: true
-    },
-    capture_heatmaps: true,
+    capture_performance: heavyTelemetryEnabled
+      ? {
+          web_vitals: true,
+          network_timing: true
+        }
+      : false,
+    capture_heatmaps: heavyTelemetryEnabled,
     capture_exceptions: true,
     disable_session_recording: true,
     session_recording: {
@@ -268,7 +275,9 @@ export function capturePostHogException(error: unknown, properties: Properties =
 
   void bootPostHog().then((ready) => {
     if (!ready) return;
-    posthog.startSessionRecording();
+    if (shouldUseHeavyClientTelemetry()) {
+      posthog.startSessionRecording();
+    }
     posthog.capture("$exception", {
       ...properties,
       $exception_message: message,

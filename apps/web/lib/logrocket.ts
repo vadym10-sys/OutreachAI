@@ -1,6 +1,7 @@
 "use client";
 
 import LogRocket from "logrocket";
+import { shouldUseHeavyClientTelemetry } from "@/lib/client-runtime";
 import { logRocketAppId } from "@/lib/env";
 
 type RuntimeConfig = {
@@ -115,6 +116,17 @@ export function bootLogRocket() {
 
 export function initializeLogRocket() {
   if (typeof window === "undefined" || !runtimeAppId) {
+    return false;
+  }
+
+  if (!shouldUseHeavyClientTelemetry()) {
+    window.__OUTREACHAI_LOGROCKET__ = {
+      enabled: false,
+      appId: runtimeAppId,
+      loaded: false,
+      release: runtimeRelease,
+      environment: runtimeEnvironment
+    };
     return false;
   }
 
