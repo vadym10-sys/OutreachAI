@@ -104,6 +104,7 @@ export type Lead = {
   recommended_cta?: string | null;
   follow_up_strategy?: string | null;
   expected_reply_rate?: string | null;
+  generated_emails?: Email[];
   created_at?: string | null;
   found_at?: string | null;
   saved_to_crm_at?: string | null;

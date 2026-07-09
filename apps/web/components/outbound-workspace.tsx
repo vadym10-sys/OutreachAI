@@ -1367,11 +1367,12 @@ function OpportunityCard({
   initialDraft?: Email | null;
 }) {
   const { t } = useI18n();
+  const savedDraft = initialDraft || lead.generated_emails?.[0] || null;
   const [copilot, setCopilot] = useState<SalesCopilot | undefined>();
   const [audit, setAudit] = useState<WebsiteAudit | undefined>();
   const [followUps, setFollowUps] = useState<FollowUpSequence | undefined>();
-  const [draft, setDraft] = useState<Email | undefined>(() => initialDraft || undefined);
-  const [readyToSend, setReadyToSend] = useState(() => Boolean(initialDraft && initialDraft.delivery_status !== "approved" && initialDraft.delivery_status !== "sent"));
+  const [draft, setDraft] = useState<Email | undefined>(() => savedDraft || undefined);
+  const [readyToSend, setReadyToSend] = useState(() => Boolean(savedDraft && savedDraft.delivery_status !== "approved" && savedDraft.delivery_status !== "sent"));
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
@@ -2387,7 +2388,7 @@ export function LeadFinderPage() {
           </div>
         </form>
       </section>
-      {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={lead.id || lead.place_id || lead.company} lead={lead} api={api} onLeadUpdated={(updated) => {
+      {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={`${lead.id || lead.place_id || lead.company}:${lead.generated_emails?.[0]?.id || "no-draft"}:${lead.generated_emails?.[0]?.delivery_status || ""}`} lead={lead} api={api} onLeadUpdated={(updated) => {
         setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
         setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
       }} />)}</div> : <EmptyState title={hasSearched ? "No matching companies found" : "No real leads yet"} copy={hasSearched ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}
@@ -2441,6 +2442,7 @@ function leadFromCrmCompany(company: CrmCompany): Lead {
     recommended_cta: company.recommended_cta,
     follow_up_strategy: company.follow_up_strategy,
     expected_reply_rate: company.expected_reply_rate,
+    generated_emails: company.generated_emails,
     created_at: company.created_at,
     found_at: company.found_at,
     saved_to_crm_at: company.saved_to_crm_at,
