@@ -190,6 +190,13 @@ export type CrmCompany = {
   recommended_cta?: string | null;
   follow_up_strategy?: string | null;
   expected_reply_rate: string;
+  buying_signals?: string[];
+  risks?: string[];
+  opportunity_analysis?: string | null;
+  partnership_fit?: string | null;
+  priority_score?: number | null;
+  confidence_score?: number | null;
+  next_recommended_action?: string | null;
   email_status: string;
   crm_stage: string;
   contacts: CrmContact[];

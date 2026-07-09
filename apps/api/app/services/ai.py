@@ -110,10 +110,14 @@ def analyze_company_website(
         "services, technologies, strengths, weaknesses, icp_score, summary, icp, "
         "value_proposition, detected_language, target_geography, sales_angle, "
         "company_summary, suggested_offer, outreach_strategy, recommended_tone, "
-        "recommended_cta, follow_up_strategy, expected_reply_rate. icp_score must be "
+        "recommended_cta, follow_up_strategy, expected_reply_rate, buying_signals, risks, "
+        "opportunity_analysis, partnership_fit, priority_score, confidence_score, "
+        "next_recommended_action. icp_score, priority_score and confidence_score must be "
         "an integer from 0 to 100. expected_reply_rate should be a realistic percentage "
         "range like 6-10%. Do not invent contact details. Mark unknown fields as empty "
-        "strings or empty arrays. Write every human-readable value in the requested "
+        "strings or empty arrays. Focus on B2B partnerships and outbound sales usefulness: "
+        "why this company is worth contacting, what signal supports it, what risk blocks it, "
+        "and the one safest next action. Write every human-readable value in the requested "
         "language, except company names, URLs, technologies, and email-related fields."
     )
     data = _json_completion(
@@ -155,6 +159,13 @@ def analyze_company_website(
         recommended_cta=str(data.get("recommended_cta") or "Book a quick call"),
         follow_up_strategy=str(data.get("follow_up_strategy") or ""),
         expected_reply_rate=str(data.get("expected_reply_rate") or ""),
+        buying_signals=_list(data.get("buying_signals")),
+        risks=_list(data.get("risks")),
+        opportunity_analysis=str(data.get("opportunity_analysis") or ""),
+        partnership_fit=str(data.get("partnership_fit") or ""),
+        priority_score=_bounded_int(data.get("priority_score"), 0, 100),
+        confidence_score=_bounded_int(data.get("confidence_score"), 0, 100),
+        next_recommended_action=str(data.get("next_recommended_action") or ""),
     )
 
 

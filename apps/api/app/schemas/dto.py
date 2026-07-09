@@ -183,6 +183,13 @@ class LeadOut(BaseModel):
     outreach_strategy: Optional[str] = None
     sales_angle: Optional[str] = None
     expected_reply_rate: Optional[str] = None
+    buying_signals: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    opportunity_analysis: str = ""
+    partnership_fit: str = ""
+    priority_score: Optional[int] = None
+    confidence_score: Optional[int] = None
+    next_recommended_action: str = ""
     found_at: Optional[datetime] = None
     saved_to_crm_at: Optional[datetime] = None
     website_analyzed_at: Optional[datetime] = None
@@ -279,6 +286,13 @@ class CrmCompanyOut(BaseModel):
     recommended_cta: str = ""
     follow_up_strategy: str = ""
     expected_reply_rate: str = ""
+    buying_signals: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    opportunity_analysis: str = ""
+    partnership_fit: str = ""
+    priority_score: Optional[int] = None
+    confidence_score: Optional[int] = None
+    next_recommended_action: str = ""
     email_status: str = "Not prepared"
     crm_stage: str = "New Lead"
     contacts: list[CrmContactOut] = Field(default_factory=list)
@@ -466,6 +480,13 @@ class AnalysisOut(BaseModel):
     recommended_cta: str = ""
     follow_up_strategy: str = ""
     expected_reply_rate: str = ""
+    buying_signals: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    opportunity_analysis: str = ""
+    partnership_fit: str = ""
+    priority_score: int = Field(default=0, ge=0, le=100)
+    confidence_score: int = Field(default=0, ge=0, le=100)
+    next_recommended_action: str = ""
 
 
 class CampaignCreate(BaseModel):

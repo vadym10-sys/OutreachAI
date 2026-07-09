@@ -2865,7 +2865,10 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const companySize = "Not available";
   const estimatedOpportunity = firstDeal?.value ? `€${Math.round(firstDeal.value).toLocaleString()}` : "Not available";
   const hasVerifiedEmail = Boolean(current.email || current.contacts.some((contact) => contact.email));
+  const aiBuyingSignals = safeArray(current.buying_signals).filter(Boolean);
+  const aiRisks = safeArray(current.risks).filter(Boolean);
   const buyingSignals = [
+    ...aiBuyingSignals,
     current.website_analyzed_at ? "Website research completed" : "",
     hasVerifiedEmail ? "Verified email available" : "",
     !hasVerifiedEmail && current.contact_search_checked_at ? "Contact search checked" : "",
@@ -2874,6 +2877,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     current.google_rating ? "Public reputation signal available" : ""
   ].filter(Boolean);
   const risks = [
+    ...aiRisks,
     !hasVerifiedEmail ? "No verified email yet" : "",
     !current.ai_summary ? "Company research is incomplete" : "",
     !current.generated_emails.length ? "No approved outreach draft yet" : ""
@@ -3298,7 +3302,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               <p className="text-sm font-bold text-brand">{t("AI summary")}</p>
               <p className="mt-2 text-sm leading-6 text-slate-800">{current.ai_summary || t("Not available. Analyze the company website to generate the summary, pain points and sales angle.")}</p>
               <p className="mt-4 text-sm font-bold text-ink">{t("Why this company is interesting")}</p>
-              <p className="mt-2 text-sm leading-6 text-slate-700">{current.sales_angle || current.outreach_strategy || t("Not available. Complete sales research to identify the strongest outreach angle.")}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{current.opportunity_analysis || current.partnership_fit || current.sales_angle || current.outreach_strategy || t("Not available. Complete sales research to identify the strongest outreach angle.")}</p>
               {(!current.ai_summary || (!current.sales_angle && !current.outreach_strategy)) && (
                 <button
                   type="button"
@@ -3313,8 +3317,9 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             </div>
             <div className="grid gap-3">
               <InfoCell label="Estimated opportunity" value={estimatedOpportunity === "Not available" ? null : estimatedOpportunity} help="Deal value appears after qualification." />
-              <InfoCell label="Confidence score" value={`${healthScore}%`} help="Based on profile completeness, contacts, AI research and outreach state." />
-              <InfoCell label="Recommended action" value={t(nextAction)} help="The next safest step in the sales workflow." />
+              <InfoCell label="Confidence score" value={`${current.confidence_score || healthScore}%`} help="Based on profile completeness, contacts, AI research and outreach state." />
+              <InfoCell label="Priority score" value={current.priority_score ? `${current.priority_score}%` : null} help="AI priority for B2B sales work." />
+              <InfoCell label="Recommended action" value={t(current.next_recommended_action || nextAction)} help="The next safest step in the sales workflow." />
             </div>
           </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">

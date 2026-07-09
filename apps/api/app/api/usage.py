@@ -311,6 +311,19 @@ def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallb
         "expected_reply_rate": metadata.get("expected_reply_rate") or ("8-12%" if has_website and has_email else "4-8% until contact is verified"),
         "confidence_score": metadata.get("confidence_score") or (72 if has_website and has_email else 58 if has_website else 42),
         "priority_score": metadata.get("priority_score") or (78 if has_website and has_email else 62 if has_website else 45),
+        "buying_signals": metadata.get("buying_signals") or public_signals or ["Company profile saved in CRM"],
+        "risks": metadata.get("risks")
+        or [
+            risk
+            for risk in [
+                "" if has_website else "Website is missing, so AI research is limited.",
+                "" if has_email else "Verified decision-maker email is not available yet.",
+            ]
+            if risk
+        ],
+        "opportunity_analysis": metadata.get("opportunity_analysis")
+        or f"{company} can be worked as a B2B opportunity once research and contact verification are complete.",
+        "partnership_fit": metadata.get("partnership_fit") or f"Potential fit for {offer_focus} if the company matches the workspace ICP.",
         "next_recommended_action": metadata.get("next_recommended_action")
         or (
             "Review and approve the generated email." if has_email else "Find or add a verified decision-maker email before sending."

@@ -692,6 +692,13 @@ def _lead_out(lead: Lead) -> LeadOut:
         outreach_strategy=str(metadata.get("outreach_strategy") or "") or None,
         sales_angle=str(metadata.get("sales_angle") or "") or None,
         expected_reply_rate=str(metadata.get("expected_reply_rate") or "") or None,
+        buying_signals=[str(item) for item in metadata.get("buying_signals", [])] if isinstance(metadata.get("buying_signals"), list) else [],
+        risks=[str(item) for item in metadata.get("risks", [])] if isinstance(metadata.get("risks"), list) else [],
+        opportunity_analysis=str(metadata.get("opportunity_analysis") or ""),
+        partnership_fit=str(metadata.get("partnership_fit") or ""),
+        priority_score=int(metadata["priority_score"]) if str(metadata.get("priority_score") or "").isdigit() else None,
+        confidence_score=int(metadata["confidence_score"]) if str(metadata.get("confidence_score") or "").isdigit() else None,
+        next_recommended_action=str(metadata.get("next_recommended_action") or ""),
         found_at=lead.created_at,
         saved_to_crm_at=metadata.get("saved_to_crm_at"),
         website_analyzed_at=metadata.get("website_analyzed_at"),
@@ -1022,6 +1029,13 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         recommended_cta=str(company_metadata.get("recommended_cta") or ""),
         follow_up_strategy=str(company_metadata.get("follow_up_strategy") or ""),
         expected_reply_rate=company.expected_reply_rate,
+        buying_signals=[str(item) for item in company_metadata.get("buying_signals", [])] if isinstance(company_metadata.get("buying_signals"), list) else [],
+        risks=[str(item) for item in company_metadata.get("risks", [])] if isinstance(company_metadata.get("risks"), list) else [],
+        opportunity_analysis=str(company_metadata.get("opportunity_analysis") or ""),
+        partnership_fit=str(company_metadata.get("partnership_fit") or ""),
+        priority_score=int(company_metadata["priority_score"]) if str(company_metadata.get("priority_score") or "").isdigit() else None,
+        confidence_score=int(company_metadata["confidence_score"]) if str(company_metadata.get("confidence_score") or "").isdigit() else None,
+        next_recommended_action=str(company_metadata.get("next_recommended_action") or ""),
         email_status=company.email_status,
         crm_stage=company.crm_stage,
         contacts=[_crm_contact_out(contact, company.name) for contact in contacts],
@@ -1191,6 +1205,9 @@ def _analysis_summary_with_score(analysis: AnalysisOut, score: int) -> str:
         f"Sales angle: {analysis.sales_angle}" if analysis.sales_angle else "",
         f"Suggested offer: {analysis.suggested_offer}" if analysis.suggested_offer else "",
         f"Outreach strategy: {analysis.outreach_strategy}" if analysis.outreach_strategy else "",
+        f"Opportunity: {analysis.opportunity_analysis}" if analysis.opportunity_analysis else "",
+        f"Partnership fit: {analysis.partnership_fit}" if analysis.partnership_fit else "",
+        f"Next action: {analysis.next_recommended_action}" if analysis.next_recommended_action else "",
     ]
     return " ".join(part for part in parts if part).strip()
 
@@ -1215,6 +1232,13 @@ def _analysis_metadata(analysis: AnalysisOut, score: int, audit: dict | None = N
         "recommended_cta": analysis.recommended_cta,
         "follow_up_strategy": analysis.follow_up_strategy,
         "expected_reply_rate": analysis.expected_reply_rate,
+        "buying_signals": analysis.buying_signals,
+        "risks": analysis.risks,
+        "opportunity_analysis": analysis.opportunity_analysis,
+        "partnership_fit": analysis.partnership_fit,
+        "priority_score": analysis.priority_score or score,
+        "confidence_score": analysis.confidence_score or score,
+        "next_recommended_action": analysis.next_recommended_action,
         "website_audit_actions": list((audit or {}).get("priority_actions") or []),
     }
 
@@ -1229,6 +1253,11 @@ def _analysis_readable_notes(analysis: AnalysisOut, score: int, audit: dict | No
         f"Suggested offer: {analysis.suggested_offer}" if analysis.suggested_offer else "",
         f"Outreach strategy: {analysis.outreach_strategy}" if analysis.outreach_strategy else "",
         f"Expected reply rate: {analysis.expected_reply_rate}" if analysis.expected_reply_rate else "",
+        f"Buying signals: {', '.join(analysis.buying_signals)}" if analysis.buying_signals else "",
+        f"Risks: {', '.join(analysis.risks)}" if analysis.risks else "",
+        f"Opportunity: {analysis.opportunity_analysis}" if analysis.opportunity_analysis else "",
+        f"Partnership fit: {analysis.partnership_fit}" if analysis.partnership_fit else "",
+        f"Next action: {analysis.next_recommended_action}" if analysis.next_recommended_action else "",
         f"Website audit: {audit_notes}",
     ]
 

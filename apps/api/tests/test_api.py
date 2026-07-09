@@ -1859,6 +1859,13 @@ def test_manual_lead_creation_enriches_with_hunter_and_ai(monkeypatch) -> None:
             recommended_cta="Open to a 10 minute review?",
             follow_up_strategy="Two helpful follow-ups",
             expected_reply_rate="8-12%",
+            buying_signals=["Clear service positioning", "Local construction market focus"],
+            risks=["No pricing page visible"],
+            opportunity_analysis="Strong B2B partnership opportunity for project lead generation.",
+            partnership_fit="Good fit for reviewed outbound partnerships.",
+            priority_score=84,
+            confidence_score=79,
+            next_recommended_action="Review and approve the first outreach draft.",
         ),
     )
 
@@ -1876,6 +1883,8 @@ def test_manual_lead_creation_enriches_with_hunter_and_ai(monkeypatch) -> None:
     assert lead["ai_summary"] == "Manual Build serves commercial construction buyers in Berlin."
     assert lead["suggested_offer"] == "Offer a reviewed outreach campaign for project leads."
     assert lead["expected_reply_rate"] == "8-12%"
+    assert lead["priority_score"] == 84
+    assert lead["confidence_score"] == 79
 
     crm_response = client.get("/api/crm/companies?search=Manual%20Build", headers=AUTH)
     assert crm_response.status_code == 200
@@ -1887,6 +1896,13 @@ def test_manual_lead_creation_enriches_with_hunter_and_ai(monkeypatch) -> None:
     assert company["crm_stage"] in {"Contact Found", "Website Analyzed"}
     assert company["contacts"][0]["email_status"] == "Verified"
     assert company["deals"][0]["stage"] == company["crm_stage"]
+    assert "Clear service positioning" in company["buying_signals"]
+    assert "No pricing page visible" in company["risks"]
+    assert company["opportunity_analysis"] == "Strong B2B partnership opportunity for project lead generation."
+    assert company["partnership_fit"] == "Good fit for reviewed outbound partnerships."
+    assert company["priority_score"] == 84
+    assert company["confidence_score"] == 79
+    assert company["next_recommended_action"] == "Review and approve the first outreach draft."
 
 
 def test_manual_lead_creation_survives_hunter_no_email(monkeypatch) -> None:
