@@ -2198,6 +2198,8 @@ export const visiblePhraseTranslations: Record<string, Partial<Record<Locale, st
   'Meeting step prepared. Add the date, time and calendar link in the note, then save it.': { ru: 'Шаг встречи подготовлен. Добавьте дату, время и ссылку на календарь в заметку, затем сохраните её.', es: 'Paso de reunión preparado. Añade fecha, hora y enlace de calendario en la nota y guárdala.', 'en-US': 'Meeting step prepared. Add the date, time and calendar link in the note, then save it.', fr: 'Étape de rendez-vous préparée. Ajoutez la date, l’heure et le lien calendrier dans la note, puis enregistrez.', it: 'Passaggio meeting preparato. Aggiungi data, ora e link calendario nella nota, poi salva.', pl: 'Krok spotkania przygotowany. Dodaj datę, godzinę i link kalendarza w notatce, a potem zapisz.' },
   'Meeting note template': { ru: 'Встреча с {company}\nДата:\nВремя:\nСсылка на календарь:\nСледующий шаг:', es: 'Reunión con {company}\nFecha:\nHora:\nEnlace de calendario:\nSiguiente paso:', 'en-US': 'Meeting with {company}\nDate:\nTime:\nCalendar link:\nNext step:', fr: 'Rendez-vous avec {company}\nDate :\nHeure :\nLien calendrier :\nProchaine étape :', it: 'Meeting con {company}\nData:\nOra:\nLink calendario:\nProssimo passo:', pl: 'Spotkanie z {company}\nData:\nGodzina:\nLink kalendarza:\nNastępny krok:' },
   'Move stage': { ru: 'Переместить этап', es: 'Mover etapa', 'en-US': 'Move stage', fr: 'Changer d’étape', it: 'Sposta fase', pl: 'Przenieś etap' },
+  'CRM stage': { ru: 'Этап CRM', es: 'Etapa CRM', 'en-US': 'CRM stage', fr: 'Étape CRM', it: 'Fase CRM', pl: 'Etap CRM' },
+  'Add next-step note': { ru: 'Добавьте заметку о следующем шаге', es: 'Añade una nota del siguiente paso', 'en-US': 'Add next-step note', fr: 'Ajoutez une note de prochaine étape', it: 'Aggiungi nota sul prossimo passo', pl: 'Dodaj notatkę o następnym kroku' },
   'Update the pipeline when the sales situation changes.': { ru: 'Обновляйте пайплайн, когда меняется ситуация продажи.', es: 'Actualiza pipeline cuando cambie la situación.', 'en-US': 'Update the pipeline when the sales situation changes.', fr: 'Mettez à jour le pipeline quand la situation change.', it: 'Aggiorna pipeline quando cambia la situazione.', pl: 'Aktualizuj pipeline, gdy sytuacja się zmienia.' },
   'Notes': { ru: 'Заметки', es: 'Notas', 'en-US': 'Notes', fr: 'Notes', it: 'Note', pl: 'Notatki' },
   'Use short notes, checklists, mentions or attachment links. Rich formatting can be pasted into the note.': { ru: 'Используйте короткие заметки, чек-листы, упоминания или ссылки на файлы. Форматированный текст можно вставить в заметку.', es: 'Usa notas cortas, checklists, menciones o enlaces. Puedes pegar formato.', 'en-US': 'Use short notes, checklists, mentions or attachment links. Rich formatting can be pasted into the note.', fr: 'Utilisez notes courtes, checklists, mentions ou liens. Le texte enrichi peut être collé.', it: 'Usa note brevi, checklist, menzioni o link. Puoi incollare formattazione.', pl: 'Używaj krótkich notatek, checklist, wzmianek lub linków. Formatowanie można wkleić.' },
@@ -2314,6 +2316,10 @@ export function translate(key: TranslationKey | string, locale: Locale): string 
   if (localized) return localized;
   const phrase = visiblePhraseTranslations[key]?.[locale];
   if (phrase) return phrase;
+  if (locale === 'en') {
+    const americanEnglishPhrase = visiblePhraseTranslations[key]?.['en-US'];
+    if (americanEnglishPhrase) return americanEnglishPhrase;
+  }
   return en[key as TranslationKey] || key;
 }
 

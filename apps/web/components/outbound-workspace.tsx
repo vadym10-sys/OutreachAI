@@ -1636,6 +1636,64 @@ function OpportunityCard({
     }
   }
 
+  async function approveAndSendDraft() {
+    if (!draft?.id) {
+      setError(t("Generate and review the email before approving a send."));
+      return;
+    }
+    setSending(true);
+    setError("");
+    setSendConfirmOpen(false);
+    setStatus(t("Approving email..."));
+    try {
+      const approved = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}/approve`, { method: "POST" }),
+        15000,
+        "Email approval timed out. Please try again before sending."
+      );
+      if (!approved.email) {
+        throw new Error(approved.message || "Email approval could not be completed.");
+      }
+      setDraft(approved.email);
+      setStatus(t("Sending approved email..."));
+      const sentResult = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${approved.email.id}/send`, { method: "POST" }),
+        30000,
+        "Email sending timed out. Please try again before approving another send."
+      );
+      if (!sentResult.email || sentResult.status !== "success") {
+        throw new Error(sentResult.message || "Email could not be sent.");
+      }
+      setDraft(sentResult.email);
+      setReadyToSend(false);
+      setStatus(t("Approved email was sent. CRM stage updated to Contacted."));
+      if (sentResult.company) {
+        const updatedCompany = normalizeCrmCompany(sentResult.company);
+        onCompanyUpdated?.(updatedCompany);
+        onLeadUpdated?.(leadFromCrmCompany(updatedCompany));
+      } else {
+        onLeadUpdated?.({ ...lead, status: "Contacted", email_approved_at: new Date().toISOString(), email_sent_at: sentResult.email.sent_at || new Date().toISOString() });
+      }
+      trackEvent("approved_email_sent", {
+        lead_id: lead.id,
+        email_id: approved.email.id,
+        company: lead.company
+      });
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, "Email could not be sent. Check the recipient email, plan limits, and try again.");
+      setError(t(reason));
+      setStatus("");
+      trackEvent("approved_email_send_failed", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company,
+        reason
+      });
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-4 min-[520px]:flex-row min-[520px]:items-start min-[520px]:justify-between">
@@ -1768,8 +1826,8 @@ function OpportunityCard({
       {visibleStatus && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
-        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Complete missing AI data" : "Refresh AI research")}</PrimaryButton>
-        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve draft")}</SecondaryButton>
+        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Complete sales research" : "Refresh AI research")}</PrimaryButton>
+        <SecondaryButton onClick={approveAndSendDraft} disabled={busy || !draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Approve & send")}</SecondaryButton>
         <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </article>
@@ -2218,7 +2276,7 @@ export function LeadFinderPage() {
           <PrimaryButton type="button" disabled={searching || !automaticSearchReady} onClick={clickLeadSearch}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
           <p className="text-sm text-slate-600">{t("Expected time: 20-30 seconds. Saved companies will stay after refresh.")}</p>
         </div>
-        {visibleMessage && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+        {visibleMessage && (!searchSummary || searching) && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm font-semibold text-slate-700">{visibleMessage}</p>
           {hasSearched && !searching && lastSearchPayload && searchResults.length === 0 && (
             <button type="button" onClick={() => {
@@ -2229,17 +2287,28 @@ export function LeadFinderPage() {
             </button>
           )}
         </div>}
-        {searchSummary && <div className="mt-4 grid gap-2 sm:grid-cols-3" aria-label={t("Lead search summary")}>
-          {[
-            ["Companies found", searchSummary.found],
-            ["Saved to CRM", searchSummary.saved],
-            ["Duplicates skipped", searchSummary.duplicates]
-          ].map(([label, value]) => (
-            <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-sm">
-              <p className="font-bold text-ink">{value}</p>
-              <p className="mt-1 text-slate-600">{t(String(label))}</p>
-            </div>
-          ))}
+        {searchSummary && <div className="mt-4 space-y-3" aria-label={t("Lead search summary")}>
+          <p className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-sm font-bold text-brand" aria-live="polite">
+            {searchSummary.found > 0 && searchSummary.saved === 0 && searchSummary.duplicates > 0
+              ? t("Found companies already in CRM").replace("{count}", String(searchSummary.found))
+              : searchSummary.found > 0 && searchSummary.saved > 0 && searchSummary.duplicates > 0
+                ? t("Found companies added and reused").replace("{count}", String(searchSummary.found)).replace("{saved}", String(searchSummary.saved)).replace("{duplicates}", String(searchSummary.duplicates))
+                : searchSummary.found > 0
+                  ? t("Found companies saved to CRM").replace("{count}", String(searchSummary.found))
+                  : t("No results. Try a broader city, industry, radius, or fewer filters.")}
+          </p>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {[
+              ["Companies found", searchSummary.found],
+              ["Saved to CRM", searchSummary.saved],
+              ["Duplicates skipped", searchSummary.duplicates]
+            ].map(([label, value]) => (
+              <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-sm">
+                <p className="font-bold text-ink">{value}</p>
+                <p className="mt-1 text-slate-600">{t(String(label))}</p>
+              </div>
+            ))}
+          </div>
         </div>}
         {opportunityReadiness && opportunityReadiness.total > 0 && <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label={t("Opportunity readiness")}>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2300,14 +2369,14 @@ export function LeadFinderPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <label className="text-sm font-semibold text-slate-700">{t("Company name")}<input name="company" required placeholder="Acme Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
             <label className="text-sm font-semibold text-slate-700">{t("Website")}<input name="website" placeholder="https://company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700 md:col-span-2">{t("Industry")}<input name="industry" placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
           </div>
           <details className="rounded-xl border border-slate-200 bg-slate-50 p-4">
             <summary className="cursor-pointer text-sm font-bold text-ink">{t("Optional details")}</summary>
             <p className="mt-2 text-sm text-slate-600">{t("Add contact details only if you already know them. You can fill missing data later from the company card.")}</p>
             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
               <label className="text-sm font-semibold text-slate-700">{t("Decision maker")}<input name="contact" placeholder="Owner or founder" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
               <label className="text-sm font-semibold text-slate-700">{t("Email")}<input name="email" type="email" placeholder="name@company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
               <label className="text-sm font-semibold text-slate-700">{t("Phone")}<input name="phone" placeholder="+49..." className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" /></label>
@@ -3203,28 +3272,70 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   </article>;
 }
 
-function CompactCompanyCard({ company }: { company: CrmCompany }) {
+function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
   const { t } = useI18n();
-  const healthScore = companyHealthScore(company);
-  const nextAction = companyNextAction(company);
-  const primaryAction = companyPrimaryAction(company);
+  const [current, setCurrent] = useState(company);
+  const [stageValue, setStageValue] = useState(company.crm_stage);
+  const [noteBody, setNoteBody] = useState("");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState("");
+  const healthScore = companyHealthScore(current);
+  const nextAction = companyNextAction(current);
+  const primaryAction = companyPrimaryAction(current);
   const PrimaryActionIcon = primaryAction.icon;
-  const contactCount = company.contacts.length;
-  const emailCount = company.generated_emails.length;
-  const website = company.website || company.domain || "";
-  const primaryContact = company.contacts.find((contact) => contact.email) || company.contacts[0];
+  const contactCount = current.contacts.length;
+  const emailCount = current.generated_emails.length;
+  const website = current.website || current.domain || "";
+  const primaryContact = current.contacts.find((contact) => contact.email) || current.contacts[0];
+
+  async function moveStage() {
+    setBusy("stage");
+    setNotice("");
+    setError("");
+    try {
+      const updated = await api<CrmCompany>(`/api/crm/companies/${current.id}/stage`, { method: "PATCH", body: JSON.stringify({ stage: stageValue }) });
+      const normalized = normalizeCrmCompany(updated);
+      setCurrent(normalized);
+      setStageValue(normalized.crm_stage);
+      setNotice(t("CRM stage moved to {stage}.").replace("{stage}", t(normalized.crm_stage)));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, t("CRM stage could not be updated. Check your session and try again.")));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function addNote(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const body = noteBody.trim();
+    if (!body) return;
+    setBusy("note");
+    setNotice("");
+    setError("");
+    try {
+      const note = await api<CrmCompany["notes"][number]>(`/api/crm/companies/${current.id}/notes`, { method: "POST", body: JSON.stringify({ body }) });
+      setCurrent((previous) => ({ ...previous, notes: [note, ...previous.notes] }));
+      setNoteBody("");
+      setNotice(t("Note saved to the activity history."));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, t("Note could not be saved. Please try again.")));
+    } finally {
+      setBusy("");
+    }
+  }
 
   return <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md">
     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
-          <span className={`rounded-full border px-3 py-1 text-xs font-bold ${stageTone(company.crm_stage)}`}>{t(company.crm_stage)}</span>
+          <span className={`rounded-full border px-3 py-1 text-xs font-bold ${stageTone(current.crm_stage)}`}>{t(current.crm_stage)}</span>
           <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-bold text-slate-700">{t("AI Health")} {healthScore}%</span>
         </div>
-        <h2 className="mt-3 break-words text-xl font-black tracking-tight text-ink">{company.name}</h2>
+        <h2 className="mt-3 break-words text-xl font-black tracking-tight text-ink">{current.name}</h2>
         <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2 xl:grid-cols-4">
-          <span className="inline-flex min-w-0 items-center gap-1.5"><Building2 className="shrink-0" size={16} /> <span className="truncate">{company.industry || t("Not available")}</span></span>
-          <span className="inline-flex min-w-0 items-center gap-1.5"><MapPin className="shrink-0" size={16} /> <span className="truncate">{[company.city, company.country].filter(Boolean).join(", ") || t("Not available")}</span></span>
+          <span className="inline-flex min-w-0 items-center gap-1.5"><Building2 className="shrink-0" size={16} /> <span className="truncate">{current.industry || t("Not available")}</span></span>
+          <span className="inline-flex min-w-0 items-center gap-1.5"><MapPin className="shrink-0" size={16} /> <span className="truncate">{[current.city, current.country].filter(Boolean).join(", ") || t("Not available")}</span></span>
           <span className="inline-flex min-w-0 items-center gap-1.5"><UserRound className="shrink-0" size={16} /> <span className="truncate">{contactCount ? `${contactCount} ${t(contactCount === 1 ? "contact" : "contacts")}` : t("No contacts yet")}</span></span>
           <span className="inline-flex min-w-0 items-center gap-1.5"><Mail className="shrink-0" size={16} /> <span className="truncate">{emailCount ? `${emailCount} ${t(emailCount === 1 ? "email draft" : "email drafts")}` : t("No email draft yet")}</span></span>
         </div>
@@ -3236,7 +3347,7 @@ function CompactCompanyCard({ company }: { company: CrmCompany }) {
         </div>
       </div>
       <div className="grid shrink-0 gap-2 lg:w-56">
-        <Link href={`/dashboard/companies?company=${encodeURIComponent(company.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">
+        <Link href={`/dashboard/companies?company=${encodeURIComponent(current.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">
           <PrimaryActionIcon size={17} />
           {t("Continue work")}
           <ArrowRight size={16} />
@@ -3244,10 +3355,26 @@ function CompactCompanyCard({ company }: { company: CrmCompany }) {
         <Link href={`/dashboard/crm`} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("View pipeline")}</Link>
       </div>
     </div>
+    <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 lg:grid-cols-[1fr_1.5fr]">
+      <div className="grid gap-2 min-[430px]:grid-cols-[1fr_auto]">
+        <select aria-label={t("CRM stage")} value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
+          {crmStages.map((stage) => <option key={stage} value={stage}>{t(stage)}</option>)}
+        </select>
+        <button type="button" onClick={moveStage} disabled={busy === "stage" || stageValue === current.crm_stage} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{busy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
+      </div>
+      <form onSubmit={addNote} className="grid gap-2 min-[430px]:grid-cols-[1fr_auto]">
+        <label className="sr-only" htmlFor={`quick-note-${current.id}`}>{t("Add note")}</label>
+        <input id={`quick-note-${current.id}`} aria-label={t("Add note")} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder={t("Add next-step note")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
+        <button type="submit" disabled={busy === "note" || !noteBody.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{busy === "note" && <Loader2 className="animate-spin" size={16} />} {t("Add note")}</button>
+      </form>
+    </div>
+    {notice && <p role="status" className="mt-3 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{notice}</p>}
+    {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
+    {current.notes.length > 0 && <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{current.notes.slice(0, 2).map((note) => <p key={note.id}>{note.body}</p>)}</div>}
     <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 text-sm sm:grid-cols-3">
-      <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Last activity")}</span><span className="font-semibold text-ink">{formatDateTime(company.last_activity_at || company.stage_changed_at || company.updated_at)}</span></p>
+      <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Last activity")}</span><span className="font-semibold text-ink">{formatDateTime(current.last_activity_at || current.stage_changed_at || current.updated_at)}</span></p>
       <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Decision maker")}</span><span className="font-semibold text-ink">{primaryContact?.name || primaryContact?.title || t("Not available")}</span></p>
-      <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Verified email")}</span><span className="font-semibold text-ink">{company.email || primaryContact?.email || t("Not available")}</span></p>
+      <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Verified email")}</span><span className="font-semibold text-ink">{current.email || primaryContact?.email || t("Not available")}</span></p>
     </div>
   </article>;
 }
@@ -3267,7 +3394,7 @@ export function CompaniesPage() {
       <Link href="/dashboard/companies" className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-teal-300 bg-white px-3 text-xs font-bold text-brand">{t("Clear focus")}</Link>
     </section>}
     <CrmFilters filters={filters} setFilters={setFilters} />
-    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : focusedCompany ? <WidgetBoundary name={`Company workspace: ${focusedCompany.name}`}><CrmCompanyCard company={focusedCompany} api={api} highlighted /></WidgetBoundary> : companies.length ? <div className="grid gap-4">{companies.map((company) => <WidgetBoundary key={company.id} name={`Company summary: ${company.name}`}><CompactCompanyCard company={company} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
+    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : focusedCompany ? <WidgetBoundary name={`Company workspace: ${focusedCompany.name}`}><CrmCompanyCard company={focusedCompany} api={api} highlighted /></WidgetBoundary> : companies.length ? <div className="grid gap-4">{companies.map((company) => <WidgetBoundary key={company.id} name={`Company summary: ${company.name}`}><CompactCompanyCard company={company} api={api} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
 }
 
 export function WebsiteAnalyzerPage() {
@@ -3436,7 +3563,6 @@ export function CampaignsPage() {
       setCampaigns((items) => items.map((item) => item.id === campaignId ? safeCampaign({ ...item, ...updated }) : item));
       setNotice(`${updated.name} is now ${updated.status}. Emails still require approved drafts before sending.`);
       trackEvent("campaign_status_updated", { campaign_id: campaignId, action, status: updated.status });
-      await refresh();
     } catch (err) {
       setNotice(t(friendlyErrorMessage(err, "Campaign status could not be updated.")));
     } finally {

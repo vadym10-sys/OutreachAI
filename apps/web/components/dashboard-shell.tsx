@@ -441,7 +441,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               <span className="block max-w-[58vw] truncate text-xs font-medium text-slate-500 sm:max-w-none">{accountLabel}</span>
             </div>
           </div>
-          <div className="hidden shrink-0 min-[360px]:block">
+          <div className="hidden shrink-0 md:block">
             <LanguageSwitcher compact />
           </div>
           <div className="hidden min-w-0 shrink-0 text-right md:block">
