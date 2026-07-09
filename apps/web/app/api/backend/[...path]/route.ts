@@ -5,7 +5,7 @@ import { backendApiUrl } from "@/lib/backend-url";
 export const dynamic = "force-dynamic";
 
 const backendUrl = backendApiUrl();
-const hopByHopHeaders = new Set(["connection", "content-length", "keep-alive", "transfer-encoding", "upgrade"]);
+const hopByHopHeaders = new Set(["connection", "content-encoding", "content-length", "keep-alive", "transfer-encoding", "upgrade"]);
 const defaultProxyTimeoutMs = 30000;
 const longRunningTimeoutMs = 35000;
 
