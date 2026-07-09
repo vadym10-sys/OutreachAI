@@ -818,6 +818,17 @@ function opportunityDataFacts(lead: Lead, profile: ReturnType<typeof leadProfile
   ];
 }
 
+function dataCollectionSummaryFromFacts(facts: Array<{ label: string; value: string; ready: boolean }>, t: (key: string) => string) {
+  const found = facts.filter((fact) => fact.ready).map((fact) => t(fact.label));
+  const missing = facts.filter((fact) => !fact.ready).map((fact) => t(fact.label));
+  return {
+    found,
+    missing,
+    foundText: found.length ? found.slice(0, 4).join(", ") + (found.length > 4 ? ` +${found.length - 4}` : "") : t("Nothing verified yet"),
+    missingText: missing.length ? missing.slice(0, 4).join(", ") + (missing.length > 4 ? ` +${missing.length - 4}` : "") : t("No critical gaps")
+  };
+}
+
 function opportunityNextStep(lead: Lead, draft?: Email) {
   if (!lead.crm_company_id) {
     return {
@@ -1389,6 +1400,7 @@ function OpportunityCard({
   const contactSearch = contactSearchDetails(lead);
   const contactNeedsManualStep = !lead.email && (contactSearch.checked || lead.hunter_status === "no_verified_email");
   const dataFacts = opportunityDataFacts(lead, profile, t);
+  const dataSummary = dataCollectionSummaryFromFacts(dataFacts, t);
   const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
 
   async function completeResearch() {
@@ -1758,10 +1770,25 @@ function OpportunityCard({
           <div>
             <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Useful B2B data")}</p>
             <h3 className="mt-1 text-lg font-black text-ink">{t("Most important facts for qualification and outreach.")}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{t("Every field below is either verified, clearly missing, or ready to retry from this card.")}</p>
           </div>
           <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
             {dataFacts.filter((fact) => fact.ready).length}/{dataFacts.length} {t("ready")}
           </span>
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          <div className="rounded-xl bg-teal-50 p-3">
+            <p className="text-xs font-black uppercase text-brand">{t("Found")}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{dataSummary.foundText}</p>
+          </div>
+          <div className="rounded-xl bg-amber-50 p-3">
+            <p className="text-xs font-black uppercase text-amber-700">{t("Still missing")}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{dataSummary.missingText}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-black uppercase text-slate-500">{t("What to do next")}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(missingCoverage.length ? "Click Complete missing AI data to retry website analysis, contacts and email draft." : "Review the prepared email and approve only when everything looks right.")}</p>
+          </div>
         </div>
         <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {dataFacts.map((fact) => <div key={fact.label} className={`rounded-xl border p-3 ${fact.ready ? "border-teal-100 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
@@ -1828,7 +1855,7 @@ function OpportunityCard({
       {visibleStatus && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
-        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Complete sales research" : "Refresh AI research")}</PrimaryButton>
+        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Complete missing AI data" : "Refresh AI research")}</PrimaryButton>
         <SecondaryButton onClick={approveAndSendDraft} disabled={busy || !draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Approve & send")}</SecondaryButton>
         <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
@@ -3438,6 +3465,100 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     }
   }
 
+  async function completeMissingCompanyData() {
+    if (!current.lead_id) {
+      setError(t("Reconnect this company to a lead before generating outreach."));
+      return;
+    }
+    setBusy("complete-data");
+    setNotice(t("Collecting missing company data..."));
+    setError("");
+    const warnings: string[] = [];
+    try {
+      let nextCompany = current;
+      if ((nextCompany.website || nextCompany.domain) && !nextCompany.ai_summary) {
+        try {
+          const analysisResult = await withTimeout(
+            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/analyze`, { method: "POST", timeoutMs: 22000 }),
+            24000,
+            "Website analysis took too long. The company stays saved in CRM."
+          );
+          if (analysisResult.company) {
+            nextCompany = normalizeCrmCompany(analysisResult.company);
+            setCurrent(nextCompany);
+            setStageValue(nextCompany.crm_stage);
+          }
+          if (analysisResult.status !== "success") warnings.push(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
+        } catch (err) {
+          warnings.push(friendlyErrorMessage(err, t("Website analysis is temporarily unavailable. The company stays saved in CRM.")));
+        }
+      }
+
+      if (!nextCompany.email && !nextCompany.contacts.some((contact) => contact.email)) {
+        try {
+          const contactResult = await withTimeout(
+            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
+            22000,
+            "Contact search took too long. You can add a contact manually."
+          );
+          if (contactResult.company) {
+            nextCompany = normalizeCrmCompany(contactResult.company);
+            setCurrent(nextCompany);
+            setStageValue(nextCompany.crm_stage);
+          }
+          if (contactResult.status !== "success") warnings.push(t(contactResult.message || "No verified business email was found. Add a decision maker manually or continue with research."));
+        } catch (err) {
+          warnings.push(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
+        }
+      }
+
+      if (!nextCompany.generated_emails.length) {
+        try {
+          const draftResult = await withTimeout(
+            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/email-draft`, { method: "POST", timeoutMs: 35000 }),
+            37000,
+            "Email draft took too long. Try again from the Outreach Center."
+          );
+          if (draftResult.company) {
+            nextCompany = normalizeCrmCompany(draftResult.company);
+            setCurrent(nextCompany);
+            setStageValue(nextCompany.crm_stage);
+          }
+          if (draftResult.status !== "success" || !draftResult.email) warnings.push(t(draftResult.message || "Email draft could not be prepared yet."));
+        } catch (err) {
+          warnings.push(friendlyErrorMessage(err, t("Email draft is temporarily unavailable. The company stays saved.")));
+        }
+      }
+
+      setNotice(
+        warnings.length
+          ? `${t("Data collection finished with missing fields.")} ${warnings.slice(0, 2).join(" ")}`
+          : t("Data collection finished. Review the opportunity and approve only when ready.")
+      );
+      trackEvent("company_missing_data_completed", {
+        company_id: current.id,
+        company: current.name,
+        warnings: warnings.length
+      });
+    } catch (err) {
+      setError(friendlyErrorMessage(err, t("Company preparation could not be completed. Try again or continue manually.")));
+      setNotice("");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const compactDataFacts = [
+    { label: "Profile", ready: Boolean(current.name && (current.address || current.city || current.country || current.phone)) },
+    { label: "Website analysis", ready: Boolean(current.website_analyzed_at || current.ai_summary || current.sales_angle || current.suggested_offer) },
+    { label: "Decision maker", ready: Boolean(current.contacts.length || current.contact_found_at) },
+    { label: "Verified email", ready: hasVerifiedContact },
+    { label: "AI email", ready: Boolean(current.generated_emails.length) },
+    { label: "Approval", ready: Boolean(current.email_approved_at || current.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent")) }
+  ];
+  const compactFound = compactDataFacts.filter((item) => item.ready).map((item) => t(item.label));
+  const compactMissing = compactDataFacts.filter((item) => !item.ready).map((item) => t(item.label));
+
   return <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md">
     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
       <div className="min-w-0">
@@ -3472,9 +3593,29 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
               {t(item.label)}
             </div>)}
           </div>
+          <div className="mt-3 grid gap-2 md:grid-cols-3">
+            <div className="rounded-lg bg-teal-50 p-2">
+              <p className="text-[11px] font-black uppercase text-brand">{t("Found")}</p>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-800">{compactFound.length ? compactFound.slice(0, 3).join(", ") : t("Nothing verified yet")}</p>
+            </div>
+            <div className="rounded-lg bg-amber-50 p-2">
+              <p className="text-[11px] font-black uppercase text-amber-700">{t("Still missing")}</p>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-800">{compactMissing.length ? compactMissing.slice(0, 3).join(", ") : t("No critical gaps")}</p>
+            </div>
+            <div className="rounded-lg bg-slate-50 p-2">
+              <p className="text-[11px] font-black uppercase text-slate-500">{t("Next")}</p>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-800">{t(compactMissing.length ? "Run data enrichment" : "Review and approve")}</p>
+            </div>
+          </div>
         </div>
       </div>
       <div className="grid shrink-0 gap-2 lg:w-56">
+        {compactMissing.length > 0 && (
+          <button type="button" onClick={completeMissingCompanyData} disabled={busy === "complete-data" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
+            {busy === "complete-data" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+            {t("Complete missing AI data")}
+          </button>
+        )}
         {!hasVerifiedContact && (
           <button type="button" onClick={findVerifiedEmail} disabled={busy === "contacts" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
             {busy === "contacts" ? <Loader2 className="animate-spin" size={17} /> : <UserRoundSearch size={17} />}
