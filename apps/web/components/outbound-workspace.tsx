@@ -154,7 +154,7 @@ const emptyMetrics: DashboardMetrics = {
   usage: {}
 };
 
-const unavailable = "Unavailable until verified data is collected.";
+const unavailable = "Not found yet. Add it manually or run research.";
 
 const crmStages = [
   "New Lead",
