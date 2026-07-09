@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { friendlyErrorMessage } from "../../lib/client-api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { clientApi, friendlyErrorMessage } from "../../lib/client-api";
 import { containsSensitiveTechnicalInfo, sanitizeUserMessage } from "../../lib/safe-errors";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("client API errors", () => {
   it("hides provider names, status codes, endpoints, and secrets from user messages", () => {
@@ -41,5 +45,19 @@ describe("client API errors", () => {
 
   it("uses a safe fallback for unknown raw technical failures", () => {
     expect(sanitizeUserMessage("Traceback: SQLAlchemy failed with HTTP 500", "Please try again.")).toBe("Please try again.");
+  });
+
+  it("routes customer API calls through the same-origin proxy", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    await expect(clientApi<{ ok: boolean }>("/api/workspace-app/leads/search", "token", { method: "POST", body: "{}" })).resolves.toEqual({ ok: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/backend/api/workspace-app/leads/search");
   });
 });

@@ -1,7 +1,7 @@
 import * as Sentry from '@sentry/nextjs';
 import { captureLogRocketException, trackLogRocketApiFailure } from '@/lib/logrocket';
 import { trackEvent } from '@/lib/posthog';
-import { apiProxyUrl, publicBackendApiUrl } from '@/lib/env';
+import { apiProxyUrl } from '@/lib/env';
 import { sanitizeUserMessage } from '@/lib/safe-errors';
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -96,7 +96,7 @@ export type ClientApiInit = RequestInit & {
 export async function clientApi<T>(path: string, token: string | null, init: ClientApiInit = {}): Promise<T> {
   let response: Response;
   const { timeoutMs = 30000, signal, direct = false, ...requestInit } = init;
-  const requestPath = direct ? path : isProduction ? `${publicBackendApiUrl}${path}` : `${apiProxyUrl}${path}`;
+  const requestPath = direct ? path : `${apiProxyUrl}${path}`;
   const requestId = createRequestId();
   const headers = new Headers(requestInit.headers);
   headers.set('Content-Type', headers.get('Content-Type') || 'application/json');

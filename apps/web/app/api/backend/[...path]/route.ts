@@ -16,7 +16,12 @@ function targetUrl(parts: string[]) {
 
 function timeoutForPath(parts: string[]) {
   const endpoint = `/${parts.join("/")}`;
-  if (endpoint === "/api/leads/find" || endpoint.includes("/analyze") || endpoint.includes("/draft-email")) {
+  if (
+    endpoint === "/api/leads/find" ||
+    endpoint === "/api/workspace-app/leads/search" ||
+    endpoint.includes("/analyze") ||
+    endpoint.includes("/draft-email")
+  ) {
     return longRunningTimeoutMs;
   }
   return defaultProxyTimeoutMs;
