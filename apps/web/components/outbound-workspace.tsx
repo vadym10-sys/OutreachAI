@@ -2594,6 +2594,43 @@ function companyPrimaryAction(company: CrmCompany) {
   };
 }
 
+function companyAiWorkPlan(company: CrmCompany) {
+  const hasVerifiedEmail = Boolean(company.email || company.contacts.some((contact) => contact.email));
+  const hasDraft = Boolean(company.generated_emails.length);
+  return [
+    {
+      label: "Company profile",
+      copy: "Saved company, location, website, phone and business listing data.",
+      done: Boolean(company.name && (company.website || company.domain || company.address || company.phone))
+    },
+    {
+      label: "Website analysis",
+      copy: "AI summary, services, sales angle, offer and useful personalization facts.",
+      done: Boolean(company.website_analyzed_at || company.ai_summary || company.sales_angle || company.suggested_offer)
+    },
+    {
+      label: "Decision maker",
+      copy: "A real person or role to contact. If not verified, add it manually.",
+      done: Boolean(company.contacts.length || company.contact_found_at)
+    },
+    {
+      label: "Verified email",
+      copy: "A usable business email. OutreachAI never invents missing email addresses.",
+      done: hasVerifiedEmail
+    },
+    {
+      label: "AI email",
+      copy: "A personalized first email generated from the company research.",
+      done: hasDraft
+    },
+    {
+      label: "Approval",
+      copy: "Human review before anything is sent to a real prospect.",
+      done: Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"))
+    }
+  ];
+}
+
 function emailStatusLabel(status?: string | null) {
   if (!status) return "Not prepared";
   const normalized = status.toLowerCase().replace(/[_-]+/g, " ").trim();
@@ -2741,6 +2778,9 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const completedProgress = progress.filter(([, done]) => Boolean(done)).length;
   const progressPercent = Math.round((completedProgress / progress.length) * 100);
   const nextMissingStep = progress.find(([, done]) => !done)?.[0] || "Outcome";
+  const aiWorkPlan = companyAiWorkPlan(current);
+  const aiWorkComplete = aiWorkPlan.filter((item) => item.done).length;
+  const aiNextWork = aiWorkPlan.find((item) => !item.done)?.label || "Approval";
   const primaryContact = current.contacts[0];
   const sendRecipient = current.email || primaryContact?.email || "";
   const approvedDraftReady = Boolean(currentDraft?.delivery_status === "approved" && !currentSentAt);
@@ -3073,6 +3113,45 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <p className="mt-1 text-sm font-black text-ink">{t(nextMissingStep)}</p>
           <p className="mt-1 text-xs leading-5 text-slate-600">{t("Complete this step to move the company closer to a meeting.")}</p>
         </div>
+      </div>
+      <div className="mt-4 rounded-2xl border border-teal-200 bg-white p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase text-brand">{t("AI work plan")}</p>
+            <h3 className="mt-1 text-lg font-black text-ink">{t("Turn this company into a complete B2B opportunity.")}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{t("AI fills every useful sales field it can verify, then leaves the rest clear for manual review.")}</p>
+          </div>
+          <div className="rounded-2xl bg-teal-50 px-4 py-3 text-sm font-black text-brand">
+            {aiWorkComplete}/{aiWorkPlan.length} {t("ready")}
+          </div>
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {aiWorkPlan.map((item) => {
+            const isNext = item.label === aiNextWork && !item.done;
+            return <div key={item.label} className={`rounded-xl border p-3 ${item.done ? "border-teal-200 bg-teal-50" : isNext ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className={item.done ? "text-brand" : isNext ? "text-amber-700" : "text-slate-300"} size={17} />
+                <div>
+                  <p className={`text-sm font-black ${item.done ? "text-brand" : isNext ? "text-amber-900" : "text-slate-600"}`}>{t(item.label)}</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">{t(item.copy)}</p>
+                </div>
+              </div>
+            </div>;
+          })}
+        </div>
+        {aiWorkComplete < aiWorkPlan.length ? (
+          <button
+            type="button"
+            onClick={prepareCompanyOpportunity}
+            disabled={actionBusy === "prepare-company" || !current.lead_id}
+            className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+          >
+            {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+            {t("Complete missing AI data")}
+          </button>
+        ) : (
+          <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("This company is ready for review and approval.")}</p>
+        )}
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {progress.map(([label, done]) => {
