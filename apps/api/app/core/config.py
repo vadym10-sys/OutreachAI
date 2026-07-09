@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./outreachai.db"
     clerk_secret_key: str = "dev"
     clerk_jwt_issuer: str = "https://example.clerk.accounts.dev"
-    jwt_audience: str = "outreachai-api"
+    jwt_audience: str = ""
     openai_api_key: str = ""
     openai_model: str = "gpt-5.5"
     openai_timeout_seconds: float = 40
