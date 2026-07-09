@@ -272,6 +272,59 @@ def _needs_ai_research(lead: Lead) -> bool:
     )
 
 
+def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallback") -> None:
+    """Fill useful sales fields from verified CRM data without inventing contacts."""
+    metadata = _lead_metadata(lead)
+    company = (lead.company or "This company").strip()
+    industry = (lead.industry or lead.niche or metadata.get("business_category") or "its market").strip()
+    location = ", ".join(part for part in [lead.city, lead.country] if part)
+    has_website = bool(lead.website or metadata.get("domain"))
+    has_email = bool(lead.email)
+    public_signals = [
+        "website available" if has_website else "",
+        "phone available" if lead.phone else "",
+        "local business listing available" if metadata.get("place_id") else "",
+        "public rating available" if metadata.get("google_rating") else "",
+    ]
+    public_signals = [signal for signal in public_signals if signal]
+    summary = (
+        f"{company} is a {industry} company"
+        + (f" in {location}" if location else "")
+        + ". "
+        + (
+            f"Verified public signals: {', '.join(public_signals)}."
+            if public_signals
+            else "Public profile is saved, but more research is needed before outreach."
+        )
+    )
+    offer_focus = workspace.company or getattr(workspace, "offer", "") or "a focused B2B partnership and outbound workflow"
+    updates = {
+        "ai_summary": metadata.get("ai_summary") or summary,
+        "sales_angle": metadata.get("sales_angle") or f"Lead with a practical {industry} growth or partnership angle based on verified public data.",
+        "suggested_offer": metadata.get("suggested_offer") or f"Offer {offer_focus} tailored to {company}.",
+        "outreach_strategy": metadata.get("outreach_strategy") or (
+            "Use review mode: research the company, prepare a concise email, verify the recipient, then approve before sending."
+        ),
+        "recommended_tone": metadata.get("recommended_tone") or "Professional",
+        "recommended_cta": metadata.get("recommended_cta") or "Book a quick call",
+        "follow_up_strategy": metadata.get("follow_up_strategy") or "Send two short follow-ups only after the first email is reviewed.",
+        "expected_reply_rate": metadata.get("expected_reply_rate") or ("8-12%" if has_website and has_email else "4-8% until contact is verified"),
+        "confidence_score": metadata.get("confidence_score") or (72 if has_website and has_email else 58 if has_website else 42),
+        "priority_score": metadata.get("priority_score") or (78 if has_website and has_email else 62 if has_website else 45),
+        "next_recommended_action": metadata.get("next_recommended_action")
+        or (
+            "Review and approve the generated email." if has_email else "Find or add a verified decision-maker email before sending."
+        ),
+        "research_source": metadata.get("research_source") or source,
+    }
+    if not metadata.get("pain_points"):
+        updates["pain_points"] = [
+            "Manual prospect research takes time.",
+            "Personal outreach needs verified company context.",
+        ]
+    lead.notes = _merge_lead_metadata(lead, updates)
+
+
 def _existing_review_draft(db: Session, workspace_id: UUID, lead_id: UUID) -> EmailMessage | None:
     return db.scalar(
         select(EmailMessage)
@@ -353,6 +406,7 @@ def _complete_turnkey_b2b_research(
         try:
             if _needs_ai_research(lead):
                 _analyze_lead_if_possible(db, user_id, workspace, lead)
+                _ensure_b2b_opportunity_metadata(lead, workspace, source="turnkey_fallback")
                 metadata = _lead_metadata(lead)
                 if metadata.get("ai_summary") or metadata.get("suggested_offer") or metadata.get("expected_reply_rate"):
                     _add_lead_activity(db, request, user_id, workspace, "website.analyzed", lead, {"source": "turnkey_lead_research"})
@@ -362,9 +416,10 @@ def _complete_turnkey_b2b_research(
             _sync_lead_to_crm(db, user_id, workspace, lead)
         except Exception as exc:
             capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_research", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id})
+            _ensure_b2b_opportunity_metadata(lead, workspace, source="turnkey_fallback_after_ai_error")
+            _sync_lead_to_crm(db, user_id, workspace, lead)
             warnings.append(f"{lead.company}: AI research is temporarily unavailable.")
             _lead_trace(request_id, "turnkey_ai_research_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
-            continue
 
         try:
             _create_review_email_draft(db, request, user_id, workspace, lead)
@@ -680,6 +735,8 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
     )
     existing_lead = _existing_duplicate_lead(db, workspace, user.user_id, lead_out)
     if existing_lead:
+        _ensure_b2b_opportunity_metadata(existing_lead, workspace, source="manual_company_reused_fallback")
+        metadata = {**metadata, **_lead_metadata(existing_lead)}
         company = _ensure_minimal_company(db, user.user_id, workspace, existing_lead, metadata)
         try:
             with db.begin_nested():
@@ -708,6 +765,8 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
     )
     db.add(lead)
     db.flush()
+    _ensure_b2b_opportunity_metadata(lead, workspace, source="manual_company_fallback")
+    metadata = {**metadata, **_lead_metadata(lead)}
     company = _ensure_minimal_company(db, user.user_id, workspace, lead, metadata)
     try:
         with db.begin_nested():
@@ -894,6 +953,7 @@ def analyze_company(company_id: UUID, request: Request, user: WorkspaceUserConte
     try:
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
         _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_analyze")
         _add_lead_activity(db, request, user.user_id, workspace, "website.analyzed", lead, {"source": "workspace_app"})
         db.commit()
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
@@ -952,6 +1012,7 @@ def discover_company_contacts(company_id: UUID, request: Request, user: Workspac
             "email_status": "Verified" if enriched_lead.hunter_verified or metadata.get("hunter_verified") else ("Found" if enriched_lead.email or lead.email else "No verified email"),
         },
     )
+    _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_contact_discovery")
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     if lead.email and lead.email != before_email:
         _add_lead_activity(db, request, user.user_id, workspace, "contact.found", lead, {"source": "contact_discovery"})
@@ -1039,6 +1100,9 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
         return UsageActionOut(status="error", message="This company needs a saved lead before email generation.", company=_crm_company_out(db, workspace, user.user_id, company))
     try:
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
+        if _needs_ai_research(lead):
+            _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_email_draft")
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
         variant = personalize_email(
             PersonalizeRequest(

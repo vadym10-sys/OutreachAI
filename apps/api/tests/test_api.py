@@ -1015,6 +1015,45 @@ def test_workspace_app_email_draft_uses_current_ui_locale(monkeypatch) -> None:
     assert "Здравствуйте" in draft.json()["email"]["body"]
 
 
+def test_workspace_app_manual_company_gets_fallback_intelligence_and_review_draft(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-fallback-intelligence@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Fallback Partner Build", "country": "Poland", "city": "Warsaw", "industry": "B2B partnerships"},
+    )
+    assert company_response.status_code == 200
+    company = company_response.json()["company"]
+    assert company["ai_summary"]
+    assert company["suggested_offer"]
+    assert company["sales_angle"]
+    assert company["expected_reply_rate"] == "4-8% until contact is verified"
+
+    captured: dict[str, str] = {}
+
+    def fake_personalize(payload):
+        captured["summary"] = payload.website_summary
+        captured["offer"] = payload.offer
+        return EmailVariantOut(
+            subject="Partnership idea for Fallback Partner Build",
+            preview="Prepared for review",
+            full_email="Hi, I prepared this partnership idea for review.",
+            cta="Book a quick call",
+            cold_email="Hi, I prepared this partnership idea for review.",
+            follow_ups=["Following up once.", "Following up twice."],
+        )
+
+    monkeypatch.setattr("app.api.usage.personalize_email", fake_personalize)
+    draft = client.post(f"/api/workspace-app/companies/{company['id']}/email-draft", headers=headers)
+    assert draft.status_code == 200
+    data = draft.json()
+    assert data["status"] == "success"
+    assert data["email"]["delivery_status"] == "draft"
+    assert "Fallback Partner Build" in captured["summary"]
+    assert captured["offer"]
+    assert data["company"]["email_status"] == "Draft Ready"
+
+
 def test_workspace_app_contact_discovery_empty_persists_search_state(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-contact-empty@example.com"}
     company_response = client.post(
