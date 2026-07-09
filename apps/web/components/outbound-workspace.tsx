@@ -3209,6 +3209,17 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <div className="mt-4 rounded-2xl bg-slate-50 p-4">
             <p className="text-sm font-bold text-ink">{t("Company description")}</p>
             <p className="mt-2 text-sm leading-6 text-slate-700">{current.ai_summary || t("Not available. Run company research to create a clear description before outreach.")}</p>
+            {!current.ai_summary && (
+              <button
+                type="button"
+                onClick={prepareCompanyOpportunity}
+                disabled={actionBusy === "prepare-company" || !current.lead_id}
+                className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+              >
+                {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+                {t("Run website analysis")}
+              </button>
+            )}
           </div>
         </WorkspaceSection>
 
@@ -3219,6 +3230,17 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               <p className="mt-2 text-sm leading-6 text-slate-800">{current.ai_summary || t("Not available. Analyze the company website to generate the summary, pain points and sales angle.")}</p>
               <p className="mt-4 text-sm font-bold text-ink">{t("Why this company is interesting")}</p>
               <p className="mt-2 text-sm leading-6 text-slate-700">{current.sales_angle || current.outreach_strategy || t("Not available. Complete sales research to identify the strongest outreach angle.")}</p>
+              {(!current.ai_summary || (!current.sales_angle && !current.outreach_strategy)) && (
+                <button
+                  type="button"
+                  onClick={prepareCompanyOpportunity}
+                  disabled={actionBusy === "prepare-company" || !current.lead_id}
+                  className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                >
+                  {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+                  {t("Run AI analysis")}
+                </button>
+              )}
             </div>
             <div className="grid gap-3">
               <InfoCell label="Estimated opportunity" value={estimatedOpportunity === "Not available" ? null : estimatedOpportunity} help="Deal value appears after qualification." />
@@ -3229,7 +3251,18 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-sm font-bold text-ink">{t("Buying signals")}</p>
-              <div className="mt-3 space-y-2">{buyingSignals.length ? buyingSignals.map((signal) => <p key={signal} className="flex items-center gap-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand"><ShieldCheck size={16} />{t(signal)}</p>) : <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">{t("Not available. Analyze the website and find contacts to reveal buying signals.")}</p>}</div>
+              <div className="mt-3 space-y-2">{buyingSignals.length ? buyingSignals.map((signal) => <p key={signal} className="flex items-center gap-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand"><ShieldCheck size={16} />{t(signal)}</p>) : <>
+                <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">{t("Not available. Analyze the website and find contacts to reveal buying signals.")}</p>
+                <button
+                  type="button"
+                  onClick={prepareCompanyOpportunity}
+                  disabled={actionBusy === "prepare-company" || !current.lead_id}
+                  className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+                  {t("Find buying signals")}
+                </button>
+              </>}</div>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-sm font-bold text-ink">{t("Risks")}</p>
@@ -3272,6 +3305,25 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           </div> : <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5">
             <p className="font-bold text-ink">{t("No decision makers yet.")}</p>
             <p className="mt-2 text-sm leading-6 text-slate-600">{t("Use the outreach research action to find or add a verified contact. Emails are never invented.")}</p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={discoverContacts}
+                disabled={actionBusy === "discover-contact" || !current.lead_id}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {actionBusy === "discover-contact" ? <Loader2 className="animate-spin" size={17} /> : <UserRoundSearch size={17} />}
+                {t("Find contact")}
+              </button>
+              <button
+                type="button"
+                onClick={() => contactFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"
+              >
+                <Plus size={17} />
+                {t("Add email manually")}
+              </button>
+            </div>
           </div>}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> {t("Review outreach workflow")}</a>
@@ -3303,6 +3355,21 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               <p className="mt-2">{t(label)}</p>
             </div>)}
           </div>
+          {!current.generated_emails.length && (
+            <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-black text-ink">{t("No email draft yet")}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{t("AI can generate a draft for review even if no verified email is available yet. Nothing will be sent until you add/verify a recipient and approve.")}</p>
+              <button
+                type="button"
+                onClick={prepareCompanyOpportunity}
+                disabled={actionBusy === "prepare-company" || !current.lead_id}
+                className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+              >
+                {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Mail size={17} />}
+                {t("Generate email for review")}
+              </button>
+            </div>
+          )}
           <div className="mt-5">
             {current.lead_id ? <OpportunityCard key={`${current.id}:${currentDraft?.id || "no-draft"}:${currentDraft?.delivery_status || ""}`} lead={lead} api={api} onCompanyUpdated={applyCompanyUpdate} initialDraft={currentDraft} /> : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
           </div>
