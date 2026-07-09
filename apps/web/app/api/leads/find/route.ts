@@ -6,13 +6,14 @@ export const dynamic = "force-dynamic";
 
 const backendUrl = backendApiUrl();
 const timeoutMs = 35000;
-const hopByHopHeaders = new Set(["connection", "content-length", "keep-alive", "transfer-encoding", "upgrade"]);
+const hopByHopHeaders = new Set(["connection", "content-encoding", "content-length", "keep-alive", "transfer-encoding", "upgrade"]);
 
 export async function POST(request: NextRequest) {
   const url = `${backendUrl.replace(/\/$/, "")}/api/leads/find`;
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("content-length");
+  headers.set("accept-encoding", "identity");
 
   const controller = new AbortController();
   let didTimeout = false;
@@ -31,10 +32,12 @@ export async function POST(request: NextRequest) {
       signal: controller.signal
     });
 
-    const responseHeaders = new Headers(response.headers);
-    for (const key of responseHeaders.keys()) {
-      if (hopByHopHeaders.has(key.toLowerCase())) responseHeaders.delete(key);
-    }
+    const responseHeaders = new Headers();
+    response.headers.forEach((value, key) => {
+      if (!hopByHopHeaders.has(key.toLowerCase())) {
+        responseHeaders.set(key, value);
+      }
+    });
 
     return new NextResponse(response.body, {
       status: response.status,

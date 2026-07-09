@@ -35,6 +35,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("content-length");
+  headers.set("accept-encoding", "identity");
 
   const body = ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer();
   let response: Response;
@@ -74,10 +75,12 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     clearTimeout(timeoutId);
   }
 
-  const responseHeaders = new Headers(response.headers);
-  for (const key of responseHeaders.keys()) {
-    if (hopByHopHeaders.has(key.toLowerCase())) responseHeaders.delete(key);
-  }
+  const responseHeaders = new Headers();
+  response.headers.forEach((value, key) => {
+    if (!hopByHopHeaders.has(key.toLowerCase())) {
+      responseHeaders.set(key, value);
+    }
+  });
 
   return new NextResponse(response.body, {
     status: response.status,
