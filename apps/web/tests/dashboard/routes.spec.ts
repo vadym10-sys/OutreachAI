@@ -7,7 +7,7 @@ const appHeader = "body > div > div > header";
 const customerRoutes = [
   ["/dashboard", "What should I do now?"],
   ["/dashboard/leads", "Find real companies and turn each into a sales opportunity."],
-  ["/dashboard/companies", "Every company is saved in your CRM."],
+  ["/dashboard/companies", "Open the next company to finish the opportunity."],
   ["/dashboard/campaigns", "Review real outreach before anything is sent."],
   ["/dashboard/crm", "Move real leads from research to revenue."],
   ["/dashboard/billing", "Subscription and usage."],
@@ -171,7 +171,7 @@ test.describe("customer workspace routes", () => {
 
     await drawer.getByRole("link", { name: "Companies" }).click();
     await expect(page).toHaveURL(/\/dashboard\/companies$/);
-    await expect(page.getByRole("heading", { name: "Every company is saved in your CRM." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Open the next company to finish the opportunity." })).toBeVisible();
     await expect(drawer).not.toBeVisible();
     await expectNoHorizontalOverflow(page);
     await guards.assertClean();
@@ -194,8 +194,8 @@ test.describe("customer workspace routes", () => {
     await expect(page.getByText("Companies found").first()).toBeVisible();
     await expect(page.getByText("Saved to CRM").first()).toBeVisible();
     await expect(page.getByText("Duplicates skipped").first()).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Hill Country Build Co" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Complete sales research" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hill Country Build Co", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open company workspace" }).first()).toBeVisible();
     await expectNoHorizontalOverflow(page);
     await guards.assertClean();
   });
@@ -370,7 +370,7 @@ test.describe("customer workspace routes", () => {
     });
 
     await page.goto("/dashboard/companies");
-    await expect(page.getByRole("heading", { name: "Every company is saved in your CRM." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Open the next company to finish the opportunity." })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Partial Company" })).toBeVisible();
     await expect(page.getByRole("main")).toContainText("Not available");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");

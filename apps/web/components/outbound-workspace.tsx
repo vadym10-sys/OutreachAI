@@ -1041,6 +1041,37 @@ function completedWorkflowSteps(metrics: DashboardMetrics, leads: Lead[], campai
   return Array.from(steps);
 }
 
+const coreCustomerActions = [
+  ["Find leads", "Search one focused market.", "/dashboard/leads"],
+  ["Open company", "Review saved companies and missing data.", "/dashboard/companies"],
+  ["Prepare email", "Let AI draft outreach for review.", "/dashboard/companies"],
+  ["Approve", "Approve only messages ready to send.", "/dashboard/campaigns"]
+] as const;
+
+function CoreActionGrid({ activeHref }: { activeHref?: string }) {
+  const { t } = useI18n();
+  return (
+    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {coreCustomerActions.map(([title, copy, href], index) => {
+        const active = activeHref === href || (!activeHref && index === 0);
+        return (
+          <Link
+            key={title}
+            href={href}
+            className={`min-w-0 rounded-2xl border p-4 shadow-sm transition hover:-translate-y-0.5 ${
+              active ? "border-teal-300 bg-teal-50 text-brand" : "border-slate-200 bg-white text-slate-700 hover:border-teal-200"
+            }`}
+          >
+            <span className="grid size-9 place-items-center rounded-xl bg-white text-sm font-black shadow-sm">{index + 1}</span>
+            <h3 className="mt-3 text-base font-black text-ink">{t(title)}</h3>
+            <p className="mt-1 text-sm leading-6 text-slate-600">{t(copy)}</p>
+          </Link>
+        );
+      })}
+    </section>
+  );
+}
+
 function useSalesData() {
   const { api, ready } = useTokenApi();
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -1868,7 +1899,6 @@ export function DashboardHome() {
   const { t } = useI18n();
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
   const nextStep = dashboardNextStep(metrics, leads, campaigns);
-  const completedSteps = completedWorkflowSteps(metrics, leads, campaigns);
   const activeSignals = [
     { label: "Leads found", value: String(metrics.leads || leads.length), help: "Real workspace leads", show: metrics.leads > 0 || leads.length > 0 },
     { label: "Campaigns", value: String(metrics.campaigns || campaigns.length), help: "Saved campaigns", show: metrics.campaigns > 0 || campaigns.length > 0 },
@@ -1886,6 +1916,9 @@ export function DashboardHome() {
       {loading && <WidgetErrorCard title="Loading your private workspace" copy="Your dashboard is opening. You can already use the main actions below." />}
       {supportingError && <WidgetErrorCard title={cachedAt ? "Updating workspace data" : "Dashboard details are temporarily unavailable"} copy={supportingError} />}
       {error && <WidgetErrorCard title="Dashboard metrics could not update" copy={error} />}
+      <WidgetBoundary name="Main customer actions">
+        <CoreActionGrid activeHref={nextStep.href} />
+      </WidgetBoundary>
       {!hasAnyData && <WidgetBoundary name="Private workspace onboarding"><section className="rounded-3xl border border-teal-100 bg-gradient-to-br from-white to-teal-50/70 p-5 shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
@@ -1908,36 +1941,16 @@ export function DashboardHome() {
           <Link href={nextStep.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white">{t(nextStep.label)}<ArrowRight size={17} /></Link>
         </section>
       </WidgetBoundary>
-      <WidgetBoundary name="Customer success path">
-        <ActionPanel
-          eyebrow="Fastest path to value"
-          title="Get from one company to one reviewed email."
-          copy="The workspace is organized around the shortest useful sales path: find companies, complete research, review the email, then launch only after approval."
-        >
-          <div className="grid gap-3 md:grid-cols-4">
-            {[
-              ["1", "Find companies", "Search one focused market.", "/dashboard/leads"],
-              ["2", "Review CRM", "Open saved company workspaces.", "/dashboard/companies"],
-              ["3", "Approve outreach", "Review the AI email before sending.", "/dashboard/campaigns"],
-              ["4", "Track results", "Move replies through CRM.", "/dashboard/crm"]
-            ].map(([step, title, copy, href]) => (
-              <Link key={step} href={href} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:border-teal-200 hover:bg-teal-50">
-                <span className="grid size-9 place-items-center rounded-xl bg-white text-sm font-black text-brand shadow-sm">{step}</span>
-                <h3 className="mt-3 font-black text-ink">{t(title)}</h3>
-                <p className="mt-1 text-sm leading-6 text-slate-600">{t(copy)}</p>
-              </Link>
-            ))}
-          </div>
-        </ActionPanel>
-      </WidgetBoundary>
-      <WidgetBoundary name="Sales workflow">
-        <WorkflowTracker activeStep={nextStep.step} completedSteps={completedSteps} />
-      </WidgetBoundary>
-      {activeSignals.length > 0 && <WidgetBoundary name="Workspace metrics"><section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {activeSignals.map((signal) => <MetricCard key={signal.label} label={signal.label} value={signal.value} help={signal.help} />)}
-      </section></WidgetBoundary>}
+      {activeSignals.length > 0 && <WidgetBoundary name="Workspace metrics"><details className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Show workspace details")}</summary>
+        <section className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {activeSignals.map((signal) => <MetricCard key={signal.label} label={signal.label} value={signal.value} help={signal.help} />)}
+        </section>
+      </details></WidgetBoundary>}
       {!hasAnyData && <WidgetBoundary name="Dashboard onboarding"><EmptyState title={t("Start with one focused lead search.")} copy={t("Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after verified data exists.")} action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} /></WidgetBoundary>}
-      {(employees.length > 0 || activity.length > 0) && <WidgetBoundary name="Latest workspace activity"><section className="grid gap-4 lg:grid-cols-2">
+      {(employees.length > 0 || activity.length > 0) && <WidgetBoundary name="Latest workspace activity"><details className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+        <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Show recent activity")}</summary>
+        <section className="mt-4 grid gap-4 lg:grid-cols-2">
         {employees.length > 0 && <WidgetBoundary name="AI employee summary"><article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold text-ink">{t("AI Employees")}</h2>
           <p className="mt-2 text-sm text-slate-600">{t("Active AI workers connected to this workspace.")}</p>
@@ -1948,7 +1961,8 @@ export function DashboardHome() {
           <p className="mt-2 text-sm text-slate-600">{t("Latest workspace actions from real saved events.")}</p>
           <div className="mt-4 space-y-2">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{t(activityLabel(item.action))}</p><p className="text-slate-600">{new Date(item.created_at).toLocaleString()}</p></div>)}</div>
         </article></WidgetBoundary>}
-      </section></WidgetBoundary>}
+        </section>
+      </details></WidgetBoundary>}
     </div>
   );
 }
@@ -2264,7 +2278,7 @@ export function LeadFinderPage() {
           {automaticSearchReady ? <Link href="#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-teal-300 bg-white px-4 text-sm font-black text-brand shadow-sm">{t("Search market")}</Link> : <Link href="#lead-search-setup" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-amber-300 bg-white px-4 text-sm font-black text-amber-900 shadow-sm">{t("Automatic search setup")}</Link>}
         </div>
       </section>
-      <IntegrationStatusPanel api={api} ready={ready} />
+      {!automaticSearchReady && <IntegrationStatusPanel api={api} ready={ready} />}
       <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
       {!automaticSearchReady && (
         <div id="lead-search-setup" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -3727,16 +3741,32 @@ export function CompaniesPage() {
   const searchParams = useSearchParams();
   const focusedCompanyId = searchParams.get("company") || "";
   const focusedCompany = companies.find((company) => company.id === focusedCompanyId);
+  const primaryCompanies = companies.slice(0, 3);
+  const secondaryCompanies = companies.slice(3);
 
   return <div className="space-y-6">
-    <PageHeader eyebrow="Companies" title="Every company is saved in your CRM." copy="Companies found by lead search, contact verification, or manual entry stay here after refresh." />
+    <PageHeader eyebrow="Companies" title="Open the next company to finish the opportunity." copy="Keep this screen focused: review the best saved companies, fill missing data, prepare the email, then approve." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")} <ArrowRight size={17} /></Link>} />
     {focusedCompany && <section className="rounded-2xl border border-teal-200 bg-teal-50 p-4 text-sm text-slate-700">
       <p className="font-bold text-brand">{t("Opened from CRM pipeline")}</p>
       <p className="mt-1">{t("Continue with the highlighted company, or clear the focus to view the full CRM list.")}</p>
       <Link href="/dashboard/companies" className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-teal-300 bg-white px-3 text-xs font-bold text-brand">{t("Clear focus")}</Link>
     </section>}
-    <CrmFilters filters={filters} setFilters={setFilters} />
-    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : focusedCompany ? <WidgetBoundary name={`Company workspace: ${focusedCompany.name}`}><CrmCompanyCard company={focusedCompany} api={api} highlighted /></WidgetBoundary> : companies.length ? <div className="grid gap-4">{companies.map((company) => <WidgetBoundary key={company.id} name={`Company summary: ${company.name}`}><CompactCompanyCard company={company} api={api} /></WidgetBoundary>)}</div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
+    <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Search and filters")}</summary>
+      <div className="mt-4"><CrmFilters filters={filters} setFilters={setFilters} /></div>
+    </details>
+    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : focusedCompany ? <WidgetBoundary name={`Company workspace: ${focusedCompany.name}`}><CrmCompanyCard company={focusedCompany} api={api} highlighted /></WidgetBoundary> : companies.length ? <div className="grid gap-4">
+      <WidgetBoundary name="Primary company actions">
+        <CoreActionGrid activeHref="/dashboard/companies" />
+      </WidgetBoundary>
+      {primaryCompanies.map((company) => <WidgetBoundary key={company.id} name={`Company summary: ${company.name}`}><CompactCompanyCard company={company} api={api} /></WidgetBoundary>)}
+      {secondaryCompanies.length > 0 && <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Show more companies")} · {secondaryCompanies.length}</summary>
+        <div className="mt-4 grid gap-4">
+          {secondaryCompanies.map((company) => <WidgetBoundary key={company.id} name={`Company summary: ${company.name}`}><CompactCompanyCard company={company} api={api} /></WidgetBoundary>)}
+        </div>
+      </details>}
+    </div> : <EmptyState title="No companies saved yet" copy="Run Lead Finder or add a manual company. OutreachAI will save real companies here, not demo data." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
 }
 
 export function WebsiteAnalyzerPage() {
