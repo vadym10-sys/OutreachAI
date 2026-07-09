@@ -2305,6 +2305,9 @@ export const visiblePhraseTranslations: Record<string, Partial<Record<Locale, st
   'This opportunity has all required sales research.': { ru: 'У этой возможности есть всё необходимое sales-исследование.', es: 'Esta oportunidad tiene toda la investigación comercial requerida.', 'en-US': 'This opportunity has all required sales research.', fr: 'Cette opportunité contient toute la recherche commerciale requise.', it: 'Questa opportunità ha tutta la ricerca vendita richiesta.', pl: 'Ta szansa ma wszystkie wymagane dane sprzedażowe.' },
   'Complete missing AI data': { ru: 'Дособрать AI-данные', es: 'Completar datos IA faltantes', 'en-US': 'Complete missing AI data', fr: 'Compléter les données IA', it: 'Completa dati AI mancanti', pl: 'Uzupełnij brakujące dane AI' },
   'Refresh AI research': { ru: 'Обновить AI-исследование', es: 'Actualizar investigación IA', 'en-US': 'Refresh AI research', fr: 'Actualiser la recherche IA', it: 'Aggiorna ricerca AI', pl: 'Odśwież analizę AI' },
+  'Company size not available': { ru: 'Размер компании пока недоступен', es: 'Tamaño de empresa aún no disponible', 'en-US': 'Company size not available', fr: 'Taille de l’entreprise non disponible', it: 'Dimensione azienda non disponibile', pl: 'Wielkość firmy niedostępna' },
+  'Decision maker not found yet': { ru: 'Лицо, принимающее решение, пока не найдено', es: 'Responsable de decisión aún no encontrado', 'en-US': 'Decision maker not found yet', fr: 'Décideur pas encore trouvé', it: 'Decision maker non ancora trovato', pl: 'Decydent nie został jeszcze znaleziony' },
+  'Verified email not found yet': { ru: 'Проверенный email пока не найден', es: 'Email verificado aún no encontrado', 'en-US': 'Verified email not found yet', fr: 'Email vérifié pas encore trouvé', it: 'Email verificata non ancora trovata', pl: 'Zweryfikowany email nie został jeszcze znaleziony' },
 };
 
 export function isLocale(value: string | null | undefined): value is Locale {

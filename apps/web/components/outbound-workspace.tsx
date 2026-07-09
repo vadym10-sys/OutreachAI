@@ -706,8 +706,8 @@ function leadProfile(lead: Lead) {
     location: lead.address || [lead.city, lead.country].filter(Boolean).join(", ") || unavailable,
     size: lead.employee_count || lead.revenue_range || unavailable,
     sizeUnit: lead.employee_count ? "employees" : "",
-    decisionMaker: [lead.contact, lead.title].filter(Boolean).join(", ") || unavailable,
-    verifiedEmail: lead.email || (lead.hunter_status === "no_verified_email" ? "No verified email yet" : unavailable),
+    decisionMaker: [lead.contact, lead.title].filter(Boolean).join(", ") || "Decision maker not found yet",
+    verifiedEmail: lead.email || (lead.hunter_status === "no_verified_email" ? "No verified email yet" : "Verified email not found yet"),
     phone: lead.phone || unavailable,
     linkedin: lead.linkedin || unavailable,
     websiteAnalysis: lead.ai_summary || text(metadata.ai_summary, "") || fallbackWebsiteAnalysis(lead),
@@ -764,7 +764,7 @@ function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, 
   return [
     ["Company profile", Boolean(lead.company && (lead.website || lead.domain || lead.industry || lead.country))],
     ["Website analysis", profile.websiteAnalysis !== unavailable || Boolean(audit?.improvement_report)],
-    ["Decision makers", profile.decisionMaker !== unavailable],
+    ["Decision makers", Boolean(lead.contact || lead.title)],
     ["Verified emails", Boolean(lead.email && lead.hunter_verified)],
     ["AI pain analysis", Boolean(profile.painAnalysis && profile.painAnalysis !== unavailable) || Boolean(audit?.priority_actions?.length)],
     ["AI opportunity analysis", Boolean(profile.opportunityAnalysis && profile.opportunityAnalysis !== unavailable) || Boolean(copilot?.reasoning?.length)],
@@ -850,7 +850,7 @@ function opportunityNextStep(lead: Lead, draft?: Email) {
 }
 
 function profileSizeText(profile: ReturnType<typeof leadProfile>, t: (key: string) => string) {
-  if (profile.size === unavailable) return t(unavailable);
+  if (profile.size === unavailable) return t("Company size not available");
   return profile.sizeUnit ? `${profile.size} ${t(profile.sizeUnit)}` : profile.size;
 }
 
@@ -1389,6 +1389,7 @@ function OpportunityCard({
   const contactSearch = contactSearchDetails(lead);
   const contactNeedsManualStep = !lead.email && (contactSearch.checked || lead.hunter_status === "no_verified_email");
   const dataFacts = opportunityDataFacts(lead, profile, t);
+  const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
 
   async function completeResearch() {
     if (!companyId) {
@@ -1701,7 +1702,7 @@ function OpportunityCard({
         <div>
           <h2 className="text-xl font-bold text-ink">{lead.company}</h2>
           <p className="mt-1 break-all text-sm text-slate-500">{profile.website}</p>
-          <p className="mt-2 text-sm text-slate-600">{profile.industry} · {profile.location} · {profileSizeText(profile, t)}</p>
+          <p className="mt-2 text-sm text-slate-600">{summaryParts.join(" · ")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t("Completion count").replace("{count}", String(completed))}</span>
