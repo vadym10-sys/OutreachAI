@@ -17,6 +17,7 @@ from app.schemas.dto import LeadFinderRequest, LeadOut
 logger = logging.getLogger("outreachai.google_maps")
 
 GOOGLE_PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+GOOGLE_PLACES_DETAILS_URL = "https://places.googleapis.com/v1/places/{place_id}"
 GOOGLE_PLACES_FIELD_MASK = ",".join(
     [
         "places.id",
@@ -33,6 +34,24 @@ GOOGLE_PLACES_FIELD_MASK = ",".join(
         "places.location",
         "places.businessStatus",
         "nextPageToken",
+    ]
+)
+GOOGLE_PLACE_DETAILS_FIELD_MASK = ",".join(
+    [
+        "id",
+        "name",
+        "displayName",
+        "formattedAddress",
+        "nationalPhoneNumber",
+        "internationalPhoneNumber",
+        "websiteUri",
+        "rating",
+        "primaryType",
+        "primaryTypeDisplayName",
+        "types",
+        "location",
+        "businessStatus",
+        "googleMapsUri",
     ]
 )
 
@@ -71,6 +90,22 @@ def search_google_places(payload: LeadFinderRequest) -> GooglePlacesSearchResult
     leads = [_place_to_lead(item, payload) for item in records if isinstance(item, dict)]
     leads = [lead for lead in leads if lead.company]
     return GooglePlacesSearchResult(leads=_dedupe(leads, payload.limit), raw_count=len(records), duration_ms=_duration_ms(started))
+
+
+def get_google_place_details(place_id: str) -> dict[str, Any]:
+    clean_place_id = str(place_id or "").replace("places/", "").strip()
+    if not clean_place_id:
+        raise GoogleMapsRequestError("A saved company needs a map card before public details can be refreshed.")
+
+    data = _google_places_get(clean_place_id, operation="google_maps.place_details")
+    details = _place_details_to_metadata(data)
+    logger.info(
+        "google_maps.place_details parsed place_id=%s has_website=%s has_phone=%s",
+        clean_place_id,
+        bool(details.get("website")),
+        bool(details.get("phone")),
+    )
+    return details
 
 
 def _search_body(payload: LeadFinderRequest) -> dict[str, Any]:
@@ -160,6 +195,61 @@ def _google_places_post(body: dict[str, Any], operation: str) -> dict[str, Any]:
     raise GoogleMapsRequestError(f"Google Maps is temporarily unavailable after retries. Last error: {last_error}") from last_error
 
 
+def _google_places_get(place_id: str, operation: str) -> dict[str, Any]:
+    settings = get_settings()
+    api_key = settings.google_maps_api_key
+    if not api_key:
+        raise GoogleMapsConfigurationError("Google Maps is not connected yet. Add GOOGLE_MAPS_API_KEY to the backend environment and redeploy.")
+
+    app_origin = settings.public_app_url.rstrip("/")
+    headers = {
+        "Origin": app_origin,
+        "Referer": f"{app_origin}/",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": GOOGLE_PLACE_DETAILS_FIELD_MASK,
+    }
+    last_error: Exception | None = None
+    started = time.monotonic()
+    for attempt in range(1, 3):
+        try:
+            with httpx.Client(timeout=httpx.Timeout(5.0, connect=2.0), headers=headers) as client:
+                response = client.get(GOOGLE_PLACES_DETAILS_URL.format(place_id=place_id))
+                response.raise_for_status()
+                data = response.json()
+                logger.info(
+                    "%s succeeded attempt=%s status=%s duration_ms=%s raw_response_preview=%s",
+                    operation,
+                    attempt,
+                    response.status_code,
+                    _duration_ms(started),
+                    _preview(data),
+                )
+                return data
+        except httpx.TimeoutException as exc:
+            last_error = exc
+            logger.warning("%s timeout attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
+            capture_provider_exception(exc, provider="google_maps", endpoint=operation, extra={"attempt": attempt, "duration_ms": _duration_ms(started), "place_id": place_id})
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            detail = _safe_response_detail(exc.response)
+            logger.warning("%s failed status=%s attempt=%s duration_ms=%s response=%s", operation, status, attempt, _duration_ms(started), detail)
+            capture_provider_exception(exc, provider="google_maps", endpoint=operation, extra={"attempt": attempt, "status": status, "duration_ms": _duration_ms(started), "detail": detail[:1000], "place_id": place_id})
+            if status in {401, 403}:
+                raise GoogleMapsRequestError(f"Google Maps rejected the backend API key or Places API access. Google status={status}. Detail: {detail}") from exc
+            if status == 429 or 500 <= status < 600:
+                last_error = exc
+            else:
+                raise GoogleMapsRequestError(f"Google Maps could not complete the place details request. Google status={status}. Detail: {detail}") from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+            logger.warning("%s request_error attempt=%s duration_ms=%s", operation, attempt, _duration_ms(started))
+            capture_provider_exception(exc, provider="google_maps", endpoint=operation, extra={"attempt": attempt, "duration_ms": _duration_ms(started), "place_id": place_id})
+        if attempt < 2:
+            time.sleep(0.25 * attempt)
+
+    raise GoogleMapsRequestError(f"Google Maps place details are temporarily unavailable after retries. Last error: {last_error}") from last_error
+
+
 def _place_to_lead(item: dict[str, Any], payload: LeadFinderRequest) -> LeadOut:
     display = item.get("displayName") if isinstance(item.get("displayName"), dict) else {}
     category_display = item.get("primaryTypeDisplayName") if isinstance(item.get("primaryTypeDisplayName"), dict) else {}
@@ -214,6 +304,34 @@ def _place_to_lead(item: dict[str, Any], payload: LeadFinderRequest) -> LeadOut:
         latitude=latitude,
         longitude=longitude,
     )
+
+
+def _place_details_to_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    category_display = item.get("primaryTypeDisplayName") if isinstance(item.get("primaryTypeDisplayName"), dict) else {}
+    website = _clean_url(str(item.get("websiteUri") or ""))
+    phone = str(item.get("nationalPhoneNumber") or item.get("internationalPhoneNumber") or "").strip()
+    location = item.get("location") if isinstance(item.get("location"), dict) else {}
+    types = item.get("types") if isinstance(item.get("types"), list) else []
+    category = str(category_display.get("text") or item.get("primaryType") or "").strip()
+    if not category and types:
+        category = str(types[0]).replace("_", " ").title()
+    return {
+        "source": "google_maps",
+        "source_payload": "places_details",
+        "place_id": str(item.get("id") or item.get("name") or "").replace("places/", "").strip(),
+        "website": website or None,
+        "domain": _domain(website) or None,
+        "phone": phone or None,
+        "address": str(item.get("formattedAddress") or "").strip() or None,
+        "google_rating": _float_value(item.get("rating")),
+        "business_category": category or None,
+        "latitude": _float_value(location.get("latitude")),
+        "longitude": _float_value(location.get("longitude")),
+        "google_maps_url": str(item.get("googleMapsUri") or "").strip() or None,
+        "google_business_status": item.get("businessStatus"),
+        "google_types": types,
+        "public_details_refreshed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
 
 
 def _dedupe(leads: list[LeadOut], limit: int) -> list[LeadOut]:

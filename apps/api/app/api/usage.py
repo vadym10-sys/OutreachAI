@@ -40,7 +40,7 @@ from app.models.entities import AuditLog, Campaign, Company, Contact, Deal, Emai
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
-from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, search_google_places
+from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
 from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
 from app.services.website import normalize_website_url
 
@@ -329,6 +329,27 @@ def _complete_turnkey_b2b_research(
     warnings: list[str] = []
     for index, lead in enumerate(leads[:MAX_TURNKEY_RESEARCH_LEADS], start=1):
         _lead_trace(request_id, "turnkey_research_started", lead_id=str(lead.id), company=lead.company, index=index)
+        public_details_updated = _complete_public_company_details(db, request, user_id, workspace, lead, request_id)
+        if public_details_updated:
+            _sync_lead_to_crm(db, user_id, workspace, lead)
+            _lead_trace(request_id, "turnkey_public_details_completed", lead_id=str(lead.id), company=lead.company, website=lead.website or "", phone=lead.phone or "")
+        if not lead.email and hunter_key_loaded() and (lead.website or _lead_metadata(lead).get("domain")):
+            try:
+                _lead_trace(request_id, "turnkey_contact_refresh_started", lead_id=str(lead.id), company=lead.company)
+                enriched = _hunter_enriched_leads(db, request, user_id, workspace, [_lead_out(lead)])
+                enriched_lead = enriched[0] if enriched else None
+                if enriched_lead:
+                    _apply_enriched_lead_to_record(lead, enriched_lead)
+                    if lead.email:
+                        _add_lead_activity(db, request, user_id, workspace, "contact.found", lead, {"source": "turnkey_lead_research"})
+                    else:
+                        _add_lead_activity(db, request, user_id, workspace, "contact.search_empty", lead, {"source": "turnkey_lead_research"})
+                _sync_lead_to_crm(db, user_id, workspace, lead)
+                _lead_trace(request_id, "turnkey_contact_refresh_finished", lead_id=str(lead.id), company=lead.company, has_email=bool(lead.email))
+            except Exception as exc:
+                capture_provider_exception(exc, provider="hunter", endpoint="workspace_app.turnkey_contact_refresh", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id})
+                warnings.append(f"{lead.company}: verified contact could not be completed yet.")
+                _lead_trace(request_id, "turnkey_contact_refresh_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
         try:
             if _needs_ai_research(lead):
                 _analyze_lead_if_possible(db, user_id, workspace, lead)
@@ -357,6 +378,141 @@ def _complete_turnkey_b2b_research(
     if len(leads) > MAX_TURNKEY_RESEARCH_LEADS:
         warnings.append(f"Prepared the first {MAX_TURNKEY_RESEARCH_LEADS} opportunities. Open the rest to complete research.")
     return warnings
+
+
+def _complete_public_company_details(db: Session, request: Request, user_id: str, workspace, lead: Lead, request_id: str) -> bool:
+    metadata = _lead_metadata(lead)
+    place_id = str(metadata.get("place_id") or "").strip()
+    if not place_id:
+        return False
+    if lead.website and lead.phone and metadata.get("address") and metadata.get("google_maps_url"):
+        return False
+    try:
+        _lead_trace(request_id, "google_place_details_started", lead_id=str(lead.id), company=lead.company, place_id=place_id)
+        details = get_google_place_details(place_id)
+    except Exception as exc:
+        capture_provider_exception(exc, provider="google_maps", endpoint="workspace_app.place_details", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id, "place_id": place_id})
+        _lead_trace(request_id, "google_place_details_failed", lead_id=str(lead.id), company=lead.company, place_id=place_id, reason=str(exc))
+        return False
+
+    updates = {key: value for key, value in details.items() if value not in {None, ""}}
+    if not updates:
+        return False
+    if not lead.website and updates.get("website"):
+        lead.website = str(updates["website"])
+    if not lead.phone and updates.get("phone"):
+        lead.phone = str(updates["phone"])
+    if not lead.industry and updates.get("business_category"):
+        lead.industry = str(updates["business_category"])
+    if not lead.niche and updates.get("business_category"):
+        lead.niche = str(updates["business_category"])
+    updates["domain"] = str(updates.get("domain") or _domain_from_website(lead.website) or metadata.get("domain") or "") or None
+    lead.notes = _merge_lead_metadata(lead, updates)
+    _add_lead_activity(db, request, user_id, workspace, "company.public_details_completed", lead, {"source": "turnkey_lead_research"})
+    return True
+
+
+def _complete_public_details_for_search_results(leads: list[LeadOut], request_id: str) -> list[LeadOut]:
+    completed: list[LeadOut] = []
+    for lead in leads:
+        metadata = _lead_metadata(lead)
+        place_id = str(metadata.get("place_id") or lead.place_id or "").strip()
+        if not place_id or (lead.website and lead.phone):
+            completed.append(lead)
+            continue
+        try:
+            _lead_trace(request_id, "google_place_details_started", company=lead.company, place_id=place_id)
+            details = get_google_place_details(place_id)
+        except Exception as exc:
+            _lead_trace(request_id, "google_place_details_failed", company=lead.company, place_id=place_id, reason=str(exc))
+            completed.append(lead)
+            continue
+        updates = {key: value for key, value in details.items() if value not in {None, ""}}
+        if not updates:
+            completed.append(lead)
+            continue
+        completed.append(
+            lead.model_copy(
+                update={
+                    "website": lead.website or updates.get("website"),
+                    "domain": lead.domain or updates.get("domain"),
+                    "phone": lead.phone or updates.get("phone"),
+                    "address": lead.address or updates.get("address"),
+                    "google_rating": lead.google_rating or updates.get("google_rating"),
+                    "business_category": lead.business_category or updates.get("business_category"),
+                    "industry": lead.industry or updates.get("business_category"),
+                    "niche": lead.niche or updates.get("business_category"),
+                    "notes": _merge_metadata_notes_for_lead_out(lead, updates),
+                }
+            )
+        )
+    return completed
+
+
+def _merge_metadata_notes_for_lead_out(lead: LeadOut, updates: dict[str, Any]) -> str:
+    return _merge_lead_metadata(lead, {**_lead_metadata(lead), **updates})
+
+
+def _preserve_search_public_details(original: list[LeadOut], enriched: list[LeadOut]) -> list[LeadOut]:
+    metadata_by_key: dict[str, dict[str, Any]] = {}
+    lead_by_key: dict[str, LeadOut] = {}
+    for lead in original:
+        key = _lead_out_match_key(lead)
+        if key:
+            metadata_by_key[key] = _lead_metadata(lead)
+            lead_by_key[key] = lead
+    preserved: list[LeadOut] = []
+    for lead in enriched:
+        key = _lead_out_match_key(lead)
+        source_lead = lead_by_key.get(key)
+        if not source_lead:
+            preserved.append(lead)
+            continue
+        public_metadata = metadata_by_key.get(key, {})
+        preserved.append(
+            lead.model_copy(
+                update={
+                    "website": lead.website or source_lead.website,
+                    "domain": lead.domain or source_lead.domain,
+                    "phone": lead.phone or source_lead.phone,
+                    "address": lead.address or source_lead.address,
+                    "google_rating": lead.google_rating or source_lead.google_rating,
+                    "business_category": lead.business_category or source_lead.business_category,
+                    "notes": _merge_metadata_notes_for_lead_out(lead, {**public_metadata, **_lead_metadata(lead)}),
+                }
+            )
+        )
+    return preserved
+
+
+def _lead_out_match_key(lead: LeadOut) -> str:
+    metadata = _lead_metadata(lead)
+    return str(metadata.get("place_id") or lead.place_id or metadata.get("domain") or lead.domain or lead.website or lead.company or "")
+
+
+def _apply_enriched_lead_to_record(lead: Lead, enriched: LeadOut) -> None:
+    metadata = _lead_metadata(enriched)
+    lead.contact = enriched.contact or lead.contact
+    lead.email = str(enriched.email) if enriched.email else lead.email
+    lead.phone = enriched.phone or lead.phone
+    lead.linkedin = enriched.linkedin or lead.linkedin
+    lead.website = enriched.website or lead.website
+    lead.industry = enriched.industry or lead.industry
+    lead.niche = enriched.niche or lead.niche
+    lead.notes = _merge_lead_metadata(
+        lead,
+        {
+            **metadata,
+            "contact_search_checked_at": datetime.utcnow().isoformat(),
+            "contact_search_status": "verified_email_found" if enriched.email else metadata.get("hunter_status", "no_verified_email"),
+            "contact_search_message": "Verified contact saved to CRM." if enriched.email else "No verified business email was found yet. Add a decision maker manually or continue with research.",
+            "decision_maker_roles_searched": list(DECISION_MAKER_TITLES),
+            "hunter_status": enriched.hunter_status or metadata.get("hunter_status") or ("verified" if enriched.email else "no_verified_email"),
+            "hunter_verified": bool(enriched.hunter_verified or metadata.get("hunter_verified")),
+            "email_status": "Verified" if enriched.hunter_verified or metadata.get("hunter_verified") else ("Found" if enriched.email or lead.email else "No verified email"),
+            "contact_found_at": datetime.utcnow().isoformat() if enriched.email or lead.email else metadata.get("contact_found_at"),
+        },
+    )
 
 
 def _integration_status(key: str, label: str, configured: bool, ready_message: str, missing_message: str) -> UsageIntegrationStatus:
@@ -606,9 +762,11 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
             message="No companies were found for these filters. Try a broader city, industry, or company size.",
         )
 
+    found = _complete_public_details_for_search_results(found, request_id)
     try:
         _lead_trace(request_id, "hunter_started", leads=len(found))
         enriched = _hunter_enriched_leads(db, request, user.user_id, workspace, found)
+        enriched = _preserve_search_public_details(found, enriched)
         _lead_trace(request_id, "hunter_finished", leads=len(enriched), verified=sum(1 for item in enriched if item.hunter_verified))
     except Exception as exc:
         capture_provider_exception(exc, provider="hunter", endpoint="workspace_app.hunter.enrichment", workspace_id=workspace.id, extra={"request_id": request_id})
@@ -710,6 +868,7 @@ def analyze_company(company_id: UUID, request: Request, user: WorkspaceUserConte
     if not lead:
         return UsageActionOut(status="error", message="This company needs a saved lead before analysis.", company=_crm_company_out(db, workspace, user.user_id, company))
     try:
+        _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
         _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
         _add_lead_activity(db, request, user.user_id, workspace, "website.analyzed", lead, {"source": "workspace_app"})
         db.commit()
@@ -733,6 +892,7 @@ def discover_company_contacts(company_id: UUID, request: Request, user: Workspac
     if not hunter_key_loaded():
         return UsageActionOut(status="provider_unavailable", message="Contact discovery needs setup. You can add a contact manually and continue.", company=_crm_company_out(db, workspace, user.user_id, company))
 
+    _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
     before_email = lead.email
     try:
         enriched = _hunter_enriched_leads(db, request, user.user_id, workspace, [_lead_out(lead)])
@@ -854,6 +1014,8 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
     if not lead:
         return UsageActionOut(status="error", message="This company needs a saved lead before email generation.", company=_crm_company_out(db, workspace, user.user_id, company))
     try:
+        _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
+        company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
         variant = personalize_email(
             PersonalizeRequest(
                 company=lead.company,

@@ -811,6 +811,101 @@ def test_workspace_app_lead_search_reports_reused_duplicates(monkeypatch) -> Non
     assert "already in your CRM" in second_data["message"]
 
 
+def test_workspace_app_turnkey_research_completes_public_details_before_ai_and_contacts(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-turnkey-details@example.com"}
+    monkeypatch.setattr(
+        "app.api.usage.search_google_places",
+        lambda payload: GooglePlacesSearchResult(
+            leads=[
+                LeadOut(
+                    company="Usage Details GmbH",
+                    website=None,
+                    industry="Construction",
+                    country="Germany",
+                    city="Berlin",
+                    phone=None,
+                    notes='{"source":"google_maps","place_id":"usage-details-place"}',
+                    place_id="usage-details-place",
+                    source="google_maps",
+                )
+            ],
+            raw_count=1,
+            duration_ms=7,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.api.usage.get_google_place_details",
+        lambda place_id: {
+            "place_id": place_id,
+            "website": "https://usage-details.example",
+            "domain": "usage-details.example",
+            "phone": "+49 30 123456",
+            "address": "Alexanderplatz 1, Berlin",
+            "google_rating": 4.6,
+            "business_category": "Construction company",
+        },
+    )
+
+    def fake_hunter(db, request, user_id, workspace, leads):
+        assert leads[0].website == "https://usage-details.example"
+        return [
+            leads[0].model_copy(
+                update={
+                    "contact": "Anna Founder",
+                    "email": "anna@usage-details.example",
+                    "title": "Founder",
+                    "hunter_verified": True,
+                    "hunter_status": "verified",
+                    "notes": '{"source":"hunter","domain":"usage-details.example","hunter_verified":true,"confidence":96,"title":"Founder"}',
+                    "source": "hunter",
+                }
+            )
+        ]
+
+    def fake_analyze(db, user_id, workspace, lead):
+        assert lead.website == "https://usage-details.example"
+        metadata = json.loads((lead.notes or "{}").splitlines()[0])
+        metadata.update(
+            {
+                "ai_summary": "Usage Details serves Berlin construction buyers with specialist services.",
+                "suggested_offer": "Offer a qualified B2B partner shortlist.",
+                "outreach_strategy": "Mention their Berlin market and construction specialization.",
+                "sales_angle": "Reduce manual partner research.",
+                "expected_reply_rate": "9-13%",
+                "website_analyzed_at": datetime.utcnow().isoformat(),
+            }
+        )
+        lead.notes = json.dumps(metadata, sort_keys=True)
+
+    monkeypatch.setattr("app.api.usage._hunter_enriched_leads", fake_hunter)
+    monkeypatch.setattr("app.api.usage._analyze_lead_if_possible", fake_analyze)
+    monkeypatch.setattr(
+        "app.api.usage.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Berlin partnership idea",
+            preview="A quick idea for your Berlin construction work",
+            full_email="Hi Anna, I found a relevant B2B partnership angle for Usage Details.",
+            cta="Open to a quick fit review?",
+            cold_email="Hi Anna, I found a relevant B2B partnership angle for Usage Details.",
+            follow_ups=["Worth a quick look?", "Should I send the details?"],
+        ),
+    )
+
+    response = client.post("/api/workspace-app/leads/search", headers=headers, json={"industry": "Construction", "country": "Germany", "city": "Berlin", "limit": 10})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    company = data["companies"][0]
+    assert company["website"] == "https://usage-details.example"
+    assert company["phone"] == "+49 30 123456"
+    assert company["address"] == "Alexanderplatz 1, Berlin"
+    assert company["email"] == "anna@usage-details.example"
+    assert company["ai_summary"] == "Usage Details serves Berlin construction buyers with specialist services."
+    assert company["suggested_offer"] == "Offer a qualified B2B partner shortlist."
+    assert company["expected_reply_rate"] == "9-13%"
+    assert company["generated_emails"][0]["subject"] == "Berlin partnership idea"
+
+
 def test_workspace_app_lead_search_provider_error_returns_structured_status(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-provider-error@example.com"}
     monkeypatch.setattr("app.api.usage.search_google_places", lambda payload: (_ for _ in ()).throw(GoogleMapsRequestError("provider outage")))
