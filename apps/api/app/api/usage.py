@@ -134,6 +134,8 @@ class UsageActionOut(BaseModel):
     message: str
     company: Optional[CrmCompanyOut] = None
     email: Optional[EmailOut] = None
+    warnings: list[str] = Field(default_factory=list)
+    completed_steps: list[str] = Field(default_factory=list)
 
 
 class UsageIntegrationStatus(BaseModel):
@@ -1158,6 +1160,160 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
         message="Email draft created for review. Nothing was sent.",
         company=_crm_company_out(db, workspace, user.user_id, company),
         email=EmailOut.model_validate(email),
+    )
+
+
+@router.post("/companies/{company_id}/complete-opportunity", response_model=UsageActionOut)
+def complete_company_opportunity(company_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+    if not company.lead_id:
+        return UsageActionOut(
+            status="error",
+            message="This company needs a saved lead before preparation.",
+            company=_crm_company_out(db, workspace, user.user_id, company),
+        )
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id))
+    if not lead:
+        return UsageActionOut(
+            status="error",
+            message="This company needs a saved lead before preparation.",
+            company=_crm_company_out(db, workspace, user.user_id, company),
+        )
+
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    warnings: list[str] = []
+    completed_steps: list[str] = []
+    email: EmailMessage | None = None
+    _lead_trace(request_id, "complete_opportunity_started", lead_id=str(lead.id), company=lead.company)
+
+    try:
+        _complete_public_company_details(db, request, user.user_id, workspace, lead, request_id)
+        completed_steps.append("Company profile checked")
+    except Exception as exc:
+        capture_provider_exception(
+            exc,
+            provider="google_maps",
+            endpoint="workspace_app.complete_opportunity.profile",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            extra={"request_id": request_id},
+        )
+        warnings.append("Company profile could not be refreshed. Saved CRM data was kept.")
+        completed_steps.append("Company profile checked")
+        _lead_trace(request_id, "complete_opportunity_profile_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
+
+    try:
+        metadata = _lead_metadata(lead)
+        has_completed_research = bool(metadata.get("website_analyzed_at"))
+        if (lead.website or metadata.get("domain")) and (_needs_ai_research(lead) or not has_completed_research):
+            _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity")
+        metadata = _lead_metadata(lead)
+        if not any(metadata.get(key) for key in ("ai_summary", "opportunity_analysis", "suggested_offer", "pain_points")):
+            warnings.append("AI research could not complete yet. The company is saved and can be retried.")
+        else:
+            _add_lead_activity(db, request, user.user_id, workspace, "website.analyzed", lead, {"source": "complete_opportunity"})
+        completed_steps.append("Website analysis checked")
+    except Exception as exc:
+        capture_provider_exception(
+            exc,
+            provider="openai",
+            endpoint="workspace_app.complete_opportunity.analysis",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            extra={"request_id": request_id},
+        )
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_ai_fallback")
+        warnings.append(_safe_provider_warning(exc))
+        completed_steps.append("Website analysis checked")
+        _lead_trace(request_id, "complete_opportunity_analysis_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
+
+    try:
+        if not lead.email:
+            metadata = _lead_metadata(lead)
+            if hunter_key_loaded() and (lead.website or metadata.get("domain")):
+                enriched = _hunter_enriched_leads(db, request, user.user_id, workspace, [_lead_out(lead)])
+                if enriched:
+                    before_email = lead.email
+                    _apply_enriched_lead_to_record(lead, enriched[0])
+                    if lead.email and lead.email != before_email:
+                        _add_lead_activity(db, request, user.user_id, workspace, "contact.found", lead, {"source": "complete_opportunity"})
+                if not lead.email:
+                    warnings.append("No verified business email was found yet. Add a decision maker manually or continue with research.")
+                    _add_lead_activity(db, request, user.user_id, workspace, "contact.search_empty", lead, {"source": "complete_opportunity"})
+            else:
+                lead.notes = _merge_lead_metadata(
+                    lead,
+                    {
+                        "contact_search_checked_at": datetime.utcnow().isoformat(),
+                        "contact_search_status": "needs_manual_contact",
+                        "contact_search_message": "Add a decision maker email manually or connect contact discovery to continue.",
+                        "decision_maker_roles_searched": list(DECISION_MAKER_TITLES),
+                        "email_status": _lead_metadata(lead).get("email_status", "No verified email"),
+                    },
+                )
+                warnings.append("Contact discovery needs setup. Add a decision maker email manually and continue.")
+                _add_lead_activity(db, request, user.user_id, workspace, "contact.search_empty", lead, {"source": "complete_opportunity"})
+        completed_steps.append("Contact search checked")
+    except Exception as exc:
+        capture_provider_exception(
+            exc,
+            provider="hunter",
+            endpoint="workspace_app.complete_opportunity.contacts",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            extra={"request_id": request_id},
+        )
+        lead.notes = _merge_lead_metadata(
+            lead,
+            {
+                "contact_search_checked_at": datetime.utcnow().isoformat(),
+                "contact_search_status": "provider_unavailable",
+                "contact_search_message": "Contact search is temporarily unavailable. Add a contact manually and continue.",
+                "email_status": _lead_metadata(lead).get("email_status", "No verified email"),
+            },
+        )
+        warnings.append("Contact search is temporarily unavailable. Add a contact manually and continue.")
+        completed_steps.append("Contact search checked")
+        _lead_trace(request_id, "complete_opportunity_contacts_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
+
+    try:
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_before_draft")
+        email = _create_review_email_draft(db, request, user.user_id, workspace, lead)
+        db.flush()
+        completed_steps.append("Email draft checked")
+    except Exception as exc:
+        capture_provider_exception(
+            exc,
+            provider="openai",
+            endpoint="workspace_app.complete_opportunity.email_draft",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            extra={"request_id": request_id},
+        )
+        warnings.append("Email draft could not be prepared yet. Review the company and try again.")
+        completed_steps.append("Email draft checked")
+        _lead_trace(request_id, "complete_opportunity_email_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
+
+    company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    db.commit()
+    db.refresh(company)
+    if email:
+        db.refresh(email)
+    _lead_trace(request_id, "complete_opportunity_finished", lead_id=str(lead.id), company=lead.company, warnings=len(warnings), has_email_draft=bool(email))
+
+    return UsageActionOut(
+        status="partial_success" if warnings else "success",
+        message=(
+            "Sales opportunity prepared with missing fields. Review the next recommended action."
+            if warnings
+            else "Sales opportunity prepared. Review the AI research and approve only when ready."
+        ),
+        company=_crm_company_out(db, workspace, user.user_id, company),
+        email=EmailOut.model_validate(email) if email else None,
+        warnings=warnings,
+        completed_steps=completed_steps,
     )
 
 

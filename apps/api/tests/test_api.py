@@ -985,6 +985,74 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent.json()["company"]["crm_stage"] == "Sent"
 
 
+def test_workspace_app_complete_opportunity_prepares_research_contact_and_review_draft(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-complete-opportunity@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Complete Build", "website": "https://usage-complete.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    def fake_analyze(db, user_id, workspace, lead, language="en"):
+        metadata = json.loads((lead.notes or "{}").splitlines()[0])
+        metadata.update(
+            {
+                "ai_summary": "Usage Complete builds construction services for Berlin B2B buyers.",
+                "opportunity_analysis": "Strong fit because the company can benefit from partner discovery.",
+                "buying_signals": ["Public B2B footprint", "Clear local market"],
+                "risks": ["No reply history yet"],
+                "suggested_offer": "Offer qualified B2B partnership leads.",
+                "expected_reply_rate": "10-14%",
+                "priority_score": 82,
+                "confidence_score": 88,
+                "website_analyzed_at": datetime.utcnow().isoformat(),
+            }
+        )
+        lead.notes = json.dumps(metadata, sort_keys=True)
+
+    def fake_hunter_enrichment(db, request, user_id, workspace, leads):
+        lead = leads[0].model_copy(
+            update={
+                "contact": "Eva Founder",
+                "title": "Founder",
+                "email": "eva@usage-complete.example",
+                "hunter_verified": True,
+                "hunter_status": "verified",
+                "notes": '{"source":"hunter","hunter_verified":true,"confidence":97,"title":"Founder"}',
+            }
+        )
+        return [lead]
+
+    monkeypatch.setattr("app.api.usage._analyze_lead_if_possible", fake_analyze)
+    monkeypatch.setattr("app.api.usage._hunter_enriched_leads", fake_hunter_enrichment)
+    monkeypatch.setattr(
+        "app.api.usage.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="B2B partner idea for Usage Complete",
+            preview="A quick partner angle",
+            full_email="Hi Eva, I found a relevant B2B partner angle for Usage Complete.",
+            cta="Open to a quick fit review?",
+            cold_email="Hi Eva, I found a relevant B2B partner angle for Usage Complete.",
+            follow_ups=["Worth a quick look?", "Should I send the details?"],
+        ),
+    )
+
+    response = client.post(f"/api/workspace-app/companies/{company_id}/complete-opportunity", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert data["completed_steps"] == ["Company profile checked", "Website analysis checked", "Contact search checked", "Email draft checked"]
+    assert data["company"]["email"] == "eva@usage-complete.example"
+    assert data["company"]["ai_summary"] == "Usage Complete builds construction services for Berlin B2B buyers."
+    assert data["company"]["opportunity_analysis"] == "Strong fit because the company can benefit from partner discovery."
+    assert data["company"]["priority_score"] == 82
+    assert data["email"]["subject"] == "B2B partner idea for Usage Complete"
+    assert data["email"]["delivery_status"] == "draft"
+    assert data["company"]["crm_stage"] == "Email Draft Ready"
+
+
 def test_workspace_app_email_draft_uses_current_ui_locale(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-locale@example.com", "X-OutreachAI-Locale": "ru"}
     company_response = client.post(

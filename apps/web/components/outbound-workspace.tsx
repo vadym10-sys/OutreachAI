@@ -80,6 +80,8 @@ type WorkspaceAppActionResponse = {
   message: string;
   company?: CrmCompany | null;
   email?: Email | null;
+  warnings?: string[];
+  completed_steps?: string[];
 };
 
 type WorkspaceIntegrationStatus = {
@@ -1453,57 +1455,20 @@ function OpportunityCard({
     const warnings: string[] = [];
     let latestLead: Lead | null = null;
     try {
-      if (lead.website || lead.domain) {
-        setStatus(t("Analyzing website..."));
-        try {
-          const analysisResult = await withTimeout(
-            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/analyze`, { method: "POST", timeoutMs: 22000 }),
-            24000,
-            "Website analysis took too long. The lead stays saved in CRM, and you can retry research."
-          );
-          if (analysisResult.company) {
-            const updatedCompany = normalizeCrmCompany(analysisResult.company);
-            latestLead = leadFromCrmCompany(updatedCompany);
-            onCompanyUpdated?.(updatedCompany);
-            onLeadUpdated?.(latestLead);
-          }
-          if (analysisResult.status !== "success") {
-            warnings.push(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
-          }
-        } catch (err) {
-          warnings.push(friendlyErrorMessage(err, "Website analysis is temporarily unavailable. The lead stays saved in CRM."));
-        }
-      }
-      setStatus(t("Finding decision makers..."));
-      try {
-        const contactResult = await withTimeout(
-          api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/contacts`, { method: "POST", timeoutMs: 18000 }),
-          20000,
-          "Contact discovery took too long. Continue with the saved company or retry contacts later."
-        );
-        if (contactResult.company) {
-          const updatedCompany = normalizeCrmCompany(contactResult.company);
-          latestLead = leadFromCrmCompany(updatedCompany);
-          onCompanyUpdated?.(updatedCompany);
-          onLeadUpdated?.(latestLead);
-        }
-        if (contactResult.status !== "success") {
-          warnings.push(t(contactResult.message || "No verified contact was found yet. You can add an email manually and continue."));
-        }
-      } catch (err) {
-        warnings.push(friendlyErrorMessage(err, "Contact discovery is temporarily unavailable. You can add a contact manually and continue."));
-      }
-      setStatus(t("Preparing personalized first email..."));
+      setStatus(t("Preparing full sales opportunity..."));
       const draftResult = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/email-draft`, { method: "POST", timeoutMs: 35000 }),
-        37000,
-        "Email draft took too long. Your CRM research was saved; try generating the email again."
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/complete-opportunity`, { method: "POST", timeoutMs: 65000 }),
+        70000,
+        "Sales opportunity preparation took too long. The company stays saved in CRM."
       );
       if (draftResult.company) {
         const updatedCompany = normalizeCrmCompany(draftResult.company);
         latestLead = leadFromCrmCompany(updatedCompany);
         onCompanyUpdated?.(updatedCompany);
         onLeadUpdated?.(latestLead);
+      }
+      if (Array.isArray(draftResult.warnings)) {
+        warnings.push(...draftResult.warnings.map((item) => t(item)).filter(Boolean));
       }
       if (!draftResult.email) {
         throw new Error(draftResult.message || "Email draft could not be created.");
@@ -2034,48 +1999,19 @@ export function LeadFinderPage() {
       setOpportunityReadiness(opportunityReadinessFromCompanies([currentCompany]));
     };
 
-    if (currentCompany.website || currentCompany.domain) {
-      setSearchSteps([t("Saved to CRM"), t("Analyzing website...")]);
-      setMessage(t("OutreachAI is preparing this company automatically..."));
-      try {
-        const result = await withTimeout(
-          api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/analyze`, { method: "POST", timeoutMs: 18000 }),
-          20000,
-          "Website analysis took too long. The company is saved and you can retry later."
-        );
-        applyCompany(result.company);
-        if (result.status !== "success") warnings.push(t(result.message || "Website analysis is temporarily unavailable. The company stays saved."));
-      } catch (err) {
-        warnings.push(friendlyErrorMessage(err, "Website analysis is temporarily unavailable. The company stays saved."));
-      }
-    } else {
-      warnings.push(t("Add a website later to unlock deeper AI research."));
-    }
-
-    setSearchSteps([t("Saved to CRM"), t("Website analysis checked"), t("Finding decision makers...")]);
+    setSearchSteps([t("Saved to CRM"), t("Preparing full sales opportunity...")]);
+    setMessage(t("OutreachAI is preparing this company automatically..."));
     try {
       const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/contacts`, { method: "POST", timeoutMs: 14000 }),
-        16000,
-        "Contact discovery took too long. The company is saved and you can add a contact manually."
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/complete-opportunity`, { method: "POST", timeoutMs: 65000 }),
+        70000,
+        "Sales opportunity preparation took too long. The company is saved and you can retry later."
       );
       applyCompany(result.company);
-      if (result.status !== "success") warnings.push(t(result.message || "No verified contact was found yet. You can add an email manually and continue."));
-    } catch (err) {
-      warnings.push(friendlyErrorMessage(err, "Contact discovery is temporarily unavailable. You can add a contact manually and continue."));
-    }
-
-    setSearchSteps([t("Saved to CRM"), t("Website analysis checked"), t("Contacts checked"), t("Preparing personalized first email...")]);
-    try {
-      const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/email-draft`, { method: "POST", timeoutMs: 25000 }),
-        27000,
-        "Email draft took too long. The company is saved and you can generate it later."
-      );
-      applyCompany(result.company);
+      if (Array.isArray(result.warnings)) warnings.push(...result.warnings.map((item) => t(item)).filter(Boolean));
       if (result.status !== "success" || !result.email) warnings.push(t(result.message || "Email draft could not be prepared yet."));
     } catch (err) {
-      warnings.push(friendlyErrorMessage(err, "Email draft is temporarily unavailable. The company stays saved."));
+      warnings.push(friendlyErrorMessage(err, "Sales opportunity preparation is temporarily unavailable. The company stays saved."));
     }
 
     setSearchSteps([
@@ -3033,72 +2969,22 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     setActionNotice(t("Preparing company research, contacts and first email..."));
     setActionCompletedSteps([]);
     setActionCurrentStep("Checking website analysis...");
-    const warnings: string[] = [];
     const markStepDone = (step: string) => setActionCompletedSteps((steps) => steps.includes(step) ? steps : [...steps, step]);
     try {
-      let nextCompany = current;
-      if ((nextCompany.website || nextCompany.domain) && !nextCompany.ai_summary) {
-        try {
-          setActionCurrentStep("Analyzing website and sales angle...");
-          const analysisResult = await withTimeout(
-            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/analyze`, { method: "POST", timeoutMs: 22000 }),
-            24000,
-            "Website analysis took too long. The company stays saved in CRM."
-          );
-          if (analysisResult.company) {
-            nextCompany = normalizeCrmCompany(analysisResult.company);
-            applyCompanyUpdate(nextCompany);
-          }
-          if (analysisResult.status !== "success") warnings.push(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
-        } catch (err) {
-          warnings.push(friendlyErrorMessage(err, t("Website analysis is temporarily unavailable. The company stays saved in CRM.")));
-        } finally {
-          markStepDone("Website analysis checked");
-        }
-      } else {
-        markStepDone("Website analysis checked");
+      setActionCurrentStep("Preparing full sales opportunity...");
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/complete-opportunity`, { method: "POST", timeoutMs: 65000 }),
+        70000,
+        "Sales opportunity preparation took too long. The company stays saved in CRM."
+      );
+      if (result.company) {
+        applyCompanyUpdate(normalizeCrmCompany(result.company));
       }
-
-      const hasEmailBeforeContactSearch = Boolean(nextCompany.email || nextCompany.contacts.some((contact) => contact.email));
-      if (!hasEmailBeforeContactSearch) {
-        try {
-          setActionCurrentStep("Finding decision makers and verified email...");
-          const contactResult = await withTimeout(
-            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
-            22000,
-            "Contact search took too long. You can add a contact manually."
-          );
-          if (contactResult.company) {
-            nextCompany = normalizeCrmCompany(contactResult.company);
-            applyCompanyUpdate(nextCompany);
-          }
-          if (contactResult.status !== "success") warnings.push(t(contactResult.message || "No verified business email was found. Add a decision maker manually or continue with research."));
-        } catch (err) {
-          warnings.push(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
-        } finally {
-          markStepDone("Contact search checked");
-        }
-      } else {
-        markStepDone("Contact search checked");
-      }
-
-      const hasDraftBeforeGeneration = Boolean(nextCompany.generated_emails.length);
-      if (!hasDraftBeforeGeneration) {
-        setActionCurrentStep("Generating personalized email for review...");
-        const draftResult = await withTimeout(
-          api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/email-draft`, { method: "POST", timeoutMs: 35000 }),
-          37000,
-          "Email draft took too long. Try again from the Outreach Center."
-        );
-        if (draftResult.company) {
-          nextCompany = normalizeCrmCompany(draftResult.company);
-          applyCompanyUpdate(nextCompany);
-        }
-        if (draftResult.status !== "success" || !draftResult.email) warnings.push(t(draftResult.message || "Email draft could not be prepared yet."));
-        markStepDone("Email draft checked");
-      } else {
-        markStepDone("Email draft checked");
-      }
+      const completedSteps = Array.isArray(result.completed_steps) && result.completed_steps.length
+        ? result.completed_steps
+        : ["Website analysis checked", "Contact search checked", "Email draft checked"];
+      completedSteps.forEach(markStepDone);
+      const warnings = Array.isArray(result.warnings) ? result.warnings.map((item) => t(item)).filter(Boolean) : [];
 
       setActionCurrentStep("");
       setActionNotice(
@@ -3619,78 +3505,24 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     setError("");
     setCompletedSteps([]);
     setCurrentStep("Checking website analysis...");
-    const warnings: string[] = [];
     const markStepDone = (step: string) => setCompletedSteps((steps) => steps.includes(step) ? steps : [...steps, step]);
     try {
-      let nextCompany = current;
-      if ((nextCompany.website || nextCompany.domain) && !nextCompany.ai_summary) {
-        try {
-          setCurrentStep("Analyzing website and sales angle...");
-          const analysisResult = await withTimeout(
-            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/analyze`, { method: "POST", timeoutMs: 22000 }),
-            24000,
-            "Website analysis took too long. The company stays saved in CRM."
-          );
-          if (analysisResult.company) {
-            nextCompany = normalizeCrmCompany(analysisResult.company);
-            setCurrent(nextCompany);
-            setStageValue(nextCompany.crm_stage);
-          }
-          if (analysisResult.status !== "success") warnings.push(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
-        } catch (err) {
-          warnings.push(friendlyErrorMessage(err, t("Website analysis is temporarily unavailable. The company stays saved in CRM.")));
-        } finally {
-          markStepDone("Website analysis checked");
-        }
-      } else {
-        markStepDone("Website analysis checked");
+      setCurrentStep("Preparing full sales opportunity...");
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/complete-opportunity`, { method: "POST", timeoutMs: 65000 }),
+        70000,
+        "Sales opportunity preparation took too long. The company stays saved in CRM."
+      );
+      if (result.company) {
+        const nextCompany = normalizeCrmCompany(result.company);
+        setCurrent(nextCompany);
+        setStageValue(nextCompany.crm_stage);
       }
-
-      if (!nextCompany.email && !nextCompany.contacts.some((contact) => contact.email)) {
-        try {
-          setCurrentStep("Finding decision makers and verified email...");
-          const contactResult = await withTimeout(
-            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
-            22000,
-            "Contact search took too long. You can add a contact manually."
-          );
-          if (contactResult.company) {
-            nextCompany = normalizeCrmCompany(contactResult.company);
-            setCurrent(nextCompany);
-            setStageValue(nextCompany.crm_stage);
-          }
-          if (contactResult.status !== "success") warnings.push(t(contactResult.message || "No verified business email was found. Add a decision maker manually or continue with research."));
-        } catch (err) {
-          warnings.push(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
-        } finally {
-          markStepDone("Contact search checked");
-        }
-      } else {
-        markStepDone("Contact search checked");
-      }
-
-      if (!nextCompany.generated_emails.length) {
-        try {
-          setCurrentStep("Generating personalized email for review...");
-          const draftResult = await withTimeout(
-            api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/email-draft`, { method: "POST", timeoutMs: 35000 }),
-            37000,
-            "Email draft took too long. Try again from the Outreach Center."
-          );
-          if (draftResult.company) {
-            nextCompany = normalizeCrmCompany(draftResult.company);
-            setCurrent(nextCompany);
-            setStageValue(nextCompany.crm_stage);
-          }
-          if (draftResult.status !== "success" || !draftResult.email) warnings.push(t(draftResult.message || "Email draft could not be prepared yet."));
-        } catch (err) {
-          warnings.push(friendlyErrorMessage(err, t("Email draft is temporarily unavailable. The company stays saved.")));
-        } finally {
-          markStepDone("Email draft checked");
-        }
-      } else {
-        markStepDone("Email draft checked");
-      }
+      const completed = Array.isArray(result.completed_steps) && result.completed_steps.length
+        ? result.completed_steps
+        : ["Website analysis checked", "Contact search checked", "Email draft checked"];
+      completed.forEach(markStepDone);
+      const warnings = Array.isArray(result.warnings) ? result.warnings.map((item) => t(item)).filter(Boolean) : [];
 
       setCurrentStep("");
       setNotice(
