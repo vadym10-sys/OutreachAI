@@ -2643,31 +2643,37 @@ function companyAiWorkPlan(company: CrmCompany) {
     {
       label: "Company profile",
       copy: "Saved company, location, website, phone and business listing data.",
+      action: "Add or verify the company website and business profile.",
       done: Boolean(company.name && (company.website || company.domain || company.address || company.phone))
     },
     {
       label: "Website analysis",
       copy: "AI summary, services, sales angle, offer and useful personalization facts.",
+      action: "Run website analysis to fill summary, pain points and opportunity angle.",
       done: Boolean(company.website_analyzed_at || company.ai_summary || company.sales_angle || company.suggested_offer)
     },
     {
       label: "Decision maker",
       copy: "A real person or role to contact. If not verified, add it manually.",
+      action: "Find a decision maker or add the right contact manually.",
       done: Boolean(company.contacts.length || company.contact_found_at)
     },
     {
       label: "Verified email",
       copy: "A usable business email. OutreachAI never invents missing email addresses.",
+      action: "Find a verified email or add a known business email manually.",
       done: hasVerifiedEmail
     },
     {
       label: "AI email",
       copy: "A personalized first email generated from the company research.",
+      action: "Generate a personalized email for review. Sending stays blocked until approval.",
       done: hasDraft
     },
     {
       label: "Approval",
       copy: "Human review before anything is sent to a real prospect.",
+      action: "Review the draft, edit it if needed, then approve before sending.",
       done: Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"))
     }
   ];
@@ -2793,6 +2799,32 @@ function WorkspaceSection({ id, title, copy, children }: { id: string; title: st
   );
 }
 
+function ActionProgress({ current, completed }: { current: string; completed: string[] }) {
+  const { t } = useI18n();
+  if (!current && completed.length === 0) return null;
+  return (
+    <div className="rounded-2xl border border-teal-100 bg-teal-50 p-4">
+      <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI is working")}</p>
+      {current && (
+        <p className="mt-2 inline-flex items-center gap-2 text-sm font-bold text-ink">
+          <Loader2 className="animate-spin text-brand" size={16} />
+          {t(current)}
+        </p>
+      )}
+      {completed.length ? (
+        <div className="mt-3 grid gap-2">
+          {completed.map((step) => (
+            <p key={step} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-xs font-bold text-brand">
+              <CheckCircle2 size={15} />
+              {t(step)}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function contactConfidenceLabel(confidence: CrmContact["confidence"], t: (key: string) => string) {
   if (confidence === undefined || confidence === null || confidence === "") return t("Confidence not available");
   const value = typeof confidence === "number" ? `${confidence}%` : String(confidence).trim();
@@ -2807,6 +2839,8 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const [actionBusy, setActionBusy] = useState("");
   const [actionNotice, setActionNotice] = useState("");
   const [actionError, setActionError] = useState("");
+  const [actionCurrentStep, setActionCurrentStep] = useState("");
+  const [actionCompletedSteps, setActionCompletedSteps] = useState<string[]>([]);
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const contactFormRef = useRef<HTMLFormElement | null>(null);
   const lead = leadFromCrmCompany(current);
@@ -2993,11 +3027,15 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     setActionBusy("prepare-company");
     setActionError("");
     setActionNotice(t("Preparing company research, contacts and first email..."));
+    setActionCompletedSteps([]);
+    setActionCurrentStep("Checking website analysis...");
     const warnings: string[] = [];
+    const markStepDone = (step: string) => setActionCompletedSteps((steps) => steps.includes(step) ? steps : [...steps, step]);
     try {
       let nextCompany = current;
       if ((nextCompany.website || nextCompany.domain) && !nextCompany.ai_summary) {
         try {
+          setActionCurrentStep("Analyzing website and sales angle...");
           const analysisResult = await withTimeout(
             api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/analyze`, { method: "POST", timeoutMs: 22000 }),
             24000,
@@ -3010,12 +3048,17 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           if (analysisResult.status !== "success") warnings.push(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
         } catch (err) {
           warnings.push(friendlyErrorMessage(err, t("Website analysis is temporarily unavailable. The company stays saved in CRM.")));
+        } finally {
+          markStepDone("Website analysis checked");
         }
+      } else {
+        markStepDone("Website analysis checked");
       }
 
       const hasEmailBeforeContactSearch = Boolean(nextCompany.email || nextCompany.contacts.some((contact) => contact.email));
       if (!hasEmailBeforeContactSearch) {
         try {
+          setActionCurrentStep("Finding decision makers and verified email...");
           const contactResult = await withTimeout(
             api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
             22000,
@@ -3028,11 +3071,16 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           if (contactResult.status !== "success") warnings.push(t(contactResult.message || "No verified business email was found. Add a decision maker manually or continue with research."));
         } catch (err) {
           warnings.push(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
+        } finally {
+          markStepDone("Contact search checked");
         }
+      } else {
+        markStepDone("Contact search checked");
       }
 
       const hasDraftBeforeGeneration = Boolean(nextCompany.generated_emails.length);
       if (!hasDraftBeforeGeneration) {
+        setActionCurrentStep("Generating personalized email for review...");
         const draftResult = await withTimeout(
           api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/email-draft`, { method: "POST", timeoutMs: 35000 }),
           37000,
@@ -3043,8 +3091,12 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           applyCompanyUpdate(nextCompany);
         }
         if (draftResult.status !== "success" || !draftResult.email) warnings.push(t(draftResult.message || "Email draft could not be prepared yet."));
+        markStepDone("Email draft checked");
+      } else {
+        markStepDone("Email draft checked");
       }
 
+      setActionCurrentStep("");
       setActionNotice(
         warnings.length
           ? `${t("Company preparation finished with missing data.")} ${warnings.slice(0, 2).join(" ")}`
@@ -3059,6 +3111,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
       const reason = friendlyErrorMessage(err, t("Company preparation could not be completed. Try again or continue manually."));
       setActionError(reason);
       setActionNotice("");
+      setActionCurrentStep("");
       trackEvent("company_preparation_failed", {
         company_id: current.id,
         company: current.name,
@@ -3176,6 +3229,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
                 <div>
                   <p className={`text-sm font-black ${item.done ? "text-brand" : isNext ? "text-amber-900" : "text-slate-600"}`}>{t(item.label)}</p>
                   <p className="mt-1 text-xs leading-5 text-slate-600">{t(item.copy)}</p>
+                  {!item.done && <p className={`mt-2 rounded-lg px-2 py-1 text-xs font-bold leading-5 ${isNext ? "bg-white text-amber-900" : "bg-white text-slate-700"}`}>{t(item.action)}</p>}
                 </div>
               </div>
             </div>;
@@ -3458,6 +3512,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
 
         {actionNotice && <p role="status" className="rounded-2xl bg-teal-50 p-4 text-sm font-semibold text-brand">{actionNotice}</p>}
         {actionError && <p role="alert" className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{actionError}</p>}
+        <ActionProgress current={actionCurrentStep} completed={actionCompletedSteps} />
       </aside>
     </div>
   </article>;
@@ -3471,6 +3526,8 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [currentStep, setCurrentStep] = useState("");
+  const [completedSteps, setCompletedSteps] = useState<string[]>([]);
   const healthScore = companyHealthScore(current);
   const nextAction = companyNextAction(current);
   const primaryAction = companyPrimaryAction(current);
@@ -3555,11 +3612,15 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     setBusy("complete-data");
     setNotice(t("Collecting missing company data..."));
     setError("");
+    setCompletedSteps([]);
+    setCurrentStep("Checking website analysis...");
     const warnings: string[] = [];
+    const markStepDone = (step: string) => setCompletedSteps((steps) => steps.includes(step) ? steps : [...steps, step]);
     try {
       let nextCompany = current;
       if ((nextCompany.website || nextCompany.domain) && !nextCompany.ai_summary) {
         try {
+          setCurrentStep("Analyzing website and sales angle...");
           const analysisResult = await withTimeout(
             api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/analyze`, { method: "POST", timeoutMs: 22000 }),
             24000,
@@ -3573,11 +3634,16 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
           if (analysisResult.status !== "success") warnings.push(t(analysisResult.message || "AI is temporarily unavailable. Try again in a moment."));
         } catch (err) {
           warnings.push(friendlyErrorMessage(err, t("Website analysis is temporarily unavailable. The company stays saved in CRM.")));
+        } finally {
+          markStepDone("Website analysis checked");
         }
+      } else {
+        markStepDone("Website analysis checked");
       }
 
       if (!nextCompany.email && !nextCompany.contacts.some((contact) => contact.email)) {
         try {
+          setCurrentStep("Finding decision makers and verified email...");
           const contactResult = await withTimeout(
             api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
             22000,
@@ -3591,11 +3657,16 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
           if (contactResult.status !== "success") warnings.push(t(contactResult.message || "No verified business email was found. Add a decision maker manually or continue with research."));
         } catch (err) {
           warnings.push(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
+        } finally {
+          markStepDone("Contact search checked");
         }
+      } else {
+        markStepDone("Contact search checked");
       }
 
       if (!nextCompany.generated_emails.length) {
         try {
+          setCurrentStep("Generating personalized email for review...");
           const draftResult = await withTimeout(
             api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${nextCompany.id}/email-draft`, { method: "POST", timeoutMs: 35000 }),
             37000,
@@ -3609,9 +3680,14 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
           if (draftResult.status !== "success" || !draftResult.email) warnings.push(t(draftResult.message || "Email draft could not be prepared yet."));
         } catch (err) {
           warnings.push(friendlyErrorMessage(err, t("Email draft is temporarily unavailable. The company stays saved.")));
+        } finally {
+          markStepDone("Email draft checked");
         }
+      } else {
+        markStepDone("Email draft checked");
       }
 
+      setCurrentStep("");
       setNotice(
         warnings.length
           ? `${t("Data collection finished with missing fields.")} ${warnings.slice(0, 2).join(" ")}`
@@ -3625,6 +3701,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     } catch (err) {
       setError(friendlyErrorMessage(err, t("Company preparation could not be completed. Try again or continue manually.")));
       setNotice("");
+      setCurrentStep("");
     } finally {
       setBusy("");
     }
@@ -3673,6 +3750,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
             {aiWorkPlan.slice(0, 6).map((item) => <div key={item.label} className={`rounded-lg px-2 py-2 text-xs font-bold ${item.done ? "bg-teal-50 text-brand" : item.label === aiNextWork ? "bg-amber-50 text-amber-800" : "bg-slate-50 text-slate-500"}`}>
               <CheckCircle2 className="mb-1" size={14} />
               {t(item.label)}
+              {!item.done && item.label === aiNextWork ? <p className="mt-1 text-[11px] font-semibold leading-4 text-amber-900">{t(item.action)}</p> : null}
             </div>)}
           </div>
           <div className="mt-3 grid gap-2 md:grid-cols-3">
@@ -3724,6 +3802,9 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
         <input id={`quick-note-${current.id}`} aria-label={t("Add note")} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder={t("Add next-step note")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
         <button type="submit" disabled={busy === "note" || !noteBody.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{busy === "note" && <Loader2 className="animate-spin" size={16} />} {t("Add note")}</button>
       </form>
+    </div>
+    <div className="mt-3">
+      <ActionProgress current={currentStep} completed={completedSteps} />
     </div>
     {notice && <p role="status" className="mt-3 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{notice}</p>}
     {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
