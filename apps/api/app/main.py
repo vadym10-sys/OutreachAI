@@ -12,14 +12,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from sqlalchemy import select, text
 
 from app.api.routes import router as api_router
 from app.api.usage import router as usage_router
 from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
-from app.core.database import Base, ensure_runtime_schema, get_engine
+from app.core.database import Base, ensure_runtime_schema, get_engine, get_sessionmaker
 from app.core.observability import init_sentry, sentry_transaction_name, set_request_context
-from app.core.security import rate_limit
+from app.core.reliability import database_backup_configured, required_environment_status, validate_required_environment
+from app.core.security import authenticated_user_id_from_authorization, rate_limit
+from app.models.entities import AuditLog, Workspace
 
 logging.basicConfig(
     level=logging.INFO,
@@ -132,6 +135,48 @@ async def sentry_request_context(request: Request, call_next) -> Response:
     return response
 
 
+@app.middleware("http")
+async def audit_user_actions(request: Request, call_next) -> Response:
+    response = await call_next(request)
+    if not settings.request_audit_enabled:
+        return response
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return response
+    if request.url.path.startswith(("/api/health", "/api/live", "/api/ready", "/docs", "/openapi", "/webhooks")):
+        return response
+
+    user_id = authenticated_user_id_from_authorization(request.headers.get("authorization"))
+    if not user_id:
+        return response
+
+    try:
+        db = get_sessionmaker()()
+        try:
+            workspace_id = db.scalar(select(Workspace.id).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
+            ip = request.headers.get("x-forwarded-for", "").split(",")[0] or (request.client.host if request.client else None)
+            db.add(
+                AuditLog(
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    action=f"api.{request.method.lower()}",
+                    ip_address=ip,
+                    metadata_json={
+                        "path": request.url.path,
+                        "status": response.status_code,
+                        "request_id": getattr(request.state, "request_id", ""),
+                    },
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("User action audit failed request_id=%s path=%s reason=%s", getattr(request.state, "request_id", ""), request.url.path, exc)
+        sentry_sdk.capture_exception(exc)
+
+    return response
+
+
 @app.exception_handler(StarletteHTTPException)
 async def sanitized_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     sentry_sdk.set_context("sanitized_http_error", {"path": request.url.path, "status_code": exc.status_code, "detail": str(exc.detail)[:1000]})
@@ -152,6 +197,42 @@ def root() -> dict[str, str]:
     return {"service": "outreachai-api", "status": "ok"}
 
 
+@app.get("/api/health")
+def api_health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/api/live")
+def api_liveness() -> dict[str, str]:
+    return {"status": "alive"}
+
+
+@app.get("/api/ready")
+def api_readiness() -> JSONResponse:
+    env_status = required_environment_status(settings)
+    missing_env = [name for name, loaded in env_status.items() if not loaded]
+    database_ready = False
+    try:
+        with get_engine().connect() as connection:
+            connection.execute(text("SELECT 1"))
+        database_ready = True
+    except Exception as exc:
+        logger.exception("Readiness database check failed")
+        sentry_sdk.capture_exception(exc)
+
+    ready = database_ready and (not missing_env or not settings.strict_startup_env_validation)
+    status_code = 200 if ready else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "ready" if ready else "degraded",
+            "database": database_ready,
+            "required_environment": env_status,
+            "database_backups_configured": database_backup_configured(settings),
+        },
+    )
+
+
 @app.get("/api/debug/sentry-error", include_in_schema=False)
 def sentry_error_probe() -> dict[str, str]:
     if not settings.debug:
@@ -168,6 +249,9 @@ app.include_router(webhook_router)
 def startup() -> None:
     try:
         logger.info("Starting OutreachAI API app_env=%s", settings.app_env)
+        validate_required_environment(settings)
+        if not database_backup_configured(settings):
+            logger.warning("Database backup policy is not confirmed by runtime configuration.")
         logger.info(
             "Startup diagnostics: registered routes=%s",
             ", ".join(f"{route.path}:{','.join(sorted(route.methods or []))}" for route in app.routes)
@@ -187,3 +271,12 @@ def startup() -> None:
     except Exception:
         logger.exception("Startup initialization failed; API will keep running so /api/health remains available")
         traceback.print_exc(file=sys.stdout)
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    try:
+        get_engine().dispose()
+        logger.info("Database engine disposed during graceful shutdown")
+    except Exception:
+        logger.exception("Graceful shutdown failed while disposing database engine")

@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""
     sentry_traces_sample_rate: float = 0.1
     slow_request_ms: int = 2500
+    slow_db_query_ms: int = 750
+    request_audit_enabled: bool = True
+    strict_startup_env_validation: bool = False
+    required_runtime_envs: str = "DATABASE_URL,CLERK_SECRET_KEY,CLERK_JWT_ISSUER"
+    database_backups_enabled: bool = False
     upstash_redis_rest_url: str = ""
     upstash_redis_rest_token: str = ""
     cache_dashboard_ttl_seconds: int = 15
@@ -129,6 +134,10 @@ class Settings(BaseSettings):
     @property
     def missing_optional_services(self) -> list[str]:
         return self.missing_customer_integrations
+
+    @property
+    def required_runtime_envs_list(self) -> list[str]:
+        return [item.strip() for item in self.required_runtime_envs.split(",") if item.strip()]
 
 
 @lru_cache

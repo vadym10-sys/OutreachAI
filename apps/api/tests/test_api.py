@@ -163,11 +163,48 @@ def test_health() -> None:
     assert response.headers.get("x-response-time-ms")
 
 
+def test_liveness_and_readiness_are_public() -> None:
+    live = client.get("/api/live")
+    ready = client.get("/api/ready")
+
+    assert live.status_code == 200
+    assert live.json()["status"] == "alive"
+    assert ready.status_code == 200
+    payload = ready.json()
+    assert payload["database"] is True
+    assert payload["required_environment"]["DATABASE_URL"] is True
+
+
 def test_request_id_is_echoed_for_traceability() -> None:
     response = client.get("/api/health", headers={"X-Request-ID": "test-request-123"})
     assert response.status_code == 200
     assert response.headers["x-request-id"] == "test-request-123"
     assert response.headers.get("x-response-time-ms")
+
+
+def test_mutating_api_requests_are_audited() -> None:
+    before = client.get("/api/activity", headers=AUTH)
+    assert before.status_code == 200
+
+    response = client.put(
+        "/api/profile",
+        headers={**AUTH, "X-Request-ID": "audit-request-123"},
+        json={
+            "workspace": "Audit Workspace",
+            "company": "Audit Co",
+            "avatar_url": None,
+            "timezone": "Europe/Warsaw",
+            "language": "English",
+        },
+    )
+    assert response.status_code == 200
+
+    with get_sessionmaker()() as db:
+        audits = db.scalars(select(AuditLog).where(AuditLog.action == "api.put").order_by(AuditLog.created_at.desc()).limit(20)).all()
+        audit = next((item for item in audits if item.metadata_json.get("request_id") == "audit-request-123"), None)
+    assert audit is not None
+    assert audit.metadata_json["path"] == "/api/profile"
+    assert audit.metadata_json["status"] == 200
 
 
 def test_profile_language_updates_private_workspace_language() -> None:

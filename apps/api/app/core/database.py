@@ -4,8 +4,10 @@ from collections.abc import Generator
 from functools import lru_cache
 
 import logging
+import time
 
 from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy import event
 from sqlalchemy.schema import CreateColumn
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -23,7 +25,26 @@ class Base(DeclarativeBase):
 def get_engine() -> Engine:
     settings = get_settings()
     connect_args = {"connect_timeout": 5} if settings.database_url.startswith("postgresql") else {}
-    return create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
+    engine = create_engine(settings.database_url, pool_pre_ping=True, connect_args=connect_args)
+    _install_query_timing(engine)
+    return engine
+
+
+def _install_query_timing(engine: Engine) -> None:
+    settings = get_settings()
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):  # type: ignore[no-untyped-def]
+        context._outreachai_query_started = time.perf_counter()
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def after_cursor_execute(conn, cursor, statement, parameters, context, executemany):  # type: ignore[no-untyped-def]
+        started = getattr(context, "_outreachai_query_started", None)
+        if started is None:
+            return
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        if duration_ms >= settings.slow_db_query_ms:
+            logger.warning("Slow database query duration_ms=%s statement=%s", duration_ms, str(statement)[:240])
 
 
 @lru_cache

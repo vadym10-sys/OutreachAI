@@ -11,6 +11,7 @@ import httpx
 from jose import JWTError, jwt
 
 from app.core.config import get_settings
+from app.core.reliability import retry_operation
 
 OWNER_EMAIL = "romaniukvadym10@gmail.com"
 
@@ -49,7 +50,7 @@ async def rate_limit(request: Request) -> None:
 @lru_cache(maxsize=8)
 def _fetch_clerk_jwks(issuer: str) -> dict:
     jwks_url = f"{issuer.rstrip('/')}/.well-known/jwks.json"
-    response = httpx.get(jwks_url, timeout=5)
+    response = retry_operation(lambda: httpx.get(jwks_url, timeout=5), attempts=3, operation_name="clerk.jwks")
     response.raise_for_status()
     return response.json()
 
@@ -150,10 +151,14 @@ def _fetch_clerk_user_email(user_id: str) -> str:
     if not settings.clerk_secret_key or settings.clerk_secret_key == "dev":
         return ""
 
-    response = httpx.get(
-        f"https://api.clerk.com/v1/users/{user_id}",
-        headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
-        timeout=5,
+    response = retry_operation(
+        lambda: httpx.get(
+            f"https://api.clerk.com/v1/users/{user_id}",
+            headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
+            timeout=5,
+        ),
+        attempts=3,
+        operation_name="clerk.user_email",
     )
     response.raise_for_status()
     payload = response.json()
@@ -216,6 +221,20 @@ def get_current_workspace_user_context(
 
     claims = _verify_clerk_token(token)
     return AuthenticatedUser(user_id=str(claims["sub"]), email=_email_from_claims(claims))
+
+
+def authenticated_user_id_from_authorization(authorization: str | None) -> str | None:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.removeprefix("Bearer ").strip()
+    settings = get_settings()
+    if settings.app_env == "development" and token == "dev":
+        return "dev_user"
+    try:
+        claims = _verify_clerk_token(token)
+    except HTTPException:
+        return None
+    return str(claims.get("sub") or "") or None
 
 
 WorkspaceUserContext = Annotated[AuthenticatedUser, Depends(get_current_workspace_user_context)]

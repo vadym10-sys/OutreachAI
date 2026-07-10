@@ -8,6 +8,8 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
+from app.core.reliability import retry_operation
+
 
 WEBSITE_UNREACHABLE_MESSAGE = "Website could not be reached. The lead was saved, but AI website analysis was skipped."
 
@@ -38,7 +40,7 @@ def collect_website(url: str) -> WebsiteSnapshot:
     }
     try:
         with httpx.Client(timeout=12, follow_redirects=True, headers=headers) as client:
-            response = client.get(normalized_url)
+            response = retry_operation(lambda: client.get(normalized_url), attempts=2, operation_name="website.fetch")
             response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise WebsiteFetchError(f"{WEBSITE_UNREACHABLE_MESSAGE} HTTP status: {exc.response.status_code}.") from exc
