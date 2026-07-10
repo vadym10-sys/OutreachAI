@@ -4001,7 +4001,7 @@ def lead_copilot(lead_id: UUID, request: Request, user_id: CurrentUser, db: Sess
         result = sales_copilot(_lead_ai_payload(lead, analysis, campaign, messages))
     except Exception as exc:
         raise _provider_error(exc) from exc
-    if not lead.revenue:
+    if not lead.revenue and result.estimated_revenue is not None:
         lead.revenue = result.estimated_revenue
     lead.notes = "\n".join(part for part in [lead.notes or "", f"Sales copilot: {result.probability_to_reply}% reply, {result.probability_to_buy}% buy. {result.best_cta}"] if part)
     log_event(db, request, user_id, "copilot.generated", {"lead_id": str(lead.id), "reply": result.probability_to_reply, "buy": result.probability_to_buy})

@@ -425,7 +425,8 @@ export type SalesCopilot = {
   best_first_contact: string;
   best_subject_line: string;
   best_cta: string;
-  estimated_revenue: number;
+  estimated_revenue: number | null;
+  estimated_revenue_reason?: string | null;
   reasoning: string[];
 };
 

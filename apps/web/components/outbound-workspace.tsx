@@ -817,12 +817,16 @@ function opportunityCoverageHint(label: string) {
 }
 
 function priorityScore(profile: ReturnType<typeof leadProfile>, copilot?: SalesCopilot, draft?: Email) {
-  if (copilot) return Math.round((copilot.probability_to_reply * 0.45) + (copilot.probability_to_buy * 0.45) + Math.min(copilot.estimated_revenue / 1000, 10));
+  if (copilot) return Math.round((copilot.probability_to_reply * 0.45) + (copilot.probability_to_buy * 0.45) + Math.min((copilot.estimated_revenue ?? 0) / 1000, 10));
   const icp = typeof profile.icpScore === "number" ? profile.icpScore : 0;
   const replyRate = parseReplyRate(profile.expectedReplyRate) ?? 0;
   if (!icp && !replyRate && !draft) return null;
   const draftBonus = draft?.subject && draft.body ? 10 : 0;
   return Math.max(0, Math.min(100, Math.round(icp * 0.7 + replyRate * 1.5 + draftBonus)));
+}
+
+function formatEstimatedRevenue(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? `€${value.toLocaleString()}` : "Not confirmed";
 }
 
 function opportunityDataFacts(lead: Lead, profile: ReturnType<typeof leadProfile>, t: (key: string) => string) {

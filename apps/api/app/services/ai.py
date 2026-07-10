@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 import threading
 import time
 from collections import deque
@@ -37,8 +39,28 @@ class ProviderRequestError(RuntimeError):
     pass
 
 
+class ProviderResponseValidationError(ProviderRequestError):
+    pass
+
+
 _rate_lock = threading.Lock()
 _rate_window: deque[float] = deque()
+_UNKNOWN_NUMBER_VALUES = {
+    "",
+    "unknown",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "not available",
+    "unavailable",
+    "неизвестно",
+    "нет данных",
+    "недоступно",
+    "невідомо",
+    "nieznane",
+}
+_CURRENCY_WORDS = {"eur", "euro", "usd", "dollar", "dollars", "pln", "zł", "zl", "gbp"}
 
 
 def _enforce_rate_limit() -> None:
@@ -87,10 +109,30 @@ def _json_completion(system: str, payload: dict[str, Any]) -> dict[str, Any]:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
         capture_provider_exception(exc, provider="openai", endpoint="openai.chat_completion", extra={"model": settings.openai_model, "reason": "invalid_json"})
-        raise ProviderRequestError("OpenAI returned invalid JSON.") from exc
+        raise ProviderResponseValidationError("OpenAI returned invalid JSON.") from exc
     if not isinstance(parsed, dict):
-        raise ProviderRequestError("OpenAI returned an unexpected response shape.")
+        exc = ProviderResponseValidationError("OpenAI returned an unexpected response shape.")
+        capture_provider_exception(exc, provider="openai", endpoint="openai.chat_completion", extra={"model": settings.openai_model, "reason": "invalid_shape"})
+        raise exc
     return parsed
+
+
+def _safe_json_completion(system: str, payload: dict[str, Any], *, operation: str) -> dict[str, Any]:
+    try:
+        return _json_completion(system, payload)
+    except ProviderResponseValidationError as exc:
+        _capture_llm_validation_warning(operation, "invalid_json_or_shape", {"error": str(exc)})
+        return {}
+
+
+def _capture_llm_validation_warning(operation: str, reason: str, extra: dict[str, Any] | None = None) -> None:
+    logger.warning("LLM response validation warning", extra={"operation": operation, "reason": reason, **(extra or {})})
+    capture_provider_exception(
+        ValueError(f"LLM response validation warning: {reason}"),
+        provider="openai",
+        endpoint=operation,
+        extra={"reason": reason, **(extra or {})},
+    )
 
 
 def analyze_company_website(
@@ -149,7 +191,7 @@ def analyze_company_website(
         technologies=sorted(set([*_list(data.get("technologies")), *technologies])),
         strengths=_list(data.get("strengths")),
         weaknesses=_list(data.get("weaknesses")),
-        icp_score=max(0, min(100, int(data.get("icp_score") or 0))),
+        icp_score=_bounded_int(data.get("icp_score"), 0, 100),
         summary=str(data.get("summary") or ""),
         icp=str(data.get("icp") or ""),
         value_proposition=str(data.get("value_proposition") or ""),
@@ -211,7 +253,7 @@ def suggest_reply(payload: ReplyAssistantRequest) -> ReplyAssistantOut:
     return ReplyAssistantOut(
         suggested_response=str(data.get("suggested_response") or ""),
         next_step=str(data.get("next_step") or ""),
-        qualification_score=max(0, min(100, int(data.get("qualification_score") or 0))),
+        qualification_score=_bounded_int(data.get("qualification_score"), 0, 100),
     )
 
 
@@ -219,17 +261,25 @@ def sales_copilot(payload: dict[str, Any]) -> SalesCopilotOut:
     system = (
         "You are OutreachAI's AI sales copilot. Return only JSON with keys "
         "probability_to_reply, probability_to_buy, best_first_contact, best_subject_line, "
-        "best_cta, estimated_revenue, reasoning. Probabilities are integers 0-100. "
+        "best_cta, estimated_revenue, estimated_revenue_reason, reasoning. "
+        "Strict schema: probability_to_reply and probability_to_buy are integers 0-100; "
+        "estimated_revenue is a number or null only; estimated_revenue_reason is a short "
+        "explanation string or null. Never put text inside estimated_revenue. "
         "Base recommendations only on provided lead, website analysis, and campaign context."
     )
-    data = _json_completion(system, payload)
+    data = _safe_json_completion(system, payload, operation="sales_copilot")
+    estimated_revenue_raw = _first_present(data, "estimated_revenue", "szacowany_dochód", "szacowany_dochod")
+    estimated_revenue = _safe_llm_float(estimated_revenue_raw, minimum=0, operation="sales_copilot", field="estimated_revenue")
+    explicit_reason = _first_present(data, "estimated_revenue_reason", "szacowany_dochód_powód", "szacowany_dochod_powod")
+    estimated_revenue_reason = str(explicit_reason or "").strip() or _numeric_rejection_reason(estimated_revenue_raw)
     return SalesCopilotOut(
         probability_to_reply=_bounded_int(data.get("probability_to_reply"), 0, 100),
         probability_to_buy=_bounded_int(data.get("probability_to_buy"), 0, 100),
         best_first_contact=str(data.get("best_first_contact") or "Personalized email"),
         best_subject_line=str(data.get("best_subject_line") or "Quick idea for your team"),
         best_cta=str(data.get("best_cta") or "Book a quick call"),
-        estimated_revenue=max(0, float(data.get("estimated_revenue") or 0)),
+        estimated_revenue=estimated_revenue,
+        estimated_revenue_reason=estimated_revenue_reason,
         reasoning=_list(data.get("reasoning")),
     )
 
@@ -296,8 +346,8 @@ def campaign_analytics(payload: dict[str, Any]) -> CampaignAnalyticsOut:
     return CampaignAnalyticsOut(
         campaign_id=payload.get("campaign_id"),
         campaign_success=_bounded_int(data.get("campaign_success"), 0, 100),
-        predicted_reply_rate=max(0, float(data.get("predicted_reply_rate") or 0)),
-        predicted_conversion_rate=max(0, float(data.get("predicted_conversion_rate") or 0)),
+        predicted_reply_rate=_safe_llm_float(data.get("predicted_reply_rate"), minimum=0, default=0, operation="campaign_analytics", field="predicted_reply_rate") or 0,
+        predicted_conversion_rate=_safe_llm_float(data.get("predicted_conversion_rate"), minimum=0, default=0, operation="campaign_analytics", field="predicted_conversion_rate") or 0,
         suggested_improvements=_list(data.get("suggested_improvements")),
     )
 
@@ -415,11 +465,92 @@ def _list(value: Any) -> list[str]:
 
 
 def _bounded_int(value: Any, minimum: int, maximum: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = minimum
+    parsed_float = _safe_llm_float(value, minimum=minimum, maximum=maximum, default=minimum, operation="llm_numeric", field="bounded_int")
+    parsed = int(parsed_float if parsed_float is not None else minimum)
     return max(minimum, min(maximum, parsed))
+
+
+def _first_present(data: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in data:
+            return data.get(key)
+    return None
+
+
+def _safe_llm_float(
+    value: Any,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    default: float | None = None,
+    operation: str,
+    field: str,
+) -> float | None:
+    parsed = _parse_llm_number(value)
+    if parsed is None:
+        if value not in (None, "") and str(value).strip().lower() not in _UNKNOWN_NUMBER_VALUES:
+            _capture_llm_validation_warning(operation, "invalid_numeric_field", {"field": field, "value_type": type(value).__name__, "value_preview": str(value)[:180]})
+        return default
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def _parse_llm_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
+    if not isinstance(value, str):
+        return None
+
+    raw = value.strip()
+    normalized = raw.lower().replace("\u00a0", " ")
+    if normalized in _UNKNOWN_NUMBER_VALUES:
+        return None
+
+    words = set(re.findall(r"[a-zA-Zа-яА-ЯёЁąćęłńóśźżĄĆĘŁŃÓŚŹŻ]+", normalized))
+    if words and not words.issubset(_CURRENCY_WORDS):
+        return None
+
+    numeric = re.sub(r"[^0-9,.\-]", "", normalized)
+    if not re.search(r"\d", numeric):
+        return None
+
+    if "," in numeric and "." in numeric:
+        if numeric.rfind(",") > numeric.rfind("."):
+            numeric = numeric.replace(".", "").replace(",", ".")
+        else:
+            numeric = numeric.replace(",", "")
+    elif "," in numeric:
+        if re.search(r",\d{1,2}$", numeric):
+            numeric = numeric.replace(",", ".")
+        else:
+            numeric = numeric.replace(",", "")
+    elif numeric.count(".") > 1:
+        numeric = numeric.replace(".", "")
+    elif re.search(r"\.\d{3}$", numeric):
+        numeric = numeric.replace(".", "")
+
+    try:
+        parsed = float(numeric)
+    except ValueError:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _numeric_rejection_reason(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if _parse_llm_number(value) is not None:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in _UNKNOWN_NUMBER_VALUES:
+        return ""
+    return text[:280]
 
 
 def _employee_name(value: Any) -> str:

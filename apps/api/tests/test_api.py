@@ -50,6 +50,7 @@ from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, 
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
+from app.services.ai import ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
 from app.services.backups import backup_archive_is_readable  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
 from app.main import app  # noqa: E402
@@ -2466,6 +2467,60 @@ def test_ai_sales_copilot_endpoints(monkeypatch) -> None:
     analytics = client.post(f"/api/campaigns/{campaign['id']}/ai-analytics", headers=AUTH)
     assert analytics.status_code == 200
     assert analytics.json()["campaign_success"] == 68
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (10000, 10000.0),
+        (10000.5, 10000.5),
+        ("10000", 10000.0),
+        ("10 000", 10000.0),
+        ("€10,000", 10000.0),
+        (None, None),
+        ("", None),
+        ("unknown", None),
+        ("неизвестно", None),
+        ("Revenue depends on contract size and cannot be estimated from the current data.", None),
+    ],
+)
+def test_llm_number_parser_handles_sales_copilot_revenue_shapes(value, expected) -> None:
+    assert _parse_llm_number(value) == expected
+
+
+def test_sales_copilot_moves_textual_revenue_into_reason(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.ai._json_completion",
+        lambda system, payload: {
+            "probability_to_reply": "66",
+            "probability_to_buy": "41",
+            "best_first_contact": "Personalized email",
+            "best_subject_line": "Quick idea",
+            "best_cta": "Book a call",
+            "estimated_revenue": "Revenue depends on contract size and cannot be estimated from the current data.",
+            "reasoning": ["Good fit"],
+        },
+    )
+
+    result = sales_copilot({"lead": {"company": "Safe Revenue Co"}})
+
+    assert result.estimated_revenue is None
+    assert "Revenue depends on contract size" in (result.estimated_revenue_reason or "")
+    assert result.probability_to_reply == 66
+
+
+def test_sales_copilot_invalid_ai_response_returns_safe_defaults(monkeypatch) -> None:
+    def invalid_response(system, payload):
+        raise ProviderResponseValidationError("invalid json")
+
+    monkeypatch.setattr("app.services.ai._json_completion", invalid_response)
+
+    result = sales_copilot({"lead": {"company": "Invalid Json Co"}})
+
+    assert result.estimated_revenue is None
+    assert result.probability_to_reply == 0
+    assert result.probability_to_buy == 0
+    assert result.best_first_contact == "Personalized email"
 
 
 def test_resend_webhook_updates_delivery_metrics() -> None:

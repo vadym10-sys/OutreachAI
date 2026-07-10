@@ -315,7 +315,8 @@ def _qualify_lead(db: Session, workspace: Workspace, campaign: Campaign, lead: L
         }
     )
     _usage(db, workspace, "ai_generations", 1)
-    lead.revenue = lead.revenue or result.estimated_revenue
+    if not lead.revenue and result.estimated_revenue is not None:
+        lead.revenue = result.estimated_revenue
     lead.notes = "\n".join(
         part
         for part in [
