@@ -2728,11 +2728,11 @@ function companyPrimaryAction(company: CrmCompany) {
   }
   if (!hasContact) {
     return {
-      label: "Find decision maker",
-      copy: "Look for a verified email. If none is found, add one manually and continue.",
-      action: "discover-contact",
-      target: `#contacts-${company.id}`,
-      icon: UserRoundSearch
+      label: "Run all missing steps",
+      copy: "Retry contact discovery, refresh the sales brief and keep the email draft ready for review.",
+      action: "prepare-company",
+      target: `#outreach-${company.id}`,
+      icon: Sparkles
     };
   }
   if (!hasApproved) {
