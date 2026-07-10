@@ -2481,6 +2481,39 @@ function companyNextAction(company: CrmCompany) {
   return "Keep notes updated and close the outcome.";
 }
 
+function companySalesBrief(company: CrmCompany, healthScore: number) {
+  const hasContact = Boolean(company.email || company.contacts.some((contact) => contact.email));
+  const hasResearch = Boolean(company.ai_summary || company.sales_angle || company.opportunity_analysis || company.partnership_fit);
+  const hasDraft = Boolean(company.generated_emails.length);
+  const hasApproved = Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"));
+  const score = Math.max(0, Math.min(100, Math.round(((company.priority_score || healthScore) + (company.confidence_score || healthScore) + (company.icp_score || healthScore)) / 3)));
+  const fit =
+    score >= 75
+      ? "Strong opportunity"
+      : score >= 55
+        ? "Promising opportunity"
+        : "Needs more data";
+  const why =
+    company.partnership_fit ||
+    company.opportunity_analysis ||
+    company.sales_angle ||
+    company.ai_summary ||
+    "OutreachAI needs website research before it can explain why this company is a strong fit.";
+  const blocker = !hasResearch
+    ? "Company research is missing."
+    : !hasContact
+      ? "Decision maker or verified email is missing."
+      : !hasDraft
+        ? "Personalized email is not prepared."
+        : !hasApproved
+          ? "Email is waiting for approval."
+          : "No blocker for the current stage.";
+  const meetingPrep = hasResearch
+    ? (company.suggested_offer || company.outreach_strategy || company.next_recommended_action || "Use the AI research to open with a specific business improvement.")
+    : "Run AI research first, then use the summary and offer to prepare a call.";
+  return { score, fit, why, blocker, meetingPrep };
+}
+
 function companyPrimaryAction(company: CrmCompany) {
   const sentAt = currentEmailSentAt(company);
   const hasContact = Boolean(company.email || company.contacts.some((contact) => contact.email));
@@ -2819,6 +2852,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const currentDraft = latestCompanyEmail(current);
   const currentSentAt = currentEmailSentAt(current);
   const healthScore = companyHealthScore(current);
+  const salesBrief = companySalesBrief(current, healthScore);
   const nextAction = companyNextAction(current);
   const primaryAction = companyPrimaryAction(current);
   const PrimaryActionIcon = primaryAction.icon;
@@ -3120,6 +3154,25 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
                 <ArrowRight size={16} />
               </a>
             )}
+          </div>
+        </div>
+      </div>
+      <div className="mt-5 rounded-2xl border border-teal-200 bg-gradient-to-br from-white to-teal-50 p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI Sales Brief")}</p>
+            <h3 className="mt-2 text-xl font-black text-ink">{t(salesBrief.fit)} · {salesBrief.score}/100</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.why)}</p>
+          </div>
+          <div className="grid gap-3 lg:w-[28rem]">
+            <div className="rounded-xl bg-white p-3 shadow-sm">
+              <p className="text-xs font-bold uppercase text-slate-500">{t("Current blocker")}</p>
+              <p className="mt-1 text-sm font-semibold leading-6 text-ink">{t(salesBrief.blocker)}</p>
+            </div>
+            <div className="rounded-xl bg-white p-3 shadow-sm">
+              <p className="text-xs font-bold uppercase text-slate-500">{t("Meeting prep")}</p>
+              <p className="mt-1 text-sm font-semibold leading-6 text-ink">{t(salesBrief.meetingPrep)}</p>
+            </div>
           </div>
         </div>
       </div>
