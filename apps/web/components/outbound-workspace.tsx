@@ -3724,7 +3724,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           </form>
           <div className="mt-4 space-y-2">
             {current.notes.length ? current.notes.slice(0, 5).map((note) => <div key={note.id} className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
-              <p className="whitespace-pre-line">{note.body}</p>
+              <p className="whitespace-pre-line">{localizedLegacySalesFallback(note.body, displayCurrent, locale)}</p>
               <p className="mt-2 text-xs text-slate-500">{formatDateTime(note.created_at)}</p>
             </div>) : <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{t("No notes yet. Add the next customer conversation or internal follow-up.")}</p>}
           </div>
@@ -3739,7 +3739,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
 }
 
 function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [current, setCurrent] = useState(company);
   const [stageValue, setStageValue] = useState(company.crm_stage);
   const [noteBody, setNoteBody] = useState("");
@@ -3979,7 +3979,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     </div>
     {notice && <p role="status" className="mt-3 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{notice}</p>}
     {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
-    {current.notes.length > 0 && <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{current.notes.slice(0, 2).map((note) => <p key={note.id}>{note.body}</p>)}</div>}
+    {current.notes.length > 0 && <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{current.notes.slice(0, 2).map((note) => <p key={note.id}>{localizedLegacySalesFallback(note.body, current, locale)}</p>)}</div>}
     <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 text-sm sm:grid-cols-3">
       <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Last activity")}</span><span className="font-semibold text-ink">{formatDateTime(current.last_activity_at || current.stage_changed_at || current.updated_at)}</span></p>
       <p><span className="block text-xs font-bold uppercase text-slate-500">{t("Decision maker")}</span><span className="font-semibold text-ink">{primaryContact?.name || primaryContact?.title || t("Not available")}</span></p>
