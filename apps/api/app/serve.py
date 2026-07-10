@@ -51,9 +51,7 @@ def main() -> None:
         force=True
     )
     logger = logging.getLogger("outreachai.api.serve")
-    raw_port = os.getenv("PORT")
-    if raw_port is None:
-        raise RuntimeError("PORT environment variable is required")
+    raw_port = os.getenv("PORT", "8000")
     port = int(raw_port)
     logger.info("Startup diagnostics: python=%s", sys.version.replace("\n", " "))
     logger.info("Startup diagnostics: cwd=%s", os.getcwd())
