@@ -54,12 +54,27 @@ PLACEHOLDER_EMAIL_DOMAINS = {"example.com", "example.net", "example.org", "test.
 MAX_TURNKEY_RESEARCH_LEADS = 10
 LOCALE_LANGUAGE_NAMES = {
     "en": "English",
-    "en-US": "American English",
+    "en-us": "American English",
     "ru": "Russian",
     "es": "Spanish",
     "fr": "French",
     "it": "Italian",
     "pl": "Polish",
+}
+VISIBLE_LANGUAGE_NAMES = {
+    "english": "English",
+    "english (us)": "American English",
+    "american english": "American English",
+    "русский": "Russian",
+    "russian": "Russian",
+    "español": "Spanish",
+    "spanish": "Spanish",
+    "français": "French",
+    "french": "French",
+    "italiano": "Italian",
+    "italian": "Italian",
+    "polski": "Polish",
+    "polish": "Polish",
 }
 
 
@@ -71,10 +86,25 @@ class UsageCounts(BaseModel):
     deals: int = 0
 
 
+def _language_from_locale(value: str | None) -> str:
+    locale = (value or "").strip()
+    if not locale:
+        return ""
+    normalized = locale.lower()
+    if normalized in LOCALE_LANGUAGE_NAMES:
+        return LOCALE_LANGUAGE_NAMES[normalized]
+    if normalized in VISIBLE_LANGUAGE_NAMES:
+        return VISIBLE_LANGUAGE_NAMES[normalized]
+    return ""
+
+
 def _workspace_language(request: Request, workspace) -> str:
-    locale = (request.headers.get("x-outreachai-locale") or "").strip()
-    if locale in LOCALE_LANGUAGE_NAMES:
-        return LOCALE_LANGUAGE_NAMES[locale]
+    header_language = _language_from_locale(request.headers.get("x-outreachai-locale"))
+    if header_language:
+        return header_language
+    cookie_language = _language_from_locale(request.cookies.get("outreachai_locale"))
+    if cookie_language:
+        return cookie_language
     return workspace.language or "English"
 
 

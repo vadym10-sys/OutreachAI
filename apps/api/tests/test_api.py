@@ -1280,6 +1280,23 @@ def test_workspace_app_relocalizes_previous_generic_sales_fallback() -> None:
     assert "пока контакт не проверен" in russian_company["expected_reply_rate"]
 
 
+def test_workspace_app_locale_cookie_controls_sales_fallback_language() -> None:
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": "usage-cookie-locale@example.com",
+        "Cookie": "outreachai_locale=ru",
+    }
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Cookie Locale Partner", "country": "Poland", "city": "Warsaw", "industry": "B2B"},
+    )
+    assert response.status_code == 200
+    company = response.json()["company"]
+    assert "Публичный профиль" in company["ai_summary"] or "Проверенные публичные сигналы" in company["ai_summary"]
+    assert "пока контакт не проверен" in company["expected_reply_rate"]
+
+
 def test_workspace_app_contact_discovery_empty_persists_search_state(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-contact-empty@example.com"}
     company_response = client.post(
