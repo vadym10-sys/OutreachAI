@@ -27,7 +27,7 @@ export function sanitizeUserMessage(value: unknown, fallback = genericErrorMessa
     return "This action is temporarily limited. Please try again later.";
   }
   if (lower.includes("timeout") || lower.includes("timed out")) {
-    return "This is taking longer than expected. Please try again with a smaller request.";
+    return "This request took too long. Please try again with a smaller search.";
   }
   if (lower.includes("approve at least one email draft before launching this campaign")) {
     return "Approve at least one email draft before launching this campaign.";

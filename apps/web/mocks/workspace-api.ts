@@ -292,7 +292,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [qaCompany]);
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, qaCompany);
-    const workspaceCompanyAction = apiPath.match(/^\/api\/workspace-app\/companies\/([^/]+)\/(analyze|contacts|email-draft)$/);
+    const workspaceCompanyAction = apiPath.match(/^\/api\/workspace-app\/companies\/([^/]+)\/(analyze|contacts|email-draft|complete-opportunity)$/);
     if (workspaceCompanyAction) {
       const [, companyId, action] = workspaceCompanyAction;
       const baseCompany = manualCompany?.id === companyId ? manualCompany : qaCompany;
@@ -305,6 +305,41 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
         const company = { ...baseCompany, crm_stage: "Contact Found", contact_found_at: now, contacts: baseCompany.contacts?.length ? baseCompany.contacts : qaCompany.contacts, email: baseCompany.email || qaLead.email, email_status: "Verified" };
         if (manualCompany?.id === companyId) manualCompany = company;
         return fulfillJson(route, { status: "success", message: "Verified contact saved to CRM.", company });
+      }
+      if (action === "complete-opportunity") {
+        const email = { ...qaCompany.generated_emails[0], lead_id: baseCompany.lead_id || qaLead.id, subject: `Quick idea for ${baseCompany.name}` };
+        const company = {
+          ...baseCompany,
+          crm_stage: "Email Draft Ready",
+          website_analyzed_at: now,
+          contact_found_at: now,
+          email_generated_at: now,
+          contacts: baseCompany.contacts?.length ? baseCompany.contacts : qaCompany.contacts,
+          email: baseCompany.email || qaLead.email,
+          email_status: "Verified",
+          ai_summary: baseCompany.ai_summary || qaLead.ai_summary,
+          suggested_offer: baseCompany.suggested_offer || qaLead.suggested_offer,
+          outreach_strategy: baseCompany.outreach_strategy || qaLead.outreach_strategy,
+          sales_angle: baseCompany.sales_angle || qaLead.sales_angle,
+          expected_reply_rate: baseCompany.expected_reply_rate || qaLead.expected_reply_rate,
+          generated_emails: [email]
+        };
+        if (manualCompany?.id === companyId) manualCompany = company;
+        return fulfillJson(route, {
+          status: "success",
+          message: "Sales opportunity prepared. Review the AI research and approve only when ready.",
+          completed_steps: ["Company profile checked", "Website analysis checked", "Contact search checked", "Email draft checked"],
+          workflow_stages: {
+            company_profile: "completed",
+            website_analysis: "completed",
+            decision_maker: "completed",
+            verified_email: "completed",
+            ai_email: "completed",
+            approval: "waiting"
+          },
+          company,
+          email
+        });
       }
       const email = { ...qaCompany.generated_emails[0], lead_id: baseCompany.lead_id || qaLead.id, subject: `Quick idea for ${baseCompany.name}` };
       const company = { ...baseCompany, crm_stage: "Email Draft Ready", email_generated_at: now, generated_emails: [email] };

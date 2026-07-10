@@ -466,7 +466,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
         </header>
-        <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 pb-28 min-[360px]:px-5 lg:p-8">
+        <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 pb-[calc(9rem+env(safe-area-inset-bottom))] min-[360px]:px-5 lg:p-8">
           {showWorkspaceSetupPanel && <section className="mb-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <div className="grid gap-5 lg:grid-cols-[1.1fr_1.4fr] lg:items-start">
               <div className="min-w-0">

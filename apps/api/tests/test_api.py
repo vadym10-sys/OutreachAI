@@ -1048,6 +1048,13 @@ def test_workspace_app_complete_opportunity_prepares_research_contact_and_review
     assert data["company"]["ai_summary"] == "Usage Complete builds construction services for Berlin B2B buyers."
     assert data["company"]["opportunity_analysis"] == "Strong fit because the company can benefit from partner discovery."
     assert data["company"]["priority_score"] == 82
+    assert data["company"]["workflow_stages"]["company_profile"] == "completed"
+    assert data["company"]["workflow_stages"]["website_analysis"] == "completed"
+    assert data["company"]["workflow_stages"]["decision_maker"] == "completed"
+    assert data["company"]["workflow_stages"]["verified_email"] == "completed"
+    assert data["company"]["workflow_stages"]["ai_email"] == "completed"
+    assert data["company"]["workflow_stages"]["approval"] == "waiting"
+    assert data["workflow_stages"]["ai_email"] == "completed"
     assert data["email"]["subject"] == "B2B partner idea for Usage Complete"
     assert data["email"]["delivery_status"] == "draft"
     assert data["company"]["crm_stage"] == "Email Draft Ready"

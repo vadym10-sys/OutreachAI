@@ -206,6 +206,8 @@ class LeadOut(BaseModel):
     contact_search_status: Optional[str] = None
     contact_search_message: Optional[str] = None
     decision_maker_roles_searched: list[str] = Field(default_factory=list)
+    workflow_stages: dict[str, str] = Field(default_factory=dict)
+    workflow_stage_messages: dict[str, str] = Field(default_factory=dict)
 
     class Config:
         from_attributes = True
@@ -318,6 +320,8 @@ class CrmCompanyOut(BaseModel):
     contact_search_status: Optional[str] = None
     contact_search_message: Optional[str] = None
     decision_maker_roles_searched: list[str] = Field(default_factory=list)
+    workflow_stages: dict[str, str] = Field(default_factory=dict)
+    workflow_stage_messages: dict[str, str] = Field(default_factory=dict)
 
     class Config:
         from_attributes = True

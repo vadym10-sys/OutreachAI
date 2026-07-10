@@ -3,14 +3,14 @@ import { expect, test, type Route } from "@playwright/test";
 const pages = [
   ["/dashboard", "What should I do now?"],
   ["/dashboard/leads", "Find real companies and turn each into a sales opportunity."],
-  ["/dashboard/companies", "Every company is saved in your CRM."],
+  ["/dashboard/companies", "Open the next company to finish the opportunity."],
   ["/dashboard/website-analyzer", "Analyze a real prospect website."],
   ["/dashboard/contacts", "Decision makers and verified emails."],
   ["/dashboard/campaigns", "Review real outreach before anything is sent."],
-  ["/dashboard/inbox", "Replies will appear here when campaigns receive real responses."],
+  ["/dashboard/inbox", "Turn replies into meetings."],
   ["/dashboard/crm", "Move real leads from research to revenue."],
   ["/dashboard/deals", "Revenue opportunities from saved companies."],
-  ["/dashboard/analytics", "Measure real outbound performance."],
+  ["/dashboard/analytics", "Measure what creates meetings."],
   ["/dashboard/settings", "Make the workspace ready for your first campaign."],
   ["/dashboard/billing", "Subscription and usage."],
   ["/dashboard/sales-employees", "One click should replace hours of manual sales research."],
@@ -222,6 +222,22 @@ test.beforeEach(async ({ page }) => {
       body = { status: "success", message: "Verified contact saved to CRM.", company: { ...crmCompany, crm_stage: "Contact Found", contact_found_at: new Date().toISOString() } };
     } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/email-draft`) {
       body = { status: "success", message: "Email draft created for review. Nothing was sent.", company: { ...crmCompany, crm_stage: "Email Draft Ready", email_generated_at: new Date().toISOString() }, email: crmCompany.generated_emails[0] };
+    } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/complete-opportunity`) {
+      body = {
+        status: "success",
+        message: "Sales opportunity prepared. Review the AI research and approve only when ready.",
+        completed_steps: ["Company profile checked", "Website analysis checked", "Contact search checked", "Email draft checked"],
+        workflow_stages: {
+          company_profile: "completed",
+          website_analysis: "completed",
+          decision_maker: "completed",
+          verified_email: "completed",
+          ai_email: "completed",
+          approval: "waiting"
+        },
+        company: { ...crmCompany, crm_stage: "Email Draft Ready", email_generated_at: new Date().toISOString() },
+        email: crmCompany.generated_emails[0]
+      };
     } else if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") {
       body = { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: { ...crmCompany, crm_stage: "Approved", email_approved_at: new Date().toISOString() }, email: { ...crmCompany.generated_emails[0], delivery_status: "approved" } };
     } else if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
@@ -279,7 +295,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
     await expect(page.getByText("Verified email").first()).toBeVisible();
     await expect(page.getByText("jane@example.com").first()).toBeVisible();
-    await page.getByRole("button", { name: /Complete sales research/ }).click();
+    await page.getByRole("button", { name: /Run all missing steps/ }).click();
     await expect(page.getByText("Review this draft before sending. No email has been sent yet.")).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Quick idea for Hill Country Build Co")).toBeVisible();
     const approveButton = page.getByRole("button", { name: /Approve & send/ });
@@ -330,9 +346,11 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.goto("/dashboard");
     const main = page.getByRole("main");
     await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await main.getByText("Show workspace details").click();
     await expect(main.getByText("Leads found")).toBeVisible();
     await expect(main.getByText("Campaigns", { exact: true })).toBeVisible();
     await expect(main).not.toContainText("Dashboard data is temporarily unavailable");
+    await expect(main).not.toContainText("Dashboard details are temporarily unavailable");
   });
 
   test("dashboard does not crash when locale is Russian and widgets refresh", async ({ page }) => {
@@ -377,7 +395,7 @@ test.describe("redesigned B2B outbound workspace", () => {
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Pipeline unavailable" }) });
     });
     await page.goto("/dashboard/companies");
-    await expect(page.getByRole("heading", { name: "Every company is saved in your CRM." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Open the next company to finish the opportunity." })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("CRM data could not be loaded");

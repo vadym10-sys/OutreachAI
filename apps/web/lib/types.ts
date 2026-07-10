@@ -122,6 +122,8 @@ export type Lead = {
   contact_search_status?: string | null;
   contact_search_message?: string | null;
   decision_maker_roles_searched?: string[];
+  workflow_stages?: Record<string, "waiting" | "running" | "completed" | "error" | string>;
+  workflow_stage_messages?: Record<string, string>;
 };
 
 export type CrmContact = {
@@ -222,6 +224,8 @@ export type CrmCompany = {
   contact_search_status?: string | null;
   contact_search_message?: string | null;
   decision_maker_roles_searched?: string[];
+  workflow_stages?: Record<string, "waiting" | "running" | "completed" | "error" | string>;
+  workflow_stage_messages?: Record<string, string>;
 };
 
 export type CrmPipeline = {

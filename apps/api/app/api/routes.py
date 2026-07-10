@@ -1002,6 +1002,16 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     company_metadata = company.metadata_json or {}
     contact_search_checked_at = _datetime_or_none(company_metadata.get("contact_search_checked_at"))
     roles_searched = company_metadata.get("decision_maker_roles_searched")
+    workflow_stages, workflow_stage_messages = _company_workflow_statuses(
+        company=company,
+        metadata=company_metadata,
+        contacts=contacts,
+        emails=emails,
+        website_analyzed_at=website_analyzed_at,
+        contact_found_at=contact_found_at,
+        email_generated_at=email_generated_at,
+        email_approved_at=email_approved_at,
+    )
     return CrmCompanyOut(
         id=company.id,
         lead_id=company.lead_id,
@@ -1061,7 +1071,63 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         contact_search_status=str(company_metadata.get("contact_search_status") or "") or None,
         contact_search_message=str(company_metadata.get("contact_search_message") or "") or None,
         decision_maker_roles_searched=[str(role) for role in roles_searched] if isinstance(roles_searched, list) else [],
+        workflow_stages=workflow_stages,
+        workflow_stage_messages=workflow_stage_messages,
     )
+
+
+def _company_workflow_statuses(
+    *,
+    company: Company,
+    metadata: dict[str, Any],
+    contacts: list[Contact],
+    emails: list[EmailMessage],
+    website_analyzed_at: datetime | None,
+    contact_found_at: datetime | None,
+    email_generated_at: datetime | None,
+    email_approved_at: datetime | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    explicit = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
+    explicit_messages = metadata.get("workflow_stage_messages") if isinstance(metadata.get("workflow_stage_messages"), dict) else {}
+
+    def status(key: str, fallback: str) -> str:
+        value = str(explicit.get(key) or fallback or "waiting")
+        return value if value in {"waiting", "running", "completed", "error"} else "waiting"
+
+    has_profile = bool(company.name and (company.website or company.domain or company.phone or company.address or company.city or company.country or company.place_id))
+    has_research = bool(
+        website_analyzed_at
+        or company.ai_summary
+        or company.suggested_offer
+        or company.sales_angle
+        or metadata.get("opportunity_analysis")
+        or metadata.get("pain_points")
+    )
+    has_decision_maker = bool(contacts or contact_found_at or company.email)
+    has_verified_email = bool(company.email or any(contact.email for contact in contacts))
+    attempted_contact = bool(metadata.get("contact_search_checked_at") or metadata.get("contact_search_status"))
+    has_email_draft = bool(email_generated_at or emails)
+    has_approved = bool(email_approved_at or any(email.delivery_status in {"approved", "sent"} for email in emails))
+
+    stages = {
+        "company_profile": status("company_profile", "completed" if has_profile else "waiting"),
+        "website_analysis": status("website_analysis", "completed" if has_research else "waiting"),
+        "decision_maker": status("decision_maker", "completed" if has_decision_maker else ("error" if attempted_contact else "waiting")),
+        "verified_email": status("verified_email", "completed" if has_verified_email else ("error" if attempted_contact else "waiting")),
+        "ai_email": status("ai_email", "completed" if has_email_draft else "waiting"),
+        "approval": status("approval", "completed" if has_approved else "waiting"),
+    }
+
+    messages = {
+        "company_profile": "Saved company, location, website, phone and business listing data." if has_profile else "Add or verify the company website and business profile.",
+        "website_analysis": "AI summary, services, sales angle, offer and useful personalization facts." if has_research else "Run website analysis to fill summary, pain points and opportunity angle.",
+        "decision_maker": "A real person or role to contact. If not verified, add it manually." if has_decision_maker else str(metadata.get("contact_search_message") or "Find a decision maker or add the right contact manually."),
+        "verified_email": "A usable business email. OutreachAI never invents missing email addresses." if has_verified_email else str(metadata.get("contact_search_message") or "Find a verified email or add a known business email manually."),
+        "ai_email": "A personalized first email generated from the company research." if has_email_draft else "Generate a personalized email for review. Sending stays blocked until approval.",
+        "approval": "Human review before anything is sent to a real prospect." if has_approved else "Review the draft, edit it if needed, then approve before sending.",
+    }
+    messages.update({str(key): str(value) for key, value in explicit_messages.items() if value})
+    return stages, messages
 
 
 def _ensure_crm_backfilled(db: Session, user_id: str, workspace: Workspace) -> None:

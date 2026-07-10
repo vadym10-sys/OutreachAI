@@ -119,17 +119,17 @@ test("manual company entry saves to CRM and becomes a research opportunity", asy
   const manualEntry = page.getByRole("form", { name: "Manual company entry" });
   await manualEntry.getByLabel("Company name").fill("Berlin Roof Systems");
   await manualEntry.getByLabel("Website").fill("https://berlin-roof.example");
+  await manualEntry.getByText("Optional details").click();
   await manualEntry.getByLabel("Country").fill("Germany");
   await manualEntry.getByLabel("City").fill("Berlin");
   await manualEntry.getByLabel("Industry").fill("Construction");
   await manualEntry.getByRole("button", { name: /Save and prepare opportunity/ }).click();
-  await expect(page.getByText(/Company saved/)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Berlin Roof Systems" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Berlin Roof Systems", exact: true })).toBeVisible();
   await expect(page.getByText("AI autopilot")).toBeVisible();
   await expect(page.getByText("One click fills the missing sales research.")).toBeVisible();
   await expect(page.getByText("Email drafts")).toBeVisible();
   await expect(page.getByText("Email draft ready")).toBeVisible();
-  await expect(page.getByRole("button", { name: /Refresh AI research|Complete missing AI data/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Refresh AI research|Run all missing steps/ })).toBeVisible();
   await guards.assertClean();
 });
 
@@ -149,8 +149,12 @@ test("CRM stage and note actions do not silently fail", async ({ page }, testInf
   await page.goto("/dashboard/companies");
   await page.getByRole("link", { name: /Continue work/ }).click();
   await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
-  await page.getByRole("main").getByRole("combobox").selectOption("Meeting Scheduled");
-  await page.getByRole("button", { name: /Move stage/ }).click();
+  const stageSection = page.locator("section").filter({ hasText: "Update the pipeline when the sales situation changes." }).first();
+  await stageSection.getByLabel("CRM stage").selectOption("Meeting Scheduled");
+  await expect(stageSection.getByLabel("CRM stage")).toHaveValue("Meeting Scheduled");
+  const moveStageButton = stageSection.getByRole("button", { name: /^Move stage$/ });
+  await expect(moveStageButton).toBeEnabled();
+  await moveStageButton.click();
   await expect(page.getByText("CRM stage moved to Meeting Scheduled.")).toBeVisible();
   await page.getByLabel("Add note").fill("Follow up next week.");
   await page.getByRole("button", { name: /Add note/ }).click();

@@ -82,7 +82,10 @@ type WorkspaceAppActionResponse = {
   email?: Email | null;
   warnings?: string[];
   completed_steps?: string[];
+  workflow_stages?: Record<string, string>;
 };
+
+type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
 
 type WorkspaceIntegrationStatus = {
   key: string;
@@ -376,7 +379,9 @@ function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
     opened_at: value.opened_at || null,
     replied_at: value.replied_at || null,
     last_activity_at: value.last_activity_at || null,
-    stage_changed_at: value.stage_changed_at || null
+    stage_changed_at: value.stage_changed_at || null,
+    workflow_stages: value.workflow_stages || {},
+    workflow_stage_messages: value.workflow_stage_messages || {}
   };
 }
 
@@ -1784,7 +1789,7 @@ function OpportunityCard({
           </div>
           <div className="rounded-xl bg-slate-50 p-3">
             <p className="text-xs font-black uppercase text-slate-500">{t("What to do next")}</p>
-            <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(missingCoverage.length ? "Click Complete missing AI data to retry website analysis, contacts and email draft." : "Review the prepared email and approve only when everything looks right.")}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(missingCoverage.length ? "Click Run all missing steps to retry website analysis, contacts and email draft." : "Review the prepared email and approve only when everything looks right.")}</p>
           </div>
         </div>
         <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -1852,7 +1857,7 @@ function OpportunityCard({
       {visibleStatus && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
-        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Complete missing AI data" : "Refresh AI research")}</PrimaryButton>
+        <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Run all missing steps" : "Refresh AI research")}</PrimaryButton>
         <SecondaryButton onClick={approveAndSendDraft} disabled={busy || !draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Approve & send")}</SecondaryButton>
         <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
@@ -1880,7 +1885,7 @@ export function DashboardHome() {
         action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={17} /></Link>}
       />
       {loading && <WidgetErrorCard title="Loading your private workspace" copy="Your dashboard is opening. You can already use the main actions below." />}
-      {supportingError && <WidgetErrorCard title={cachedAt ? "Updating workspace data" : "Dashboard details are temporarily unavailable"} copy={supportingError} />}
+      {supportingError && !hasAnyData && <WidgetErrorCard title={cachedAt ? "Updating workspace data" : "Dashboard details are temporarily unavailable"} copy={supportingError} />}
       {error && <WidgetErrorCard title="Dashboard metrics could not update" copy={error} />}
       <WidgetBoundary name="Main customer actions">
         <CoreActionGrid activeHref={nextStep.href} />
@@ -2172,7 +2177,7 @@ export function LeadFinderPage() {
       }
       const reason = userMessage(err, "Lead search could not be completed.", t);
       setSearchResults([]);
-      setSearchSummary({ found: 0, saved: 0, duplicates: 0 });
+      setSearchSummary(null);
       setOpportunityReadiness(null);
       setSearchSteps([t("Search stopped")]);
       setMessage(reason);
@@ -2277,6 +2282,14 @@ export function LeadFinderPage() {
                   ? t("Found companies saved to CRM").replace("{count}", String(searchSummary.found))
                   : t("No results. Try a broader city, industry, radius, or fewer filters.")}
           </p>
+          {hasSearched && !searching && lastSearchPayload && searchSummary.found === 0 && (
+            <button type="button" onClick={() => {
+              leadFinderDebug("BUTTON_CLICKED", { action: "retry" });
+              runLeadSearch(lastSearchPayload);
+            }} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm sm:w-auto">
+              <Search size={16} /> {t("Retry search")}
+            </button>
+          )}
           <div className="grid gap-2 sm:grid-cols-3">
             {[
               ["Companies found", searchSummary.found],
@@ -2615,6 +2628,52 @@ function companyAiWorkPlan(company: CrmCompany) {
   ];
 }
 
+const WORKFLOW_STAGE_KEY_BY_LABEL: Record<string, string> = {
+  "Company profile": "company_profile",
+  "Website analysis": "website_analysis",
+  "Decision maker": "decision_maker",
+  "Verified email": "verified_email",
+  "AI email": "ai_email",
+  Approval: "approval"
+};
+
+function normalizeWorkflowStatus(value: unknown, fallbackDone: boolean): WorkflowStageStatus {
+  const status = typeof value === "string" ? value : "";
+  if (status === "running" || status === "completed" || status === "error" || status === "waiting") return status;
+  return fallbackDone ? "completed" : "waiting";
+}
+
+function companyWorkflowStages(company: CrmCompany) {
+  const plan = companyAiWorkPlan(company);
+  const stages = company.workflow_stages || {};
+  const messages = company.workflow_stage_messages || {};
+  return plan.map((item) => {
+    const key = WORKFLOW_STAGE_KEY_BY_LABEL[item.label] || item.label;
+    const status = normalizeWorkflowStatus(stages[key], item.done);
+    return {
+      ...item,
+      key,
+      status,
+      done: status === "completed",
+      message: messages[key] || (status === "completed" ? item.copy : item.action)
+    };
+  });
+}
+
+function workflowStatusTone(status: WorkflowStageStatus) {
+  if (status === "completed") return "bg-teal-50 text-brand border-teal-100";
+  if (status === "running") return "bg-blue-50 text-blue-800 border-blue-100";
+  if (status === "error") return "bg-amber-50 text-amber-900 border-amber-100";
+  return "bg-slate-50 text-slate-500 border-slate-100";
+}
+
+function workflowStatusLabel(status: WorkflowStageStatus) {
+  if (status === "completed") return "Completed";
+  if (status === "running") return "Running";
+  if (status === "error") return "Needs attention";
+  return "Waiting";
+}
+
 function emailStatusLabel(status?: string | null) {
   if (!status) return "Not prepared";
   const normalized = status.toLowerCase().replace(/[_-]+/g, " ").trim();
@@ -2790,9 +2849,9 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const completedProgress = progress.filter(([, done]) => Boolean(done)).length;
   const progressPercent = Math.round((completedProgress / progress.length) * 100);
   const nextMissingStep = progress.find(([, done]) => !done)?.[0] || "Outcome";
-  const aiWorkPlan = companyAiWorkPlan(current);
-  const aiWorkComplete = aiWorkPlan.filter((item) => item.done).length;
-  const aiNextWork = aiWorkPlan.find((item) => !item.done)?.label || "Approval";
+  const aiWorkPlan = companyWorkflowStages(current);
+  const aiWorkComplete = aiWorkPlan.filter((item) => item.status === "completed").length;
+  const aiNextWork = aiWorkPlan.find((item) => item.status !== "completed")?.label || "Approval";
   const primaryContact = current.contacts[0];
   const sendRecipient = current.email || primaryContact?.email || "";
   const approvedDraftReady = Boolean(currentDraft?.delivery_status === "approved" && !currentSentAt);
@@ -2851,6 +2910,11 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   }
 
   async function moveStage(nextStage = stageValue) {
+    if (nextStage === current.crm_stage) {
+      setActionError("");
+      setActionNotice(t("This CRM stage is already selected."));
+      return true;
+    }
     setActionBusy("stage");
     setActionError("");
     setActionNotice("");
@@ -3133,7 +3197,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
           >
             {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
-            {t("Complete missing AI data")}
+            {t("Run all missing steps")}
           </button>
         ) : (
           <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("This company is ready for review and approval.")}</p>
@@ -3378,10 +3442,10 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <p className="text-sm font-bold text-ink">{t("Move stage")}</p>
           <p className="mt-1 text-xs leading-5 text-slate-500">{t("Update the pipeline when the sales situation changes.")}</p>
           <div className="mt-3 grid gap-2">
-            <select value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
+            <select aria-label={t("CRM stage")} value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
               {crmStages.map((stage) => <option key={stage} value={stage}>{t(stage)}</option>)}
             </select>
-            <button type="button" onClick={() => moveStage()} disabled={actionBusy === "stage" || stageValue === current.crm_stage} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
+            <button type="button" onClick={() => moveStage()} disabled={actionBusy === "stage"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
           </div>
         </section>
 
@@ -3425,14 +3489,19 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
   const PrimaryActionIcon = primaryAction.icon;
   const contactCount = current.contacts.length;
   const emailCount = current.generated_emails.length;
-  const aiWorkPlan = companyAiWorkPlan(current);
-  const aiWorkComplete = aiWorkPlan.filter((item) => item.done).length;
-  const aiNextWork = aiWorkPlan.find((item) => !item.done)?.label || "Approval";
+  const aiWorkPlan = companyWorkflowStages(current);
+  const aiWorkComplete = aiWorkPlan.filter((item) => item.status === "completed").length;
+  const aiNextWork = aiWorkPlan.find((item) => item.status !== "completed")?.label || "Approval";
   const website = current.website || current.domain || "";
   const primaryContact = current.contacts.find((contact) => contact.email) || current.contacts[0];
   const hasVerifiedContact = Boolean(current.email || current.contacts.some((contact) => contact.email));
 
   async function moveStage() {
+    if (stageValue === current.crm_stage) {
+      setError("");
+      setNotice(t("This CRM stage is already selected."));
+      return;
+    }
     setBusy("stage");
     setNotice("");
     setError("");
@@ -3544,16 +3613,8 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     }
   }
 
-  const compactDataFacts = [
-    { label: "Profile", ready: Boolean(current.name && (current.address || current.city || current.country || current.phone)) },
-    { label: "Website analysis", ready: Boolean(current.website_analyzed_at || current.ai_summary || current.sales_angle || current.suggested_offer) },
-    { label: "Decision maker", ready: Boolean(current.contacts.length || current.contact_found_at) },
-    { label: "Verified email", ready: hasVerifiedContact },
-    { label: "AI email", ready: Boolean(current.generated_emails.length) },
-    { label: "Approval", ready: Boolean(current.email_approved_at || current.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent")) }
-  ];
-  const compactFound = compactDataFacts.filter((item) => item.ready).map((item) => t(item.label));
-  const compactMissing = compactDataFacts.filter((item) => !item.ready).map((item) => t(item.label));
+  const compactFound = aiWorkPlan.filter((item) => item.status === "completed").map((item) => t(item.label));
+  const compactMissing = aiWorkPlan.filter((item) => item.status !== "completed").map((item) => t(item.label));
 
   return <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md">
     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -3583,12 +3644,20 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Next")}: {t(aiNextWork)}</span>
           </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-3">
-            {aiWorkPlan.slice(0, 6).map((item) => <div key={item.label} className={`rounded-lg px-2 py-2 text-xs font-bold ${item.done ? "bg-teal-50 text-brand" : item.label === aiNextWork ? "bg-amber-50 text-amber-800" : "bg-slate-50 text-slate-500"}`}>
-              <CheckCircle2 className="mb-1" size={14} />
-              {t(item.label)}
-              {!item.done && item.label === aiNextWork ? <p className="mt-1 text-[11px] font-semibold leading-4 text-amber-900">{t(item.action)}</p> : null}
-            </div>)}
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {aiWorkPlan.slice(0, 6).map((item) => {
+              const Icon = item.status === "running" ? Loader2 : CheckCircle2;
+              return (
+                <div key={item.key} className={`rounded-lg border px-2 py-2 text-xs font-bold ${workflowStatusTone(item.status)}`}>
+                  <div className="flex items-center gap-1.5">
+                    <Icon className={item.status === "running" ? "animate-spin" : ""} size={14} />
+                    <span>{t(item.label)}</span>
+                  </div>
+                  <p className="mt-1 text-[11px] font-black uppercase tracking-wide opacity-80">{t(workflowStatusLabel(item.status))}</p>
+                  {item.status !== "completed" ? <p className="mt-1 text-[11px] font-semibold leading-4">{t(item.message)}</p> : null}
+                </div>
+              );
+            })}
           </div>
           <div className="mt-3 grid gap-2 md:grid-cols-3">
             <div className="rounded-lg bg-teal-50 p-2">
@@ -3601,7 +3670,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
             </div>
             <div className="rounded-lg bg-slate-50 p-2">
               <p className="text-[11px] font-black uppercase text-slate-500">{t("Next")}</p>
-              <p className="mt-1 text-xs font-semibold leading-5 text-slate-800">{t(compactMissing.length ? "Run data enrichment" : "Review and approve")}</p>
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-800">{t(compactMissing.length ? "Run all missing steps" : "Review and approve")}</p>
             </div>
           </div>
         </div>
@@ -3610,7 +3679,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
         {compactMissing.length > 0 && (
           <button type="button" onClick={completeMissingCompanyData} disabled={busy === "complete-data" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
             {busy === "complete-data" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
-            {t("Complete missing AI data")}
+            {t("Run all missing steps")}
           </button>
         )}
         {!hasVerifiedContact && (
@@ -3632,7 +3701,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
         <select aria-label={t("CRM stage")} value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
           {crmStages.map((stage) => <option key={stage} value={stage}>{t(stage)}</option>)}
         </select>
-        <button type="button" onClick={moveStage} disabled={busy === "stage" || stageValue === current.crm_stage} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{busy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
+        <button type="button" onClick={moveStage} disabled={busy === "stage"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{busy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
       </div>
       <form onSubmit={addNote} className="grid gap-2 min-[430px]:grid-cols-[1fr_auto]">
         <label className="sr-only" htmlFor={`quick-note-${current.id}`}>{t("Add note")}</label>

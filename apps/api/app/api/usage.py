@@ -136,6 +136,7 @@ class UsageActionOut(BaseModel):
     email: Optional[EmailOut] = None
     warnings: list[str] = Field(default_factory=list)
     completed_steps: list[str] = Field(default_factory=list)
+    workflow_stages: dict[str, str] = Field(default_factory=dict)
 
 
 class UsageIntegrationStatus(BaseModel):
@@ -255,6 +256,27 @@ def _safe_provider_warning(exc: Exception) -> str:
     return "This step is temporarily unavailable. Try again in a moment."
 
 
+def _set_workflow_stage(lead: Lead, key: str, status: Literal["waiting", "running", "completed", "error"], message: str = "") -> None:
+    metadata = _lead_metadata(lead)
+    stages = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
+    messages = metadata.get("workflow_stage_messages") if isinstance(metadata.get("workflow_stage_messages"), dict) else {}
+    stages = {**stages, key: status}
+    if message:
+        messages = {**messages, key: message}
+    lead.notes = _merge_lead_metadata(
+        lead,
+        {
+            "workflow_stages": stages,
+            "workflow_stage_messages": messages,
+        },
+    )
+
+
+def _set_workflow_stages(lead: Lead, updates: dict[str, Literal["waiting", "running", "completed", "error"]], messages: dict[str, str] | None = None) -> None:
+    for key, status in updates.items():
+        _set_workflow_stage(lead, key, status, (messages or {}).get(key, ""))
+
+
 def _is_placeholder_recipient(email: str | None) -> bool:
     if not email or "@" not in email:
         return True
@@ -352,6 +374,13 @@ def _existing_review_draft(db: Session, workspace_id: UUID, lead_id: UUID) -> Em
 def _create_review_email_draft(db: Session, request: Request, user_id: str, workspace, lead: Lead) -> EmailMessage | None:
     existing = _existing_review_draft(db, workspace.id, lead.id)
     if existing:
+        _set_workflow_stage(lead, "ai_email", "completed", "A personalized first email generated from the company research.")
+        _set_workflow_stage(
+            lead,
+            "approval",
+            "completed" if existing.delivery_status in {"approved", "sent"} else "waiting",
+            "Human review completed. The email is ready to send." if existing.delivery_status in {"approved", "sent"} else "Review the draft, edit it if needed, then approve before sending.",
+        )
         return existing
     metadata = _lead_metadata(lead)
     variant = personalize_email(
@@ -382,6 +411,8 @@ def _create_review_email_draft(db: Session, request: Request, user_id: str, work
     db.add(email)
     lead.status = LeadStatus.email_generated
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
+    _set_workflow_stage(lead, "ai_email", "completed", "A personalized first email generated from the company research.")
+    _set_workflow_stage(lead, "approval", "waiting", "Review the draft, edit it if needed, then approve before sending.")
     _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"source": "turnkey_lead_research"})
     return email
 
@@ -1186,9 +1217,21 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
     completed_steps: list[str] = []
     email: EmailMessage | None = None
     _lead_trace(request_id, "complete_opportunity_started", lead_id=str(lead.id), company=lead.company)
+    _set_workflow_stages(
+        lead,
+        {
+            "company_profile": "running",
+            "website_analysis": "waiting",
+            "decision_maker": "waiting",
+            "verified_email": "waiting",
+            "ai_email": "waiting",
+            "approval": "waiting",
+        },
+    )
 
     try:
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request_id)
+        _set_workflow_stage(lead, "company_profile", "completed", "Saved company, location, website, phone and business listing data.")
         completed_steps.append("Company profile checked")
     except Exception as exc:
         capture_provider_exception(
@@ -1200,10 +1243,12 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             extra={"request_id": request_id},
         )
         warnings.append("Company profile could not be refreshed. Saved CRM data was kept.")
+        _set_workflow_stage(lead, "company_profile", "error", "Company profile could not be refreshed. Saved CRM data was kept.")
         completed_steps.append("Company profile checked")
         _lead_trace(request_id, "complete_opportunity_profile_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
     try:
+        _set_workflow_stage(lead, "website_analysis", "running", "AI is analyzing the company website and sales angle.")
         metadata = _lead_metadata(lead)
         has_completed_research = bool(metadata.get("website_analyzed_at"))
         if (lead.website or metadata.get("domain")) and (_needs_ai_research(lead) or not has_completed_research):
@@ -1212,7 +1257,9 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         metadata = _lead_metadata(lead)
         if not any(metadata.get(key) for key in ("ai_summary", "opportunity_analysis", "suggested_offer", "pain_points")):
             warnings.append("AI research could not complete yet. The company is saved and can be retried.")
+            _set_workflow_stage(lead, "website_analysis", "error", "Run website analysis to fill summary, pain points and opportunity angle.")
         else:
+            _set_workflow_stage(lead, "website_analysis", "completed", "AI summary, services, sales angle, offer and useful personalization facts.")
             _add_lead_activity(db, request, user.user_id, workspace, "website.analyzed", lead, {"source": "complete_opportunity"})
         completed_steps.append("Website analysis checked")
     except Exception as exc:
@@ -1226,10 +1273,13 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         )
         _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_ai_fallback")
         warnings.append(_safe_provider_warning(exc))
+        _set_workflow_stage(lead, "website_analysis", "error", _safe_provider_warning(exc))
         completed_steps.append("Website analysis checked")
         _lead_trace(request_id, "complete_opportunity_analysis_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
     try:
+        _set_workflow_stage(lead, "decision_maker", "running", "Finding a decision maker or usable contact role.")
+        _set_workflow_stage(lead, "verified_email", "running", "Verifying a usable business email when available.")
         if not lead.email:
             metadata = _lead_metadata(lead)
             if hunter_key_loaded() and (lead.website or metadata.get("domain")):
@@ -1241,6 +1291,8 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
                         _add_lead_activity(db, request, user.user_id, workspace, "contact.found", lead, {"source": "complete_opportunity"})
                 if not lead.email:
                     warnings.append("No verified business email was found yet. Add a decision maker manually or continue with research.")
+                    _set_workflow_stage(lead, "decision_maker", "error", "Find a decision maker or add the right contact manually.")
+                    _set_workflow_stage(lead, "verified_email", "error", "Find a verified email or add a known business email manually.")
                     _add_lead_activity(db, request, user.user_id, workspace, "contact.search_empty", lead, {"source": "complete_opportunity"})
             else:
                 lead.notes = _merge_lead_metadata(
@@ -1254,7 +1306,12 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
                     },
                 )
                 warnings.append("Contact discovery needs setup. Add a decision maker email manually and continue.")
+                _set_workflow_stage(lead, "decision_maker", "error", "Find a decision maker or add the right contact manually.")
+                _set_workflow_stage(lead, "verified_email", "error", "Find a verified email or add a known business email manually.")
                 _add_lead_activity(db, request, user.user_id, workspace, "contact.search_empty", lead, {"source": "complete_opportunity"})
+        if lead.email:
+            _set_workflow_stage(lead, "decision_maker", "completed", "A real person or role to contact. If not verified, add it manually.")
+            _set_workflow_stage(lead, "verified_email", "completed", "A usable business email. OutreachAI never invents missing email addresses.")
         completed_steps.append("Contact search checked")
     except Exception as exc:
         capture_provider_exception(
@@ -1275,13 +1332,19 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             },
         )
         warnings.append("Contact search is temporarily unavailable. Add a contact manually and continue.")
+        _set_workflow_stage(lead, "decision_maker", "error", "Contact search is temporarily unavailable. Add a contact manually and continue.")
+        _set_workflow_stage(lead, "verified_email", "error", "Contact search is temporarily unavailable. Add a contact manually and continue.")
         completed_steps.append("Contact search checked")
         _lead_trace(request_id, "complete_opportunity_contacts_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
     try:
+        _set_workflow_stage(lead, "ai_email", "running", "Generating a personalized email for review.")
         _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_before_draft")
         email = _create_review_email_draft(db, request, user.user_id, workspace, lead)
         db.flush()
+        if email:
+            _set_workflow_stage(lead, "ai_email", "completed", "A personalized first email generated from the company research.")
+            _set_workflow_stage(lead, "approval", "waiting", "Review the draft, edit it if needed, then approve before sending.")
         completed_steps.append("Email draft checked")
     except Exception as exc:
         capture_provider_exception(
@@ -1293,6 +1356,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             extra={"request_id": request_id},
         )
         warnings.append("Email draft could not be prepared yet. Review the company and try again.")
+        _set_workflow_stage(lead, "ai_email", "error", "Generate a personalized email for review. Sending stays blocked until approval.")
         completed_steps.append("Email draft checked")
         _lead_trace(request_id, "complete_opportunity_email_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
@@ -1314,6 +1378,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         email=EmailOut.model_validate(email) if email else None,
         warnings=warnings,
         completed_steps=completed_steps,
+        workflow_stages=_crm_company_out(db, workspace, user.user_id, company).workflow_stages,
     )
 
 
@@ -1330,6 +1395,7 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
     company = None
     if lead:
         lead.notes = _merge_lead_metadata(lead, {"email_status": "Approved", "email_approved_at": datetime.utcnow().isoformat()})
+        _set_workflow_stage(lead, "approval", "completed", "Human review completed. The email is ready to send.")
         _add_lead_activity(db, request, user.user_id, workspace, "email.approved", lead, {"email_id": str(email.id)})
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     db.commit()
