@@ -91,11 +91,42 @@ function safeApiMessage(status: number, detail: string) {
 export type ClientApiInit = RequestInit & {
   timeoutMs?: number;
   direct?: boolean;
+  retries?: number;
+  retryDelayMs?: number;
 };
 
 export async function clientApi<T>(path: string, token: string | null, init: ClientApiInit = {}): Promise<T> {
+  const { retries = 0, retryDelayMs = 750 } = init;
+  let attempt = 0;
+  let lastError: unknown = null;
+  while (attempt <= retries) {
+    try {
+      return await clientApiOnce<T>(path, token, init, attempt);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : '';
+      const retryable =
+        attempt < retries
+        && !init.signal?.aborted
+        && (
+          message.includes('REQUEST_FAILED:This request took too long')
+          || message.includes('REQUEST_FAILED:Something went wrong while processing your request')
+          || message.includes('REQUEST_FAILED:This action is temporarily limited')
+          || message.includes('REQUEST_FAILED:We could not finish this action')
+        );
+      if (!retryable) break;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelayMs * (attempt + 1)));
+      attempt += 1;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
+}
+
+async function clientApiOnce<T>(path: string, token: string | null, init: ClientApiInit = {}, attempt = 0): Promise<T> {
   let response: Response;
-  const { timeoutMs = 30000, signal, direct = false, ...requestInit } = init;
+  const { timeoutMs = 30000, signal, direct = false, retries: _retries, retryDelayMs: _retryDelayMs, ...requestInit } = init;
   const requestPath = direct ? path : `${apiProxyUrl}${path}`;
   const requestId = createRequestId();
   const headers = new Headers(requestInit.headers);
@@ -110,11 +141,15 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   }
   const controller = new AbortController();
   let didTimeout = false;
+  let abortedByCaller = false;
   const timeoutId = globalThis.setTimeout(() => {
     didTimeout = true;
     controller.abort();
   }, timeoutMs);
-  const abortFromCaller = () => controller.abort();
+  const abortFromCaller = () => {
+    abortedByCaller = true;
+    controller.abort();
+  };
   if (signal?.aborted) abortFromCaller();
   signal?.addEventListener('abort', abortFromCaller, { once: true });
 
@@ -127,20 +162,20 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   } catch (error) {
     const timedOut = didTimeout;
     Sentry.captureException(error, {
-      tags: { area: 'api-client', api_status: timedOut ? 'timeout' : 'network-error', request_id: requestId },
-      extra: { path: requestPath, timeout_ms: timeoutMs, request_id: requestId }
+      tags: { area: 'api-client', api_status: timedOut ? 'timeout' : (abortedByCaller ? 'caller-abort' : 'network-error'), request_id: requestId },
+      extra: { path: requestPath, timeout_ms: timeoutMs, request_id: requestId, attempt }
     });
     captureLogRocketException(error, {
       area: 'api-client',
       endpoint: requestPath,
-      api_status: timedOut ? 'timeout' : 'network-error',
+      api_status: timedOut ? 'timeout' : (abortedByCaller ? 'caller-abort' : 'network-error'),
       request_id: requestId
     });
-    trackEvent(timedOut ? 'api_request_timeout' : 'api_network_error', {
+    trackEvent(timedOut ? 'api_request_timeout' : (abortedByCaller ? 'api_request_aborted' : 'api_network_error'), {
       area: 'customer_action',
       request_id: requestId
     });
-    throw new Error(timedOut ? 'REQUEST_FAILED:This request took too long. Please try again with a smaller search.' : 'REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
+    throw new Error(timedOut ? 'REQUEST_FAILED:This request took too long. Please try again in a moment.' : 'REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
   } finally {
     globalThis.clearTimeout(timeoutId);
     signal?.removeEventListener('abort', abortFromCaller);

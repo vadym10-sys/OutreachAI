@@ -8,6 +8,7 @@ const backendUrl = backendApiUrl();
 const hopByHopHeaders = new Set(["connection", "content-encoding", "content-length", "keep-alive", "transfer-encoding", "upgrade"]);
 const defaultProxyTimeoutMs = 30000;
 const longRunningTimeoutMs = 35000;
+const opportunityTimeoutMs = 90000;
 
 function targetUrl(parts: string[]) {
   const base = backendUrl.replace(/\/$/, "");
@@ -16,6 +17,11 @@ function targetUrl(parts: string[]) {
 
 function timeoutForPath(parts: string[]) {
   const endpoint = `/${parts.join("/")}`;
+  if (
+    endpoint.includes("/complete-opportunity")
+  ) {
+    return opportunityTimeoutMs;
+  }
   if (
     endpoint === "/api/leads/find" ||
     endpoint === "/api/workspace-app/leads/search" ||
@@ -33,19 +39,27 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   request.nextUrl.searchParams.forEach((value, key) => url.searchParams.append(key, value));
 
   const headers = new Headers(request.headers);
+  const requestId = headers.get("x-request-id") || crypto.randomUUID();
   headers.delete("host");
   headers.delete("content-length");
   headers.set("accept-encoding", "identity");
+  headers.set("x-request-id", requestId);
 
   const body = ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer();
   let response: Response;
   const timeoutMs = timeoutForPath(path || []);
   const controller = new AbortController();
   let didTimeout = false;
+  let clientDisconnected = false;
   const timeoutId = setTimeout(() => {
     didTimeout = true;
     controller.abort();
   }, timeoutMs);
+  const abortFromClient = () => {
+    clientDisconnected = true;
+    controller.abort();
+  };
+  request.signal.addEventListener("abort", abortFromClient, { once: true });
   try {
     response = await fetch(url, {
       method: request.method,
@@ -61,18 +75,28 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       tags: {
         area: "api-proxy",
         endpoint: `/${(path || []).join("/")}`,
-        failure_type: timedOut ? "timeout" : "network"
+        failure_type: timedOut ? "timeout" : (clientDisconnected ? "client-abort" : "network"),
+        request_id: requestId
       },
       extra: {
-        timeout_ms: timeoutMs
+        timeout_ms: timeoutMs,
+        request_id: requestId,
+        target_url: url.pathname
       }
     });
+    const isOpportunity = `/${(path || []).join("/")}`.includes("/complete-opportunity");
     return NextResponse.json(
-      { detail: timedOut ? "This request took too long. Please try again with a smaller search." : "We could not reach your workspace data right now. Please try again in a moment." },
-      { status: timedOut ? 504 : 503, headers: { "Cache-Control": "no-store" } }
+      {
+        detail: timedOut
+          ? (isOpportunity ? "We could not finish this action in time. Your company is saved. Please retry the missing steps." : "This request took too long. Please try again with a smaller search.")
+          : "We could not reach your workspace data right now. Please try again in a moment.",
+        request_id: requestId
+      },
+      { status: timedOut ? 504 : 503, headers: { "Cache-Control": "no-store", "X-Request-ID": requestId } }
     );
   } finally {
     clearTimeout(timeoutId);
+    request.signal.removeEventListener("abort", abortFromClient);
   }
 
   const responseHeaders = new Headers();
@@ -81,6 +105,9 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       responseHeaders.set(key, value);
     }
   });
+  if (!responseHeaders.has("x-request-id")) {
+    responseHeaders.set("X-Request-ID", requestId);
+  }
 
   return new NextResponse(response.body, {
     status: response.status,

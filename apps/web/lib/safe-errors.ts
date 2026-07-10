@@ -26,6 +26,9 @@ export function sanitizeUserMessage(value: unknown, fallback = genericErrorMessa
   if (lower.includes("rate limit") || lower.includes("quota") || lower.includes("too many")) {
     return "This action is temporarily limited. Please try again later.";
   }
+  if (lower.includes("could not finish this action") || lower.includes("company is saved") || lower.includes("missing steps")) {
+    return "We could not finish this action in time. Your company is saved. Please retry the missing steps.";
+  }
   if (lower.includes("timeout") || lower.includes("timed out")) {
     return "This request took too long. Please try again with a smaller search.";
   }

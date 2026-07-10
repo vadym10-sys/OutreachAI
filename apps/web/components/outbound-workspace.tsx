@@ -160,6 +160,11 @@ const emptyMetrics: DashboardMetrics = {
 };
 
 const unavailable = "Not found yet. Add it manually or run research.";
+const completeOpportunityRequest: Pick<ClientApiInit, "timeoutMs" | "retries" | "retryDelayMs"> = {
+  timeoutMs: 95000,
+  retries: 1,
+  retryDelayMs: 1200
+};
 
 const crmStages = [
   "New Lead",
@@ -1462,8 +1467,8 @@ function OpportunityCard({
     try {
       setStatus(t("Preparing full sales opportunity..."));
       const draftResult = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/complete-opportunity`, { method: "POST", timeoutMs: 65000 }),
-        70000,
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/complete-opportunity`, { method: "POST", ...completeOpportunityRequest }),
+        100000,
         "Sales opportunity preparation took too long. The company stays saved in CRM."
       );
       if (draftResult.company) {
@@ -2008,8 +2013,8 @@ export function LeadFinderPage() {
     setMessage(t("OutreachAI is preparing this company automatically..."));
     try {
       const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/complete-opportunity`, { method: "POST", timeoutMs: 65000 }),
-        70000,
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/complete-opportunity`, { method: "POST", ...completeOpportunityRequest }),
+        100000,
         "Sales opportunity preparation took too long. The company is saved and you can retry later."
       );
       applyCompany(result.company);
@@ -3037,8 +3042,8 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     try {
       setActionCurrentStep("Preparing full sales opportunity...");
       const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/complete-opportunity`, { method: "POST", timeoutMs: 65000 }),
-        70000,
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/complete-opportunity`, { method: "POST", ...completeOpportunityRequest }),
+        100000,
         "Sales opportunity preparation took too long. The company stays saved in CRM."
       );
       if (result.company) {
@@ -3578,8 +3583,8 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     try {
       setCurrentStep("Preparing full sales opportunity...");
       const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/complete-opportunity`, { method: "POST", timeoutMs: 65000 }),
-        70000,
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/complete-opportunity`, { method: "POST", ...completeOpportunityRequest }),
+        100000,
         "Sales opportunity preparation took too long. The company stays saved in CRM."
       );
       if (result.company) {

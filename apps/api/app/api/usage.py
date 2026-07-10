@@ -1229,10 +1229,12 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         },
     )
 
+    _lead_trace(request_id, "complete_opportunity_profile_started", lead_id=str(lead.id), company=lead.company)
     try:
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request_id)
         _set_workflow_stage(lead, "company_profile", "completed", "Saved company, location, website, phone and business listing data.")
         completed_steps.append("Company profile checked")
+        _lead_trace(request_id, "complete_opportunity_profile_finished", lead_id=str(lead.id), company=lead.company)
     except Exception as exc:
         capture_provider_exception(
             exc,
@@ -1247,6 +1249,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         completed_steps.append("Company profile checked")
         _lead_trace(request_id, "complete_opportunity_profile_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
+    _lead_trace(request_id, "complete_opportunity_analysis_started", lead_id=str(lead.id), company=lead.company)
     try:
         _set_workflow_stage(lead, "website_analysis", "running", "AI is analyzing the company website and sales angle.")
         metadata = _lead_metadata(lead)
@@ -1262,6 +1265,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             _set_workflow_stage(lead, "website_analysis", "completed", "AI summary, services, sales angle, offer and useful personalization facts.")
             _add_lead_activity(db, request, user.user_id, workspace, "website.analyzed", lead, {"source": "complete_opportunity"})
         completed_steps.append("Website analysis checked")
+        _lead_trace(request_id, "complete_opportunity_analysis_finished", lead_id=str(lead.id), company=lead.company)
     except Exception as exc:
         capture_provider_exception(
             exc,
@@ -1277,6 +1281,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         completed_steps.append("Website analysis checked")
         _lead_trace(request_id, "complete_opportunity_analysis_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
+    _lead_trace(request_id, "complete_opportunity_contacts_started", lead_id=str(lead.id), company=lead.company)
     try:
         _set_workflow_stage(lead, "decision_maker", "running", "Finding a decision maker or usable contact role.")
         _set_workflow_stage(lead, "verified_email", "running", "Verifying a usable business email when available.")
@@ -1313,6 +1318,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             _set_workflow_stage(lead, "decision_maker", "completed", "A real person or role to contact. If not verified, add it manually.")
             _set_workflow_stage(lead, "verified_email", "completed", "A usable business email. OutreachAI never invents missing email addresses.")
         completed_steps.append("Contact search checked")
+        _lead_trace(request_id, "complete_opportunity_contacts_finished", lead_id=str(lead.id), company=lead.company, has_email=bool(lead.email))
     except Exception as exc:
         capture_provider_exception(
             exc,
@@ -1337,6 +1343,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         completed_steps.append("Contact search checked")
         _lead_trace(request_id, "complete_opportunity_contacts_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
+    _lead_trace(request_id, "complete_opportunity_email_started", lead_id=str(lead.id), company=lead.company)
     try:
         _set_workflow_stage(lead, "ai_email", "running", "Generating a personalized email for review.")
         _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_before_draft")
@@ -1346,6 +1353,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             _set_workflow_stage(lead, "ai_email", "completed", "A personalized first email generated from the company research.")
             _set_workflow_stage(lead, "approval", "waiting", "Review the draft, edit it if needed, then approve before sending.")
         completed_steps.append("Email draft checked")
+        _lead_trace(request_id, "complete_opportunity_email_finished", lead_id=str(lead.id), company=lead.company, has_email_draft=bool(email))
     except Exception as exc:
         capture_provider_exception(
             exc,
@@ -1360,11 +1368,13 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         completed_steps.append("Email draft checked")
         _lead_trace(request_id, "complete_opportunity_email_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
+    _lead_trace(request_id, "complete_opportunity_database_save_started", lead_id=str(lead.id), company=lead.company)
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     db.commit()
     db.refresh(company)
     if email:
         db.refresh(email)
+    _lead_trace(request_id, "complete_opportunity_database_save_finished", lead_id=str(lead.id), company=lead.company, company_id=str(company.id), has_email_draft=bool(email))
     _lead_trace(request_id, "complete_opportunity_finished", lead_id=str(lead.id), company=lead.company, warnings=len(warnings), has_email_draft=bool(email))
 
     return UsageActionOut(

@@ -60,4 +60,37 @@ describe("client API errors", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/backend/api/workspace-app/leads/search");
   });
+
+  it("retries a transient opportunity completion timeout once", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            detail: "We could not finish this action in time. Your company is saved. Please retry the missing steps.",
+            request_id: "req-timeout"
+          }),
+          {
+            status: 504,
+            headers: { "content-type": "application/json", "x-request-id": "req-timeout" },
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+
+    await expect(
+      clientApi<{ ok: boolean }>("/api/workspace-app/companies/company_1/complete-opportunity", "token", {
+        method: "POST",
+        retries: 1,
+        retryDelayMs: 0
+      })
+    ).resolves.toEqual({ ok: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/backend/api/workspace-app/companies/company_1/complete-opportunity");
+  });
 });
