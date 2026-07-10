@@ -1,6 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { installQaGuards } from "../helpers/qa-guards";
 
+test("frontend health endpoint is public and stable for Railway", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  const response = await page.request.get("/api/health");
+  expect(response.status()).toBe(200);
+  const body = await response.json();
+  expect(body).toMatchObject({ status: "ok", service: "outreachai-web" });
+  await guards.assertClean();
+});
+
 test("client config endpoint returns safe public configuration only", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   const response = await page.request.get("/api/client-config");
