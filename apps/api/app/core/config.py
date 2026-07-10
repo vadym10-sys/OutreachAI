@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     request_audit_enabled: bool = True
     strict_startup_env_validation: bool = False
     required_runtime_envs: str = "DATABASE_URL,CLERK_SECRET_KEY,CLERK_JWT_ISSUER"
-    database_backups_enabled: bool = False
+    database_backups_enabled: str = ""
     upstash_redis_rest_url: str = ""
     upstash_redis_rest_token: str = ""
     cache_dashboard_ttl_seconds: int = 15

@@ -212,6 +212,8 @@ def api_readiness() -> JSONResponse:
     env_status = required_environment_status(settings)
     missing_env = [name for name, loaded in env_status.items() if not loaded]
     database_ready = False
+    database_backups_configured = database_backup_configured(settings)
+    warnings: list[str] = []
     try:
         with get_engine().connect() as connection:
             connection.execute(text("SELECT 1"))
@@ -221,6 +223,8 @@ def api_readiness() -> JSONResponse:
         sentry_sdk.capture_exception(exc)
 
     ready = database_ready and (not missing_env or not settings.strict_startup_env_validation)
+    if not database_backups_configured:
+        warnings.append("database_backups_not_confirmed")
     status_code = 200 if ready else 503
     return JSONResponse(
         status_code=status_code,
@@ -228,7 +232,8 @@ def api_readiness() -> JSONResponse:
             "status": "ready" if ready else "degraded",
             "database": database_ready,
             "required_environment": env_status,
-            "database_backups_configured": database_backup_configured(settings),
+            "database_backups_configured": database_backups_configured,
+            "warnings": warnings,
         },
     )
 

@@ -38,7 +38,8 @@ os.environ["RESEND_API_KEY"] = "resend_test"
 os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 
 from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
-from app.core.config import get_settings  # noqa: E402
+from app.core.config import Settings, get_settings  # noqa: E402
+from app.core.reliability import database_backup_configured  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
@@ -173,6 +174,16 @@ def test_liveness_and_readiness_are_public() -> None:
     payload = ready.json()
     assert payload["database"] is True
     assert payload["required_environment"]["DATABASE_URL"] is True
+    assert payload["database_backups_configured"] is False
+    assert "database_backups_not_confirmed" in payload["warnings"]
+
+
+def test_database_backup_readiness_requires_strict_true() -> None:
+    assert database_backup_configured(Settings(database_backups_enabled="true")) is True
+    assert database_backup_configured(Settings(database_backups_enabled="TRUE")) is True
+    assert database_backup_configured(Settings(database_backups_enabled="1")) is False
+    assert database_backup_configured(Settings(database_backups_enabled="yes")) is False
+    assert database_backup_configured(Settings(database_backups_enabled="false")) is False
 
 
 def test_request_id_is_echoed_for_traceability() -> None:

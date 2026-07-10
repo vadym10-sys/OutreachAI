@@ -61,4 +61,4 @@ def validate_required_environment(settings: Settings) -> list[str]:
 
 
 def database_backup_configured(settings: Settings) -> bool:
-    return bool(settings.database_backups_enabled or os.getenv("RAILWAY_VOLUME_NAME") or os.getenv("PGHOST"))
+    return str(settings.database_backups_enabled).strip().lower() == "true"
