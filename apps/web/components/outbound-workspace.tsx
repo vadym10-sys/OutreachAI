@@ -12,6 +12,7 @@ import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
+import type { Locale } from "@/lib/i18n/translations";
 import type { Activity, AISalesEmployee, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
@@ -2882,6 +2883,79 @@ function sourceLabel(source?: string | null) {
   return "Verified business data";
 }
 
+function localizedLegacySalesFallback(value: string | null | undefined, company: CrmCompany, locale: Locale) {
+  if (!value) return value || "";
+  const companyName = company.name || "Company";
+  const industry = company.industry || "";
+  const localeKey = locale === "en-US" ? "en" : locale;
+  const text: Record<string, Record<string, string>> = {
+    summary: {
+      en: `${companyName} is a company in its market. Verified public signals: website available.`,
+      ru: `${companyName} — компания на своём рынке. Проверенные публичные сигналы: сайт доступен.`,
+      es: `${companyName} es una empresa en su mercado. Señales públicas verificadas: sitio web disponible.`,
+      fr: `${companyName} est une entreprise sur son marché. Signaux publics vérifiés : site disponible.`,
+      it: `${companyName} è un’azienda nel suo mercato. Segnali pubblici verificati: sito disponibile.`,
+      pl: `${companyName} to firma na swoim rynku. Zweryfikowane sygnały publiczne: strona dostępna.`
+    },
+    reply: {
+      en: "4-8% until contact is verified",
+      ru: "4-8%, пока контакт не проверен",
+      es: "4-8% hasta verificar el contacto",
+      fr: "4-8% tant que le contact n’est pas vérifié",
+      it: "4-8% finché il contatto non è verificato",
+      pl: "4-8% do czasu weryfikacji kontaktu"
+    },
+    offer: {
+      en: `Offer a relevant B2B partnership tailored to ${companyName}.`,
+      ru: `Предложите релевантное B2B-партнёрство для ${companyName}.`,
+      es: `Ofrece una alianza B2B relevante para ${companyName}.`,
+      fr: `Proposez un partenariat B2B pertinent à ${companyName}.`,
+      it: `Proponi una partnership B2B rilevante per ${companyName}.`,
+      pl: `Zaproponuj odpowiednie partnerstwo B2B dla ${companyName}.`
+    },
+    angle: {
+      en: `Start with a practical growth or partnership angle${industry ? ` for ${industry}` : ""}.`,
+      ru: `Начните с практичного угла роста или партнёрства${industry ? ` для сферы ${industry}` : ""}.`,
+      es: `Empieza con un ángulo práctico de crecimiento o alianza${industry ? ` para ${industry}` : ""}.`,
+      fr: `Commencez par un angle concret de croissance ou partenariat${industry ? ` pour ${industry}` : ""}.`,
+      it: `Apri con un angolo pratico di crescita o partnership${industry ? ` per ${industry}` : ""}.`,
+      pl: `Zacznij od praktycznego kąta wzrostu lub partnerstwa${industry ? ` dla branży ${industry}` : ""}.`
+    },
+    next: {
+      en: "Find or add a verified decision-maker email before sending.",
+      ru: "Найдите или добавьте проверенный email лица, принимающего решение, перед отправкой.",
+      es: "Busca o añade un email verificado del decisor antes de enviar.",
+      fr: "Trouvez ou ajoutez l’email vérifié du décideur avant l’envoi.",
+      it: "Trova o aggiungi l’email verificata del decision maker prima dell’invio.",
+      pl: "Znajdź lub dodaj zweryfikowany email osoby decyzyjnej przed wysyłką."
+    }
+  };
+  const pick = (key: keyof typeof text) => text[key][localeKey] || text[key].en;
+  if (value.includes("Verified public signals:") || value.includes("Public profile is saved")) return pick("summary");
+  if (value.includes("until contact is verified")) return pick("reply");
+  if (value.includes("tailored to")) return pick("offer");
+  if (value.includes("Lead with a practical") || value.includes("growth or partnership angle based on verified public data")) return pick("angle");
+  if (value.includes("Find or add a verified decision-maker email before sending.")) return pick("next");
+  return value;
+}
+
+function localizeLegacyCompanySalesFallbacks(company: CrmCompany, locale: Locale): CrmCompany {
+  return {
+    ...company,
+    ai_summary: localizedLegacySalesFallback(company.ai_summary, company, locale),
+    sales_angle: localizedLegacySalesFallback(company.sales_angle, company, locale),
+    suggested_offer: localizedLegacySalesFallback(company.suggested_offer, company, locale),
+    outreach_strategy: localizedLegacySalesFallback(company.outreach_strategy, company, locale),
+    expected_reply_rate: localizedLegacySalesFallback(company.expected_reply_rate, company, locale),
+    opportunity_analysis: localizedLegacySalesFallback(company.opportunity_analysis, company, locale),
+    partnership_fit: localizedLegacySalesFallback(company.partnership_fit, company, locale),
+    next_recommended_action: localizedLegacySalesFallback(company.next_recommended_action, company, locale),
+    buying_signals: safeArray(company.buying_signals).map((item) => localizedLegacySalesFallback(item, company, locale)),
+    risks: safeArray(company.risks).map((item) => localizedLegacySalesFallback(item, company, locale)),
+    pain_points: safeArray(company.pain_points).map((item) => localizedLegacySalesFallback(item, company, locale)),
+  };
+}
+
 function stageTone(stage?: string | null) {
   const normalized = (stage || "").toLowerCase();
   if (normalized.includes("won") || normalized.includes("meeting")) return "bg-teal-50 text-brand border-teal-200";
@@ -2986,7 +3060,7 @@ function contactConfidenceLabel(confidence: CrmContact["confidence"], t: (key: s
 }
 
 function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCompany; api: ApiFn; highlighted?: boolean }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [current, setCurrent] = useState(company);
   const [stageValue, setStageValue] = useState(company.crm_stage);
   const [noteBody, setNoteBody] = useState("");
@@ -2997,38 +3071,39 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const [actionCompletedSteps, setActionCompletedSteps] = useState<string[]>([]);
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const contactFormRef = useRef<HTMLFormElement | null>(null);
-  const lead = leadFromCrmCompany(current);
-  const currentDraft = latestCompanyEmail(current);
-  const currentSentAt = currentEmailSentAt(current);
-  const healthScore = companyHealthScore(current);
-  const salesBrief = companySalesBrief(current, healthScore);
-  const nextAction = companyNextAction(current);
-  const primaryAction = companyPrimaryAction(current);
+  const displayCurrent = useMemo(() => localizeLegacyCompanySalesFallbacks(current, locale), [current, locale]);
+  const lead = leadFromCrmCompany(displayCurrent);
+  const currentDraft = latestCompanyEmail(displayCurrent);
+  const currentSentAt = currentEmailSentAt(displayCurrent);
+  const healthScore = companyHealthScore(displayCurrent);
+  const salesBrief = companySalesBrief(displayCurrent, healthScore);
+  const nextAction = companyNextAction(displayCurrent);
+  const primaryAction = companyPrimaryAction(displayCurrent);
   const PrimaryActionIcon = primaryAction.icon;
-  const primaryContact = current.contacts[0];
-  const sendRecipient = current.email || primaryContact?.email || "";
+  const primaryContact = displayCurrent.contacts[0];
+  const sendRecipient = displayCurrent.email || primaryContact?.email || "";
   const approvedDraftReady = Boolean(currentDraft?.delivery_status === "approved" && !currentSentAt);
-  const firstDeal = current.deals[0];
+  const firstDeal = displayCurrent.deals[0];
   const owner = "Not assigned";
   const companySize = "Not available";
   const estimatedOpportunity = firstDeal?.value ? `€${Math.round(firstDeal.value).toLocaleString()}` : "Not available";
-  const hasVerifiedEmail = Boolean(current.email || current.contacts.some((contact) => contact.email));
-  const aiBuyingSignals = safeArray(current.buying_signals).filter(Boolean);
-  const aiRisks = safeArray(current.risks).filter(Boolean);
+  const hasVerifiedEmail = Boolean(displayCurrent.email || displayCurrent.contacts.some((contact) => contact.email));
+  const aiBuyingSignals = safeArray(displayCurrent.buying_signals).filter(Boolean);
+  const aiRisks = safeArray(displayCurrent.risks).filter(Boolean);
   const buyingSignals = [
     ...aiBuyingSignals,
-    current.website_analyzed_at ? "Website research completed" : "",
+    displayCurrent.website_analyzed_at ? "Website research completed" : "",
     hasVerifiedEmail ? "Verified email available" : "",
-    !hasVerifiedEmail && current.contact_search_checked_at ? "Contact search checked" : "",
-    current.generated_emails.length ? "Outreach draft prepared" : "",
-    current.replied_at ? "Reply received" : "",
-    current.google_rating ? "Public reputation signal available" : ""
+    !hasVerifiedEmail && displayCurrent.contact_search_checked_at ? "Contact search checked" : "",
+    displayCurrent.generated_emails.length ? "Outreach draft prepared" : "",
+    displayCurrent.replied_at ? "Reply received" : "",
+    displayCurrent.google_rating ? "Public reputation signal available" : ""
   ].filter(Boolean);
   const risks = [
     ...aiRisks,
     !hasVerifiedEmail ? "No verified email yet" : "",
-    !current.ai_summary ? "Company research is incomplete" : "",
-    !current.generated_emails.length ? "No approved outreach draft yet" : ""
+    !displayCurrent.ai_summary ? "Company research is incomplete" : "",
+    !displayCurrent.generated_emails.length ? "No approved outreach draft yet" : ""
   ].filter(Boolean);
   const contactSearchAttempted = Boolean(current.contact_search_checked_at || current.contact_search_status);
   const contactSearchEmpty = !current.email && !current.contacts.some((contact) => contact.email) && current.contact_search_status === "no_verified_email";
@@ -3413,8 +3488,8 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           </div>
           <div className="mt-4 rounded-2xl bg-slate-50 p-4">
             <p className="text-sm font-bold text-ink">{t("Company description")}</p>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{current.ai_summary || t("Not available. Run company research to create a clear description before outreach.")}</p>
-            {!current.ai_summary && (
+            <p className="mt-2 text-sm leading-6 text-slate-700">{displayCurrent.ai_summary || t("Not available. Run company research to create a clear description before outreach.")}</p>
+            {!displayCurrent.ai_summary && (
               <button
                 type="button"
                 onClick={prepareCompanyOpportunity}
@@ -3432,10 +3507,10 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
             <div className="rounded-2xl bg-teal-50 p-4">
               <p className="text-sm font-bold text-brand">{t("AI summary")}</p>
-              <p className="mt-2 text-sm leading-6 text-slate-800">{current.ai_summary || t("Not available. Analyze the company website to generate the summary, pain points and sales angle.")}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-800">{displayCurrent.ai_summary || t("Not available. Analyze the company website to generate the summary, pain points and sales angle.")}</p>
               <p className="mt-4 text-sm font-bold text-ink">{t("Why this company is interesting")}</p>
-              <p className="mt-2 text-sm leading-6 text-slate-700">{current.opportunity_analysis || current.partnership_fit || current.sales_angle || current.outreach_strategy || t("Not available. Complete sales research to identify the strongest outreach angle.")}</p>
-              {(!current.ai_summary || (!current.sales_angle && !current.outreach_strategy)) && (
+              <p className="mt-2 text-sm leading-6 text-slate-700">{displayCurrent.opportunity_analysis || displayCurrent.partnership_fit || displayCurrent.sales_angle || displayCurrent.outreach_strategy || t("Not available. Complete sales research to identify the strongest outreach angle.")}</p>
+              {(!displayCurrent.ai_summary || (!displayCurrent.sales_angle && !displayCurrent.outreach_strategy)) && (
                 <button
                   type="button"
                   onClick={prepareCompanyOpportunity}
