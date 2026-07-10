@@ -508,6 +508,24 @@ class QualityCheckRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class BackupRun(Base):
+    __tablename__ = "backup_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider: Mapped[str] = mapped_column(String(64), default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    object_key: Mapped[str] = mapped_column(String(700), default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    checksum_sha256: Mapped[str] = mapped_column(String(128), default="")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    restore_verified: Mapped[bool] = mapped_column(default=False, index=True)
+    restore_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    triggered_by: Mapped[str] = mapped_column(String(128), default="")
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+
 class WorkspaceProfile(Base):
     __tablename__ = "workspace_profiles"
 

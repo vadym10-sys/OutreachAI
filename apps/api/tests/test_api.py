@@ -43,11 +43,12 @@ from app.core.reliability import database_backup_configured  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, Campaign, Company, Contact, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
+from app.services.backups import backup_archive_is_readable  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -184,6 +185,38 @@ def test_database_backup_readiness_requires_strict_true() -> None:
     assert database_backup_configured(Settings(database_backups_enabled="1")) is False
     assert database_backup_configured(Settings(database_backups_enabled="yes")) is False
     assert database_backup_configured(Settings(database_backups_enabled="false")) is False
+
+
+def test_backup_status_is_owner_only_and_reports_not_configured() -> None:
+    forbidden = client.get("/api/backups/status", headers=NON_OWNER_AUTH)
+    assert forbidden.status_code == 403
+
+    response = client.get("/api/backups/status", headers=OWNER_AUTH)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["backups_enabled"] is False
+    assert payload["provider"] == "not_configured"
+    assert payload["restore_verified"] is False
+
+
+def test_manual_backup_fails_safely_when_provider_is_missing() -> None:
+    response = client.post("/api/backups/run", headers=OWNER_AUTH)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "failed"
+    assert "provider" in payload["error_message"].lower()
+    with get_sessionmaker()() as db:
+        stored = db.scalar(select(BackupRun).where(BackupRun.id == UUID(payload["id"])))
+        assert stored is not None
+        assert stored.status == "failed"
+
+
+def test_backup_archive_integrity_check_accepts_readable_gzip(tmp_path: Path) -> None:
+    archive = tmp_path / "backup.sql.gz"
+    import gzip
+    with gzip.open(archive, "wb") as handle:
+        handle.write(b"CREATE TABLE restore_probe(id integer);\n")
+    assert backup_archive_is_readable(archive) is True
 
 
 def test_request_id_is_echoed_for_traceability() -> None:

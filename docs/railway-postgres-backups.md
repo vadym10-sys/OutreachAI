@@ -81,13 +81,48 @@ The owner or CTO is responsible for:
 
 Only use this path if Railway backups cannot be enabled on the current plan.
 
+OutreachAI includes an owner-only backup control plane:
+
+- `GET /api/backups/status`
+- `POST /api/backups/run`
+
+Both endpoints require the owner account.
+
+`/api/ready` reports `database_backups_configured=true` only when all of these are true:
+
+1. `DATABASE_BACKUPS_ENABLED=true`
+2. a backup provider is configured
+3. the latest backup finished successfully
+4. restore verification passed
+
 Required production variables for an external `pg_dump` strategy:
 
 - `BACKUP_STORAGE_PROVIDER`
 - `BACKUP_BUCKET`
 - provider-specific access key/secret or service account
-- `BACKUP_ENCRYPTION_KEY`
 - `BACKUP_RETENTION_DAYS`
+
+Supported providers:
+
+- `aws_s3`
+- `cloudflare_r2`
+- `google_cloud_storage`
+- `backblaze_b2`
+- `local` for development only
+
+Environment variables:
+
+- `BACKUP_PROVIDER`: `aws_s3`, `cloudflare_r2`, `backblaze_b2`, `gcs`, or `local`
+- `BACKUP_BUCKET`: target bucket for cloud providers
+- `BACKUP_PREFIX`: object prefix, default `outreachai/postgres`
+- `BACKUP_RETENTION_DAYS`: minimum 30 for production
+- `BACKUP_RETENTION_COUNT`: minimum 30 for production
+- `BACKUP_RESTORE_TEST_DATABASE_URL`: staging database used to verify restore
+- `AWS_ACCESS_KEY_ID`: S3-compatible access key
+- `AWS_SECRET_ACCESS_KEY`: S3-compatible secret
+- `AWS_REGION`: AWS region or provider-compatible region
+- `S3_ENDPOINT_URL`: required for Cloudflare R2 and Backblaze B2
+- `GOOGLE_APPLICATION_CREDENTIALS`: required for GCS
 
 Minimum acceptable fallback:
 
@@ -99,3 +134,23 @@ Minimum acceptable fallback:
 6. Only after a successful restore drill may `DATABASE_BACKUPS_ENABLED=true` be set.
 
 Do not store production backups only inside the same Railway project or container filesystem.
+
+## Scheduling external backups
+
+Use a Railway cron service or external scheduler to run:
+
+```bash
+python -m app.jobs.run_database_backup
+```
+
+Recommended schedule:
+
+- daily at 02:00 UTC
+- keep at least 30 successful backups
+- alert immediately on failure
+
+## RPO and RTO
+
+- RPO target: 24 hours with daily backups.
+- RTO target: 30-60 minutes for a normal restore into a fresh PostgreSQL database.
+- RTO may be longer if the latest backup must be downloaded from external storage or if DNS/service cutover is required.

@@ -27,6 +27,7 @@ from app.models.entities import (
     AICEOBriefing,
     AppSettings,
     AuditLog,
+    BackupRun,
     Campaign,
     CampaignSequence,
     CampaignStatus,
@@ -171,6 +172,7 @@ from app.services.ai import (
     website_audit,
 )
 from app.services.audit import log_event
+from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
@@ -5154,3 +5156,43 @@ def admin_summary(owner: OwnerUser, db: Session = Depends(get_db)) -> AdminSumma
 def admin_logs(owner: OwnerUser, db: Session = Depends(get_db)) -> list[AuditLog]:
     del owner
     return list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(100)).all())
+
+
+@router.get("/backups/status")
+def backup_status(owner: OwnerUser, db: Session = Depends(get_db)) -> dict:
+    del owner
+    summary = backup_summary(db, get_app_settings())
+    latest = db.scalar(select(BackupRun).order_by(BackupRun.started_at.desc()).limit(1))
+    return {
+        "backups_enabled": summary.backups_enabled,
+        "provider": summary.provider,
+        "last_backup_time": summary.last_backup_time.isoformat() if summary.last_backup_time else None,
+        "last_backup_status": summary.last_backup_status,
+        "next_backup_time": summary.next_backup_time.isoformat() if summary.next_backup_time else None,
+        "restore_verified": summary.restore_verified,
+        "message": summary.message,
+        "latest_backup": {
+            "id": str(latest.id),
+            "status": latest.status,
+            "size_bytes": latest.size_bytes,
+            "restore_verified": latest.restore_verified,
+            "started_at": latest.started_at.isoformat(),
+            "completed_at": latest.completed_at.isoformat() if latest.completed_at else None,
+            "error_message": latest.error_message,
+        } if latest else None,
+    }
+
+
+@router.post("/backups/run")
+def backup_run(request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> dict:
+    run = run_database_backup(db, triggered_by=owner.email, settings=get_app_settings())
+    log_event(db, request, owner.user_id, "backups.manual_run", {"backup_id": str(run.id), "status": run.status})
+    return {
+        "id": str(run.id),
+        "status": run.status,
+        "provider": run.provider,
+        "started_at": run.started_at.isoformat(),
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        "restore_verified": run.restore_verified,
+        "error_message": run.error_message,
+    }

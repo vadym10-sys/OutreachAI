@@ -20,9 +20,10 @@ from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
 from app.core.database import Base, ensure_runtime_schema, get_engine, get_sessionmaker
 from app.core.observability import init_sentry, sentry_transaction_name, set_request_context
-from app.core.reliability import database_backup_configured, required_environment_status, validate_required_environment
+from app.core.reliability import required_environment_status, validate_required_environment
 from app.core.security import authenticated_user_id_from_authorization, rate_limit
 from app.models.entities import AuditLog, Workspace
+from app.services.backups import database_backups_operational
 
 logging.basicConfig(
     level=logging.INFO,
@@ -212,12 +213,14 @@ def api_readiness() -> JSONResponse:
     env_status = required_environment_status(settings)
     missing_env = [name for name, loaded in env_status.items() if not loaded]
     database_ready = False
-    database_backups_configured = database_backup_configured(settings)
+    database_backups_configured = False
     warnings: list[str] = []
     try:
         with get_engine().connect() as connection:
             connection.execute(text("SELECT 1"))
         database_ready = True
+        with get_sessionmaker()() as db:
+            database_backups_configured = database_backups_operational(db, settings)
     except Exception as exc:
         logger.exception("Readiness database check failed")
         sentry_sdk.capture_exception(exc)
@@ -255,8 +258,6 @@ def startup() -> None:
     try:
         logger.info("Starting OutreachAI API app_env=%s", settings.app_env)
         validate_required_environment(settings)
-        if not database_backup_configured(settings):
-            logger.warning("Database backup policy is not confirmed by runtime configuration.")
         logger.info(
             "Startup diagnostics: registered routes=%s",
             ", ".join(f"{route.path}:{','.join(sorted(route.methods or []))}" for route in app.routes)
@@ -273,6 +274,10 @@ def startup() -> None:
         Base.metadata.create_all(bind=engine)
         ensure_runtime_schema(engine)
         logger.info("Database tables verified")
+        with get_sessionmaker()() as db:
+            backup_ready = database_backups_operational(db, settings)
+        if not backup_ready:
+            logger.warning("Database backup policy is not confirmed by runtime configuration.")
     except Exception:
         logger.exception("Startup initialization failed; API will keep running so /api/health remains available")
         traceback.print_exc(file=sys.stdout)
