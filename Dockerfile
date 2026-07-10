@@ -34,4 +34,4 @@ COPY --from=builder /app/apps/web/next.config.mjs ./next.config.mjs
 
 EXPOSE 3000
 
-CMD ["npm", "start", "--", "-H", "0.0.0.0", "-p", "3000"]
+CMD ["sh", "-c", "npm start -- -H 0.0.0.0 -p ${PORT:-3000}"]
