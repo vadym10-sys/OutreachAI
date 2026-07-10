@@ -3577,7 +3577,15 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             </div>
           )}
           <div className="mt-5">
-            {current.lead_id ? <OpportunityCard key={`${current.id}:${currentDraft?.id || "no-draft"}:${currentDraft?.delivery_status || ""}`} lead={lead} api={api} onCompanyUpdated={applyCompanyUpdate} initialDraft={currentDraft} /> : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
+            {current.lead_id ? (
+              <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <summary className="cursor-pointer text-sm font-black text-ink">{t("Open email review and sending controls")}</summary>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{t("Use this only when you are ready to review, approve or send. Nothing is sent without confirmation.")}</p>
+                <div className="mt-4">
+                  <OpportunityCard key={`${current.id}:${currentDraft?.id || "no-draft"}:${currentDraft?.delivery_status || ""}`} lead={lead} api={api} onCompanyUpdated={applyCompanyUpdate} initialDraft={currentDraft} />
+                </div>
+              </details>
+            ) : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
           </div>
         </WorkspaceSection>
 

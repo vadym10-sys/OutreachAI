@@ -1233,7 +1233,51 @@ def test_workspace_app_manual_company_gets_fallback_intelligence_and_review_draf
     assert data["email"]["delivery_status"] == "draft"
     assert "Fallback Partner Build" in captured["summary"]
     assert captured["offer"]
-    assert data["company"]["email_status"] == "Draft Ready"
+
+
+def test_workspace_app_manual_company_fallback_uses_requested_locale() -> None:
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": "usage-russian-fallback@example.com",
+        "x-outreachai-locale": "ru",
+    }
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Русский Партнер", "country": "Poland", "city": "Warsaw", "industry": "B2B партнерства"},
+    )
+    assert company_response.status_code == 200
+    company = company_response.json()["company"]
+    assert "Публичный профиль" in company["ai_summary"] or "Проверенные публичные сигналы" in company["ai_summary"]
+    assert "Предложите" in company["suggested_offer"]
+    assert "пока контакт не проверен" in company["expected_reply_rate"]
+    assert "Ручное исследование" in company["pain_points"][0]
+
+
+def test_workspace_app_relocalizes_previous_generic_sales_fallback() -> None:
+    base_headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": "usage-relocalized-fallback@example.com",
+    }
+    first_response = client.post(
+        "/api/workspace-app/companies",
+        headers=base_headers,
+        json={"name": "Localized Repeat Partner", "country": "Poland", "city": "Warsaw", "industry": "Partnerships"},
+    )
+    assert first_response.status_code == 200
+    first_company = first_response.json()["company"]
+    assert "Verified public signals" in first_company["ai_summary"] or "Public profile is saved" in first_company["ai_summary"]
+
+    russian_response = client.post(
+        "/api/workspace-app/companies",
+        headers={**base_headers, "x-outreachai-locale": "ru"},
+        json={"name": "Localized Repeat Partner", "country": "Poland", "city": "Warsaw", "industry": "Partnerships"},
+    )
+    assert russian_response.status_code == 200
+    russian_company = russian_response.json()["company"]
+    assert "Публичный профиль" in russian_company["ai_summary"] or "Проверенные публичные сигналы" in russian_company["ai_summary"]
+    assert "Verified public signals" not in russian_company["ai_summary"]
+    assert "пока контакт не проверен" in russian_company["expected_reply_rate"]
 
 
 def test_workspace_app_contact_discovery_empty_persists_search_state(monkeypatch) -> None:

@@ -459,68 +459,347 @@ def _needs_ai_research(lead: Lead) -> bool:
     )
 
 
-def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallback") -> None:
+def _localized_fallback_text(language: str | None, key: str, **values: str) -> str:
+    normalized = (language or "English").strip().lower()
+    locale = "en"
+    if "russian" in normalized:
+        locale = "ru"
+    elif "spanish" in normalized:
+        locale = "es"
+    elif "french" in normalized:
+        locale = "fr"
+    elif "italian" in normalized:
+        locale = "it"
+    elif "polish" in normalized:
+        locale = "pl"
+    elif "ukrainian" in normalized:
+        locale = "uk"
+    texts: dict[str, dict[str, str]] = {
+        "market": {
+            "en": "its market",
+            "ru": "своём рынке",
+            "es": "su mercado",
+            "fr": "son marché",
+            "it": "il suo mercato",
+            "pl": "swoim rynku",
+            "uk": "своєму ринку",
+        },
+        "website_available": {
+            "en": "website available",
+            "ru": "сайт доступен",
+            "es": "sitio web disponible",
+            "fr": "site disponible",
+            "it": "sito disponibile",
+            "pl": "strona dostępna",
+            "uk": "сайт доступний",
+        },
+        "phone_available": {
+            "en": "phone available",
+            "ru": "телефон доступен",
+            "es": "teléfono disponible",
+            "fr": "téléphone disponible",
+            "it": "telefono disponibile",
+            "pl": "telefon dostępny",
+            "uk": "телефон доступний",
+        },
+        "listing_available": {
+            "en": "local business listing available",
+            "ru": "локальная карточка бизнеса доступна",
+            "es": "ficha local disponible",
+            "fr": "fiche locale disponible",
+            "it": "scheda locale disponibile",
+            "pl": "lokalna wizytówka dostępna",
+            "uk": "локальна картка бізнесу доступна",
+        },
+        "rating_available": {
+            "en": "public rating available",
+            "ru": "публичный рейтинг доступен",
+            "es": "valoración pública disponible",
+            "fr": "note publique disponible",
+            "it": "valutazione pubblica disponibile",
+            "pl": "publiczna ocena dostępna",
+            "uk": "публічний рейтинг доступний",
+        },
+        "summary_more_research": {
+            "en": "Public profile is saved, but more research is needed before outreach.",
+            "ru": "Публичный профиль сохранён, но перед обращением нужно больше исследования.",
+            "es": "El perfil público está guardado, pero falta más investigación antes del contacto.",
+            "fr": "Le profil public est enregistré, mais une analyse supplémentaire est nécessaire avant le contact.",
+            "it": "Il profilo pubblico è salvato, ma serve più ricerca prima del contatto.",
+            "pl": "Profil publiczny zapisano, ale przed kontaktem potrzebna jest dalsza analiza.",
+            "uk": "Публічний профіль збережено, але перед зверненням потрібне додаткове дослідження.",
+        },
+        "summary": {
+            "en": "{company} is a {industry} company{location}. {signals}",
+            "ru": "{company} — компания в сфере {industry}{location}. {signals}",
+            "es": "{company} es una empresa de {industry}{location}. {signals}",
+            "fr": "{company} est une entreprise de {industry}{location}. {signals}",
+            "it": "{company} è un’azienda nel settore {industry}{location}. {signals}",
+            "pl": "{company} to firma z branży {industry}{location}. {signals}",
+            "uk": "{company} — компанія у сфері {industry}{location}. {signals}",
+        },
+        "signals": {
+            "en": "Verified public signals: {signals}.",
+            "ru": "Проверенные публичные сигналы: {signals}.",
+            "es": "Señales públicas verificadas: {signals}.",
+            "fr": "Signaux publics vérifiés : {signals}.",
+            "it": "Segnali pubblici verificati: {signals}.",
+            "pl": "Zweryfikowane sygnały publiczne: {signals}.",
+            "uk": "Перевірені публічні сигнали: {signals}.",
+        },
+        "location": {
+            "en": " in {location}",
+            "ru": " в локации {location}",
+            "es": " en {location}",
+            "fr": " à {location}",
+            "it": " in {location}",
+            "pl": " w lokalizacji {location}",
+            "uk": " у локації {location}",
+        },
+        "sales_angle": {
+            "en": "Lead with a practical {industry} growth or partnership angle based on verified public data.",
+            "ru": "Начните с практичного угла роста или партнёрства в сфере {industry} на основе проверенных публичных данных.",
+            "es": "Empieza con un ángulo práctico de crecimiento o alianza en {industry} basado en datos públicos verificados.",
+            "fr": "Commencez par un angle concret de croissance ou partenariat en {industry}, basé sur des données publiques vérifiées.",
+            "it": "Apri con un angolo pratico di crescita o partnership in {industry}, basato su dati pubblici verificati.",
+            "pl": "Zacznij od praktycznego kąta wzrostu lub partnerstwa w branży {industry}, opartego na zweryfikowanych danych publicznych.",
+            "uk": "Почніть з практичного кута зростання або партнерства у сфері {industry} на основі перевірених публічних даних.",
+        },
+        "offer": {
+            "en": "Offer {offer_focus} tailored to {company}.",
+            "ru": "Предложите {offer_focus}, адаптированное под {company}.",
+            "es": "Ofrece {offer_focus} adaptado a {company}.",
+            "fr": "Proposez {offer_focus} adapté à {company}.",
+            "it": "Proponi {offer_focus} adattato a {company}.",
+            "pl": "Zaproponuj {offer_focus} dopasowane do {company}.",
+            "uk": "Запропонуйте {offer_focus}, адаптоване під {company}.",
+        },
+        "strategy": {
+            "en": "Use review mode: research the company, prepare a concise email, verify the recipient, then approve before sending.",
+            "ru": "Используйте режим проверки: исследуйте компанию, подготовьте короткое письмо, проверьте получателя и только потом утвердите отправку.",
+            "es": "Usa modo revisión: investiga la empresa, prepara un email breve, verifica destinatario y aprueba antes de enviar.",
+            "fr": "Utilisez le mode revue : analysez l’entreprise, préparez un email court, vérifiez le destinataire puis approuvez avant envoi.",
+            "it": "Usa la modalità revisione: analizza l’azienda, prepara una mail breve, verifica il destinatario e approva prima dell’invio.",
+            "pl": "Użyj trybu przeglądu: przeanalizuj firmę, przygotuj krótki email, zweryfikuj odbiorcę i zatwierdź przed wysyłką.",
+            "uk": "Використовуйте режим перевірки: дослідіть компанію, підготуйте короткий лист, перевірте отримувача і лише потім затвердіть відправку.",
+        },
+        "cta": {
+            "en": "Book a quick call",
+            "ru": "Назначить короткий звонок",
+            "es": "Agendar una llamada breve",
+            "fr": "Planifier un court appel",
+            "it": "Fissare una breve chiamata",
+            "pl": "Umówić krótką rozmowę",
+            "uk": "Призначити короткий дзвінок",
+        },
+        "follow_up": {
+            "en": "Send two short follow-ups only after the first email is reviewed.",
+            "ru": "Отправьте два коротких follow-up только после проверки первого письма.",
+            "es": "Envía dos seguimientos breves solo después de revisar el primer email.",
+            "fr": "Envoyez deux relances courtes seulement après revue du premier email.",
+            "it": "Invia due follow-up brevi solo dopo la revisione della prima email.",
+            "pl": "Wyślij dwa krótkie follow-upy dopiero po sprawdzeniu pierwszego emaila.",
+            "uk": "Надішліть два короткі follow-up лише після перевірки першого листа.",
+        },
+        "reply_unverified": {
+            "en": "4-8% until contact is verified",
+            "ru": "4-8%, пока контакт не проверен",
+            "es": "4-8% hasta verificar el contacto",
+            "fr": "4-8% tant que le contact n’est pas vérifié",
+            "it": "4-8% finché il contatto non è verificato",
+            "pl": "4-8% do czasu weryfikacji kontaktu",
+            "uk": "4-8%, доки контакт не перевірено",
+        },
+        "profile_saved": {
+            "en": "Company profile saved in CRM",
+            "ru": "Профиль компании сохранён в CRM",
+            "es": "Perfil de empresa guardado en CRM",
+            "fr": "Profil entreprise enregistré dans le CRM",
+            "it": "Profilo azienda salvato nel CRM",
+            "pl": "Profil firmy zapisany w CRM",
+            "uk": "Профіль компанії збережено в CRM",
+        },
+        "risk_website": {
+            "en": "Website is missing, so AI research is limited.",
+            "ru": "Сайт отсутствует, поэтому AI-исследование ограничено.",
+            "es": "Falta el sitio web, por eso el análisis IA es limitado.",
+            "fr": "Le site manque, donc l’analyse IA est limitée.",
+            "it": "Manca il sito, quindi l’analisi AI è limitata.",
+            "pl": "Brakuje strony, więc analiza AI jest ograniczona.",
+            "uk": "Сайт відсутній, тому AI-дослідження обмежене.",
+        },
+        "risk_email": {
+            "en": "Verified decision-maker email is not available yet.",
+            "ru": "Проверенный email лица, принимающего решение, пока недоступен.",
+            "es": "Aún no hay email verificado del decisor.",
+            "fr": "L’email vérifié du décideur n’est pas encore disponible.",
+            "it": "L’email verificata del decision maker non è ancora disponibile.",
+            "pl": "Zweryfikowany email osoby decyzyjnej nie jest jeszcze dostępny.",
+            "uk": "Перевірений email особи, що приймає рішення, поки недоступний.",
+        },
+        "opportunity": {
+            "en": "{company} can be worked as a B2B opportunity once research and contact verification are complete.",
+            "ru": "{company} можно вести как B2B-возможность после завершения исследования и проверки контакта.",
+            "es": "{company} puede trabajarse como oportunidad B2B cuando investigación y contacto estén completos.",
+            "fr": "{company} peut devenir une opportunité B2B après analyse et vérification du contact.",
+            "it": "{company} può diventare un’opportunità B2B dopo analisi e verifica del contatto.",
+            "pl": "{company} może być szansą B2B po analizie i weryfikacji kontaktu.",
+            "uk": "{company} можна вести як B2B-можливість після дослідження та перевірки контакту.",
+        },
+        "fit": {
+            "en": "Potential fit for {offer_focus} if the company matches the workspace ICP.",
+            "ru": "Потенциально подходит для {offer_focus}, если компания совпадает с ICP пространства.",
+            "es": "Encaje potencial para {offer_focus} si coincide con el ICP del workspace.",
+            "fr": "Fit potentiel pour {offer_focus} si l’entreprise correspond à l’ICP.",
+            "it": "Fit potenziale per {offer_focus} se l’azienda coincide con l’ICP.",
+            "pl": "Potencjalne dopasowanie do {offer_focus}, jeśli firma pasuje do ICP workspace.",
+            "uk": "Потенційно підходить для {offer_focus}, якщо компанія відповідає ICP простору.",
+        },
+        "next_email": {
+            "en": "Review and approve the generated email.",
+            "ru": "Проверьте и утвердите сгенерированное письмо.",
+            "es": "Revisa y aprueba el email generado.",
+            "fr": "Relisez et approuvez l’email généré.",
+            "it": "Rivedi e approva l’email generata.",
+            "pl": "Sprawdź i zatwierdź wygenerowany email.",
+            "uk": "Перевірте та затвердьте згенерований лист.",
+        },
+        "next_contact": {
+            "en": "Find or add a verified decision-maker email before sending.",
+            "ru": "Найдите или добавьте проверенный email лица, принимающего решение, перед отправкой.",
+            "es": "Busca o añade un email verificado del decisor antes de enviar.",
+            "fr": "Trouvez ou ajoutez l’email vérifié du décideur avant l’envoi.",
+            "it": "Trova o aggiungi l’email verificata del decision maker prima dell’invio.",
+            "pl": "Znajdź lub dodaj zweryfikowany email osoby decyzyjnej przed wysyłką.",
+            "uk": "Знайдіть або додайте перевірений email особи, що приймає рішення, перед відправкою.",
+        },
+        "pain_manual": {
+            "en": "Manual prospect research takes time.",
+            "ru": "Ручное исследование потенциальных клиентов занимает время.",
+            "es": "La investigación manual de prospectos lleva tiempo.",
+            "fr": "La recherche manuelle de prospects prend du temps.",
+            "it": "La ricerca manuale dei prospect richiede tempo.",
+            "pl": "Ręczne badanie prospectów zajmuje czas.",
+            "uk": "Ручне дослідження потенційних клієнтів займає час.",
+        },
+        "pain_context": {
+            "en": "Personal outreach needs verified company context.",
+            "ru": "Персональное обращение требует проверенного контекста компании.",
+            "es": "El outreach personal necesita contexto verificado de la empresa.",
+            "fr": "L’outreach personnalisé nécessite un contexte d’entreprise vérifié.",
+            "it": "L’outreach personale richiede contesto aziendale verificato.",
+            "pl": "Personalizowany outreach wymaga zweryfikowanego kontekstu firmy.",
+            "uk": "Персональне звернення потребує перевіреного контексту компанії.",
+        },
+    }
+    template = texts.get(key, {}).get(locale) or texts.get(key, {}).get("en") or ""
+    return template.format(**values)
+
+
+def _is_generic_sales_fallback(value) -> bool:
+    if not value:
+        return False
+    if isinstance(value, list):
+        return any(_is_generic_sales_fallback(item) for item in value)
+    if not isinstance(value, str):
+        return False
+    markers = (
+        "Verified public signals:",
+        "Public profile is saved",
+        "Lead with a practical",
+        "growth or partnership angle based on verified public data",
+        "tailored to",
+        "Use review mode: research the company",
+        "Book a quick call",
+        "Send two short follow-ups",
+        "until contact is verified",
+        "Company profile saved in CRM",
+        "Website is missing, so AI research is limited.",
+        "Verified decision-maker email is not available yet.",
+        "can be worked as a B2B opportunity",
+        "Potential fit for",
+        "Review and approve the generated email.",
+        "Find or add a verified decision-maker email before sending.",
+        "Manual prospect research takes time.",
+        "Personal outreach needs verified company context.",
+    )
+    return any(marker in value for marker in markers)
+
+
+def _sales_metadata_value(metadata: dict, key: str, fallback):
+    current = metadata.get(key)
+    if not current or _is_generic_sales_fallback(current):
+        return fallback
+    return current
+
+
+def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallback", language: str | None = None) -> None:
     """Fill useful sales fields from verified CRM data without inventing contacts."""
     metadata = _lead_metadata(lead)
     company = (lead.company or "This company").strip()
-    industry = (lead.industry or lead.niche or metadata.get("business_category") or "its market").strip()
+    language = language or workspace.language or "English"
+    industry = (lead.industry or lead.niche or metadata.get("business_category") or _localized_fallback_text(language, "market")).strip()
     location = ", ".join(part for part in [lead.city, lead.country] if part)
     has_website = bool(lead.website or metadata.get("domain"))
     has_email = bool(lead.email)
     public_signals = [
-        "website available" if has_website else "",
-        "phone available" if lead.phone else "",
-        "local business listing available" if metadata.get("place_id") else "",
-        "public rating available" if metadata.get("google_rating") else "",
+        _localized_fallback_text(language, "website_available") if has_website else "",
+        _localized_fallback_text(language, "phone_available") if lead.phone else "",
+        _localized_fallback_text(language, "listing_available") if metadata.get("place_id") else "",
+        _localized_fallback_text(language, "rating_available") if metadata.get("google_rating") else "",
     ]
     public_signals = [signal for signal in public_signals if signal]
-    summary = (
-        f"{company} is a {industry} company"
-        + (f" in {location}" if location else "")
-        + ". "
-        + (
-            f"Verified public signals: {', '.join(public_signals)}."
-            if public_signals
-            else "Public profile is saved, but more research is needed before outreach."
-        )
+    signal_sentence = (
+        _localized_fallback_text(language, "signals", signals=", ".join(public_signals))
+        if public_signals
+        else _localized_fallback_text(language, "summary_more_research")
+    )
+    summary = _localized_fallback_text(
+        language,
+        "summary",
+        company=company,
+        industry=industry,
+        location=_localized_fallback_text(language, "location", location=location) if location else "",
+        signals=signal_sentence,
     )
     offer_focus = workspace.company or getattr(workspace, "offer", "") or "a focused B2B partnership and outbound workflow"
     updates = {
-        "ai_summary": metadata.get("ai_summary") or summary,
-        "sales_angle": metadata.get("sales_angle") or f"Lead with a practical {industry} growth or partnership angle based on verified public data.",
-        "suggested_offer": metadata.get("suggested_offer") or f"Offer {offer_focus} tailored to {company}.",
-        "outreach_strategy": metadata.get("outreach_strategy") or (
-            "Use review mode: research the company, prepare a concise email, verify the recipient, then approve before sending."
-        ),
+        "ai_summary": _sales_metadata_value(metadata, "ai_summary", summary),
+        "sales_angle": _sales_metadata_value(metadata, "sales_angle", _localized_fallback_text(language, "sales_angle", industry=industry)),
+        "suggested_offer": _sales_metadata_value(metadata, "suggested_offer", _localized_fallback_text(language, "offer", offer_focus=offer_focus, company=company)),
+        "outreach_strategy": _sales_metadata_value(metadata, "outreach_strategy", _localized_fallback_text(language, "strategy")),
         "recommended_tone": metadata.get("recommended_tone") or "Professional",
-        "recommended_cta": metadata.get("recommended_cta") or "Book a quick call",
-        "follow_up_strategy": metadata.get("follow_up_strategy") or "Send two short follow-ups only after the first email is reviewed.",
-        "expected_reply_rate": metadata.get("expected_reply_rate") or ("8-12%" if has_website and has_email else "4-8% until contact is verified"),
+        "recommended_cta": _sales_metadata_value(metadata, "recommended_cta", _localized_fallback_text(language, "cta")),
+        "follow_up_strategy": _sales_metadata_value(metadata, "follow_up_strategy", _localized_fallback_text(language, "follow_up")),
+        "expected_reply_rate": _sales_metadata_value(metadata, "expected_reply_rate", "8-12%" if has_website and has_email else _localized_fallback_text(language, "reply_unverified")),
         "confidence_score": metadata.get("confidence_score") or (72 if has_website and has_email else 58 if has_website else 42),
         "priority_score": metadata.get("priority_score") or (78 if has_website and has_email else 62 if has_website else 45),
-        "buying_signals": metadata.get("buying_signals") or public_signals or ["Company profile saved in CRM"],
-        "risks": metadata.get("risks")
-        or [
+        "buying_signals": _sales_metadata_value(metadata, "buying_signals", public_signals or [_localized_fallback_text(language, "profile_saved")]),
+        "risks": _sales_metadata_value(
+            metadata,
+            "risks",
+            [
             risk
             for risk in [
-                "" if has_website else "Website is missing, so AI research is limited.",
-                "" if has_email else "Verified decision-maker email is not available yet.",
+                "" if has_website else _localized_fallback_text(language, "risk_website"),
+                "" if has_email else _localized_fallback_text(language, "risk_email"),
             ]
             if risk
-        ],
-        "opportunity_analysis": metadata.get("opportunity_analysis")
-        or f"{company} can be worked as a B2B opportunity once research and contact verification are complete.",
-        "partnership_fit": metadata.get("partnership_fit") or f"Potential fit for {offer_focus} if the company matches the workspace ICP.",
-        "next_recommended_action": metadata.get("next_recommended_action")
-        or (
-            "Review and approve the generated email." if has_email else "Find or add a verified decision-maker email before sending."
+            ],
+        ),
+        "opportunity_analysis": _sales_metadata_value(metadata, "opportunity_analysis", _localized_fallback_text(language, "opportunity", company=company)),
+        "partnership_fit": _sales_metadata_value(metadata, "partnership_fit", _localized_fallback_text(language, "fit", offer_focus=offer_focus)),
+        "next_recommended_action": _sales_metadata_value(
+            metadata,
+            "next_recommended_action",
+            _localized_fallback_text(language, "next_email") if has_email else _localized_fallback_text(language, "next_contact")
         ),
         "research_source": metadata.get("research_source") or source,
     }
-    if not metadata.get("pain_points"):
+    if not metadata.get("pain_points") or _is_generic_sales_fallback(metadata.get("pain_points")):
         updates["pain_points"] = [
-            "Manual prospect research takes time.",
-            "Personal outreach needs verified company context.",
+            _localized_fallback_text(language, "pain_manual"),
+            _localized_fallback_text(language, "pain_context"),
         ]
     lead.notes = _merge_lead_metadata(lead, updates)
 
@@ -615,7 +894,7 @@ def _complete_turnkey_b2b_research(
         try:
             if _needs_ai_research(lead):
                 _analyze_lead_if_possible(db, user_id, workspace, lead)
-                _ensure_b2b_opportunity_metadata(lead, workspace, source="turnkey_fallback")
+                _ensure_b2b_opportunity_metadata(lead, workspace, source="turnkey_fallback", language=_workspace_language(request, workspace))
                 metadata = _lead_metadata(lead)
                 if metadata.get("ai_summary") or metadata.get("suggested_offer") or metadata.get("expected_reply_rate"):
                     _add_lead_activity(db, request, user_id, workspace, "website.analyzed", lead, {"source": "turnkey_lead_research"})
@@ -625,7 +904,7 @@ def _complete_turnkey_b2b_research(
             _sync_lead_to_crm(db, user_id, workspace, lead)
         except Exception as exc:
             capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_research", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id})
-            _ensure_b2b_opportunity_metadata(lead, workspace, source="turnkey_fallback_after_ai_error")
+            _ensure_b2b_opportunity_metadata(lead, workspace, source="turnkey_fallback_after_ai_error", language=_workspace_language(request, workspace))
             _sync_lead_to_crm(db, user_id, workspace, lead)
             warnings.append(f"{lead.company}: AI research is temporarily unavailable.")
             _lead_trace(request_id, "turnkey_ai_research_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
@@ -910,6 +1189,13 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
     workspace = _current_workspace(db, user.user_id, user.email)
     existing_company = _find_existing_company(db, workspace.id, payload)
     if existing_company:
+        if existing_company.lead_id:
+            existing_lead = db.scalar(select(Lead).where(Lead.id == existing_company.lead_id, Lead.workspace_id == workspace.id))
+            if existing_lead:
+                _ensure_b2b_opportunity_metadata(existing_lead, workspace, source="manual_company_reused_fallback", language=_workspace_language(request, workspace))
+                existing_company = _sync_lead_to_crm(db, user.user_id, workspace, existing_lead)
+                db.commit()
+                db.refresh(existing_company)
         return UsageCompanyCreateOut(
             status="reused",
             message="This company already exists in your private workspace.",
@@ -944,7 +1230,7 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
     )
     existing_lead = _existing_duplicate_lead(db, workspace, user.user_id, lead_out)
     if existing_lead:
-        _ensure_b2b_opportunity_metadata(existing_lead, workspace, source="manual_company_reused_fallback")
+        _ensure_b2b_opportunity_metadata(existing_lead, workspace, source="manual_company_reused_fallback", language=_workspace_language(request, workspace))
         metadata = {**metadata, **_lead_metadata(existing_lead)}
         company = _ensure_minimal_company(db, user.user_id, workspace, existing_lead, metadata)
         try:
@@ -974,7 +1260,7 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
     )
     db.add(lead)
     db.flush()
-    _ensure_b2b_opportunity_metadata(lead, workspace, source="manual_company_fallback")
+    _ensure_b2b_opportunity_metadata(lead, workspace, source="manual_company_fallback", language=_workspace_language(request, workspace))
     metadata = {**metadata, **_lead_metadata(lead)}
     company = _ensure_minimal_company(db, user.user_id, workspace, lead, metadata)
     try:
@@ -1188,7 +1474,7 @@ def analyze_company(company_id: UUID, request: Request, user: WorkspaceUserConte
     try:
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
         _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
-        _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_analyze")
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_analyze", language=_workspace_language(request, workspace))
         _add_lead_activity(db, request, user.user_id, workspace, "website.analyzed", lead, {"source": "workspace_app"})
         db.commit()
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
@@ -1247,7 +1533,7 @@ def discover_company_contacts(company_id: UUID, request: Request, user: Workspac
             "email_status": "Verified" if enriched_lead.hunter_verified or metadata.get("hunter_verified") else ("Found" if enriched_lead.email or lead.email else "No verified email"),
         },
     )
-    _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_contact_discovery")
+    _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_contact_discovery", language=_workspace_language(request, workspace))
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     if lead.email and lead.email != before_email:
         _add_lead_activity(db, request, user.user_id, workspace, "contact.found", lead, {"source": "contact_discovery"})
@@ -1337,7 +1623,7 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
         if _needs_ai_research(lead):
             _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
-        _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_email_draft")
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="workspace_email_draft", language=_workspace_language(request, workspace))
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
         variant = personalize_email(
             PersonalizeRequest(
@@ -1445,7 +1731,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         has_completed_research = bool(metadata.get("website_analyzed_at"))
         if (lead.website or metadata.get("domain")) and (_needs_ai_research(lead) or not has_completed_research):
             _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
-        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity")
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity", language=_workspace_language(request, workspace))
         metadata = _lead_metadata(lead)
         if not any(metadata.get(key) for key in ("ai_summary", "opportunity_analysis", "suggested_offer", "pain_points")):
             warnings.append("AI research could not complete yet. The company is saved and can be retried.")
@@ -1464,7 +1750,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             lead_id=lead.id,
             extra={"request_id": request_id},
         )
-        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_ai_fallback")
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_ai_fallback", language=_workspace_language(request, workspace))
         warnings.append(_safe_provider_warning(exc))
         _set_workflow_stage(lead, "website_analysis", "error", _safe_provider_warning(exc))
         completed_steps.append("Website analysis checked")
@@ -1535,7 +1821,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
     _lead_trace(request_id, "complete_opportunity_email_started", lead_id=str(lead.id), company=lead.company)
     try:
         _set_workflow_stage(lead, "ai_email", "running", "Generating a personalized email for review.")
-        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_before_draft")
+        _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_before_draft", language=_workspace_language(request, workspace))
         email = _create_review_email_draft(db, request, user.user_id, workspace, lead)
         db.flush()
         if email:
