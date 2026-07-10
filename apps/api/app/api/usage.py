@@ -362,6 +362,11 @@ def _ensure_minimal_company(db: Session, user_id: str, workspace, lead: Lead, me
     company.country = lead.country or company.country
     company.industry = lead.industry or lead.niche or company.industry
     company.source = str(metadata.get("source") or company.source or "manual")
+    company.ai_summary = str(metadata.get("ai_summary") or company.ai_summary or "")
+    company.suggested_offer = str(metadata.get("suggested_offer") or company.suggested_offer or "")
+    company.outreach_strategy = str(metadata.get("outreach_strategy") or company.outreach_strategy or "")
+    company.sales_angle = str(metadata.get("sales_angle") or company.sales_angle or "")
+    company.expected_reply_rate = str(metadata.get("expected_reply_rate") or company.expected_reply_rate or "")
     company.email_status = "Found" if lead.email else "Not prepared"
     company.crm_stage = "Contact Found" if lead.email else "New Lead"
     company.metadata_json = {**(company.metadata_json or {}), **metadata}
