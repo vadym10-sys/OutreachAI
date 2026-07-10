@@ -117,8 +117,12 @@ def analyze_company_website(
         "range like 6-10%. Do not invent contact details. Mark unknown fields as empty "
         "strings or empty arrays. Focus on B2B partnerships and outbound sales usefulness: "
         "why this company is worth contacting, what signal supports it, what risk blocks it, "
-        "and the one safest next action. Write every human-readable value in the requested "
-        "language, except company names, URLs, technologies, and email-related fields."
+        "and the one safest next action. Make every field decision-ready for a sales rep: "
+        "short, specific, explainable, and tied to observed website or company evidence. "
+        "Avoid filler, generic growth claims, and long reports. The user should understand "
+        "in 30 seconds whether to work the lead, why, what to say first, and what to do next. "
+        "Write every human-readable value in the requested language, except company names, "
+        "URLs, technologies, and email-related fields."
     )
     data = _json_completion(
         system,

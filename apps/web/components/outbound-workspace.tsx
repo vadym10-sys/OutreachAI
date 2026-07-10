@@ -2605,12 +2605,19 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   const painPoints = safeArray(company.pain_points).filter(Boolean);
   const services = safeArray(company.services).filter(Boolean);
   const buyingSignals = safeArray(company.buying_signals).filter(Boolean);
+  const risks = safeArray(company.risks).filter(Boolean);
   const fit =
     score >= 75
       ? "Strong opportunity"
       : score >= 55
         ? "Promising opportunity"
         : "Needs more data";
+  const decision =
+    score >= 70 && hasResearch && hasContact
+      ? "Work this lead now"
+      : hasResearch || score >= 55
+        ? "Research before outreach"
+        : "Do not spend time yet";
   const whatTheyDo =
     company.ai_summary ||
     (services.length ? services.slice(0, 3).join(", ") : "") ||
@@ -2661,7 +2668,31 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
     ? (company.suggested_offer || company.outreach_strategy || company.next_recommended_action || "Use the AI research to open with a specific business improvement.")
     : "Run AI research first, then use the summary and offer to prepare a call.";
   const nextBestAction = company.next_recommended_action || companyNextAction(company);
-  return { score, fit, whatTheyDo, whyFit, likelyNeed, whyUs, opener, firstMessageSubject, firstMessage, replyProbability, replyReason, blocker, meetingPrep, nextBestAction };
+  const decisionReason =
+    decision === "Work this lead now"
+      ? "The company has enough research, a reachable contact path and a clear personalized angle."
+      : decision === "Research before outreach"
+        ? "The company looks relevant, but one missing field could reduce reply quality."
+        : "The lead is saved, but there is not enough verified context to justify outreach yet.";
+  const strongestSignals = [
+    ...buyingSignals,
+    company.website || company.domain ? "Website available for personalization" : "",
+    company.google_rating ? "Public reputation signal available" : "",
+    hasContact ? "Contact path available" : "",
+    company.generated_emails.length ? "Personalized draft prepared" : "",
+  ].filter(Boolean).slice(0, 3);
+  const topRisks = [
+    ...risks,
+    !hasContact ? "No verified decision-maker email yet" : "",
+    !hasResearch ? "Company research is incomplete" : "",
+    !hasApproved ? "Message still needs human approval" : "",
+  ].filter(Boolean).slice(0, 3);
+  const actionPlan = [
+    nextBestAction,
+    hasContact ? "Review the first message against the sales angle." : "Find or add the decision maker before sending.",
+    hasApproved ? "Send the approved email and track reply intent." : "Approve only after the message is specific and safe to send.",
+  ].filter(Boolean).slice(0, 3);
+  return { score, fit, decision, decisionReason, strongestSignals, topRisks, actionPlan, whatTheyDo, whyFit, likelyNeed, whyUs, opener, firstMessageSubject, firstMessage, replyProbability, replyReason, blocker, meetingPrep, nextBestAction };
 }
 
 function companyPrimaryAction(company: CrmCompany) {
@@ -3378,7 +3409,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI Sales Brief")}</p>
-            <h3 className="mt-2 text-2xl font-black tracking-tight text-ink">{t("Should we spend time on this company?")}</h3>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-ink">{t("Should we work this lead now?")}</h3>
             <p className="mt-2 text-sm leading-6 text-slate-700">{t("Open this brief and understand the company, the angle, the message and the next best action in 30 seconds.")}</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row lg:flex-col lg:items-end">
@@ -3390,6 +3421,53 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               <BarChart3 size={16} />
               {t("Reply probability")}: {salesBrief.replyProbability}
             </span>
+          </div>
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-teal-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI decision")}</p>
+              <h4 className="mt-2 text-xl font-black text-ink">{t(salesBrief.decision)}</h4>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.decisionReason)}</p>
+            </div>
+            {primaryAction.action ? (
+              <button
+                type="button"
+                onClick={runPrimaryAction}
+                disabled={(primaryAction.action === "prepare-company" && (actionBusy === "prepare-company" || !current.lead_id)) || (primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
+                className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+              >
+                {(primaryAction.action === "prepare-company" && actionBusy === "prepare-company") || (primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
+                {t(primaryAction.label)}
+              </button>
+            ) : (
+              <a href={primaryAction.target} className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white sm:w-auto">
+                <PrimaryActionIcon size={17} />
+                {t(primaryAction.label)}
+                <ArrowRight size={16} />
+              </a>
+            )}
+          </div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
+            <div className="rounded-xl bg-teal-50 p-3">
+              <p className="text-xs font-black uppercase text-brand">{t("Best evidence")}</p>
+              <ul className="mt-2 space-y-2 text-sm font-semibold leading-5 text-ink">
+                {salesBrief.strongestSignals.length ? salesBrief.strongestSignals.map((item) => <li key={item} className="flex gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-brand" size={16} />{t(item)}</li>) : <li>{t("No strong signal yet. Run company research first.")}</li>}
+              </ul>
+            </div>
+            <div className="rounded-xl bg-amber-50 p-3">
+              <p className="text-xs font-black uppercase text-amber-800">{t("Main risks")}</p>
+              <ul className="mt-2 space-y-2 text-sm font-semibold leading-5 text-amber-950">
+                {salesBrief.topRisks.length ? salesBrief.topRisks.map((item) => <li key={item} className="flex gap-2"><AlertTriangle className="mt-0.5 shrink-0" size={16} />{t(item)}</li>) : <li>{t("No major risk for the current stage.")}</li>}
+              </ul>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="text-xs font-black uppercase text-slate-500">{t("Three-step plan")}</p>
+              <ol className="mt-2 space-y-2 text-sm font-semibold leading-5 text-ink">
+                {salesBrief.actionPlan.map((item, index) => <li key={`${item}-${index}`} className="flex gap-2"><span className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-white text-xs font-black text-brand">{index + 1}</span>{t(item)}</li>)}
+              </ol>
+            </div>
           </div>
         </div>
 
@@ -3443,31 +3521,9 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           </div>
         </div>
 
-        <div className="mt-3 rounded-2xl border border-teal-200 bg-teal-50 p-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-xs font-bold uppercase text-brand">{t("Next best action")}</p>
-              <p className="mt-2 text-base font-black leading-6 text-ink">{t(salesBrief.nextBestAction)}</p>
-              <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.replyReason)}</p>
-            </div>
-            {primaryAction.action ? (
-              <button
-                type="button"
-                onClick={runPrimaryAction}
-                disabled={(primaryAction.action === "prepare-company" && (actionBusy === "prepare-company" || !current.lead_id)) || (primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
-                className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-              >
-                {(primaryAction.action === "prepare-company" && actionBusy === "prepare-company") || (primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
-                {t(primaryAction.label)}
-              </button>
-            ) : (
-              <a href={primaryAction.target} className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white sm:w-auto">
-                <PrimaryActionIcon size={17} />
-                {t(primaryAction.label)}
-                <ArrowRight size={16} />
-              </a>
-            )}
-          </div>
+        <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4">
+          <p className="text-xs font-bold uppercase text-slate-500">{t("Why AI expects this reply probability")}</p>
+          <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.replyReason)}</p>
         </div>
       </div>
     </div>
