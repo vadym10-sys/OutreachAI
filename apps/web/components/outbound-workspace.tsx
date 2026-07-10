@@ -2727,20 +2727,11 @@ function companyPrimaryAction(company: CrmCompany) {
     };
   }
   if (!hasContact) {
-    if (company.contact_search_checked_at || company.contact_search_status) {
-      return {
-        label: "Add email manually",
-        copy: "Contact discovery already checked this company. Add a known business email to approve and send safely.",
-        target: `#contacts-${company.id}`,
-        icon: Plus
-      };
-    }
     return {
-      label: "Run all missing steps",
-      copy: "Retry contact discovery, refresh the sales brief and keep the email draft ready for review.",
-      action: "prepare-company",
-      target: `#outreach-${company.id}`,
-      icon: Sparkles
+      label: "Add email manually",
+      copy: "AI prepared the sales brief and draft. Add a known business email to approve and send safely.",
+      target: `#contacts-${company.id}`,
+      icon: Plus
     };
   }
   if (!hasApproved) {
