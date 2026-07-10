@@ -2600,18 +2600,53 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   const hasDraft = Boolean(company.generated_emails.length);
   const hasApproved = Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"));
   const score = Math.max(0, Math.min(100, Math.round(((company.priority_score || healthScore) + (company.confidence_score || healthScore) + (company.icp_score || healthScore)) / 3)));
+  const draft = latestCompanyEmail(company);
+  const painPoints = safeArray(company.pain_points).filter(Boolean);
+  const services = safeArray(company.services).filter(Boolean);
+  const buyingSignals = safeArray(company.buying_signals).filter(Boolean);
   const fit =
     score >= 75
       ? "Strong opportunity"
       : score >= 55
         ? "Promising opportunity"
         : "Needs more data";
-  const why =
+  const whatTheyDo =
+    company.ai_summary ||
+    (services.length ? services.slice(0, 3).join(", ") : "") ||
+    [company.industry, company.city, company.country].filter(Boolean).join(" · ") ||
+    "Run AI research to summarize what this company does.";
+  const whyFit =
     company.partnership_fit ||
     company.opportunity_analysis ||
     company.sales_angle ||
     company.ai_summary ||
     "OutreachAI needs website research before it can explain why this company is a strong fit.";
+  const likelyNeed =
+    painPoints[0] ||
+    company.value_proposition ||
+    company.weaknesses?.[0] ||
+    "Run AI research to identify the most likely business need.";
+  const whyUs =
+    company.suggested_offer ||
+    company.outreach_strategy ||
+    company.sales_angle ||
+    "Use OutreachAI to prepare a more relevant, research-backed sales conversation.";
+  const opener =
+    company.recommended_cta ||
+    company.sales_angle ||
+    buyingSignals[0] ||
+    "Open with a short, specific question about their current growth priorities.";
+  const firstMessage =
+    cleanGeneratedText(draft?.body || draft?.preview || "") ||
+    "Generate the first email to see the recommended message.";
+  const firstMessageSubject = draft?.subject || "First personalized message";
+  const replyProbability = company.expected_reply_rate || `${Math.max(10, Math.min(80, Math.round(score * 0.65)))}%`;
+  const replyReason =
+    company.expected_reply_rate
+      ? "AI estimated this from the company fit, available contact data and personalization strength."
+      : hasResearch && hasContact
+        ? "AI has enough company and contact context to estimate a practical reply chance."
+        : "The estimate is conservative because company research or verified contact data is still missing.";
   const blocker = !hasResearch
     ? "Company research is missing."
     : !hasContact
@@ -2624,7 +2659,8 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   const meetingPrep = hasResearch
     ? (company.suggested_offer || company.outreach_strategy || company.next_recommended_action || "Use the AI research to open with a specific business improvement.")
     : "Run AI research first, then use the summary and offer to prepare a call.";
-  return { score, fit, why, blocker, meetingPrep };
+  const nextBestAction = company.next_recommended_action || companyNextAction(company);
+  return { score, fit, whatTheyDo, whyFit, likelyNeed, whyUs, opener, firstMessageSubject, firstMessage, replyProbability, replyReason, blocker, meetingPrep, nextBestAction };
 }
 
 function companyPrimaryAction(company: CrmCompany) {
@@ -2969,13 +3005,6 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const nextAction = companyNextAction(current);
   const primaryAction = companyPrimaryAction(current);
   const PrimaryActionIcon = primaryAction.icon;
-  const progress = timelineProgress(current);
-  const completedProgress = progress.filter(([, done]) => Boolean(done)).length;
-  const progressPercent = Math.round((completedProgress / progress.length) * 100);
-  const nextMissingStep = progress.find(([, done]) => !done)?.[0] || "Outcome";
-  const aiWorkPlan = companyWorkflowStages(current);
-  const aiWorkComplete = aiWorkPlan.filter((item) => item.status === "completed").length;
-  const aiNextWork = aiWorkPlan.find((item) => item.status !== "completed")?.label || "Approval";
   const primaryContact = current.contacts[0];
   const sendRecipient = current.email || primaryContact?.email || "";
   const approvedDraftReady = Boolean(currentDraft?.delivery_status === "approved" && !currentSentAt);
@@ -3270,91 +3299,101 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           </div>
         </div>
       </div>
-      <div className="mt-5 rounded-2xl border border-teal-200 bg-gradient-to-br from-white to-teal-50 p-4">
+      <div className="mt-5 rounded-3xl border border-teal-200 bg-gradient-to-br from-white via-white to-teal-50 p-5 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI Sales Brief")}</p>
-            <h3 className="mt-2 text-xl font-black text-ink">{t(salesBrief.fit)} · {salesBrief.score}/100</h3>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.why)}</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-ink">{t("Should we spend time on this company?")}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{t("Open this brief and understand the company, the angle, the message and the next best action in 30 seconds.")}</p>
           </div>
-          <div className="grid gap-3 lg:w-[28rem]">
-            <div className="rounded-xl bg-white p-3 shadow-sm">
-              <p className="text-xs font-bold uppercase text-slate-500">{t("Current blocker")}</p>
-              <p className="mt-1 text-sm font-semibold leading-6 text-ink">{t(salesBrief.blocker)}</p>
+          <div className="flex flex-col gap-2 sm:flex-row lg:flex-col lg:items-end">
+            <span className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-2 text-sm font-black ${salesBrief.score >= 70 ? "border-teal-200 bg-teal-50 text-brand" : salesBrief.score >= 50 ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-100 text-slate-700"}`}>
+              <Target size={16} />
+              {t(salesBrief.fit)} · {salesBrief.score}/100
+            </span>
+            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700">
+              <BarChart3 size={16} />
+              {t("Reply probability")}: {salesBrief.replyProbability}
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-bold uppercase text-slate-500">{t("What they do")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.whatTheyDo)}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-bold uppercase text-slate-500">{t("Why they could become a customer")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.whyFit)}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-bold uppercase text-slate-500">{t("Likely need")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.likelyNeed)}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-bold uppercase text-slate-500">{t("Why our product helps")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.whyUs)}</p>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-3 lg:grid-cols-[0.85fr_1.15fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-bold uppercase text-slate-500">{t("How to start the conversation")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.opener)}</p>
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs font-bold uppercase text-amber-800">{t("What needs attention")}</p>
+              <p className="mt-1 text-sm font-semibold leading-6 text-amber-950">{t(salesBrief.blocker)}</p>
             </div>
-            <div className="rounded-xl bg-white p-3 shadow-sm">
-              <p className="text-xs font-bold uppercase text-slate-500">{t("Meeting prep")}</p>
-              <p className="mt-1 text-sm font-semibold leading-6 text-ink">{t(salesBrief.meetingPrep)}</p>
-            </div>
           </div>
-        </div>
-      </div>
-      <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase text-brand">{t("Path to first meeting")}</p>
-            <p className="mt-1 text-sm leading-6 text-slate-700">{t("Complete the next missing step to move this company from research to revenue.")}</p>
-          </div>
-          <div className="rounded-full bg-white px-4 py-2 text-sm font-black text-ink shadow-sm">{completedProgress}/{progress.length} · {progressPercent}%</div>
-        </div>
-        <div className="mt-4 h-3 overflow-hidden rounded-full bg-white">
-          <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${progressPercent}%` }} />
-        </div>
-        <div className="mt-4 rounded-xl border border-white bg-white/80 p-3">
-          <p className="text-xs font-bold uppercase text-slate-500">{t("Next missing step")}</p>
-          <p className="mt-1 text-sm font-black text-ink">{t(nextMissingStep)}</p>
-          <p className="mt-1 text-xs leading-5 text-slate-600">{t("Complete this step to move the company closer to a meeting.")}</p>
-        </div>
-      </div>
-      <div className="mt-4 rounded-2xl border border-teal-200 bg-white p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase text-brand">{t("AI work plan")}</p>
-            <h3 className="mt-1 text-lg font-black text-ink">{t("Turn this company into a complete B2B opportunity.")}</h3>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{t("AI fills every useful sales field it can verify, then leaves the rest clear for manual review.")}</p>
-          </div>
-          <div className="rounded-2xl bg-teal-50 px-4 py-3 text-sm font-black text-brand">
-            {aiWorkComplete}/{aiWorkPlan.length} {t("ready")}
-          </div>
-        </div>
-        <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {aiWorkPlan.map((item) => {
-            const isNext = item.label === aiNextWork && !item.done;
-            return <div key={item.label} className={`rounded-xl border p-3 ${item.done ? "border-teal-200 bg-teal-50" : isNext ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
-              <div className="flex items-start gap-2">
-                <CheckCircle2 className={item.done ? "text-brand" : isNext ? "text-amber-700" : "text-slate-300"} size={17} />
-                <div>
-                  <p className={`text-sm font-black ${item.done ? "text-brand" : isNext ? "text-amber-900" : "text-slate-600"}`}>{t(item.label)}</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-600">{t(item.copy)}</p>
-                  {!item.done && <p className={`mt-2 rounded-lg px-2 py-1 text-xs font-bold leading-5 ${isNext ? "bg-white text-amber-900" : "bg-white text-slate-700"}`}>{t(item.action)}</p>}
-                </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs font-bold uppercase text-slate-500">{t("First personalized message")}</p>
+                <h4 className="mt-2 text-base font-black text-ink">{t(salesBrief.firstMessageSubject)}</h4>
               </div>
-            </div>;
-          })}
+              {!current.generated_emails.length && (
+                <button
+                  type="button"
+                  onClick={prepareCompanyOpportunity}
+                  disabled={actionBusy === "prepare-company" || !current.lead_id}
+                  className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />}
+                  {t("Generate email")}
+                </button>
+              )}
+            </div>
+            <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-700">{t(salesBrief.firstMessage)}</p>
+          </div>
         </div>
-        {aiWorkComplete < aiWorkPlan.length ? (
-          <button
-            type="button"
-            onClick={prepareCompanyOpportunity}
-            disabled={actionBusy === "prepare-company" || !current.lead_id}
-            className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-          >
-            {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
-            {t("Run all missing steps")}
-          </button>
-        ) : (
-          <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("This company is ready for review and approval.")}</p>
-        )}
-      </div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {progress.map(([label, done]) => {
-          const isNext = label === nextMissingStep && !done;
-          return <div key={label} className={`rounded-xl border p-3 text-sm ${done ? "border-teal-200 bg-teal-50 text-brand" : isNext ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
-          <CheckCircle2 size={16} className={done ? "text-brand" : "text-slate-300"} />
-          <p className="mt-2 font-bold">{t(label)}</p>
-          <p className="mt-1 text-xs font-semibold">{t(done ? "Done" : isNext ? "Next" : "Waiting")}</p>
-        </div>;
-        })}
+
+        <div className="mt-3 rounded-2xl border border-teal-200 bg-teal-50 p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase text-brand">{t("Next best action")}</p>
+              <p className="mt-2 text-base font-black leading-6 text-ink">{t(salesBrief.nextBestAction)}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.replyReason)}</p>
+            </div>
+            {primaryAction.action ? (
+              <button
+                type="button"
+                onClick={runPrimaryAction}
+                disabled={(primaryAction.action === "prepare-company" && (actionBusy === "prepare-company" || !current.lead_id)) || (primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
+                className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+              >
+                {(primaryAction.action === "prepare-company" && actionBusy === "prepare-company") || (primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
+                {t(primaryAction.label)}
+              </button>
+            ) : (
+              <a href={primaryAction.target} className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white sm:w-auto">
+                <PrimaryActionIcon size={17} />
+                {t(primaryAction.label)}
+                <ArrowRight size={16} />
+              </a>
+            )}
+          </div>
+        </div>
       </div>
     </div>
 
