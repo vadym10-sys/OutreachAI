@@ -83,6 +83,9 @@ type WorkspaceAppActionResponse = {
   warnings?: string[];
   completed_steps?: string[];
   workflow_stages?: Record<string, string>;
+  missing_fields?: string[];
+  recommended_actions?: string[];
+  next_action?: string;
 };
 
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
@@ -1433,6 +1436,9 @@ function OpportunityCard({
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [aiNextAction, setAiNextAction] = useState("");
+  const [aiRecommendedActions, setAiRecommendedActions] = useState<string[]>([]);
+  const [aiMissingFields, setAiMissingFields] = useState<string[]>([]);
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
@@ -1457,6 +1463,9 @@ function OpportunityCard({
     setDraft(undefined);
     setSendConfirmOpen(false);
     setError("");
+    setAiNextAction("");
+    setAiRecommendedActions([]);
+    setAiMissingFields([]);
     trackEvent("sales_research_started", {
       lead_id: lead.id,
       company: lead.company,
@@ -1471,6 +1480,9 @@ function OpportunityCard({
         100000,
         "Sales opportunity preparation took too long. The company stays saved in CRM."
       );
+      setAiNextAction(draftResult.next_action || "");
+      setAiRecommendedActions(safeArray(draftResult.recommended_actions).filter((item): item is string => Boolean(item)));
+      setAiMissingFields(safeArray(draftResult.missing_fields).filter((item): item is string => Boolean(item)));
       if (draftResult.company) {
         const updatedCompany = normalizeCrmCompany(draftResult.company);
         latestLead = leadFromCrmCompany(updatedCompany);
@@ -1657,64 +1669,6 @@ function OpportunityCard({
     }
   }
 
-  async function approveAndSendDraft() {
-    if (!draft?.id) {
-      setError(t("Generate and review the email before approving a send."));
-      return;
-    }
-    setSending(true);
-    setError("");
-    setSendConfirmOpen(false);
-    setStatus(t("Approving email..."));
-    try {
-      const approved = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}/approve`, { method: "POST" }),
-        15000,
-        "Email approval timed out. Please try again before sending."
-      );
-      if (!approved.email) {
-        throw new Error(approved.message || "Email approval could not be completed.");
-      }
-      setDraft(approved.email);
-      setStatus(t("Sending approved email..."));
-      const sentResult = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${approved.email.id}/send`, { method: "POST" }),
-        30000,
-        "Email sending timed out. Please try again before approving another send."
-      );
-      if (!sentResult.email || sentResult.status !== "success") {
-        throw new Error(sentResult.message || "Email could not be sent.");
-      }
-      setDraft(sentResult.email);
-      setReadyToSend(false);
-      setStatus(t("Approved email was sent. CRM stage updated to Contacted."));
-      if (sentResult.company) {
-        const updatedCompany = normalizeCrmCompany(sentResult.company);
-        onCompanyUpdated?.(updatedCompany);
-        onLeadUpdated?.(leadFromCrmCompany(updatedCompany));
-      } else {
-        onLeadUpdated?.({ ...lead, status: "Contacted", email_approved_at: new Date().toISOString(), email_sent_at: sentResult.email.sent_at || new Date().toISOString() });
-      }
-      trackEvent("approved_email_sent", {
-        lead_id: lead.id,
-        email_id: approved.email.id,
-        company: lead.company
-      });
-    } catch (err) {
-      const reason = friendlyErrorMessage(err, "Email could not be sent. Check the recipient email, plan limits, and try again.");
-      setError(t(reason));
-      setStatus("");
-      trackEvent("approved_email_send_failed", {
-        lead_id: lead.id,
-        email_id: draft.id,
-        company: lead.company,
-        reason
-      });
-    } finally {
-      setSending(false);
-    }
-  }
-
   return (
     <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-4 min-[520px]:flex-row min-[520px]:items-start min-[520px]:justify-between">
@@ -1770,6 +1724,24 @@ function OpportunityCard({
         ) : (
           <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("This opportunity has all required sales research.")}</p>
         )}
+        {(aiNextAction || aiRecommendedActions.length || aiMissingFields.length) ? (
+          <div className="mt-4 rounded-xl border border-teal-100 bg-white p-3 text-sm">
+            <p className="font-bold text-ink">{t("AI next action")}</p>
+            {aiNextAction ? <p className="mt-1 leading-6 text-slate-700">{t(aiNextAction)}</p> : null}
+            {aiMissingFields.length ? (
+              <p className="mt-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                {t("Missing data")}: <span className="normal-case tracking-normal text-slate-700">{aiMissingFields.map((item) => t(item)).join(", ")}</span>
+              </p>
+            ) : null}
+            {aiRecommendedActions.length ? (
+              <ul className="mt-3 space-y-2">
+                {aiRecommendedActions.slice(0, 3).map((item) => (
+                  <li key={item} className="rounded-lg bg-teal-50 px-3 py-2 font-semibold text-brand">{t(item)}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
@@ -1863,7 +1835,7 @@ function OpportunityCard({
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Run all missing steps" : "Refresh AI research")}</PrimaryButton>
-        <SecondaryButton onClick={approveAndSendDraft} disabled={busy || !draft || sending || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Approve & send")}</SecondaryButton>
+        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve email")}</SecondaryButton>
         <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </article>

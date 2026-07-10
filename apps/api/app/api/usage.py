@@ -137,6 +137,9 @@ class UsageActionOut(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     completed_steps: list[str] = Field(default_factory=list)
     workflow_stages: dict[str, str] = Field(default_factory=dict)
+    missing_fields: list[str] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
+    next_action: str = ""
 
 
 class UsageIntegrationStatus(BaseModel):
@@ -180,6 +183,44 @@ def _minimal_crm_company_out(company: Company) -> CrmCompanyOut:
         saved_to_crm_at=company.created_at or now,
         last_activity_at=now,
     )
+
+
+def _company_action_guidance(company: CrmCompanyOut) -> dict[str, Any]:
+    stages = company.workflow_stages or {}
+    missing: list[str] = []
+    actions: list[str] = []
+
+    def needs(stage: str) -> bool:
+        return stages.get(stage) != "completed"
+
+    if needs("website_analysis"):
+        missing.append("Website analysis")
+        actions.append("Run AI website analysis to fill summary, pain points, offer and outreach angle.")
+    if needs("decision_maker"):
+        missing.append("Decision maker")
+        actions.append("Find a decision maker automatically or add the right contact manually.")
+    if needs("verified_email"):
+        missing.append("Verified email")
+        actions.append("Search for a verified business email or add a known recipient manually.")
+    if needs("ai_email"):
+        missing.append("AI email")
+        actions.append("Generate a personalized first email for review.")
+    if needs("approval"):
+        missing.append("Approval")
+        actions.append("Review and approve the draft before anything is sent.")
+
+    if not missing:
+        return {
+            "missing_fields": [],
+            "recommended_actions": ["Review the prepared opportunity and send only after confirmation."],
+            "next_action": "Review the prepared opportunity and approve the next safe action.",
+        }
+
+    return {
+        "missing_fields": missing,
+        "recommended_actions": actions,
+        "next_action": actions[0],
+    }
 
 
 def _ensure_minimal_company(db: Session, user_id: str, workspace, lead: Lead, metadata: dict[str, Any]) -> Company:
@@ -1376,6 +1417,8 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         db.refresh(email)
     _lead_trace(request_id, "complete_opportunity_database_save_finished", lead_id=str(lead.id), company=lead.company, company_id=str(company.id), has_email_draft=bool(email))
     _lead_trace(request_id, "complete_opportunity_finished", lead_id=str(lead.id), company=lead.company, warnings=len(warnings), has_email_draft=bool(email))
+    company_out = _crm_company_out(db, workspace, user.user_id, company)
+    guidance = _company_action_guidance(company_out)
 
     return UsageActionOut(
         status="partial_success" if warnings else "success",
@@ -1384,11 +1427,12 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             if warnings
             else "Sales opportunity prepared. Review the AI research and approve only when ready."
         ),
-        company=_crm_company_out(db, workspace, user.user_id, company),
+        company=company_out,
         email=EmailOut.model_validate(email) if email else None,
         warnings=warnings,
         completed_steps=completed_steps,
-        workflow_stages=_crm_company_out(db, workspace, user.user_id, company).workflow_stages,
+        workflow_stages=company_out.workflow_stages,
+        **guidance,
     )
 
 

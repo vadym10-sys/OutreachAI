@@ -1092,6 +1092,9 @@ def test_workspace_app_complete_opportunity_prepares_research_contact_and_review
     assert data["company"]["workflow_stages"]["ai_email"] == "completed"
     assert data["company"]["workflow_stages"]["approval"] == "waiting"
     assert data["workflow_stages"]["ai_email"] == "completed"
+    assert data["missing_fields"] == ["Approval"]
+    assert data["recommended_actions"] == ["Review and approve the draft before anything is sent."]
+    assert data["next_action"] == "Review and approve the draft before anything is sent."
     assert data["email"]["subject"] == "B2B partner idea for Usage Complete"
     assert data["email"]["delivery_status"] == "draft"
     assert data["company"]["crm_stage"] == "Email Draft Ready"
