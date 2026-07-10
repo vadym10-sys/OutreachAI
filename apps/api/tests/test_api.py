@@ -7,6 +7,7 @@ import json
 import tempfile
 import os
 import time
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -42,6 +43,7 @@ from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.reliability import database_backup_configured  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
+from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
@@ -828,6 +830,27 @@ def test_workspace_app_lead_search_success_saves_to_crm(monkeypatch) -> None:
     persisted = client.get("/api/workspace-app/companies?search=Usage%20Search", headers=headers)
     assert persisted.status_code == 200
     assert len(persisted.json()) == 1
+
+
+def test_workspace_app_ai_lead_command_parses_sales_search() -> None:
+    workspace = SimpleNamespace(target_country="")
+
+    filters, missing = _parse_lead_command("Find 25 construction companies in Berlin with 20-100 employees", workspace)
+    assert missing == []
+    assert filters is not None
+    assert filters.country == "Germany"
+    assert filters.city == "Berlin"
+    assert filters.industry == "Construction"
+    assert filters.company_size == "20-100"
+    assert filters.limit == 25
+
+    ru_filters, ru_missing = _parse_lead_command("Найди 10 строительных компаний в Берлине", workspace)
+    assert ru_missing == []
+    assert ru_filters is not None
+    assert ru_filters.country == "Germany"
+    assert ru_filters.city == "Berlin"
+    assert ru_filters.industry == "Construction"
+    assert ru_filters.limit == 10
 
 
 def test_workspace_app_lead_search_reports_reused_duplicates(monkeypatch) -> None:

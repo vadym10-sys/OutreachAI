@@ -69,6 +69,11 @@ type WorkspaceAppLeadSearchResponse = {
   warnings: string[];
 };
 
+type WorkspaceAppLeadCommandResponse = WorkspaceAppLeadSearchResponse & {
+  filters?: LeadSearchPayload | null;
+  interpreted_query?: string;
+};
+
 type WorkspaceAppCompanyCreateResponse = {
   status: "created" | "reused";
   message: string;
@@ -1925,6 +1930,8 @@ export function LeadFinderPage() {
   const [searchSummary, setSearchSummary] = useState<{ found: number; saved: number; duplicates: number } | null>(null);
   const [opportunityReadiness, setOpportunityReadiness] = useState<OpportunityReadiness | null>(null);
   const [searching, setSearching] = useState(false);
+  const [commandBusy, setCommandBusy] = useState(false);
+  const [leadCommand, setLeadCommand] = useState("");
   const [lastSearchPayload, setLastSearchPayload] = useState<LeadSearchPayload | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
   const [leadSearchStatus, setLeadSearchStatus] = useState<WorkspaceIntegrationStatus["status"] | "unknown">("unknown");
@@ -1965,6 +1972,21 @@ export function LeadFinderPage() {
       technologies: splitList(String(data.get("technology") || "")),
       radius: Number(data.get("radius") || 10000),
       limit: Number(data.get("limit") || 10)
+    };
+  }
+
+  function payloadFromCommandFilters(filters?: Partial<LeadSearchPayload> | null): LeadSearchPayload {
+    return {
+      country: String(filters?.country || ""),
+      city: String(filters?.city || ""),
+      industry: String(filters?.industry || ""),
+      category: String(filters?.category || filters?.industry || ""),
+      keyword: String(filters?.keyword || filters?.industry || ""),
+      company_size: String(filters?.company_size || ""),
+      keywords: safeArray(filters?.keywords).map(String),
+      technologies: safeArray(filters?.technologies).map(String),
+      radius: Number(filters?.radius || 10000),
+      limit: Number(filters?.limit || 10)
     };
   }
 
@@ -2071,6 +2093,42 @@ export function LeadFinderPage() {
     }
   }
 
+  function applyLeadSearchResult(result: WorkspaceAppLeadSearchResponse, payload: LeadSearchPayload, source: "lead_search" | "ai_command") {
+    const companies = safeArray(result.companies).map(normalizeCrmCompany);
+    const found = companies.map(leadFromCrmCompany);
+    const readiness = opportunityReadinessFromCompanies(companies);
+    leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id, source });
+    const warnings = safeArray(result.warnings);
+    const savedCount = Number(result.companies_saved ?? 0);
+    const duplicateCount = Number(result.duplicates_skipped ?? 0);
+    const persistenceStep = found.length && savedCount === 0 && duplicateCount > 0 ? t("Already in CRM") : found.length ? t("Saved to CRM") : t("No companies found");
+    setSearchSteps([
+      source === "ai_command" ? t("AI command understood") : t("Lead search finished"),
+      t("Found companies count").replace("{count}", String(found.length)),
+      persistenceStep,
+      found.length ? t("AI preparation checked") : "",
+      ...(warnings.length ? [t("Partial data available")] : [])
+    ].filter(Boolean));
+    setSearchSummary({
+      found: found.length,
+      saved: savedCount,
+      duplicates: duplicateCount
+    });
+    setOpportunityReadiness(readiness);
+    setLeads((items) => mergeLeads(found, items));
+    setSearchResults(found);
+    setLastSearchPayload(payload);
+    setMessage(workspaceSearchMessage(result, found.length, t));
+    trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
+      country: payload.country,
+      city: payload.city,
+      industry: payload.industry,
+      result_count: found.length,
+      status: result.status,
+      source
+    });
+  }
+
   async function runLeadSearch(payload: LeadSearchPayload) {
     if (!automaticSearchReady) {
       setHasSearched(true);
@@ -2114,38 +2172,7 @@ export function LeadFinderPage() {
         36000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
-      const companies = safeArray(result.companies).map(normalizeCrmCompany);
-      const found = companies.map(leadFromCrmCompany);
-      const readiness = opportunityReadinessFromCompanies(companies);
-      leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id });
-      const warnings = safeArray(result.warnings);
-      const savedCount = Number(result.companies_saved ?? 0);
-      const duplicateCount = Number(result.duplicates_skipped ?? 0);
-      const persistenceStep = found.length && savedCount === 0 && duplicateCount > 0 ? t("Already in CRM") : found.length ? t("Saved to CRM") : t("No companies found");
-      setSearchSteps([
-        t("Lead search finished"),
-        t("Found companies count").replace("{count}", String(found.length)),
-        persistenceStep,
-        found.length ? t("AI preparation checked") : "",
-        ...(warnings.length ? [t("Partial data available")] : [])
-      ].filter(Boolean));
-      setSearchSummary({
-        found: found.length,
-        saved: savedCount,
-        duplicates: duplicateCount
-      });
-      setOpportunityReadiness(readiness);
-      setLeads((items) => mergeLeads(found, items));
-      setSearchResults(found);
-      setMessage(workspaceSearchMessage(result, found.length, t));
-      trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
-        country: payload.country,
-        city: payload.city,
-        industry: payload.industry,
-        result_count: found.length,
-        status: result.status,
-        source: "lead_search"
-      });
+      applyLeadSearchResult(result, payload, "lead_search");
     } catch (err) {
       leadFinderDebug("FETCH_FINISHED", { status: "error", reason: err instanceof Error ? err.message : "unknown" });
       if (isSessionExpiredError(err)) {
@@ -2167,6 +2194,62 @@ export function LeadFinderPage() {
       });
     } finally {
       setSearching(false);
+    }
+  }
+
+  async function runLeadCommand() {
+    const command = leadCommand.trim();
+    if (!command || commandBusy || searching) return;
+    if (!automaticSearchReady) {
+      setHasSearched(true);
+      setSearchSteps([t("Automatic search is waiting for setup")]);
+      setMessage(t("Automatic company search needs a key. Add one company manually and continue with CRM, research and outreach."));
+      return;
+    }
+    setCommandBusy(true);
+    setHasSearched(true);
+    setSearchResults([]);
+    setSearchSummary(null);
+    setOpportunityReadiness(null);
+    setLastSearchPayload(null);
+    setSearchSteps([t("AI is turning your request into search filters")]);
+    setMessage(t("Preparing AI search..."));
+    trackEvent("lead_command_started", { source: "ai_command" });
+    try {
+      leadFinderDebug("FETCH_STARTED", { endpoint: "/api/workspace-app/leads/command" });
+      const result = await withTimeout(
+        api<WorkspaceAppLeadCommandResponse>("/api/workspace-app/leads/command", {
+          method: "POST",
+          body: JSON.stringify({ command }),
+          timeoutMs: 45000
+        }),
+        46000,
+        "AI search timed out. Try a shorter command or use the fields below."
+      );
+      const parsedPayload = payloadFromCommandFilters(result.filters);
+      if (result.status === "error" && !result.companies?.length) {
+        setSearchSteps([t("AI needs clearer search details")]);
+        setMessage(t(result.message || "Add a city, country and industry, then try again."));
+        setSearchSummary(null);
+        setOpportunityReadiness(null);
+        return;
+      }
+      applyLeadSearchResult(result, parsedPayload, "ai_command");
+    } catch (err) {
+      leadFinderDebug("FETCH_FINISHED", { status: "error", reason: err instanceof Error ? err.message : "unknown", source: "ai_command" });
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = userMessage(err, "AI search could not be completed. Use the fields below or try again.", t);
+      setSearchResults([]);
+      setSearchSummary(null);
+      setOpportunityReadiness(null);
+      setSearchSteps([t("Search stopped")]);
+      setMessage(reason);
+      trackEvent("lead_command_failed", { source: "ai_command", reason });
+    } finally {
+      setCommandBusy(false);
     }
   }
 
@@ -2198,6 +2281,36 @@ export function LeadFinderPage() {
         </div>
       </section>
       {!automaticSearchReady && <IntegrationStatusPanel api={api} ready={ready} />}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="text-sm font-black uppercase text-brand">{t("AI Command Bar")}</p>
+            <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{t("Describe the customers you want.")}</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-700">{t("Write one sentence. OutreachAI turns it into filters, searches companies, enriches them, and saves the results to CRM.")}</p>
+          </div>
+          <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">{t("Fastest path")}</span>
+        </div>
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+          <textarea
+            value={leadCommand}
+            onChange={(event) => setLeadCommand(event.target.value)}
+            disabled={!automaticSearchReady || commandBusy || searching}
+            rows={2}
+            placeholder={t("Find 25 construction companies in Berlin with 20-100 employees")}
+            className="min-h-20 w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-sm leading-6 text-ink shadow-sm outline-none focus:border-brand disabled:bg-slate-100 disabled:text-slate-500"
+          />
+          <button
+            type="button"
+            onClick={runLeadCommand}
+            disabled={!leadCommand.trim() || !automaticSearchReady || commandBusy || searching}
+            className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-ink px-5 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {commandBusy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+            {commandBusy ? t("Running AI search") : t("Run AI search")}
+          </button>
+        </div>
+        {!automaticSearchReady && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">{t("Automatic search needs setup. You can still add a company manually below.")}</p>}
+      </section>
       <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
       {!automaticSearchReady && (
         <div id="lead-search-setup" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
@@ -129,6 +130,15 @@ class UsageLeadSearchOut(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class UsageLeadCommandIn(BaseModel):
+    command: str = Field(min_length=4, max_length=500)
+
+
+class UsageLeadCommandOut(UsageLeadSearchOut):
+    filters: Optional[LeadFinderRequest] = None
+    interpreted_query: str = ""
+
+
 class UsageActionOut(BaseModel):
     status: UsageStatus
     message: str
@@ -151,6 +161,118 @@ class UsageIntegrationStatus(BaseModel):
 
 class UsageIntegrationStatusOut(BaseModel):
     integrations: list[UsageIntegrationStatus]
+
+
+CITY_COUNTRY_MAP = {
+    "berlin": ("Berlin", "Germany"),
+    "берлин": ("Berlin", "Germany"),
+    "warsaw": ("Warsaw", "Poland"),
+    "варшав": ("Warsaw", "Poland"),
+    "warszaw": ("Warsaw", "Poland"),
+    "paris": ("Paris", "France"),
+    "париж": ("Paris", "France"),
+    "madrid": ("Madrid", "Spain"),
+    "мадрид": ("Madrid", "Spain"),
+    "rome": ("Rome", "Italy"),
+    "рим": ("Rome", "Italy"),
+    "milan": ("Milan", "Italy"),
+    "милан": ("Milan", "Italy"),
+    "london": ("London", "United Kingdom"),
+    "лондон": ("London", "United Kingdom"),
+    "new york": ("New York", "United States"),
+}
+
+COUNTRY_ALIASES = {
+    "germany": "Germany",
+    "германи": "Germany",
+    "deutschland": "Germany",
+    "poland": "Poland",
+    "польш": "Poland",
+    "polska": "Poland",
+    "france": "France",
+    "франц": "France",
+    "spain": "Spain",
+    "испани": "Spain",
+    "italy": "Italy",
+    "итали": "Italy",
+    "ukraine": "Ukraine",
+    "украин": "Ukraine",
+    "usa": "United States",
+    "united states": "United States",
+    "сша": "United States",
+    "united kingdom": "United Kingdom",
+    "great britain": "United Kingdom",
+    "britain": "United Kingdom",
+}
+
+INDUSTRY_ALIASES = {
+    "Construction": ["construction", "строит", "ремонт", "builders", "contractor", "budow", "renovation"],
+    "SaaS": ["saas", "software", "стартап", "софт", "it company"],
+    "Real estate": ["real estate", "недвиж", "property", "realtor"],
+    "Marketing": ["marketing", "маркет", "agency", "агентств"],
+    "Dental": ["dental", "dentist", "стомат", "clinic"],
+    "Restaurant": ["restaurant", "рестор", "cafe", "bar"],
+    "Logistics": ["logistics", "transport", "логист", "delivery"],
+    "Manufacturing": ["manufacturing", "factory", "завод", "производ"],
+}
+
+
+def _parse_lead_command(command: str, workspace) -> tuple[LeadFinderRequest | None, list[str]]:
+    raw = " ".join(command.strip().split())
+    normalized = raw.lower()
+    missing: list[str] = []
+
+    range_match = re.search(r"(\d{1,5})\s*[-–]\s*(\d{1,5})", normalized)
+    company_size = f"{range_match.group(1)}-{range_match.group(2)}" if range_match else ""
+    command_without_range = re.sub(r"\d{1,5}\s*[-–]\s*\d{1,5}", " ", normalized)
+    limit_match = re.search(r"\b(\d{1,3})\b", command_without_range)
+    limit = min(25, max(1, int(limit_match.group(1)))) if limit_match else 10
+
+    city = ""
+    for city_alias in CITY_COUNTRY_MAP:
+        if city_alias in normalized:
+            city = CITY_COUNTRY_MAP[city_alias][0]
+            break
+
+    country = ""
+    for alias, canonical in COUNTRY_ALIASES.items():
+        if alias in normalized:
+            country = canonical
+            break
+    if not country and city:
+        country = next((value[1] for value in CITY_COUNTRY_MAP.values() if value[0].lower() == city.lower()), "")
+    if not country:
+        country = (getattr(workspace, "target_country", "") or "").strip()
+
+    industry = ""
+    for canonical, aliases in INDUSTRY_ALIASES.items():
+        if any(alias in normalized for alias in aliases):
+            industry = canonical
+            break
+
+    if not country:
+        missing.append("country")
+    if not city:
+        missing.append("city")
+    if not industry:
+        missing.append("industry")
+    if missing:
+        return None, missing
+
+    return (
+        LeadFinderRequest(
+            country=country,
+            city=city,
+            industry=industry,
+            category=industry,
+            keyword=industry,
+            company_size=company_size or None,
+            employee_count=company_size or None,
+            radius=10000,
+            limit=limit,
+        ),
+        [],
+    )
 
 
 def _minimal_crm_company_out(company: Company) -> CrmCompanyOut:
@@ -985,6 +1107,32 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
         companies=companies,
         warnings=warnings,
     )
+
+
+@router.post("/leads/command", response_model=UsageLeadCommandOut)
+def search_leads_from_command(payload: UsageLeadCommandIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageLeadCommandOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    filters, missing = _parse_lead_command(payload.command, workspace)
+    _lead_trace(
+        request_id,
+        "workspace_app_command_received",
+        workspace_id=str(workspace.id),
+        command=payload.command,
+        missing=missing,
+        filters=filters.model_dump() if filters else None,
+    )
+    if not filters:
+        labels = ", ".join(missing)
+        return UsageLeadCommandOut(
+            status="error",
+            request_id=request_id,
+            message=f"Add a clearer {labels} and try again.",
+            warnings=["AI command needs a city, country and industry before search."],
+            interpreted_query=payload.command,
+        )
+    result = search_leads(filters, request, user, db)
+    return UsageLeadCommandOut(**result.model_dump(), filters=filters, interpreted_query=payload.command)
 
 
 @router.get("/companies", response_model=list[CrmCompanyOut])
