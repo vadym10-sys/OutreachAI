@@ -3112,11 +3112,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const primaryAction = companyPrimaryAction(displayCurrent);
   const PrimaryActionIcon = primaryAction.icon;
   const primaryContact = displayCurrent.contacts[0];
-  const sendRecipient = displayCurrent.email || primaryContact?.email || "";
-  const approvedDraftReady = Boolean(currentDraft?.delivery_status === "approved" && !currentSentAt);
   const firstDeal = displayCurrent.deals[0];
-  const owner = "Not assigned";
-  const companySize = "Not available";
   const estimatedOpportunity = firstDeal?.value ? `€${Math.round(firstDeal.value).toLocaleString()}` : "Not available";
   const hasVerifiedEmail = Boolean(displayCurrent.email || displayCurrent.contacts.some((contact) => contact.email));
   const aiBuyingSignals = safeArray(displayCurrent.buying_signals).filter(Boolean);
@@ -3367,41 +3363,6 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               <span className="inline-flex items-center gap-1.5"><MapPin size={16} />{[current.city, current.country].filter(Boolean).join(", ") || t("Not available")}</span>
               <span className="inline-flex items-center gap-1.5"><Globe2 size={16} />{current.website || current.domain ? <a className="break-all font-semibold text-brand hover:underline" href={current.website || `https://${current.domain}`} target="_blank" rel="noreferrer">{current.website || current.domain}</a> : t("Not available")}</span>
             </div>
-          </div>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:w-[34rem]">
-          <InfoCell label="Company size" value={companySize === "Not available" ? null : companySize} help="Add company size from lead discovery or manual research." />
-          <InfoCell label="Assigned owner" value={owner === "Not assigned" ? null : owner} help="Assign an owner when a teammate takes responsibility." />
-          <InfoCell label="Last activity" value={formatDateTime(current.last_activity_at || current.stage_changed_at || current.updated_at)} help="Activity appears after sales work is logged." />
-          <div className="rounded-xl border border-teal-200 bg-teal-50 p-4 sm:col-span-2">
-            <p className="text-xs font-bold uppercase text-brand">{t("Next recommended action")}</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
-            <p className="mt-1 text-xs leading-5 text-slate-600">{t(primaryAction.copy)}</p>
-            {approvedDraftReady && <div className="mt-3 rounded-xl border border-teal-200 bg-white p-3">
-              <p className="text-xs font-bold uppercase text-brand">{t("Ready to send safely")}</p>
-              <div className="mt-2 grid gap-2 text-xs text-slate-700">
-                <p><span className="font-bold text-ink">{t("Recipient")}:</span> {sendRecipient || t("Not available")}</p>
-                <p><span className="font-bold text-ink">{t("Approved draft")}:</span> {currentDraft?.subject || t("Not available")}</p>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-slate-600">{t("The email is approved, but it will not be sent until you open the approval area and confirm.")}</p>
-            </div>}
-            {primaryAction.action ? (
-              <button
-                type="button"
-                onClick={runPrimaryAction}
-                disabled={(primaryAction.action === "prepare-company" && (actionBusy === "prepare-company" || !current.lead_id)) || (primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
-                className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-              >
-                {(primaryAction.action === "prepare-company" && actionBusy === "prepare-company") || (primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
-                {t(primaryAction.label)}
-              </button>
-            ) : (
-              <a href={primaryAction.target} className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white sm:w-auto">
-                <PrimaryActionIcon size={17} />
-                {t(primaryAction.label)}
-                <ArrowRight size={16} />
-              </a>
-            )}
           </div>
         </div>
       </div>
