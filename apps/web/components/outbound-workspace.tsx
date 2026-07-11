@@ -2723,7 +2723,7 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   const meetingPrep = hasResearch
     ? (company.suggested_offer || company.outreach_strategy || company.next_recommended_action || "Use the AI research to open with a specific business improvement.")
     : "Run AI research first, then use the summary and offer to prepare a call.";
-  const nextBestAction = company.next_recommended_action || companyNextAction(company);
+  const nextBestAction = companyNextAction(company);
   const decisionReason = intelligence.coverage_summary || (
     decision === "Work this lead now"
       ? "The company has enough research, a reachable contact path and a clear personalized angle."
@@ -3670,7 +3670,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               <InfoCell label="Estimated opportunity" value={estimatedOpportunity === "Not available" ? null : estimatedOpportunity} help="Deal value appears after qualification." />
               <InfoCell label="Confidence score" value={`${current.confidence_score || healthScore}%`} help="Based on profile completeness, contacts, AI research and outreach state." />
               <InfoCell label="Priority score" value={current.priority_score ? `${current.priority_score}%` : null} help="AI priority for B2B sales work." />
-              <InfoCell label="Recommended action" value={t(current.next_recommended_action || nextAction)} help="The next safest step in the sales workflow." />
+              <InfoCell label="Recommended action" value={t(nextAction)} help="The next safest step in the sales workflow." />
             </div>
           </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
