@@ -27,7 +27,7 @@ from app.api.routes import (
     _lead_out,
     _lead_trace,
     _merge_lead_metadata,
-    _require_outreach_sender_ready,
+    _outreach_sender_runtime_config,
     _run_provider_with_deadline,
     _save_provider_leads,
     _sync_lead_to_crm,
@@ -2197,7 +2197,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
         return UsageActionOut(status="error", message="Use a real recipient email before sending.", email=EmailOut.model_validate(email))
 
     try:
-        sender_status = _require_outreach_sender_ready(db, user.user_id, workspace)
+        sender_status, smtp_config = _outreach_sender_runtime_config(db, user.user_id, workspace)
         _enforce_usage(db, user.user_id, workspace, "email_sends")
         provider_response = send_email(
             to_email=lead.email,
@@ -2206,6 +2206,8 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
             from_email=sender_status.sender_email,
             from_name=sender_status.sender_name,
             reply_to=sender_status.reply_to,
+            provider=sender_status.provider,
+            smtp_config=smtp_config,
         )
     except HTTPException as exc:
         return UsageActionOut(status="provider_unavailable", message=str(exc.detail), email=EmailOut.model_validate(email))
@@ -2213,13 +2215,13 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
         email.delivery_status = "failed"
         _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id), "reason": str(exc)})
         db.commit()
-        capture_provider_exception(exc, provider="resend", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
+        capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
         return UsageActionOut(status="provider_unavailable", message="Email sending needs setup or is temporarily unavailable. The approved draft is still saved.", email=EmailOut.model_validate(email))
     except Exception as exc:
         email.delivery_status = "failed"
         _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id)})
         db.commit()
-        capture_provider_exception(exc, provider="resend", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
+        capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
         return UsageActionOut(status="provider_unavailable", message="Email sending is temporarily unavailable. The approved draft is still saved.", email=EmailOut.model_validate(email))
 
     email.sent_at = datetime.utcnow()

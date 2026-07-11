@@ -122,6 +122,10 @@ type OutreachSenderStatus = {
   dmarc_status: string;
   next_action: string;
   reason?: string;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_configured: boolean;
 };
 
 type WorkspaceAppBootstrapResponse = {
@@ -4584,7 +4588,19 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
-  const [form, setForm] = useState({ provider: "resend", sender_name: "", sender_email: "", reply_to: "", daily_send_limit: 25, enabled: true });
+  const [form, setForm] = useState({
+    provider: "resend",
+    sender_name: "",
+    sender_email: "",
+    reply_to: "",
+    daily_send_limit: 25,
+    enabled: true,
+    smtp_host: "",
+    smtp_port: 587,
+    smtp_username: "",
+    smtp_password: "",
+    smtp_use_tls: true,
+  });
 
   const loadStatus = useCallback(async () => {
     if (!ready) return;
@@ -4600,6 +4616,11 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
         reply_to: next.reply_to || "",
         daily_send_limit: next.daily_send_limit || 25,
         enabled: next.status !== "needs_setup" || next.connected,
+        smtp_host: next.smtp_host || "",
+        smtp_port: next.smtp_port || 587,
+        smtp_username: next.smtp_username || "",
+        smtp_password: "",
+        smtp_use_tls: true,
       });
     } catch (err) {
       reportWidgetFailure(err, "outreach-sender-status", { endpoint: "/api/outreach/sender/status" });
@@ -4631,9 +4652,26 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
           reply_to: form.reply_to || null,
           daily_send_limit: Number(form.daily_send_limit) || 25,
           enabled: form.enabled,
+          smtp_host: form.smtp_host,
+          smtp_port: Number(form.smtp_port) || 587,
+          smtp_username: form.smtp_username,
+          smtp_password: form.smtp_password,
+          smtp_use_tls: form.smtp_use_tls,
         }),
       });
       setStatus(next);
+      setForm((current) => ({
+        ...current,
+        provider: next.provider || current.provider,
+        sender_name: next.sender_name || current.sender_name,
+        sender_email: next.sender_email || current.sender_email,
+        reply_to: next.reply_to || current.reply_to,
+        daily_send_limit: next.daily_send_limit || current.daily_send_limit,
+        smtp_host: next.smtp_host || current.smtp_host,
+        smtp_port: next.smtp_port || current.smtp_port,
+        smtp_username: next.smtp_username || current.smtp_username,
+        smtp_password: "",
+      }));
       setSaved(t("Sending setup saved"));
     } catch (err) {
       reportWidgetFailure(err, "outreach-sender-save", { endpoint: "/api/outreach/sender" });
@@ -4658,10 +4696,30 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
         <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
           <form onSubmit={saveSender} className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-sm font-bold text-ink sm:col-span-2">{t("Provider")}
+                <select value={form.provider} onChange={(event) => setForm((current) => ({ ...current, provider: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-semibold">
+                  <option value="resend">{t("Connected API sender")}</option>
+                  <option value="smtp">{t("SMTP mailbox")}</option>
+                  <option value="gmail">{t("Gmail (needs OAuth)")}</option>
+                  <option value="outlook">{t("Outlook (needs OAuth)")}</option>
+                </select>
+              </label>
               <label className="text-sm font-bold text-ink">{t("Sender name")}<input value={form.sender_name} onChange={(event) => setForm((current) => ({ ...current, sender_name: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="Sales Team" /></label>
               <label className="text-sm font-bold text-ink">{t("Sender email")}<input value={form.sender_email} onChange={(event) => setForm((current) => ({ ...current, sender_email: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="you@company.com" type="email" /></label>
               <label className="text-sm font-bold text-ink">{t("Reply-to email")}<input value={form.reply_to} onChange={(event) => setForm((current) => ({ ...current, reply_to: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="reply@company.com" type="email" /></label>
               <label className="text-sm font-bold text-ink">{t("Daily safety limit")}<input value={form.daily_send_limit} onChange={(event) => setForm((current) => ({ ...current, daily_send_limit: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" min={1} max={200} type="number" /></label>
+              {form.provider === "smtp" && (
+                <>
+                  <label className="text-sm font-bold text-ink">{t("SMTP host")}<input value={form.smtp_host} onChange={(event) => setForm((current) => ({ ...current, smtp_host: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="smtp.company.com" /></label>
+                  <label className="text-sm font-bold text-ink">{t("SMTP port")}<input value={form.smtp_port} onChange={(event) => setForm((current) => ({ ...current, smtp_port: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" min={1} max={65535} type="number" /></label>
+                  <label className="text-sm font-bold text-ink">{t("SMTP username")}<input value={form.smtp_username} onChange={(event) => setForm((current) => ({ ...current, smtp_username: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="you@company.com" /></label>
+                  <label className="text-sm font-bold text-ink">{t("SMTP password")}<input value={form.smtp_password} onChange={(event) => setForm((current) => ({ ...current, smtp_password: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder={t("Leave blank to keep current password")} type="password" /></label>
+                  <label className="inline-flex min-h-11 items-center gap-3 rounded-xl border border-slate-200 px-3 text-sm font-bold text-ink sm:col-span-2">
+                    <input checked={form.smtp_use_tls} onChange={(event) => setForm((current) => ({ ...current, smtp_use_tls: event.target.checked }))} type="checkbox" className="h-4 w-4" />
+                    {t("Use TLS")}
+                  </label>
+                </>
+              )}
             </div>
             <button disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white disabled:opacity-60 sm:w-auto">{saving ? t("Saving...") : t("Save sending setup")}</button>
             {saved && <p className="rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{saved}</p>}
@@ -4672,6 +4730,7 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
             {status?.reason && <p className="mt-2 leading-6">{t(status.reason)}</p>}
             <div className="mt-4 grid gap-2">
               {[["SPF", status?.spf_status], ["DKIM", status?.dkim_status], ["DMARC", status?.dmarc_status]].map(([label, value]) => <p key={label} className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{label}</span><span>{t(String(value || "not_checked"))}</span></p>)}
+              {status?.provider === "smtp" && <p className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("SMTP configured")}</span><span>{t(status.smtp_configured ? "Connected" : "Needs setup")}</span></p>}
               <p className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Sent today")}</span><span>{status?.sent_today || 0}/{status?.daily_send_limit || 25}</span></p>
             </div>
           </div>

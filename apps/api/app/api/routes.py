@@ -179,6 +179,7 @@ from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
+from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
 from app.services.apollo import (
     ApolloConfigurationError,
@@ -457,17 +458,31 @@ def _email_domain(value: str | None) -> str:
 def _sender_settings(settings: AppSettings) -> dict[str, Any]:
     email_settings = settings.email if isinstance(settings.email, dict) else {}
     sender = email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}
+    smtp = sender.get("smtp") if isinstance(sender.get("smtp"), dict) else {}
     try:
         daily_send_limit = int(sender.get("daily_send_limit") or email_settings.get("dailyLimit") or 25)
     except (TypeError, ValueError):
         daily_send_limit = 25
+    try:
+        smtp_port = int(smtp.get("port") or 587)
+    except (TypeError, ValueError):
+        smtp_port = 587
+    enabled_value = sender.get("enabled", True)
+    enabled = enabled_value if isinstance(enabled_value, bool) else str(enabled_value).strip().lower() not in {"false", "0", "no", "off"}
     return {
         "provider": str(sender.get("provider") or email_settings.get("provider") or "resend").strip().lower(),
         "sender_name": str(sender.get("sender_name") or sender.get("name") or "").strip(),
         "sender_email": _extract_email(str(sender.get("sender_email") or sender.get("email") or "")),
         "reply_to": _extract_email(str(sender.get("reply_to") or "")),
         "daily_send_limit": daily_send_limit,
-        "enabled": bool(sender.get("enabled", True)),
+        "enabled": enabled,
+        "smtp": {
+            "host": str(smtp.get("host") or "").strip(),
+            "port": max(1, min(smtp_port, 65535)),
+            "username": str(smtp.get("username") or "").strip(),
+            "password_encrypted": str(smtp.get("password_encrypted") or "").strip(),
+            "use_tls": bool(smtp.get("use_tls", True)),
+        },
     }
 
 
@@ -512,12 +527,14 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
     settings = _settings_for_workspace(db, user_id, workspace)
     sender = _sender_settings(settings)
     app_settings = get_app_settings()
-    configured_sender = sender["sender_email"] or _extract_email(app_settings.resend_from_email)
     provider = sender["provider"] if sender["provider"] in SUPPORTED_OUTREACH_PROVIDERS else "resend"
+    configured_sender = sender["sender_email"] or (_extract_email(app_settings.resend_from_email) if provider == "resend" else "")
     daily_limit = max(1, min(int(sender["daily_send_limit"] or 25), 200))
     sent_today = _sent_today_count(db, workspace)
     remaining_today = max(0, daily_limit - sent_today)
     domain_checks = _domain_auth_status(_email_domain(configured_sender))
+    smtp = sender["smtp"]
+    smtp_configured = bool(smtp["host"] and smtp["username"] and smtp["password_encrypted"])
 
     reason = ""
     connected = True
@@ -528,16 +545,31 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         status = "needs_setup"
         reason = "Email sending is disabled for this workspace."
         next_action = "Enable sending when your mailbox is ready."
-    elif provider != "resend":
-        connected = False
-        status = "needs_setup"
-        reason = "This mailbox provider still needs secure OAuth or SMTP setup."
-        next_action = "Use the connected API sender now, or finish mailbox setup before sending."
-    elif not app_settings.resend_api_key or not app_settings.resend_from_email.strip():
+    elif provider == "resend" and (not app_settings.resend_api_key or not app_settings.resend_from_email.strip()):
         connected = False
         status = "missing_key"
         reason = "Production email sending is not configured on the server."
         next_action = "Ask the workspace owner to connect email sending."
+    elif provider == "smtp" and not configured_sender:
+        connected = False
+        status = "needs_setup"
+        reason = "Add the sender email that should appear on outbound messages."
+        next_action = "Add your sender email."
+    elif provider == "smtp" and not smtp_configured:
+        connected = False
+        status = "needs_setup"
+        reason = "SMTP setup is incomplete."
+        next_action = "Finish SMTP setup before sending."
+    elif provider == "smtp" and app_settings.encryption_key == "replace-with-32-byte-url-safe-key":
+        connected = False
+        status = "needs_setup"
+        reason = "A custom encryption key is required before storing mailbox credentials."
+        next_action = "Finish secure SMTP setup before sending."
+    elif provider in {"gmail", "outlook"}:
+        connected = False
+        status = "needs_setup"
+        reason = "Gmail and Outlook need secure OAuth setup before sending."
+        next_action = "Use the connected API sender now, or finish mailbox setup before sending."
     elif not configured_sender:
         connected = False
         status = "needs_setup"
@@ -561,6 +593,10 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         remaining_today=remaining_today,
         next_action=next_action,
         reason=reason,
+        smtp_host=smtp["host"],
+        smtp_port=smtp["port"],
+        smtp_username=smtp["username"],
+        smtp_configured=smtp_configured,
         **domain_checks,
     )
 
@@ -570,6 +606,26 @@ def _require_outreach_sender_ready(db: Session, user_id: str, workspace: Workspa
     if not status.connected:
         raise HTTPException(status_code=409, detail=status.reason or status.next_action)
     return status
+
+
+def _outreach_sender_runtime_config(db: Session, user_id: str, workspace: Workspace) -> tuple[OutreachSenderStatusOut, dict[str, Any] | None]:
+    status = _require_outreach_sender_ready(db, user_id, workspace)
+    if status.provider != "smtp":
+        return status, None
+    settings = _settings_for_workspace(db, user_id, workspace)
+    smtp = _sender_settings(settings)["smtp"]
+    try:
+        password = decrypt_secret(smtp["password_encrypted"], get_app_settings().encryption_key)
+    except SecretBoxError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return status, {
+        "host": smtp["host"],
+        "port": smtp["port"],
+        "username": smtp["username"],
+        "password": password,
+        "use_tls": smtp["use_tls"],
+        "sender_email": status.sender_email,
+    }
 
 
 def _plan_for_workspace(db: Session, user_id: str, workspace: Workspace) -> str:
@@ -4571,9 +4627,16 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     email_settings = settings.email if isinstance(settings.email, dict) else {}
+    current_sender = _sender_settings(settings)
     provider = payload.provider.strip().lower()
     if provider not in SUPPORTED_OUTREACH_PROVIDERS:
         raise HTTPException(status_code=400, detail="Choose a supported sending option.")
+    encrypted_password = current_sender["smtp"]["password_encrypted"]
+    if payload.smtp_password.strip():
+        try:
+            encrypted_password = encrypt_secret(payload.smtp_password, get_app_settings().encryption_key)
+        except SecretBoxError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     email_settings["sender"] = {
         "provider": provider,
         "sender_name": payload.sender_name.strip(),
@@ -4581,6 +4644,13 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
         "reply_to": str(payload.reply_to or "").strip().lower(),
         "daily_send_limit": payload.daily_send_limit,
         "enabled": payload.enabled,
+        "smtp": {
+            "host": payload.smtp_host.strip(),
+            "port": payload.smtp_port,
+            "username": payload.smtp_username.strip(),
+            "password_encrypted": encrypted_password,
+            "use_tls": payload.smtp_use_tls,
+        },
         "updated_at": datetime.utcnow().isoformat(),
     }
     settings.email = email_settings
@@ -4596,7 +4666,7 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
 def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace)
-    sender_status = _require_outreach_sender_ready(db, user_id, workspace)
+    sender_status, smtp_config = _outreach_sender_runtime_config(db, user_id, workspace)
     _enforce_usage(db, user_id, workspace, "email_sends")
     message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
     if message is None:
@@ -4616,6 +4686,8 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
             from_email=sender_status.sender_email,
             from_name=sender_status.sender_name,
             reply_to=sender_status.reply_to,
+            provider=sender_status.provider,
+            smtp_config=smtp_config,
         )
     except Exception as exc:
         message.delivery_status = "failed"

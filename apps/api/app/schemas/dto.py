@@ -1242,6 +1242,11 @@ class OutreachSenderUpdate(BaseModel):
     reply_to: Optional[EmailStr] = None
     daily_send_limit: int = Field(default=25, ge=1, le=200)
     enabled: bool = True
+    smtp_host: str = Field(default="", max_length=255)
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str = Field(default="", max_length=255)
+    smtp_password: str = Field(default="", max_length=2048)
+    smtp_use_tls: bool = True
 
 
 class OutreachSenderStatusOut(BaseModel):
@@ -1259,6 +1264,10 @@ class OutreachSenderStatusOut(BaseModel):
     dmarc_status: str = "not_checked"
     next_action: str
     reason: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_configured: bool = False
 
 
 class CheckoutRequest(BaseModel):

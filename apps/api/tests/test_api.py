@@ -2485,6 +2485,99 @@ def test_approved_email_uses_workspace_sender(monkeypatch) -> None:
     assert sent.json()["tags"]["sender_provider"] == "resend"
 
 
+def test_smtp_sender_requires_custom_encryption_key() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "smtp-no-key@example.com"}
+
+    response = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "smtp",
+            "sender_name": "Sales Team",
+            "sender_email": "sales@example.com",
+            "reply_to": "reply@example.com",
+            "daily_send_limit": 25,
+            "enabled": True,
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 587,
+            "smtp_username": "sales@example.com",
+            "smtp_password": "secret",
+            "smtp_use_tls": True,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Connect email sending or adjust the daily sending limit before sending."
+
+
+def test_smtp_sender_send_uses_decrypted_workspace_config(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "smtp-send@example.com"}
+    monkeypatch.setenv("ENCRYPTION_KEY", "test-custom-encryption-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    monkeypatch.setattr(
+        "app.api.routes.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="SMTP sender idea",
+            preview="Short idea",
+            full_email="Hi, this is a reviewed SMTP idea.",
+            cta="Open to a short call?",
+            follow_ups=[],
+            ab_tests=[],
+        ),
+    )
+    try:
+        setup = client.put(
+            "/api/outreach/sender",
+            headers=headers,
+            json={
+                "provider": "smtp",
+                "sender_name": "SMTP Team",
+                "sender_email": "sales@example.com",
+                "reply_to": "reply@example.com",
+                "daily_send_limit": 25,
+                "enabled": True,
+                "smtp_host": "smtp.example.com",
+                "smtp_port": 587,
+                "smtp_username": "sales@example.com",
+                "smtp_password": "smtp-secret",
+                "smtp_use_tls": True,
+            },
+        )
+        assert setup.status_code == 200
+        assert setup.json()["connected"] is True
+        assert setup.json()["smtp_configured"] is True
+        assert "smtp-secret" not in json.dumps(setup.json())
+
+        sent_payload: dict[str, object] = {}
+
+        def fake_send(**kwargs):
+            sent_payload.update(kwargs)
+            return {"id": "smtp-message-id"}
+
+        monkeypatch.setattr("app.api.routes.send_email", fake_send)
+        lead = client.post(
+            "/api/leads",
+            headers=headers,
+            json={"company": "SMTP Send Co", "website": "https://smtp-send.example", "industry": "Construction", "email": "buyer@smtp-send.example"},
+        ).json()
+        draft = client.post(f"/api/leads/{lead['id']}/draft-email", headers=headers).json()
+        approved = client.post(f"/api/emails/{draft['id']}/approve", headers=headers)
+        assert approved.status_code == 200
+
+        sent = client.post(f"/api/emails/{draft['id']}/send", headers=headers)
+        assert sent.status_code == 200
+        assert sent_payload["provider"] == "smtp"
+        assert sent_payload["from_email"] == "sales@example.com"
+        assert sent_payload["from_name"] == "SMTP Team"
+        assert sent_payload["reply_to"] == "reply@example.com"
+        assert sent_payload["smtp_config"]["host"] == "smtp.example.com"  # type: ignore[index]
+        assert sent_payload["smtp_config"]["password"] == "smtp-secret"  # type: ignore[index]
+        assert sent.json()["tags"]["sender_provider"] == "smtp"
+    finally:
+        get_settings.cache_clear()
+
+
 def test_disabled_outreach_sender_blocks_send(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "sender-disabled@example.com"}
     monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)

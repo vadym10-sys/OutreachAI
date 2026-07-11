@@ -57,7 +57,7 @@ def _safe_error_message(status_code: int, detail: object) -> str:
         return "Lead search is temporarily unavailable. Please try again later."
     if any(term in lower for term in ["openai", "model", "ai analysis", "website analysis"]):
         return "AI analysis is temporarily unavailable. Please try again in a moment."
-    if any(term in lower for term in ["email sending is disabled", "sender email", "daily sending limit", "daily safe sending limit", "safe daily sending limit"]):
+    if any(term in lower for term in ["email sending is disabled", "sender email", "daily sending limit", "daily safe sending limit", "safe daily sending limit", "smtp setup", "custom encryption key", "mailbox credential"]):
         return "Connect email sending or adjust the daily sending limit before sending."
     if any(term in lower for term in ["resend", "email send", "smtp"]):
         return "Email sending is temporarily unavailable. Please try again later."

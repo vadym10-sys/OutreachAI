@@ -1,14 +1,16 @@
 # AI Email Outreach
 
 OutreachAI sends outbound email only after a user reviews and approves a draft.
-The production-safe path today uses the backend email provider configured on the
-server and a workspace sender identity configured in Settings.
+The production-safe path today supports a backend API sender and encrypted SMTP
+mailbox credentials. A workspace sender identity is configured in Settings.
 
 ## Required server variables
 
 - `RESEND_API_KEY`: server-only API key for sending approved email.
 - `RESEND_FROM_EMAIL`: verified production sender or domain identity.
 - `RESEND_REPLY_TO`: optional default reply-to address.
+- `ENCRYPTION_KEY`: required before storing SMTP mailbox credentials. Use a
+  strong production value, not the development placeholder.
 
 Never expose these values to the browser.
 
@@ -20,9 +22,15 @@ Users configure the visible sender in `Settings -> Email sending`:
 - sender email;
 - reply-to email;
 - daily safety limit.
+- provider:
+  - connected API sender;
+  - SMTP mailbox;
+  - Gmail/Outlook, which remain blocked until OAuth is configured.
+- SMTP host, port, username, password and TLS mode when SMTP is selected.
 
 The backend stores this in the workspace `app_settings.email.sender` JSON and
-checks it before every send.
+checks it before every send. SMTP passwords are encrypted before storage and are
+never returned to the frontend.
 
 ## Sending rules
 
@@ -30,13 +38,17 @@ checks it before every send.
 - `Approve` is required before `Send`.
 - Sending is blocked if the sender is disabled, the server provider is missing,
   or the daily workspace limit is reached.
-- Gmail, Outlook and SMTP are shown as setup-required until a secure OAuth or
-  encrypted SMTP credential flow is implemented.
+- SMTP sending is blocked until host, username, password, sender email and
+  `ENCRYPTION_KEY` are configured.
+- Gmail and Outlook are shown as setup-required until secure OAuth is
+  implemented.
 
 ## Tracking
 
 Delivery, open, bounce, complaint and reply events are handled by the existing
-Resend webhook. These update email timestamps and CRM activity.
+Resend webhook for API-sent messages. SMTP sends are recorded as sent once the
+SMTP provider accepts the message; inbox/reply tracking requires a provider or
+mailbox webhook.
 
 ## Deliverability checks
 
