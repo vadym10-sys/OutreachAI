@@ -53,6 +53,7 @@ from app.services.hunter import HunterRequestError  # noqa: E402
 from app.services.ai import ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
 from app.services.backups import backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
+from app.services.emailer import EmailProviderRequestError  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -2536,6 +2537,7 @@ def test_smtp_sender_send_uses_decrypted_workspace_config(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "smtp-send@example.com"}
     monkeypatch.setenv("ENCRYPTION_KEY", "test-custom-encryption-key")
     get_settings.cache_clear()
+    monkeypatch.setattr("app.api.routes.verify_smtp_connection", lambda **kwargs: None)
     monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
     monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
     monkeypatch.setattr(
@@ -2570,6 +2572,7 @@ def test_smtp_sender_send_uses_decrypted_workspace_config(monkeypatch) -> None:
         assert setup.status_code == 200
         assert setup.json()["connected"] is True
         assert setup.json()["smtp_configured"] is True
+        assert setup.json()["smtp_verified_at"]
         assert "smtp-secret" not in json.dumps(setup.json())
 
         sent_payload: dict[str, object] = {}
@@ -2597,6 +2600,45 @@ def test_smtp_sender_send_uses_decrypted_workspace_config(monkeypatch) -> None:
         assert sent_payload["smtp_config"]["host"] == "smtp.example.com"  # type: ignore[index]
         assert sent_payload["smtp_config"]["password"] == "smtp-secret"  # type: ignore[index]
         assert sent.json()["tags"]["sender_provider"] == "smtp"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_smtp_sender_save_rejects_unverified_mailbox(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "smtp-unverified@example.com"}
+    monkeypatch.setenv("ENCRYPTION_KEY", "test-custom-encryption-key")
+    get_settings.cache_clear()
+
+    def fail_verify(**kwargs):
+        raise EmailProviderRequestError("SMTP connection could not be verified. Check host, port, username and app password.")
+
+    monkeypatch.setattr("app.api.routes.verify_smtp_connection", fail_verify)
+    try:
+        response = client.put(
+            "/api/outreach/sender",
+            headers=headers,
+            json={
+                "provider": "smtp",
+                "sender_name": "SMTP Team",
+                "sender_email": "sales@example.com",
+                "reply_to": "reply@example.com",
+                "daily_send_limit": 25,
+                "enabled": True,
+                "smtp_host": "smtp.example.com",
+                "smtp_port": 587,
+                "smtp_username": "sales@example.com",
+                "smtp_password": "wrong-password",
+                "smtp_use_tls": True,
+            },
+        )
+        assert response.status_code == 409
+        assert "temporarily unavailable" in response.json()["detail"]
+
+        status = client.get("/api/outreach/sender/status", headers=headers)
+        assert status.status_code == 200
+        assert status.json()["connected"] is True
+        assert status.json()["provider"] == "resend"
+        assert status.json()["smtp_verified_at"] == ""
     finally:
         get_settings.cache_clear()
 

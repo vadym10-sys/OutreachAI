@@ -126,6 +126,7 @@ type OutreachSenderStatus = {
   smtp_port: number;
   smtp_username: string;
   smtp_configured: boolean;
+  smtp_verified_at?: string;
 };
 
 type WorkspaceAppBootstrapResponse = {
@@ -4681,6 +4682,9 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
               <label className="text-sm font-bold text-ink">{t("Daily safety limit")}<input value={form.daily_send_limit} onChange={(event) => setForm((current) => ({ ...current, daily_send_limit: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" min={1} max={200} type="number" /></label>
               {form.provider === "smtp" && (
                 <>
+                  <p className="rounded-xl border border-teal-100 bg-teal-50 p-3 text-sm font-semibold leading-6 text-slate-700 sm:col-span-2">
+                    {t("When you save SMTP settings, OutreachAI verifies the mailbox login before enabling real sends. Use an app password when your provider requires it.")}
+                  </p>
                   <label className="text-sm font-bold text-ink">{t("SMTP host")}<input value={form.smtp_host} onChange={(event) => setForm((current) => ({ ...current, smtp_host: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="smtp.company.com" /></label>
                   <label className="text-sm font-bold text-ink">{t("SMTP port")}<input value={form.smtp_port} onChange={(event) => setForm((current) => ({ ...current, smtp_port: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" min={1} max={65535} type="number" /></label>
                   <label className="text-sm font-bold text-ink">{t("SMTP username")}<input value={form.smtp_username} onChange={(event) => setForm((current) => ({ ...current, smtp_username: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="you@company.com" /></label>
@@ -4702,6 +4706,7 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
             <div className="mt-4 grid gap-2">
               {[["SPF", status?.spf_status], ["DKIM", status?.dkim_status], ["DMARC", status?.dmarc_status]].map(([label, value]) => <p key={label} className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{label}</span><span>{t(String(value || "not_checked"))}</span></p>)}
               {status?.provider === "smtp" && <p className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("SMTP configured")}</span><span>{t(status.smtp_configured ? "Connected" : "Needs setup")}</span></p>}
+              {status?.provider === "smtp" && <p className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Mailbox verified")}</span><span className="text-right">{status.smtp_verified_at ? new Date(status.smtp_verified_at).toLocaleString() : t("Not verified yet")}</span></p>}
               <p className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Sent today")}</span><span>{status?.sent_today || 0}/{status?.daily_send_limit || 25}</span></p>
             </div>
           </div>

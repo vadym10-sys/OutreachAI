@@ -178,7 +178,7 @@ from app.services.ai import (
 from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
-from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
+from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email, verify_smtp_connection
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
 from app.services.apollo import (
@@ -482,6 +482,7 @@ def _sender_settings(settings: AppSettings) -> dict[str, Any]:
             "username": str(smtp.get("username") or "").strip(),
             "password_encrypted": str(smtp.get("password_encrypted") or "").strip(),
             "use_tls": bool(smtp.get("use_tls", True)),
+            "verified_at": str(smtp.get("verified_at") or "").strip(),
         },
     }
 
@@ -534,7 +535,7 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
     remaining_today = max(0, daily_limit - sent_today)
     domain_checks = _domain_auth_status(_email_domain(configured_sender))
     smtp = sender["smtp"]
-    smtp_configured = bool(smtp["host"] and smtp["username"] and smtp["password_encrypted"])
+    smtp_configured = bool(smtp["host"] and smtp["username"] and smtp["password_encrypted"] and smtp["verified_at"])
 
     reason = ""
     connected = True
@@ -558,8 +559,8 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
     elif provider == "smtp" and not smtp_configured:
         connected = False
         status = "needs_setup"
-        reason = "SMTP setup is incomplete."
-        next_action = "Finish SMTP setup before sending."
+        reason = "SMTP setup must be saved and verified before sending."
+        next_action = "Save SMTP settings to verify the mailbox connection."
     elif provider == "smtp" and app_settings.encryption_key == "replace-with-32-byte-url-safe-key":
         connected = False
         status = "needs_setup"
@@ -597,6 +598,7 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         smtp_port=smtp["port"],
         smtp_username=smtp["username"],
         smtp_configured=smtp_configured,
+        smtp_verified_at=smtp["verified_at"] if smtp_configured else "",
         **domain_checks,
     )
 
@@ -4632,11 +4634,41 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
     if provider not in SUPPORTED_OUTREACH_PROVIDERS:
         raise HTTPException(status_code=400, detail="Choose a supported sending option.")
     encrypted_password = current_sender["smtp"]["password_encrypted"]
+    smtp_verified_at = current_sender["smtp"].get("verified_at", "")
+    smtp_plain_password = ""
     if payload.smtp_password.strip():
         try:
             encrypted_password = encrypt_secret(payload.smtp_password, get_app_settings().encryption_key)
+            smtp_plain_password = payload.smtp_password
         except SecretBoxError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+    elif provider == "smtp" and encrypted_password:
+        try:
+            smtp_plain_password = decrypt_secret(encrypted_password, get_app_settings().encryption_key)
+        except SecretBoxError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    smtp_changed = (
+        payload.smtp_host.strip() != current_sender["smtp"]["host"]
+        or payload.smtp_port != current_sender["smtp"]["port"]
+        or payload.smtp_username.strip() != current_sender["smtp"]["username"]
+        or payload.smtp_use_tls != current_sender["smtp"]["use_tls"]
+        or bool(payload.smtp_password.strip())
+    )
+    if provider == "smtp" and payload.enabled:
+        smtp_verified_at = "" if smtp_changed else smtp_verified_at
+        if payload.smtp_host.strip() and payload.smtp_username.strip() and encrypted_password:
+            try:
+                verify_smtp_connection(
+                    host=payload.smtp_host.strip(),
+                    port=payload.smtp_port,
+                    username=payload.smtp_username.strip(),
+                    password=smtp_plain_password,
+                    use_tls=payload.smtp_use_tls,
+                )
+                smtp_verified_at = datetime.utcnow().isoformat()
+            except (EmailProviderConfigurationError, EmailProviderRequestError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
     email_settings["sender"] = {
         "provider": provider,
         "sender_name": payload.sender_name.strip(),
@@ -4650,6 +4682,7 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
             "username": payload.smtp_username.strip(),
             "password_encrypted": encrypted_password,
             "use_tls": payload.smtp_use_tls,
+            "verified_at": smtp_verified_at,
         },
         "updated_at": datetime.utcnow().isoformat(),
     }

@@ -87,6 +87,26 @@ def _send_smtp_email(*, to_email: str, subject: str, body: str, reply_to: Option
     return {"id": f"smtp:{host}:{to_email}"}
 
 
+def verify_smtp_connection(*, host: str, port: int, username: str, password: str, use_tls: bool = True) -> None:
+    host = str(host or "").strip()
+    username = str(username or "").strip()
+    password = str(password or "").strip()
+    port = int(port or 587)
+    if not host or not username or not password:
+        raise EmailProviderConfigurationError("SMTP sender setup is incomplete.")
+    try:
+        if use_tls:
+            with smtplib.SMTP(host, port, timeout=15) as client:
+                client.starttls(context=ssl.create_default_context())
+                client.login(username, password)
+        else:
+            with smtplib.SMTP_SSL(host, port, timeout=15, context=ssl.create_default_context()) as client:
+                client.login(username, password)
+    except Exception as exc:
+        logger.warning("SMTP connection verification failed for host=%s username=%s", host, username)
+        raise EmailProviderRequestError("SMTP connection could not be verified. Check host, port, username and app password.") from exc
+
+
 def send_email(
     *,
     to_email: str,

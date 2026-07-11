@@ -1268,6 +1268,7 @@ class OutreachSenderStatusOut(BaseModel):
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_configured: bool = False
+    smtp_verified_at: str = ""
 
 
 class CheckoutRequest(BaseModel):
