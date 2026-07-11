@@ -159,7 +159,7 @@ def _domain_search(domain: str) -> list[dict[str, Any]]:
     )
     payload = data.get("data") if isinstance(data.get("data"), dict) else {}
     emails = payload.get("emails") if isinstance(payload.get("emails"), list) else []
-    logger.info("hunter.domain_search raw_response domain=%s emails=%s preview=%s", domain, len(emails), _preview(data))
+    logger.info("hunter.domain_search parsed domain=%s emails=%s decision_maker_candidates=%s", domain, len(emails), len([item for item in emails if isinstance(item, dict) and _is_decision_maker(item)]))
     return [item for item in emails if isinstance(item, dict) and _is_decision_maker(item)]
 
 

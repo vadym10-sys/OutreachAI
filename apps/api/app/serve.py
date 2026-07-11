@@ -50,6 +50,7 @@ def main() -> None:
         format="%(levelname)s:%(name)s:%(message)s",
         force=True
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     logger = logging.getLogger("outreachai.api.serve")
     raw_port = os.getenv("PORT", "8000")
     port = int(raw_port)

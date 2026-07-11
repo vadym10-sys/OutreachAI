@@ -31,6 +31,7 @@ logging.basicConfig(
     format="%(levelname)s:%(name)s:%(message)s",
     force=True
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("outreachai.api")
 settings = get_settings()
 init_sentry(settings)
