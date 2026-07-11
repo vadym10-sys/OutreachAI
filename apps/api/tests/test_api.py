@@ -1169,12 +1169,35 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert approved.json()["email"]["delivery_status"] == "approved"
     assert approved.json()["company"]["crm_stage"] == "Approved"
 
-    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: {"id": "workspace-app-send-1"})
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Usage Sales",
+            "sender_email": "sales@usage-email.example",
+            "reply_to": "reply@usage-email.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    sent_payload: dict[str, object] = {}
+
+    def fake_send(**kwargs):
+        sent_payload.update(kwargs)
+        return {"id": "workspace-app-send-1"}
+
+    monkeypatch.setattr("app.api.usage.send_email", fake_send)
     sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
     assert sent.status_code == 200
     assert sent.json()["status"] == "success"
     assert sent.json()["email"]["delivery_status"] == "sent"
     assert sent.json()["company"]["crm_stage"] == "Sent"
+    assert sent_payload["from_email"] == "sales@usage-email.example"
+    assert sent_payload["from_name"] == "Usage Sales"
+    assert sent_payload["reply_to"] == "reply@usage-email.example"
 
 
 def test_workspace_app_complete_opportunity_prepares_research_contact_and_review_draft(monkeypatch) -> None:

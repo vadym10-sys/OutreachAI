@@ -1487,6 +1487,8 @@ function OpportunityCard({
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
+  const [senderStatus, setSenderStatus] = useState<OutreachSenderStatus | null>(null);
+  const [senderLoading, setSenderLoading] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [aiNextAction, setAiNextAction] = useState("");
@@ -1505,6 +1507,32 @@ function OpportunityCard({
   const dataFacts = opportunityDataFacts(lead, profile, t);
   const dataSummary = dataCollectionSummaryFromFacts(dataFacts, t);
   const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
+  const recipientEmail = String(lead.email || "").trim();
+
+  async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
+    setSenderLoading(true);
+    try {
+      const next = await withTimeout(
+        api<OutreachSenderStatus>("/api/outreach/sender/status"),
+        12000,
+        "Email sending setup could not be checked. Please try again."
+      );
+      setSenderStatus(next);
+      return next;
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, "Email sending setup could not be checked. Please try again.");
+      setError(t(reason));
+      setStatus("");
+      trackEvent("email_sender_status_failed", {
+        lead_id: lead.id,
+        company: lead.company,
+        reason
+      });
+      return null;
+    } finally {
+      setSenderLoading(false);
+    }
+  }
 
   async function completeResearch() {
     if (!companyId) {
@@ -1673,7 +1701,19 @@ function OpportunityCard({
       setError(t("Approve the draft before sending."));
       return;
     }
+    if (!recipientEmail) {
+      setError(t("AI has not found a recipient email yet. Find a contact or add an email manually before sending."));
+      setStatus(t("The email draft is still saved for review."));
+      return;
+    }
     if (!confirmed) {
+      const sender = await loadSenderStatusForSend();
+      if (!sender?.connected) {
+        setSendConfirmOpen(false);
+        setError(t(sender?.next_action || sender?.reason || "Connect your sending email in Settings before sending."));
+        setStatus(t("The approved draft is saved. Connect your sender email, then send it from this card."));
+        return;
+      }
       setSendConfirmOpen(true);
       setError("");
       setStatus(t("Review recipient before sending. Nothing has been sent yet."));
@@ -1683,6 +1723,10 @@ function OpportunityCard({
     setError("");
     setStatus(t("Sending approved email..."));
     try {
+      const sender = senderStatus?.connected ? senderStatus : await loadSenderStatusForSend();
+      if (!sender?.connected) {
+        throw new Error(sender?.next_action || sender?.reason || "Connect your sending email in Settings before sending.");
+      }
       const sentResult = await withTimeout(
         api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}/send`, { method: "POST" }),
         30000,
@@ -1866,6 +1910,16 @@ function OpportunityCard({
       {draft && (readyToSend || draft.delivery_status === "approved" || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">{t("Personalized first email")}</p>
         <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Contacted.") : draft.delivery_status === "approved" ? t("Email approved. Nothing was sent yet.") : t("Review this draft before sending. No email has been sent yet.")}</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-2">
+          <div className="rounded-lg bg-white p-3 text-sm">
+            <span className="font-bold text-slate-700">{t("Recipient")}:</span>{" "}
+            <span className="font-semibold text-ink">{recipientEmail || t("Find a contact or add an email manually.")}</span>
+          </div>
+          <div className="rounded-lg bg-white p-3 text-sm">
+            <span className="font-bold text-slate-700">{t("Sender")}:</span>{" "}
+            <span className="font-semibold text-ink">{senderStatus?.sender_email || t("Checked before sending.")}</span>
+          </div>
+        </div>
         <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
         <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{draft.body}</p>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -1877,7 +1931,10 @@ function OpportunityCard({
       {sendConfirmOpen && draft?.delivery_status === "approved" && <section className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
         <p className="text-sm font-bold text-ink">{t("Confirm before sending")}</p>
         <p className="mt-2 text-sm leading-6 text-slate-700">{t("This will send one email to the saved recipient. Nothing is sent until you confirm.")}</p>
-        <p className="mt-3 rounded-lg bg-white p-3 text-sm font-semibold text-slate-800">{t("Recipient")}: {lead.email || t("Not available")}</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-2">
+          <p className="rounded-lg bg-white p-3 text-sm font-semibold text-slate-800">{t("From")}: {senderStatus?.sender_email || t("Not connected")}</p>
+          <p className="rounded-lg bg-white p-3 text-sm font-semibold text-slate-800">{t("To")}: {recipientEmail || t("Not available")}</p>
+        </div>
         <div className="mt-4 grid gap-2 min-[430px]:grid-cols-2">
           <SecondaryButton type="button" onClick={() => setSendConfirmOpen(false)} disabled={sending}>{t("Cancel")}</SecondaryButton>
           <PrimaryButton type="button" onClick={() => sendApprovedEmail(true)} disabled={sending}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {t("Confirm and send")}</PrimaryButton>
@@ -1889,7 +1946,7 @@ function OpportunityCard({
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Run all missing steps" : "Refresh AI research")}</PrimaryButton>
         <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve email")}</SecondaryButton>
-        <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || draft.delivery_status !== "approved"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
+        <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || senderLoading || draft.delivery_status !== "approved"}>{sending || senderLoading ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </article>
   );
