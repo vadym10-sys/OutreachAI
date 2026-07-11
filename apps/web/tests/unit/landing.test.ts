@@ -40,6 +40,7 @@ describe("i18n", () => {
       "Analytics",
       "Emails generated",
       "Workspace data",
+      "No critical improvement needed right now.",
     ];
 
     for (const phrase of phrases) {

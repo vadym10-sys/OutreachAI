@@ -213,6 +213,20 @@ function safeStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
 }
 
+function uniqueStrings(values: Array<string | undefined | null>) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
 function leadKey(lead: Lead) {
   return String(lead.crm_company_id || lead.id || lead.place_id || lead.website || lead.domain || `${lead.company}:${lead.city || ""}`).toLowerCase();
 }
@@ -2613,10 +2627,10 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   const hasDraft = Boolean(company.generated_emails.length);
   const hasApproved = Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"));
   const intelligence = company.intelligence_quality || {};
-  const qualitySources = safeArray(intelligence.used_sources).map(String).filter(Boolean);
-  const qualityBasis = safeArray(intelligence.decision_basis).map(String).filter(Boolean);
-  const qualityGaps = safeArray(intelligence.gaps).map(String).filter(Boolean);
-  const providerImprovements = safeArray(intelligence.provider_improvements).map(String).filter(Boolean);
+  const qualitySources = uniqueStrings(safeArray(intelligence.used_sources).map(String));
+  const qualityBasis = uniqueStrings(safeArray(intelligence.decision_basis).map(String));
+  const qualityGaps = uniqueStrings(safeArray(intelligence.gaps).map(String));
+  const providerImprovements = uniqueStrings(safeArray(intelligence.provider_improvements).map(String));
   const deepSearch = company.deep_contact_search || {};
   const deepSelected = deepSearch.selected_decision_maker || undefined;
   const technologies = safeArray(company.technologies).map(String).filter(Boolean);
@@ -2696,7 +2710,7 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
         ? "The company looks relevant, but one missing field could reduce reply quality."
         : "The lead is saved, but there is not enough verified context to justify outreach yet."
   );
-  const strongestSignals = [
+  const strongestSignals = uniqueStrings([
     ...buyingSignals,
     ...qualityBasis,
     ...qualitySources,
@@ -2706,19 +2720,19 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
     company.google_rating ? "Public reputation signal available" : "",
     hasContact ? "Contact path available" : "",
     company.generated_emails.length ? "Personalized draft prepared" : "",
-  ].filter(Boolean).slice(0, 3);
-  const topRisks = [
+  ]).slice(0, 3);
+  const topRisks = uniqueStrings([
     ...risks,
     ...qualityGaps,
     !hasContact ? "No verified decision-maker email yet" : "",
     !hasResearch ? "Company research is incomplete" : "",
     !hasApproved ? "Message still needs human approval" : "",
-  ].filter(Boolean).slice(0, 3);
-  const actionPlan = [
+  ]).slice(0, 3);
+  const actionPlan = uniqueStrings([
     nextBestAction,
     hasContact ? "Review the first message against the sales angle." : "Find or add the decision maker before sending.",
     hasApproved ? "Send the approved email and track reply intent." : "Approve only after the message is specific and safe to send.",
-  ].filter(Boolean).slice(0, 3);
+  ]).slice(0, 3);
   return { score, fit, decision, decisionReason, strongestSignals, topRisks, actionPlan, whatTheyDo, whyFit, likelyNeed, whyUs, opener, firstMessageSubject, firstMessage, replyProbability, replyReason, blocker, meetingPrep, nextBestAction, qualitySources, qualityGaps, providerImprovements, technologies };
 }
 
@@ -3143,7 +3157,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const hasVerifiedEmail = Boolean(displayCurrent.email || displayCurrent.contacts.some((contact) => contact.email));
   const aiBuyingSignals = safeArray(displayCurrent.buying_signals).filter(Boolean);
   const aiRisks = safeArray(displayCurrent.risks).filter(Boolean);
-  const buyingSignals = [
+  const buyingSignals = uniqueStrings([
     ...aiBuyingSignals,
     displayCurrent.website_analyzed_at ? "Website research completed" : "",
     hasVerifiedEmail ? "Verified email available" : "",
@@ -3151,13 +3165,13 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     displayCurrent.generated_emails.length ? "Outreach draft prepared" : "",
     displayCurrent.replied_at ? "Reply received" : "",
     displayCurrent.google_rating ? "Public reputation signal available" : ""
-  ].filter(Boolean);
-  const risks = [
+  ]);
+  const risks = uniqueStrings([
     ...aiRisks,
     !hasVerifiedEmail ? "No verified email yet" : "",
     !displayCurrent.ai_summary ? "Company research is incomplete" : "",
     !displayCurrent.generated_emails.length ? "No approved outreach draft yet" : ""
-  ].filter(Boolean);
+  ]);
   const contactSearchAttempted = Boolean(current.contact_search_checked_at || current.contact_search_status);
   const contactSearchEmpty = !current.email && !current.contacts.some((contact) => contact.email) && current.contact_search_status === "no_verified_email";
   const contactRolesSearched = safeArray(current.decision_maker_roles_searched).filter(Boolean);
@@ -3574,7 +3588,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <p className="text-xs font-bold uppercase text-slate-500">{t("What would improve it")}</p>
             <ul className="mt-2 space-y-2 text-sm leading-6 text-slate-700">
-              {(salesBrief.qualityGaps.length ? salesBrief.qualityGaps : salesBrief.providerImprovements.slice(0, 2)).slice(0, 4).map((item) => <li key={item} className="flex gap-2"><AlertTriangle className="mt-1 shrink-0 text-amber-700" size={15} />{t(item)}</li>)}
+              {(salesBrief.qualityGaps.length ? salesBrief.qualityGaps : salesBrief.providerImprovements.length ? salesBrief.providerImprovements : ["No critical improvement needed right now."]).slice(0, 4).map((item) => <li key={item} className="flex gap-2"><AlertTriangle className="mt-1 shrink-0 text-amber-700" size={15} />{t(item)}</li>)}
             </ul>
           </div>
         </div>
