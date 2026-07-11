@@ -3,9 +3,7 @@ from __future__ import annotations
 import os
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from threading import Lock
 from types import SimpleNamespace
 from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
@@ -42,10 +40,11 @@ from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
-from app.models.entities import AuditLog, Campaign, Company, Contact, Deal, EmailMessage, Lead, LeadStatus, Workspace
+from app.models.entities import AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Workspace
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
+from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, enqueue_company_enrichment_job, mark_cancelled, update_job_progress
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
 from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
 from app.services.deep_contact_search import DeepContactSearchError, normalize_domain, run_deep_contact_search
@@ -58,12 +57,6 @@ router = APIRouter()
 UsageStatus = Literal["success", "partial_success", "empty", "provider_unavailable", "timeout", "error"]
 PLACEHOLDER_EMAIL_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
 MAX_TURNKEY_RESEARCH_LEADS = 10
-AUTO_ENRICHMENT_MAX_WORKERS = max(1, min(4, int(os.getenv("OUTREACHAI_ENRICHMENT_WORKERS", "2") or "2")))
-AUTO_ENRICHMENT_MAX_RETRIES = max(1, min(4, int(os.getenv("OUTREACHAI_ENRICHMENT_RETRIES", "2") or "2")))
-AUTO_ENRICHMENT_CACHE_HOURS = max(1, min(168, int(os.getenv("OUTREACHAI_ENRICHMENT_CACHE_HOURS", "24") or "24")))
-_AUTO_ENRICHMENT_EXECUTOR = ThreadPoolExecutor(max_workers=AUTO_ENRICHMENT_MAX_WORKERS, thread_name_prefix="outreachai-enrichment")
-_AUTO_ENRICHMENT_LOCK = Lock()
-_AUTO_ENRICHMENT_ACTIVE: set[str] = set()
 LOCALE_LANGUAGE_NAMES = {
     "en": "English",
     "en-us": "American English",
@@ -1124,131 +1117,131 @@ def _lead_recently_enriched(lead: Lead) -> bool:
         last_enriched = datetime.fromisoformat(raw_last_enriched.replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError:
         return False
-    return datetime.utcnow() - last_enriched < timedelta(hours=AUTO_ENRICHMENT_CACHE_HOURS)
+    settings = get_settings()
+    cache_hours = max(1, min(168, int(settings.enrichment_cache_hours or 24)))
+    return datetime.utcnow() - last_enriched < timedelta(hours=cache_hours)
 
 
-def _run_auto_enrichment_job(user_id: str, workspace_id: UUID, lead_ids: list[UUID], request_id: str, language: str) -> None:
+def process_enrichment_job(job_id: UUID) -> None:
     db = get_sessionmaker()()
-    request = _background_request(language)
     try:
-        workspace = db.get(Workspace, workspace_id)
-        if workspace is None:
-            logger.warning("Auto enrichment workspace missing request_id=%s workspace_id=%s", request_id, workspace_id)
+        job = db.get(EnrichmentJob, job_id)
+        if job is None:
             return
-        for lead_id in lead_ids:
-            active_key = str(lead_id)
-            try:
-                lead = db.scalar(select(Lead).where(Lead.id == lead_id, Lead.workspace_id == workspace_id))
-                if lead is None:
-                    continue
-                if _lead_enrichment_cancelled(lead):
-                    lead.notes = _merge_lead_metadata(
-                        lead,
-                        _enrichment_metadata_update("cancelled", request_id, {"enrichment_message": "Automatic enrichment was stopped."}),
-                    )
-                    _set_workflow_stages(
-                        lead,
-                        {
-                            "website_analysis": "waiting",
-                            "decision_maker": "waiting",
-                            "verified_email": "waiting",
-                            "ai_email": "waiting",
-                        },
-                    )
-                    _sync_lead_to_crm(db, user_id, workspace, lead)
-                    db.commit()
-                    continue
+        workspace = db.get(Workspace, job.workspace_id)
+        lead = db.scalar(select(Lead).where(Lead.id == job.lead_id, Lead.workspace_id == job.workspace_id))
+        request_id = job.request_id or str(job.id)
+        if workspace is None or lead is None:
+            mark_cancelled(db, job, message="Workspace or lead no longer exists.")
+            return
+        request = _background_request(job.language or "English")
+        if job.cancel_requested or _lead_enrichment_cancelled(lead):
+            lead.notes = _merge_lead_metadata(
+                lead,
+                _enrichment_metadata_update("cancelled", request_id, {"enrichment_message": "Automatic enrichment was stopped."}),
+            )
+            _set_workflow_stages(
+                lead,
+                {"website_analysis": "waiting", "decision_maker": "waiting", "verified_email": "waiting", "ai_email": "waiting"},
+            )
+            _sync_lead_to_crm(db, job.user_id, workspace, lead)
+            mark_cancelled(db, job)
+            return
 
-                lead.notes = _merge_lead_metadata(
-                    lead,
-                    _enrichment_metadata_update("running", request_id, {"enrichment_attempt": int(_lead_metadata(lead).get("enrichment_attempt") or 0) + 1}),
-                )
-                db.commit()
+        lead.notes = _merge_lead_metadata(
+            lead,
+            _enrichment_metadata_update(
+                "running",
+                request_id,
+                {
+                    "enrichment_attempt": int(job.attempts or 1),
+                    "enrichment_job_id": str(job.id),
+                },
+            ),
+        )
+        _sync_lead_to_crm(db, job.user_id, workspace, lead)
+        update_job_progress(db, job, stage="website_analysis", message="AI is analyzing the company and website.", percent=25)
+        _lead_trace(request_id, "durable_auto_enrichment_started", lead_id=str(lead.id), job_id=str(job.id), company=lead.company, attempt=job.attempts)
 
-                warnings: list[str] = []
-                for attempt in range(1, AUTO_ENRICHMENT_MAX_RETRIES + 1):
-                    try:
-                        _lead_trace(request_id, "auto_enrichment_attempt_started", lead_id=str(lead.id), company=lead.company, attempt=attempt)
-                        warnings = _complete_turnkey_b2b_research(db, request, user_id, workspace, [lead], request_id)
-                        break
-                    except Exception as exc:
-                        db.rollback()
-                        capture_provider_exception(
-                            exc,
-                            provider="auto_enrichment",
-                            endpoint="workspace_app.auto_enrichment",
-                            workspace_id=workspace_id,
-                            lead_id=lead_id,
-                            extra={"request_id": request_id, "attempt": attempt},
-                        )
-                        _lead_trace(request_id, "auto_enrichment_attempt_failed", lead_id=str(lead_id), reason=str(exc), attempt=attempt)
-                        if attempt >= AUTO_ENRICHMENT_MAX_RETRIES:
-                            raise
+        warnings = _complete_turnkey_b2b_research(db, request, job.user_id, workspace, [lead], request_id)
+        if job.cancel_requested:
+            mark_cancelled(db, job)
+            return
 
-                lead = db.scalar(select(Lead).where(Lead.id == lead_id, Lead.workspace_id == workspace_id))
-                if lead is None:
-                    continue
-                status = "partial_success" if warnings else "completed"
-                lead.notes = _merge_lead_metadata(
-                    lead,
-                    _enrichment_metadata_update(
-                        status,
-                        request_id,
-                        {
-                            "enrichment_message": "Automatic enrichment finished with missing fields." if warnings else "Automatic enrichment completed.",
-                            "enrichment_warnings": warnings[:5],
-                        },
-                    ),
-                )
-                _sync_lead_to_crm(db, user_id, workspace, lead)
-                db.commit()
-                _lead_trace(request_id, "auto_enrichment_finished", lead_id=str(lead_id), status=status, warnings=len(warnings))
-            except Exception as exc:
-                db.rollback()
-                capture_provider_exception(exc, provider="auto_enrichment", endpoint="workspace_app.auto_enrichment.final", workspace_id=workspace_id, lead_id=lead_id, extra={"request_id": request_id})
-                failed_lead = db.scalar(select(Lead).where(Lead.id == lead_id, Lead.workspace_id == workspace_id))
-                if failed_lead is not None:
-                    failed_lead.notes = _merge_lead_metadata(
-                        failed_lead,
-                        _enrichment_metadata_update("error", request_id, {"enrichment_message": "Automatic enrichment could not finish. Retry from the company card."}),
-                    )
-                    _set_workflow_stages(
-                        failed_lead,
-                        {
-                            "website_analysis": "error",
-                            "decision_maker": "error",
-                            "verified_email": "error",
-                            "ai_email": "error",
-                        },
-                    )
-                    _sync_lead_to_crm(db, user_id, workspace, failed_lead)
-                    db.commit()
-                _lead_trace(request_id, "auto_enrichment_failed", lead_id=str(lead_id), reason=str(exc))
-            finally:
-                with _AUTO_ENRICHMENT_LOCK:
-                    _AUTO_ENRICHMENT_ACTIVE.discard(active_key)
+        lead = db.scalar(select(Lead).where(Lead.id == job.lead_id, Lead.workspace_id == job.workspace_id))
+        if lead is None:
+            mark_cancelled(db, job, message="Lead no longer exists.")
+            return
+        status = "partial_success" if warnings else "completed"
+        lead.notes = _merge_lead_metadata(
+            lead,
+            _enrichment_metadata_update(
+                status,
+                request_id,
+                {
+                    "enrichment_job_id": str(job.id),
+                    "enrichment_message": "Automatic enrichment finished with missing fields." if warnings else "Automatic enrichment completed.",
+                    "enrichment_warnings": warnings[:5],
+                },
+            ),
+        )
+        _sync_lead_to_crm(db, job.user_id, workspace, lead)
+        complete_job(db, job, partial=bool(warnings), warnings=warnings)
+        _lead_trace(request_id, "durable_auto_enrichment_finished", lead_id=str(lead.id), job_id=str(job.id), status=status, warnings=len(warnings))
     finally:
         db.close()
 
 
-def _enqueue_auto_enrichment(request: Request, user_id: str, workspace, leads: list[Lead], request_id: str, *, force: bool = False) -> bool:
-    lead_ids: list[UUID] = []
-    with _AUTO_ENRICHMENT_LOCK:
-        for lead in leads[:MAX_TURNKEY_RESEARCH_LEADS]:
-            if not force and _lead_recently_enriched(lead):
-                continue
-            active_key = str(lead.id)
-            if active_key in _AUTO_ENRICHMENT_ACTIVE:
-                continue
-            _AUTO_ENRICHMENT_ACTIVE.add(active_key)
-            lead_ids.append(lead.id)
-    if not lead_ids:
-        return False
+def mark_enrichment_job_failed(job_id: UUID, exc: Exception, *, final: bool = False) -> None:
+    db = get_sessionmaker()()
+    try:
+        job = db.get(EnrichmentJob, job_id)
+        if job is None:
+            return
+        if not final:
+            return
+        workspace = db.get(Workspace, job.workspace_id)
+        lead = db.scalar(select(Lead).where(Lead.id == job.lead_id, Lead.workspace_id == job.workspace_id))
+        if workspace is None or lead is None:
+            return
+        lead.notes = _merge_lead_metadata(
+            lead,
+            _enrichment_metadata_update("error", job.request_id or str(job.id), {"enrichment_message": "Automatic enrichment could not finish. Retry from the company card."}),
+        )
+        _set_workflow_stages(lead, {"website_analysis": "error", "decision_maker": "error", "verified_email": "error", "ai_email": "error"})
+        _sync_lead_to_crm(db, job.user_id, workspace, lead)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _enqueue_auto_enrichment(db: Session, request: Request, user_id: str, workspace, leads: list[Lead], request_id: str, *, force: bool = False) -> bool:
+    jobs: list[EnrichmentJob] = []
+    settings = get_settings()
     language = _workspace_language(request, workspace)
+    max_attempts = max(1, min(5, int(settings.enrichment_max_retries or 2) + 1))
+    for lead in leads[:MAX_TURNKEY_RESEARCH_LEADS]:
+        if not force and _lead_recently_enriched(lead):
+            continue
+        job = enqueue_company_enrichment_job(
+            db,
+            user_id=user_id,
+            workspace_id=workspace.id,
+            lead=lead,
+            request_id=request_id,
+            language=language,
+            max_attempts=max_attempts,
+            force=force,
+        )
+        if job:
+            jobs.append(job)
+    db.commit()
+    if not jobs:
+        return False
     if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("OUTREACHAI_SYNC_ENRICHMENT") == "true":
-        _run_auto_enrichment_job(user_id, workspace.id, lead_ids, request_id, language)
+        for job in jobs:
+            process_enrichment_job(job.id)
         return True
-    _AUTO_ENRICHMENT_EXECUTOR.submit(_run_auto_enrichment_job, user_id, workspace.id, lead_ids, request_id, language)
     return False
 
 
@@ -1822,7 +1815,7 @@ def _search_leads_impl(
             companies.append(_minimal_crm_company_out(fallback_company))
 
     db.commit()
-    enrichment_ran_inline = _enqueue_auto_enrichment(request, user.user_id, workspace, queued_for_enrichment, request_id) if queued_for_enrichment else False
+    enrichment_ran_inline = _enqueue_auto_enrichment(db, request, user.user_id, workspace, queued_for_enrichment, request_id) if queued_for_enrichment else False
     if enrichment_ran_inline:
         db.expire_all()
         companies = []
@@ -2430,7 +2423,7 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
     _mark_auto_enrichment_queued(lead, request_id)
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     db.commit()
-    ran_inline = _enqueue_auto_enrichment(request, user.user_id, workspace, [lead], request_id, force=True)
+    ran_inline = _enqueue_auto_enrichment(db, request, user.user_id, workspace, [lead], request_id, force=True)
     if ran_inline:
         db.expire_all()
         company = _scoped_company(db, workspace.id, company_id)
@@ -2454,6 +2447,7 @@ def cancel_company_auto_enrichment(company_id: UUID, request: Request, user: Wor
     if not lead:
         return UsageActionOut(status="error", message="This company does not have a running AI enrichment job.", company=_crm_company_out(db, workspace, user.user_id, company))
     request_id = request.headers.get("x-request-id") or str(uuid4())
+    cancel_jobs_for_lead(db, workspace_id=workspace.id, lead_id=lead.id, reason="AI enrichment was stopped by the user.")
     lead.notes = _merge_lead_metadata(
         lead,
         _enrichment_metadata_update(

@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     cache_billing_ttl_seconds: int = 60
     cache_lead_search_ttl_seconds: int = 600
     cache_website_analysis_ttl_seconds: int = 3600
+    enrichment_worker_enabled: bool = True
+    enrichment_worker_concurrency: int = 2
+    enrichment_worker_poll_seconds: float = 2.0
+    enrichment_worker_claim_timeout_seconds: int = 900
+    enrichment_max_retries: int = 2
+    enrichment_cache_hours: int = 24
     debug: bool = False
     encryption_key: str = "replace-with-32-byte-url-safe-key"
     auto_create_tables: bool = True

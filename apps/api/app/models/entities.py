@@ -360,6 +360,35 @@ class SalesEmployeeTaskResult(Base):
     employee: Mapped[AISalesEmployee] = relationship()
 
 
+class EnrichmentJob(Base):
+    __tablename__ = "enrichment_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    lead_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    job_type: Mapped[str] = mapped_column(String(80), default="company_enrichment", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=2)
+    request_id: Mapped[str] = mapped_column(String(80), index=True)
+    language: Mapped[str] = mapped_column(String(80), default="English")
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    progress_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    cancel_requested: Mapped[bool] = mapped_column(default=False, index=True)
+    locked_by: Mapped[str] = mapped_column(String(120), default="", index=True)
+    locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    run_after: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+    lead: Mapped[Lead] = relationship()
+
+
 class AICEOBriefing(Base):
     __tablename__ = "ai_ceo_briefings"
 

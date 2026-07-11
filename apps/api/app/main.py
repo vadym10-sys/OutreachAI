@@ -280,6 +280,9 @@ def startup() -> None:
             backup_ready = database_backups_operational(db, settings)
         if not backup_ready:
             logger.warning("Database backup policy is not confirmed by runtime configuration.")
+        from app.jobs.worker import start_embedded_enrichment_worker
+
+        start_embedded_enrichment_worker()
     except Exception:
         logger.exception("Startup initialization failed; API will keep running so /api/health remains available")
         traceback.print_exc(file=sys.stdout)
@@ -288,6 +291,9 @@ def startup() -> None:
 @app.on_event("shutdown")
 def shutdown() -> None:
     try:
+        from app.jobs.worker import stop_embedded_enrichment_worker
+
+        stop_embedded_enrichment_worker()
         get_engine().dispose()
         logger.info("Database engine disposed during graceful shutdown")
     except Exception:

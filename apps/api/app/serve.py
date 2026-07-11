@@ -53,10 +53,19 @@ def main() -> None:
     logger = logging.getLogger("outreachai.api.serve")
     raw_port = os.getenv("PORT", "8000")
     port = int(raw_port)
+    process_role = os.getenv("OUTREACHAI_PROCESS_ROLE", "api").strip().lower()
     logger.info("Startup diagnostics: python=%s", sys.version.replace("\n", " "))
     logger.info("Startup diagnostics: cwd=%s", os.getcwd())
     logger.info("Startup diagnostics: PORT=%s", raw_port)
+    logger.info("Startup diagnostics: OUTREACHAI_PROCESS_ROLE=%s", process_role)
     logger.info("Startup diagnostics: DATABASE_URL present=%s", bool(os.getenv("DATABASE_URL")))
+
+    if process_role == "worker":
+        logger.info("Starting OutreachAI enrichment worker process")
+        from app.jobs.worker import main as worker_main
+
+        worker_main()
+        return
 
     try:
         main_module = importlib.import_module("app.main")

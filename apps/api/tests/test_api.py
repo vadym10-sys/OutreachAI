@@ -45,7 +45,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -963,7 +963,7 @@ def test_workspace_app_ai_lead_command_uses_fast_search_path(monkeypatch) -> Non
     queued: list[str] = []
     monkeypatch.setattr(
         "app.api.usage._enqueue_auto_enrichment",
-        lambda request, user_id, workspace, leads, request_id, **kwargs: queued.extend([str(lead.id) for lead in leads]) or False,
+        lambda db, request, user_id, workspace, leads, request_id, **kwargs: queued.extend([str(lead.id) for lead in leads]) or False,
     )
     monkeypatch.setattr(
         "app.api.usage.search_google_places",
@@ -1288,7 +1288,7 @@ def test_workspace_app_company_enrichment_restart_and_cancel(monkeypatch) -> Non
     queued: list[str] = []
     monkeypatch.setattr(
         "app.api.usage._enqueue_auto_enrichment",
-        lambda request, user_id, workspace, leads, request_id, **kwargs: queued.extend([str(lead.id) for lead in leads]) or False,
+        lambda db, request, user_id, workspace, leads, request_id, **kwargs: queued.extend([str(lead.id) for lead in leads]) or False,
     )
 
     restarted = client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=headers)
@@ -1305,6 +1305,49 @@ def test_workspace_app_company_enrichment_restart_and_cancel(monkeypatch) -> Non
     assert cancel_payload["status"] == "success"
     assert cancel_payload["company"]["workflow_stages"]["website_analysis"] == "waiting"
     assert cancel_payload["company"]["workflow_stages"]["decision_maker"] == "waiting"
+
+
+def test_workspace_app_enrichment_queue_persists_and_cancels_job() -> None:
+    from app.services.enrichment_queue import cancel_jobs_for_lead, enqueue_company_enrichment_job
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-queue@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Durable Queue", "website": "https://usage-queue.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        lead = db.scalar(select(Lead).where(Lead.company == "Usage Durable Queue"))
+        assert lead is not None
+        workspace = db.get(Workspace, lead.workspace_id)
+        assert workspace is not None
+        job = enqueue_company_enrichment_job(
+            db,
+            user_id=lead.user_id,
+            workspace_id=workspace.id,
+            lead=lead,
+            request_id="queue-test",
+            language="Russian",
+            max_attempts=3,
+        )
+        db.commit()
+        assert job is not None
+        stored = db.get(EnrichmentJob, job.id)
+        assert stored is not None
+        assert stored.status == "pending"
+        assert stored.progress_json["stage"] == "queued"
+
+        cancelled = cancel_jobs_for_lead(db, workspace_id=workspace.id, lead_id=lead.id, reason="Test cancellation.")
+        assert cancelled == 1
+        db.refresh(stored)
+        assert stored.status == "cancelled"
+        assert stored.cancel_requested is True
+        assert stored.progress_json["stage"] == "cancelled"
+    finally:
+        db.close()
 
 
 def test_workspace_app_complete_opportunity_prepares_research_contact_and_review_draft(monkeypatch) -> None:
