@@ -941,6 +941,15 @@ def test_workspace_app_ai_lead_command_parses_sales_search() -> None:
     assert ru_filters.industry == "Construction"
     assert ru_filters.limit == 10
 
+    beauty_workspace = SimpleNamespace(target_country="Europe", industry="")
+    beauty_filters, beauty_missing = _parse_lead_command("Хочу найти клиентов для своей продукции по косметике", beauty_workspace)
+    assert beauty_missing == []
+    assert beauty_filters is not None
+    assert beauty_filters.country == "Poland"
+    assert beauty_filters.city == "Warsaw"
+    assert beauty_filters.industry == "Beauty & cosmetics"
+    assert "beauty" in beauty_filters.keyword
+
 
 def test_workspace_app_lead_search_reports_reused_duplicates(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-search-duplicates@example.com"}

@@ -239,6 +239,8 @@ COUNTRY_ALIASES = {
     "united kingdom": "United Kingdom",
     "great britain": "United Kingdom",
     "britain": "United Kingdom",
+    "europe": "Poland",
+    "европ": "Poland",
 }
 
 INDUSTRY_ALIASES = {
@@ -246,10 +248,26 @@ INDUSTRY_ALIASES = {
     "SaaS": ["saas", "software", "стартап", "софт", "it company"],
     "Real estate": ["real estate", "недвиж", "property", "realtor"],
     "Marketing": ["marketing", "маркет", "agency", "агентств"],
+    "Beauty & cosmetics": ["cosmetic", "cosmetics", "beauty", "skincare", "makeup", "космет", "красот", "салон красоты", "парфюм", "perfume", "spa"],
     "Dental": ["dental", "dentist", "стомат", "clinic"],
     "Restaurant": ["restaurant", "рестор", "cafe", "bar"],
     "Logistics": ["logistics", "transport", "логист", "delivery"],
     "Manufacturing": ["manufacturing", "factory", "завод", "производ"],
+}
+
+COUNTRY_DEFAULT_CITY = {
+    "Germany": "Berlin",
+    "Poland": "Warsaw",
+    "France": "Paris",
+    "Spain": "Madrid",
+    "Italy": "Milan",
+    "Ukraine": "Kyiv",
+    "United States": "New York",
+    "United Kingdom": "London",
+}
+
+INDUSTRY_SEARCH_KEYWORDS = {
+    "Beauty & cosmetics": "beauty salons cosmetics stores skincare spa",
 }
 
 
@@ -278,13 +296,22 @@ def _parse_lead_command(command: str, workspace) -> tuple[LeadFinderRequest | No
     if not country and city:
         country = next((value[1] for value in CITY_COUNTRY_MAP.values() if value[0].lower() == city.lower()), "")
     if not country:
-        country = (getattr(workspace, "target_country", "") or "").strip()
+        workspace_country = (getattr(workspace, "target_country", "") or "").strip()
+        country = COUNTRY_ALIASES.get(workspace_country.lower(), workspace_country)
+    if country.lower() in {"europe", "eu", "европа"}:
+        country = "Poland"
 
     industry = ""
     for canonical, aliases in INDUSTRY_ALIASES.items():
         if any(alias in normalized for alias in aliases):
             industry = canonical
             break
+    if not industry:
+        workspace_industry = (getattr(workspace, "industry", "") or "").strip()
+        industry = next((canonical for canonical, aliases in INDUSTRY_ALIASES.items() if workspace_industry == canonical or any(alias in workspace_industry.lower() for alias in aliases)), workspace_industry)
+
+    if not city and country:
+        city = COUNTRY_DEFAULT_CITY.get(country, "")
 
     if not country:
         missing.append("country")
@@ -301,7 +328,7 @@ def _parse_lead_command(command: str, workspace) -> tuple[LeadFinderRequest | No
             city=city,
             industry=industry,
             category=industry,
-            keyword=industry,
+            keyword=INDUSTRY_SEARCH_KEYWORDS.get(industry, industry),
             company_size=company_size or None,
             employee_count=company_size or None,
             radius=10000,
