@@ -1067,7 +1067,7 @@ def _complete_public_company_details(db: Session, request: Request, user_id: str
         _lead_trace(request_id, "google_place_details_failed", lead_id=str(lead.id), company=lead.company, place_id=place_id, reason=str(exc))
         return False
 
-    updates = {key: value for key, value in details.items() if value not in {None, ""}}
+    updates = {key: value for key, value in details.items() if _metadata_value_present(value)}
     if not updates:
         return False
     if not lead.website and updates.get("website"):
@@ -1099,7 +1099,7 @@ def _complete_public_details_for_search_results(leads: list[LeadOut], request_id
             _lead_trace(request_id, "google_place_details_failed", company=lead.company, place_id=place_id, reason=str(exc))
             completed.append(lead)
             continue
-        updates = {key: value for key, value in details.items() if value not in {None, ""}}
+        updates = {key: value for key, value in details.items() if _metadata_value_present(value)}
         if not updates:
             completed.append(lead)
             continue
@@ -1123,6 +1123,16 @@ def _complete_public_details_for_search_results(leads: list[LeadOut], request_id
 
 def _merge_metadata_notes_for_lead_out(lead: LeadOut, updates: dict[str, Any]) -> str:
     return _merge_lead_metadata(lead, {**_lead_metadata(lead), **updates})
+
+
+def _metadata_value_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
 
 
 def _preserve_search_public_details(original: list[LeadOut], enriched: list[LeadOut]) -> list[LeadOut]:

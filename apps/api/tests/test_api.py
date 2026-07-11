@@ -980,6 +980,18 @@ def test_workspace_app_ai_lead_command_uses_fast_search_path(monkeypatch) -> Non
             duration_ms=9,
         ),
     )
+    monkeypatch.setattr(
+        "app.api.usage.get_google_place_details",
+        lambda place_id: {
+            "place_id": place_id,
+            "website": "https://usage-beauty.example",
+            "domain": "usage-beauty.example",
+            "phone": "+48 22 123 45 67",
+            "address": "Warsaw, Poland",
+            "business_category": "Beauty salon",
+            "technologies": ["booking", "ecommerce"],
+        },
+    )
 
     response = client.post(
         "/api/workspace-app/leads/command",
