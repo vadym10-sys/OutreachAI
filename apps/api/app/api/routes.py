@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
+from email.utils import parseaddr
 from typing import Any, Optional
 from uuid import UUID
 from uuid import uuid4
@@ -16,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.cache import cache_key, get_json, set_json
 from app.core.database import get_db
@@ -113,6 +115,8 @@ from app.schemas.dto import (
     MemberInvite,
     NotificationOut,
     OnboardingUpdate,
+    OutreachSenderStatusOut,
+    OutreachSenderUpdate,
     OwnerConsoleOut,
     OwnerFeatureFlagsOut,
     OwnerFeatureFlagsUpdate,
@@ -431,6 +435,141 @@ def _settings_for_workspace(db: Session, user_id: str, workspace: Workspace) -> 
         db.commit()
         db.refresh(settings)
     return settings
+
+
+SUPPORTED_OUTREACH_PROVIDERS = {"resend", "smtp", "gmail", "outlook"}
+
+
+def _extract_email(value: str | None) -> str:
+    if not value:
+        return ""
+    parsed = parseaddr(str(value))[1] or str(value).strip()
+    return parsed.strip().lower()
+
+
+def _email_domain(value: str | None) -> str:
+    email = _extract_email(value)
+    if "@" not in email:
+        return ""
+    return email.rsplit("@", 1)[1].strip().lower()
+
+
+def _sender_settings(settings: AppSettings) -> dict[str, Any]:
+    email_settings = settings.email if isinstance(settings.email, dict) else {}
+    sender = email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}
+    try:
+        daily_send_limit = int(sender.get("daily_send_limit") or email_settings.get("dailyLimit") or 25)
+    except (TypeError, ValueError):
+        daily_send_limit = 25
+    return {
+        "provider": str(sender.get("provider") or email_settings.get("provider") or "resend").strip().lower(),
+        "sender_name": str(sender.get("sender_name") or sender.get("name") or "").strip(),
+        "sender_email": _extract_email(str(sender.get("sender_email") or sender.get("email") or "")),
+        "reply_to": _extract_email(str(sender.get("reply_to") or "")),
+        "daily_send_limit": daily_send_limit,
+        "enabled": bool(sender.get("enabled", True)),
+    }
+
+
+def _sent_today_count(db: Session, workspace: Workspace) -> int:
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(EmailMessage.workspace_id == workspace.id, EmailMessage.sent_at >= today)
+        )
+        or 0
+    )
+
+
+def _domain_auth_status(domain: str) -> dict[str, str]:
+    if not domain:
+        return {"spf_status": "not_checked", "dkim_status": "not_checked", "dmarc_status": "not_checked"}
+    try:
+        import dns.resolver  # type: ignore
+    except Exception:
+        return {"spf_status": "not_checked", "dkim_status": "not_checked", "dmarc_status": "not_checked"}
+
+    def txt_records(name: str) -> list[str]:
+        try:
+            answers = dns.resolver.resolve(name, "TXT", lifetime=3.0)
+            return ["".join(part.decode("utf-8", "ignore") if isinstance(part, bytes) else str(part) for part in answer.strings) for answer in answers]
+        except Exception:
+            return []
+
+    spf = "verified" if any("v=spf1" in item.lower() for item in txt_records(domain)) else "missing"
+    dmarc = "verified" if any("v=dmarc1" in item.lower() for item in txt_records(f"_dmarc.{domain}")) else "missing"
+    dkim = "not_checked"
+    for selector in ("resend", "default", "google", "selector1", "selector2"):
+        if txt_records(f"{selector}._domainkey.{domain}"):
+            dkim = "verified"
+            break
+    return {"spf_status": spf, "dkim_status": dkim, "dmarc_status": dmarc}
+
+
+def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> OutreachSenderStatusOut:
+    settings = _settings_for_workspace(db, user_id, workspace)
+    sender = _sender_settings(settings)
+    app_settings = get_app_settings()
+    configured_sender = sender["sender_email"] or _extract_email(app_settings.resend_from_email)
+    provider = sender["provider"] if sender["provider"] in SUPPORTED_OUTREACH_PROVIDERS else "resend"
+    daily_limit = max(1, min(int(sender["daily_send_limit"] or 25), 200))
+    sent_today = _sent_today_count(db, workspace)
+    remaining_today = max(0, daily_limit - sent_today)
+    domain_checks = _domain_auth_status(_email_domain(configured_sender))
+
+    reason = ""
+    connected = True
+    status = "connected"
+    next_action = "Ready to send approved emails."
+    if not sender["enabled"]:
+        connected = False
+        status = "needs_setup"
+        reason = "Email sending is disabled for this workspace."
+        next_action = "Enable sending when your mailbox is ready."
+    elif provider != "resend":
+        connected = False
+        status = "needs_setup"
+        reason = "This mailbox provider still needs secure OAuth or SMTP setup."
+        next_action = "Use the connected API sender now, or finish mailbox setup before sending."
+    elif not app_settings.resend_api_key or not app_settings.resend_from_email.strip():
+        connected = False
+        status = "missing_key"
+        reason = "Production email sending is not configured on the server."
+        next_action = "Ask the workspace owner to connect email sending."
+    elif not configured_sender:
+        connected = False
+        status = "needs_setup"
+        reason = "Add the sender email that should appear on outbound messages."
+        next_action = "Add your sender email."
+    elif remaining_today <= 0:
+        connected = False
+        status = "error"
+        reason = "The safe daily sending limit has been reached."
+        next_action = "Wait until tomorrow or lower campaign volume."
+
+    return OutreachSenderStatusOut(
+        provider=provider,
+        connected=connected,
+        status=status,
+        sender_name=sender["sender_name"],
+        sender_email=configured_sender or None,
+        reply_to=sender["reply_to"] or _extract_email(app_settings.resend_reply_to) or None,
+        daily_send_limit=daily_limit,
+        sent_today=sent_today,
+        remaining_today=remaining_today,
+        next_action=next_action,
+        reason=reason,
+        **domain_checks,
+    )
+
+
+def _require_outreach_sender_ready(db: Session, user_id: str, workspace: Workspace) -> OutreachSenderStatusOut:
+    status = _outreach_sender_status(db, user_id, workspace)
+    if not status.connected:
+        raise HTTPException(status_code=409, detail=status.reason or status.next_action)
+    return status
 
 
 def _plan_for_workspace(db: Session, user_id: str, workspace: Workspace) -> str:
@@ -4421,10 +4560,43 @@ def approve_email(email_id: UUID, request: Request, user_id: CurrentUser, db: Se
     return message
 
 
+@router.get("/outreach/sender/status", response_model=OutreachSenderStatusOut)
+def outreach_sender_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
+    workspace = _current_workspace(db, user_id)
+    return _outreach_sender_status(db, user_id, workspace)
+
+
+@router.put("/outreach/sender", response_model=OutreachSenderStatusOut)
+def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    email_settings = settings.email if isinstance(settings.email, dict) else {}
+    provider = payload.provider.strip().lower()
+    if provider not in SUPPORTED_OUTREACH_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Choose a supported sending option.")
+    email_settings["sender"] = {
+        "provider": provider,
+        "sender_name": payload.sender_name.strip(),
+        "sender_email": str(payload.sender_email or "").strip().lower(),
+        "reply_to": str(payload.reply_to or "").strip().lower(),
+        "daily_send_limit": payload.daily_send_limit,
+        "enabled": payload.enabled,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    settings.email = email_settings
+    flag_modified(settings, "email")
+    db.add(settings)
+    log_event(db, request, user_id, "outreach.sender.updated", {"workspace_id": str(workspace.id), "provider": provider})
+    db.commit()
+    db.refresh(settings)
+    return _outreach_sender_status(db, user_id, workspace)
+
+
 @router.post("/emails/{email_id}/send", response_model=EmailOut)
 def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace)
+    sender_status = _require_outreach_sender_ready(db, user_id, workspace)
     _enforce_usage(db, user_id, workspace, "email_sends")
     message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
     if message is None:
@@ -4437,7 +4609,14 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     if lead is None or not lead.email:
         raise HTTPException(status_code=400, detail="Lead email is required before sending.")
     try:
-        provider_response = send_email(to_email=lead.email, subject=message.subject, body=message.body)
+        provider_response = send_email(
+            to_email=lead.email,
+            subject=message.subject,
+            body=message.body,
+            from_email=sender_status.sender_email,
+            from_name=sender_status.sender_name,
+            reply_to=sender_status.reply_to,
+        )
     except Exception as exc:
         message.delivery_status = "failed"
         db.add(message)
@@ -4449,6 +4628,7 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     message.sent_at = datetime.utcnow()
     message.provider_message_id = str(provider_response.get("id"))
     message.delivery_status = "sent"
+    message.tags = {**(message.tags if isinstance(message.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider}
     lead.status = LeadStatus.contacted
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": message.sent_at.isoformat()})
     _sync_lead_to_crm(db, user_id, workspace, lead)

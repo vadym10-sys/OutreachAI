@@ -2405,6 +2405,130 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
     assert any(item["action"] == "email.sent" for item in crm_after_send["activity"])
 
 
+def test_outreach_sender_status_and_update() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "sender-settings@example.com"}
+
+    status = client.get("/api/outreach/sender/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["provider"] == "resend"
+    assert status.json()["sender_email"] == "hello@example.com"
+    assert status.json()["connected"] is True
+
+    updated = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "gmail",
+            "sender_name": "Founder",
+            "sender_email": "founder@example.com",
+            "reply_to": "reply@example.com",
+            "daily_send_limit": 15,
+            "enabled": True,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["connected"] is False
+    assert updated.json()["status"] == "needs_setup"
+    assert "OAuth" in updated.json()["reason"]
+
+
+def test_approved_email_uses_workspace_sender(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "sender-send@example.com"}
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    monkeypatch.setattr(
+        "app.api.routes.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Personal idea",
+            preview="Short idea",
+            full_email="Hi, this is a reviewed idea.",
+            cta="Open to a short call?",
+            follow_ups=[],
+            ab_tests=[],
+        ),
+    )
+    setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Sales Team",
+            "sender_email": "sales@example.com",
+            "reply_to": "reply@example.com",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert setup.status_code == 200
+
+    sent_payload: dict[str, str] = {}
+
+    def fake_send(**kwargs):
+        sent_payload.update(kwargs)
+        return {"id": "workspace-sender-send"}
+
+    monkeypatch.setattr("app.api.routes.send_email", fake_send)
+    lead = client.post(
+        "/api/leads",
+        headers=headers,
+        json={"company": "Sender Send Co", "website": "https://sender-send.example", "industry": "Construction", "email": "buyer@sender-send.example"},
+    ).json()
+    draft = client.post(f"/api/leads/{lead['id']}/draft-email", headers=headers).json()
+    approved = client.post(f"/api/emails/{draft['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    sent = client.post(f"/api/emails/{draft['id']}/send", headers=headers)
+    assert sent.status_code == 200
+    assert sent_payload["from_email"] == "sales@example.com"
+    assert sent_payload["from_name"] == "Sales Team"
+    assert sent_payload["reply_to"] == "reply@example.com"
+    assert sent.json()["tags"]["sender_provider"] == "resend"
+
+
+def test_disabled_outreach_sender_blocks_send(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "sender-disabled@example.com"}
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    monkeypatch.setattr(
+        "app.api.routes.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Disabled sender idea",
+            preview="Short idea",
+            full_email="Hi, this is a reviewed idea.",
+            cta="Open to a short call?",
+            follow_ups=[],
+            ab_tests=[],
+        ),
+    )
+    disabled = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Sales Team",
+            "sender_email": "sales@example.com",
+            "reply_to": "reply@example.com",
+            "daily_send_limit": 25,
+            "enabled": False,
+        },
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["connected"] is False
+
+    lead = client.post(
+        "/api/leads",
+        headers=headers,
+        json={"company": "Sender Disabled Co", "website": "https://sender-disabled.example", "industry": "Construction", "email": "buyer@sender-disabled.example"},
+    ).json()
+    draft = client.post(f"/api/leads/{lead['id']}/draft-email", headers=headers).json()
+    approved = client.post(f"/api/emails/{draft['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    sent = client.post(f"/api/emails/{draft['id']}/send", headers=headers)
+    assert sent.status_code == 409
+    assert "connect email sending" in sent.json()["detail"].lower()
+
+
 def test_crm_duplicate_prevention_reuses_manual_company(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
     monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)

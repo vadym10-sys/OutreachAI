@@ -107,6 +107,23 @@ type WorkspaceIntegrationStatusResponse = {
   integrations: WorkspaceIntegrationStatus[];
 };
 
+type OutreachSenderStatus = {
+  provider: string;
+  connected: boolean;
+  status: "connected" | "missing_key" | "needs_setup" | "error";
+  sender_name: string;
+  sender_email?: string | null;
+  reply_to?: string | null;
+  daily_send_limit: number;
+  sent_today: number;
+  remaining_today: number;
+  spf_status: string;
+  dkim_status: string;
+  dmarc_status: string;
+  next_action: string;
+  reason?: string;
+};
+
 type WorkspaceAppBootstrapResponse = {
   workspace: {
     id: string;
@@ -4560,6 +4577,110 @@ export function AnalyticsPage() {
   return <div className="space-y-6"><PageHeader eyebrow="Analytics" title="Measure what creates meetings." copy="Analytics stays focused on the sales actions companies pay for: leads found, emails approved, campaigns sent, replies and meetings." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />{loading ? <EmptyState title="Loading analytics" copy="Reading real workspace metrics." /> : error ? <WidgetErrorCard title="Analytics unavailable" copy={error} /> : visibleCards.length ? <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{visibleCards.map(([label, value]) => <MetricCard key={String(label)} label={String(label)} value={String(value)} help="Workspace data" />)}</section> : <EmptyState title="No performance data yet" copy="Find leads, prepare emails and launch one approved campaign. Analytics will then show real conversion signals instead of placeholder numbers." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />}</div>;
 }
 
+function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolean }) {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<OutreachSenderStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  const [form, setForm] = useState({ provider: "resend", sender_name: "", sender_email: "", reply_to: "", daily_send_limit: 25, enabled: true });
+
+  const loadStatus = useCallback(async () => {
+    if (!ready) return;
+    setLoading(true);
+    setError("");
+    try {
+      const next = await api<OutreachSenderStatus>("/api/outreach/sender/status");
+      setStatus(next);
+      setForm({
+        provider: next.provider || "resend",
+        sender_name: next.sender_name || "",
+        sender_email: next.sender_email || "",
+        reply_to: next.reply_to || "",
+        daily_send_limit: next.daily_send_limit || 25,
+        enabled: next.status !== "needs_setup" || next.connected,
+      });
+    } catch (err) {
+      reportWidgetFailure(err, "outreach-sender-status", { endpoint: "/api/outreach/sender/status" });
+      setError(userMessage(err, "Email sending setup is temporarily unavailable.", t));
+    } finally {
+      setLoading(false);
+    }
+  }, [api, ready, t]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadStatus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadStatus]);
+
+  async function saveSender(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setSaved("");
+    try {
+      const next = await api<OutreachSenderStatus>("/api/outreach/sender", {
+        method: "PUT",
+        body: JSON.stringify({
+          provider: form.provider,
+          sender_name: form.sender_name,
+          sender_email: form.sender_email || null,
+          reply_to: form.reply_to || null,
+          daily_send_limit: Number(form.daily_send_limit) || 25,
+          enabled: form.enabled,
+        }),
+      });
+      setStatus(next);
+      setSaved(t("Sending setup saved"));
+    } catch (err) {
+      reportWidgetFailure(err, "outreach-sender-save", { endpoint: "/api/outreach/sender" });
+      setError(userMessage(err, "Sending setup could not be saved.", t));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const badgeClass = status?.connected ? "border-teal-200 bg-teal-50 text-brand" : "border-amber-200 bg-amber-50 text-amber-900";
+  return (
+    <section id="email-sending" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-bold uppercase text-brand">{t("Email sending")}</p>
+          <h2 className="mt-2 text-xl font-black text-ink">{t("Send from your workspace")}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{t("Approved emails are sent only when a sender is connected and the daily safety limit allows it.")}</p>
+        </div>
+        <span className={`inline-flex min-h-9 items-center justify-center rounded-full border px-3 text-sm font-black ${badgeClass}`}>{t(status?.connected ? "Connected" : "Needs setup")}</span>
+      </div>
+      {loading ? <div className="mt-4 h-28 animate-pulse rounded-xl bg-slate-100" /> : (
+        <div className="mt-4 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+          <form onSubmit={saveSender} className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-sm font-bold text-ink">{t("Sender name")}<input value={form.sender_name} onChange={(event) => setForm((current) => ({ ...current, sender_name: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="Sales Team" /></label>
+              <label className="text-sm font-bold text-ink">{t("Sender email")}<input value={form.sender_email} onChange={(event) => setForm((current) => ({ ...current, sender_email: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="you@company.com" type="email" /></label>
+              <label className="text-sm font-bold text-ink">{t("Reply-to email")}<input value={form.reply_to} onChange={(event) => setForm((current) => ({ ...current, reply_to: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="reply@company.com" type="email" /></label>
+              <label className="text-sm font-bold text-ink">{t("Daily safety limit")}<input value={form.daily_send_limit} onChange={(event) => setForm((current) => ({ ...current, daily_send_limit: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" min={1} max={200} type="number" /></label>
+            </div>
+            <button disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white disabled:opacity-60 sm:w-auto">{saving ? t("Saving...") : t("Save sending setup")}</button>
+            {saved && <p className="rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{saved}</p>}
+            {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</p>}
+          </form>
+          <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">
+            <p className="font-black text-ink">{t(status?.next_action || "Connect sending before launching campaigns.")}</p>
+            {status?.reason && <p className="mt-2 leading-6">{t(status.reason)}</p>}
+            <div className="mt-4 grid gap-2">
+              {[["SPF", status?.spf_status], ["DKIM", status?.dkim_status], ["DMARC", status?.dmarc_status]].map(([label, value]) => <p key={label} className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{label}</span><span>{t(String(value || "not_checked"))}</span></p>)}
+              <p className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Sent today")}</span><span>{status?.sent_today || 0}/{status?.daily_send_limit || 25}</span></p>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function SettingsPage() {
   const { t } = useI18n();
   const { api, ready } = useTokenApi();
@@ -4595,7 +4716,7 @@ export function SettingsPage() {
   }, [api, ready]);
 
   const leadSearchReady = leadSearchStatus === "connected";
-  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} /><section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(copy)}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t(status)}</p></article>)}</section><section id="lead-search-key" className={`scroll-mt-24 rounded-2xl border p-5 shadow-sm ${leadSearchReady ? "border-teal-200 bg-teal-50" : "border-amber-200 bg-amber-50"}`}><p className={`text-sm font-bold uppercase ${leadSearchReady ? "text-brand" : "text-amber-800"}`}>{t("Lead search key")}</p>{leadSearchStatusLoading ? <div className="mt-3 h-20 animate-pulse rounded-xl bg-white/70" /> : leadSearchReady ? <><h2 className="mt-2 text-xl font-black text-ink">{t("Ready to find companies")}</h2><p className="mt-2 text-sm leading-6 text-slate-700">{t("Your company search is connected. Start with one narrow market and save results to CRM.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Search market")}</Link><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md border border-teal-300 bg-white px-4 text-sm font-bold text-brand">{t("Add company manually")}</Link></div></> : <><h2 className="mt-2 text-xl font-black text-ink">{t("Automatic company search needs one setup step")}</h2><p className="mt-2 text-sm leading-6 text-amber-900">{t("Ask the workspace owner to connect automatic company search. Until then, add companies manually and continue with CRM, research and outreach review.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Add company manually")}</Link><Link href="/dashboard/billing" className="inline-flex min-h-11 items-center justify-center rounded-md border border-amber-300 bg-white px-4 text-sm font-bold text-amber-900">{t("Check plan")}</Link></div></>}</section><details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary><p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.")}</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["Billing", "Security", "Team access", "Sending preferences"].map((item) => <Link key={item} href={item === "Billing" ? "/dashboard/billing" : "/dashboard/settings"} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t(item)}</Link>)}</div></details></div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} /><section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(copy)}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t(status)}</p></article>)}</section><section id="lead-search-key" className={`scroll-mt-24 rounded-2xl border p-5 shadow-sm ${leadSearchReady ? "border-teal-200 bg-teal-50" : "border-amber-200 bg-amber-50"}`}><p className={`text-sm font-bold uppercase ${leadSearchReady ? "text-brand" : "text-amber-800"}`}>{t("Lead search key")}</p>{leadSearchStatusLoading ? <div className="mt-3 h-20 animate-pulse rounded-xl bg-white/70" /> : leadSearchReady ? <><h2 className="mt-2 text-xl font-black text-ink">{t("Ready to find companies")}</h2><p className="mt-2 text-sm leading-6 text-slate-700">{t("Your company search is connected. Start with one narrow market and save results to CRM.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Search market")}</Link><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md border border-teal-300 bg-white px-4 text-sm font-bold text-brand">{t("Add company manually")}</Link></div></> : <><h2 className="mt-2 text-xl font-black text-ink">{t("Automatic company search needs one setup step")}</h2><p className="mt-2 text-sm leading-6 text-amber-900">{t("Ask the workspace owner to connect automatic company search. Until then, add companies manually and continue with CRM, research and outreach review.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Add company manually")}</Link><Link href="/dashboard/billing" className="inline-flex min-h-11 items-center justify-center rounded-md border border-amber-300 bg-white px-4 text-sm font-bold text-amber-900">{t("Check plan")}</Link></div></>}</section><OutreachSenderSettingsPanel api={api} ready={ready} /><details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary><p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.")}</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["Billing", "Security", "Team access", "Sending preferences"].map((item) => <Link key={item} href={item === "Billing" ? "/dashboard/billing" : "/dashboard/settings"} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t(item)}</Link>)}</div></details></div>;
 }
 
 export function BillingPage() {

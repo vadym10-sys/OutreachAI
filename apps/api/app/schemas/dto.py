@@ -1235,6 +1235,32 @@ class SettingsUpdate(SettingsOut):
     pass
 
 
+class OutreachSenderUpdate(BaseModel):
+    provider: str = Field(default="resend", max_length=40)
+    sender_name: str = Field(default="", max_length=120)
+    sender_email: Optional[EmailStr] = None
+    reply_to: Optional[EmailStr] = None
+    daily_send_limit: int = Field(default=25, ge=1, le=200)
+    enabled: bool = True
+
+
+class OutreachSenderStatusOut(BaseModel):
+    provider: str
+    connected: bool
+    status: str
+    sender_name: str = ""
+    sender_email: Optional[str] = None
+    reply_to: Optional[str] = None
+    daily_send_limit: int = 25
+    sent_today: int = 0
+    remaining_today: int = 0
+    spf_status: str = "not_checked"
+    dkim_status: str = "not_checked"
+    dmarc_status: str = "not_checked"
+    next_action: str
+    reason: str = ""
+
+
 class CheckoutRequest(BaseModel):
     plan: str
     success_url: Optional[HttpUrl] = None

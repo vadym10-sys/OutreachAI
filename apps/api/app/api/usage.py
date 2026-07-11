@@ -27,6 +27,7 @@ from app.api.routes import (
     _lead_out,
     _lead_trace,
     _merge_lead_metadata,
+    _require_outreach_sender_ready,
     _run_provider_with_deadline,
     _save_provider_leads,
     _sync_lead_to_crm,
@@ -2196,8 +2197,18 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
         return UsageActionOut(status="error", message="Use a real recipient email before sending.", email=EmailOut.model_validate(email))
 
     try:
+        sender_status = _require_outreach_sender_ready(db, user.user_id, workspace)
         _enforce_usage(db, user.user_id, workspace, "email_sends")
-        provider_response = send_email(to_email=lead.email, subject=email.subject, body=email.body)
+        provider_response = send_email(
+            to_email=lead.email,
+            subject=email.subject,
+            body=email.body,
+            from_email=sender_status.sender_email,
+            from_name=sender_status.sender_name,
+            reply_to=sender_status.reply_to,
+        )
+    except HTTPException as exc:
+        return UsageActionOut(status="provider_unavailable", message=str(exc.detail), email=EmailOut.model_validate(email))
     except (EmailProviderConfigurationError, EmailProviderRequestError) as exc:
         email.delivery_status = "failed"
         _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id), "reason": str(exc)})
@@ -2214,6 +2225,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))
     email.delivery_status = "sent"
+    email.tags = {**(email.tags if isinstance(email.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider}
     lead.status = LeadStatus.contacted
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": email.sent_at.isoformat()})
     _add_lead_activity(db, request, user.user_id, workspace, "email.sent", lead, {"email_id": str(email.id), "provider_message_id": email.provider_message_id})
