@@ -3959,8 +3959,6 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
 function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {
   const { t, locale } = useI18n();
   const [current, setCurrent] = useState(company);
-  const [stageValue, setStageValue] = useState(company.crm_stage);
-  const [noteBody, setNoteBody] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
@@ -3977,75 +3975,6 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
   const aiNextWork = aiWorkPlan.find((item) => item.status !== "completed")?.label || "Approval";
   const website = current.website || current.domain || "";
   const primaryContact = current.contacts.find((contact) => contact.email) || current.contacts[0];
-  const hasVerifiedContact = Boolean(current.email || current.contacts.some((contact) => contact.email));
-
-  async function moveStage() {
-    if (stageValue === current.crm_stage) {
-      setError("");
-      setNotice(t("This CRM stage is already selected."));
-      return;
-    }
-    setBusy("stage");
-    setNotice("");
-    setError("");
-    try {
-      const updated = await api<CrmCompany>(`/api/crm/companies/${current.id}/stage`, { method: "PATCH", body: JSON.stringify({ stage: stageValue }) });
-      const normalized = normalizeCrmCompany(updated);
-      setCurrent(normalized);
-      setStageValue(normalized.crm_stage);
-      setNotice(t("CRM stage moved to {stage}.").replace("{stage}", t(normalized.crm_stage)));
-    } catch (err) {
-      setError(friendlyErrorMessage(err, t("CRM stage could not be updated. Check your session and try again.")));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function addNote(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const body = noteBody.trim();
-    if (!body) return;
-    setBusy("note");
-    setNotice("");
-    setError("");
-    try {
-      const note = await api<CrmCompany["notes"][number]>(`/api/crm/companies/${current.id}/notes`, { method: "POST", body: JSON.stringify({ body }) });
-      setCurrent((previous) => ({ ...previous, notes: [note, ...previous.notes] }));
-      setNoteBody("");
-      setNotice(t("Note saved to the activity history."));
-    } catch (err) {
-      setError(friendlyErrorMessage(err, t("Note could not be saved. Please try again.")));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function findVerifiedEmail() {
-    if (!current.lead_id) {
-      setError(t("Reconnect this company to a lead before finding contacts."));
-      return;
-    }
-    setBusy("contacts");
-    setNotice("");
-    setError("");
-    try {
-      const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/contacts`, { method: "POST", timeoutMs: 20000 }),
-        22000,
-        "Contact search took too long. You can add a contact manually."
-      );
-      if (result.company) {
-        const normalized = normalizeCrmCompany(result.company);
-        setCurrent(normalized);
-        setStageValue(normalized.crm_stage);
-      }
-      setNotice(t(result.message || "Contact search finished."));
-    } catch (err) {
-      setError(friendlyErrorMessage(err, t("Contact search could not be completed. Add a contact manually and continue.")));
-    } finally {
-      setBusy("");
-    }
-  }
 
   async function completeMissingCompanyData() {
     if (!current.lead_id) {
@@ -4068,7 +3997,6 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
       if (result.company) {
         const nextCompany = normalizeCrmCompany(result.company);
         setCurrent(nextCompany);
-        setStageValue(nextCompany.crm_stage);
       }
       const completed = Array.isArray(result.completed_steps) && result.completed_steps.length
         ? result.completed_steps
@@ -4159,38 +4087,24 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
         </div>
       </div>
       <div className="grid shrink-0 gap-2 lg:w-56">
-        {compactMissing.length > 0 && (
+        {compactMissing.length > 0 ? (
           <button type="button" onClick={completeMissingCompanyData} disabled={busy === "complete-data" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
             {busy === "complete-data" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
             {t("Run all missing steps")}
           </button>
+        ) : (
+          <Link href={`/dashboard/companies?company=${encodeURIComponent(current.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">
+            <PrimaryActionIcon size={17} />
+            {t("Continue work")}
+            <ArrowRight size={16} />
+          </Link>
         )}
-        {!hasVerifiedContact && (
-          <button type="button" onClick={findVerifiedEmail} disabled={busy === "contacts" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
-            {busy === "contacts" ? <Loader2 className="animate-spin" size={17} /> : <UserRoundSearch size={17} />}
-            {t("Find verified email")}
-          </button>
-        )}
-        <Link href={`/dashboard/companies?company=${encodeURIComponent(current.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">
+        {compactMissing.length > 0 && <Link href={`/dashboard/companies?company=${encodeURIComponent(current.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">
           <PrimaryActionIcon size={17} />
-          {t("Continue work")}
+          {t("Open company")}
           <ArrowRight size={16} />
-        </Link>
-        <Link href={`/dashboard/crm`} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("View pipeline")}</Link>
+        </Link>}
       </div>
-    </div>
-    <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 lg:grid-cols-[1fr_1.5fr]">
-      <div className="grid gap-2 min-[430px]:grid-cols-[1fr_auto]">
-        <select aria-label={t("CRM stage")} value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
-          {crmStages.map((stage) => <option key={stage} value={stage}>{t(stage)}</option>)}
-        </select>
-        <button type="button" onClick={moveStage} disabled={busy === "stage"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{busy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
-      </div>
-      <form onSubmit={addNote} className="grid gap-2 min-[430px]:grid-cols-[1fr_auto]">
-        <label className="sr-only" htmlFor={`quick-note-${current.id}`}>{t("Add note")}</label>
-        <input id={`quick-note-${current.id}`} aria-label={t("Add note")} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} placeholder={t("Add next-step note")} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
-        <button type="submit" disabled={busy === "note" || !noteBody.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{busy === "note" && <Loader2 className="animate-spin" size={16} />} {t("Add note")}</button>
-      </form>
     </div>
     <div className="mt-3">
       <ActionProgress current={currentStep} completed={completedSteps} />
