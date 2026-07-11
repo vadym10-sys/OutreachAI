@@ -1359,6 +1359,14 @@ function useCrmData() {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (!ready || !hasActiveEnrichment(companies)) return;
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [companies, ready, refresh]);
+
   return { api, companies, contacts, deals, pipeline, loading, error, filters, setFilters, refresh };
 }
 
@@ -2065,6 +2073,35 @@ export function LeadFinderPage() {
     };
   }, [api, ready]);
 
+  useEffect(() => {
+    if (!ready || !hasSearched || !searchResults.some(leadHasRunningWorkflow)) return;
+    let cancelled = false;
+    const refreshSearchCompanies = async () => {
+      try {
+        const companies = await api<CrmCompany[]>("/api/workspace-app/companies");
+        if (cancelled) return;
+        const normalized = safeArray(companies).map(normalizeCrmCompany);
+        setSearchResults((items) => {
+          const visibleIds = new Set(items.map((lead) => lead.crm_company_id).filter(Boolean));
+          const updates = normalized.filter((company) => visibleIds.has(company.id)).map(leadFromCrmCompany);
+          return updates.length ? mergeLeads(updates, items) : items;
+        });
+        const visibleCompanies = normalized.filter((company) => searchResults.some((lead) => lead.crm_company_id === company.id));
+        if (visibleCompanies.length) setOpportunityReadiness(opportunityReadinessFromCompanies(visibleCompanies));
+      } catch (err) {
+        reportWidgetFailure(err, "lead-search-enrichment-poll", { endpoint: "/workspace-app/companies" });
+      }
+    };
+    const timer = window.setInterval(() => {
+      void refreshSearchCompanies();
+    }, 5000);
+    void refreshSearchCompanies();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [api, hasSearched, ready, searchResults]);
+
   function payloadFromForm(form: HTMLFormElement): LeadSearchPayload {
     const data = new FormData(form);
     return {
@@ -2212,7 +2249,7 @@ export function LeadFinderPage() {
       source === "ai_command" ? t("AI command understood") : t("Lead search finished"),
       t("Found companies count").replace("{count}", String(found.length)),
       persistenceStep,
-      found.length ? t("AI preparation checked") : "",
+      found.length ? t("AI enrichment is running automatically") : "",
       ...(warnings.length ? [t("Partial data available")] : [])
     ].filter(Boolean));
     setSearchSummary({
@@ -2968,6 +3005,18 @@ function companyWorkflowStages(company: CrmCompany) {
       message: messages[key] || (status === "completed" ? item.copy : item.action)
     };
   });
+}
+
+function hasRunningWorkflow(company: CrmCompany) {
+  return Object.values(company.workflow_stages || {}).some((status) => status === "running");
+}
+
+function hasActiveEnrichment(companies: CrmCompany[]) {
+  return companies.some(hasRunningWorkflow);
+}
+
+function leadHasRunningWorkflow(lead: Lead) {
+  return Object.values(lead.workflow_stages || {}).some((status) => status === "running");
 }
 
 function workflowStatusTone(status: WorkflowStageStatus) {
@@ -4030,6 +4079,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
   const emailCount = current.generated_emails.length;
   const aiWorkPlan = companyWorkflowStages(current);
   const aiWorkComplete = aiWorkPlan.filter((item) => item.status === "completed").length;
+  const aiWorkRunning = aiWorkPlan.some((item) => item.status === "running");
   const aiNextWork = aiWorkPlan.find((item) => item.status !== "completed")?.label || "Approval";
   const website = current.website || current.domain || "";
   const primaryContact = current.contacts.find((contact) => contact.email) || current.contacts[0];
@@ -4043,14 +4093,14 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     setNotice(t("Collecting missing company data..."));
     setError("");
     setCompletedSteps([]);
-    setCurrentStep("Checking website analysis...");
+    setCurrentStep("Starting automatic AI enrichment...");
     const markStepDone = (step: string) => setCompletedSteps((steps) => steps.includes(step) ? steps : [...steps, step]);
     try {
-      setCurrentStep("Preparing full sales opportunity...");
+      setCurrentStep("AI enrichment is running automatically");
       const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/complete-opportunity`, { method: "POST", ...completeOpportunityRequest }),
-        100000,
-        "Sales opportunity preparation took too long. The company stays saved in CRM."
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/enrichment/restart`, { method: "POST", timeoutMs: 15000 }),
+        16000,
+        "AI enrichment could not be restarted. The company stays saved in CRM."
       );
       if (result.company) {
         const nextCompany = normalizeCrmCompany(result.company);
@@ -4065,8 +4115,8 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
       setCurrentStep("");
       setNotice(
         warnings.length
-          ? `${t("Data collection finished with missing fields.")} ${warnings.slice(0, 2).join(" ")}`
-          : t("Data collection finished. Review the opportunity and approve only when ready.")
+          ? `${t("AI enrichment restarted with some missing fields.")} ${warnings.slice(0, 2).join(" ")}`
+          : t("AI enrichment restarted. This card will update as data arrives.")
       );
       trackEvent("company_missing_data_completed", {
         company_id: current.id,
@@ -4077,6 +4127,26 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
       setError(friendlyErrorMessage(err, t("Company preparation could not be completed. Try again or continue manually.")));
       setNotice("");
       setCurrentStep("");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function stopAutoEnrichment() {
+    if (!current.lead_id) return;
+    setBusy("stop-enrichment");
+    setError("");
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/enrichment/cancel`, { method: "POST", timeoutMs: 12000 }),
+        13000,
+        "AI enrichment stop timed out. Try again."
+      );
+      if (result.company) setCurrent(normalizeCrmCompany(result.company));
+      setNotice(t("AI enrichment stopped. Saved company data stayed in CRM."));
+      setCurrentStep("");
+    } catch (err) {
+      setError(friendlyErrorMessage(err, t("AI enrichment could not be stopped. Try again.")));
     } finally {
       setBusy("");
     }
@@ -4113,6 +4183,9 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Next")}: {t(aiNextWork)}</span>
           </div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+            <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${Math.round((aiWorkComplete / Math.max(aiWorkPlan.length, 1)) * 100)}%` }} />
+          </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {aiWorkPlan.slice(0, 6).map((item) => {
               const Icon = item.status === "running" ? Loader2 : CheckCircle2;
@@ -4148,7 +4221,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
         {compactMissing.length > 0 ? (
           <button type="button" onClick={completeMissingCompanyData} disabled={busy === "complete-data" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
             {busy === "complete-data" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
-            {t("Run all missing steps")}
+            {t(aiWorkRunning ? "Restart AI enrichment" : "Run all missing steps")}
           </button>
         ) : (
           <Link href={`/dashboard/companies?company=${encodeURIComponent(current.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">
@@ -4157,6 +4230,10 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
             <ArrowRight size={16} />
           </Link>
         )}
+        {aiWorkRunning && <button type="button" onClick={stopAutoEnrichment} disabled={busy === "stop-enrichment"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">
+          {busy === "stop-enrichment" ? <Loader2 className="animate-spin" size={17} /> : <Pause size={17} />}
+          {t("Stop AI enrichment")}
+        </button>}
         {compactMissing.length > 0 && <Link href={`/dashboard/companies?company=${encodeURIComponent(current.id)}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">
           <PrimaryActionIcon size={17} />
           {t("Open company")}

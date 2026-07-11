@@ -1211,6 +1211,8 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     deep_contact_search = company_metadata.get("deep_contact_search") if isinstance(company_metadata.get("deep_contact_search"), dict) else {}
     technologies = deep_contact_search.get("technologies") if isinstance(deep_contact_search.get("technologies"), list) else []
     last_enriched_at = _datetime_or_none(deep_contact_search.get("last_enriched_at")) if deep_contact_search else None
+    if last_enriched_at is None:
+        last_enriched_at = _datetime_or_none(company_metadata.get("last_enriched_at"))
     contact_search_checked_at = _datetime_or_none(company_metadata.get("contact_search_checked_at"))
     roles_searched = company_metadata.get("decision_maker_roles_searched")
     intelligence_quality = company_metadata.get("intelligence_quality") if isinstance(company_metadata.get("intelligence_quality"), dict) else {}

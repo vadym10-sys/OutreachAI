@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 import logging
 import re
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from threading import Lock
+from types import SimpleNamespace
 from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
 
@@ -35,10 +39,10 @@ from app.api.routes import (
     _enforce_usage,
 )
 from app.core.config import get_settings
-from app.core.database import get_db
+from app.core.database import get_db, get_sessionmaker
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
-from app.models.entities import AuditLog, Campaign, Company, Contact, Deal, EmailMessage, Lead, LeadStatus
+from app.models.entities import AuditLog, Campaign, Company, Contact, Deal, EmailMessage, Lead, LeadStatus, Workspace
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
@@ -54,6 +58,12 @@ router = APIRouter()
 UsageStatus = Literal["success", "partial_success", "empty", "provider_unavailable", "timeout", "error"]
 PLACEHOLDER_EMAIL_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
 MAX_TURNKEY_RESEARCH_LEADS = 10
+AUTO_ENRICHMENT_MAX_WORKERS = max(1, min(4, int(os.getenv("OUTREACHAI_ENRICHMENT_WORKERS", "2") or "2")))
+AUTO_ENRICHMENT_MAX_RETRIES = max(1, min(4, int(os.getenv("OUTREACHAI_ENRICHMENT_RETRIES", "2") or "2")))
+AUTO_ENRICHMENT_CACHE_HOURS = max(1, min(168, int(os.getenv("OUTREACHAI_ENRICHMENT_CACHE_HOURS", "24") or "24")))
+_AUTO_ENRICHMENT_EXECUTOR = ThreadPoolExecutor(max_workers=AUTO_ENRICHMENT_MAX_WORKERS, thread_name_prefix="outreachai-enrichment")
+_AUTO_ENRICHMENT_LOCK = Lock()
+_AUTO_ENRICHMENT_ACTIVE: set[str] = set()
 LOCALE_LANGUAGE_NAMES = {
     "en": "English",
     "en-us": "American English",
@@ -1052,6 +1062,196 @@ def _complete_turnkey_b2b_research(
     return warnings
 
 
+def _background_request(language: str) -> Any:
+    return SimpleNamespace(headers={"x-outreachai-locale": language}, cookies={}, client=None)
+
+
+def _enrichment_metadata_update(status: str, request_id: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    now = datetime.utcnow().isoformat()
+    payload: dict[str, Any] = {
+        "enrichment_status": status,
+        "enrichment_request_id": request_id,
+        "enrichment_updated_at": now,
+    }
+    if status == "queued":
+        payload["enrichment_queued_at"] = now
+        payload["enrichment_cancel_requested"] = False
+    if status == "running":
+        payload["enrichment_started_at"] = now
+        payload["enrichment_cancel_requested"] = False
+    if status in {"completed", "partial_success", "error", "cancelled"}:
+        payload["last_enriched_at"] = now
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _mark_auto_enrichment_queued(lead: Lead, request_id: str) -> None:
+    lead.notes = _merge_lead_metadata(lead, _enrichment_metadata_update("queued", request_id))
+    _set_workflow_stages(
+        lead,
+        {
+            "company_profile": "completed",
+            "website_analysis": "running",
+            "decision_maker": "running",
+            "verified_email": "running",
+            "ai_email": "waiting",
+            "approval": "waiting",
+        },
+        {
+            "company_profile": "Saved company profile and public business data.",
+            "website_analysis": "AI enrichment is running automatically in the background.",
+            "decision_maker": "Contact discovery is running automatically in the background.",
+            "verified_email": "Email verification is running automatically when a contact source is available.",
+            "ai_email": "A review draft will be prepared after company research.",
+            "approval": "Sending stays blocked until you approve the draft.",
+        },
+    )
+
+
+def _lead_enrichment_cancelled(lead: Lead) -> bool:
+    return bool(_lead_metadata(lead).get("enrichment_cancel_requested"))
+
+
+def _lead_recently_enriched(lead: Lead) -> bool:
+    metadata = _lead_metadata(lead)
+    if metadata.get("enrichment_status") not in {"completed", "partial_success"}:
+        return False
+    raw_last_enriched = str(metadata.get("last_enriched_at") or "").strip()
+    if not raw_last_enriched:
+        return False
+    try:
+        last_enriched = datetime.fromisoformat(raw_last_enriched.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return False
+    return datetime.utcnow() - last_enriched < timedelta(hours=AUTO_ENRICHMENT_CACHE_HOURS)
+
+
+def _run_auto_enrichment_job(user_id: str, workspace_id: UUID, lead_ids: list[UUID], request_id: str, language: str) -> None:
+    db = get_sessionmaker()()
+    request = _background_request(language)
+    try:
+        workspace = db.get(Workspace, workspace_id)
+        if workspace is None:
+            logger.warning("Auto enrichment workspace missing request_id=%s workspace_id=%s", request_id, workspace_id)
+            return
+        for lead_id in lead_ids:
+            active_key = str(lead_id)
+            try:
+                lead = db.scalar(select(Lead).where(Lead.id == lead_id, Lead.workspace_id == workspace_id))
+                if lead is None:
+                    continue
+                if _lead_enrichment_cancelled(lead):
+                    lead.notes = _merge_lead_metadata(
+                        lead,
+                        _enrichment_metadata_update("cancelled", request_id, {"enrichment_message": "Automatic enrichment was stopped."}),
+                    )
+                    _set_workflow_stages(
+                        lead,
+                        {
+                            "website_analysis": "waiting",
+                            "decision_maker": "waiting",
+                            "verified_email": "waiting",
+                            "ai_email": "waiting",
+                        },
+                    )
+                    _sync_lead_to_crm(db, user_id, workspace, lead)
+                    db.commit()
+                    continue
+
+                lead.notes = _merge_lead_metadata(
+                    lead,
+                    _enrichment_metadata_update("running", request_id, {"enrichment_attempt": int(_lead_metadata(lead).get("enrichment_attempt") or 0) + 1}),
+                )
+                db.commit()
+
+                warnings: list[str] = []
+                for attempt in range(1, AUTO_ENRICHMENT_MAX_RETRIES + 1):
+                    try:
+                        _lead_trace(request_id, "auto_enrichment_attempt_started", lead_id=str(lead.id), company=lead.company, attempt=attempt)
+                        warnings = _complete_turnkey_b2b_research(db, request, user_id, workspace, [lead], request_id)
+                        break
+                    except Exception as exc:
+                        db.rollback()
+                        capture_provider_exception(
+                            exc,
+                            provider="auto_enrichment",
+                            endpoint="workspace_app.auto_enrichment",
+                            workspace_id=workspace_id,
+                            lead_id=lead_id,
+                            extra={"request_id": request_id, "attempt": attempt},
+                        )
+                        _lead_trace(request_id, "auto_enrichment_attempt_failed", lead_id=str(lead_id), reason=str(exc), attempt=attempt)
+                        if attempt >= AUTO_ENRICHMENT_MAX_RETRIES:
+                            raise
+
+                lead = db.scalar(select(Lead).where(Lead.id == lead_id, Lead.workspace_id == workspace_id))
+                if lead is None:
+                    continue
+                status = "partial_success" if warnings else "completed"
+                lead.notes = _merge_lead_metadata(
+                    lead,
+                    _enrichment_metadata_update(
+                        status,
+                        request_id,
+                        {
+                            "enrichment_message": "Automatic enrichment finished with missing fields." if warnings else "Automatic enrichment completed.",
+                            "enrichment_warnings": warnings[:5],
+                        },
+                    ),
+                )
+                _sync_lead_to_crm(db, user_id, workspace, lead)
+                db.commit()
+                _lead_trace(request_id, "auto_enrichment_finished", lead_id=str(lead_id), status=status, warnings=len(warnings))
+            except Exception as exc:
+                db.rollback()
+                capture_provider_exception(exc, provider="auto_enrichment", endpoint="workspace_app.auto_enrichment.final", workspace_id=workspace_id, lead_id=lead_id, extra={"request_id": request_id})
+                failed_lead = db.scalar(select(Lead).where(Lead.id == lead_id, Lead.workspace_id == workspace_id))
+                if failed_lead is not None:
+                    failed_lead.notes = _merge_lead_metadata(
+                        failed_lead,
+                        _enrichment_metadata_update("error", request_id, {"enrichment_message": "Automatic enrichment could not finish. Retry from the company card."}),
+                    )
+                    _set_workflow_stages(
+                        failed_lead,
+                        {
+                            "website_analysis": "error",
+                            "decision_maker": "error",
+                            "verified_email": "error",
+                            "ai_email": "error",
+                        },
+                    )
+                    _sync_lead_to_crm(db, user_id, workspace, failed_lead)
+                    db.commit()
+                _lead_trace(request_id, "auto_enrichment_failed", lead_id=str(lead_id), reason=str(exc))
+            finally:
+                with _AUTO_ENRICHMENT_LOCK:
+                    _AUTO_ENRICHMENT_ACTIVE.discard(active_key)
+    finally:
+        db.close()
+
+
+def _enqueue_auto_enrichment(request: Request, user_id: str, workspace, leads: list[Lead], request_id: str, *, force: bool = False) -> bool:
+    lead_ids: list[UUID] = []
+    with _AUTO_ENRICHMENT_LOCK:
+        for lead in leads[:MAX_TURNKEY_RESEARCH_LEADS]:
+            if not force and _lead_recently_enriched(lead):
+                continue
+            active_key = str(lead.id)
+            if active_key in _AUTO_ENRICHMENT_ACTIVE:
+                continue
+            _AUTO_ENRICHMENT_ACTIVE.add(active_key)
+            lead_ids.append(lead.id)
+    if not lead_ids:
+        return False
+    language = _workspace_language(request, workspace)
+    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("OUTREACHAI_SYNC_ENRICHMENT") == "true":
+        _run_auto_enrichment_job(user_id, workspace.id, lead_ids, request_id, language)
+        return True
+    _AUTO_ENRICHMENT_EXECUTOR.submit(_run_auto_enrichment_job, user_id, workspace.id, lead_ids, request_id, language)
+    return False
+
+
 def _complete_public_company_details(db: Session, request: Request, user_id: str, workspace, lead: Lead, request_id: str) -> bool:
     metadata = _lead_metadata(lead)
     place_id = str(metadata.get("place_id") or "").strip()
@@ -1535,7 +1735,7 @@ def _merge_lead_metadata_for_create(metadata: dict[str, Any]) -> str:
 
 @router.post("/leads/search", response_model=UsageLeadSearchOut)
 def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageLeadSearchOut:
-    return _search_leads_impl(payload, request, user, db, run_turnkey_research=True)
+    return _search_leads_impl(payload, request, user, db, run_turnkey_research=False)
 
 
 def _search_leads_impl(
@@ -1597,21 +1797,14 @@ def _search_leads_impl(
         request_id=request_id,
         run_inline_analysis=False,
     )
-    if run_turnkey_research:
-        _lead_trace(request_id, "turnkey_research_batch_started", leads=len(saved))
-        try:
-            warnings.extend(_complete_turnkey_b2b_research(db, request, user.user_id, workspace, saved, request_id))
-        except Exception as exc:
-            capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_research_batch", workspace_id=workspace.id, extra={"request_id": request_id})
-            warnings.append("Companies were saved. Some AI research is still being prepared and can be retried from the company profile.")
-            _lead_trace(request_id, "turnkey_research_batch_failed", reason=str(exc), error_type=type(exc).__name__)
-            try:
-                db.rollback()
-            except Exception:
-                pass
-    else:
-        warnings.append("Companies were saved quickly. Open a company and run missing AI research when needed.")
-        _lead_trace(request_id, "turnkey_research_batch_skipped", reason="ai_command_fast_path", leads=len(saved))
+    queued_for_enrichment: list[Lead] = []
+    if saved:
+        for lead in saved:
+            if _lead_recently_enriched(lead):
+                continue
+            _mark_auto_enrichment_queued(lead, request_id)
+            queued_for_enrichment.append(lead)
+        _lead_trace(request_id, "auto_enrichment_batch_queued", leads=len(queued_for_enrichment), skipped_recent=len(saved) - len(queued_for_enrichment), run_turnkey_research=run_turnkey_research)
 
     companies: list[CrmCompanyOut] = []
     for lead in saved:
@@ -1629,6 +1822,17 @@ def _search_leads_impl(
             companies.append(_minimal_crm_company_out(fallback_company))
 
     db.commit()
+    enrichment_ran_inline = _enqueue_auto_enrichment(request, user.user_id, workspace, queued_for_enrichment, request_id) if queued_for_enrichment else False
+    if enrichment_ran_inline:
+        db.expire_all()
+        companies = []
+        for lead in saved:
+            refreshed = db.scalar(select(Lead).where(Lead.id == lead.id, Lead.workspace_id == workspace.id))
+            if refreshed is None:
+                continue
+            company = _sync_lead_to_crm(db, user.user_id, workspace, refreshed)
+            companies.append(_safe_company_out(db, workspace, user.user_id, company))
+        db.commit()
     _lead_trace(
         request_id,
         "turnkey_research_batch_finished",
@@ -1643,10 +1847,12 @@ def _search_leads_impl(
         message = f"Found {len(companies)} companies. Added {new_saved_count} new and reused {duplicates_skipped} already in your CRM."
     elif duplicates_skipped:
         message = f"Found {len(companies)} companies. They were already in your CRM."
+    elif not queued_for_enrichment:
+        message = f"Found {len(companies)} companies. Recent AI enrichment is already saved in CRM."
     elif not run_turnkey_research:
-        message = f"Found and saved {len(companies)} companies. Open any company to complete AI research and outreach."
+        message = f"Found and saved {len(companies)} companies. AI enrichment is now filling research, contacts and email drafts automatically."
     else:
-        message = f"Found, researched and saved {len(companies)} companies to your CRM."
+        message = f"Found and saved {len(companies)} companies to your CRM. AI enrichment is running automatically."
     return UsageLeadSearchOut(
         status=status,
         request_id=request_id,
@@ -2208,6 +2414,75 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         completed_steps=completed_steps,
         workflow_stages=company_out.workflow_stages,
         **guidance,
+    )
+
+
+@router.post("/companies/{company_id}/enrichment/restart", response_model=UsageActionOut)
+def restart_company_auto_enrichment(company_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+    if not company.lead_id:
+        return UsageActionOut(status="error", message="This company needs a saved lead before AI enrichment.", company=_crm_company_out(db, workspace, user.user_id, company))
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id))
+    if not lead:
+        return UsageActionOut(status="error", message="This company needs a saved lead before AI enrichment.", company=_crm_company_out(db, workspace, user.user_id, company))
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    _mark_auto_enrichment_queued(lead, request_id)
+    company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    db.commit()
+    ran_inline = _enqueue_auto_enrichment(request, user.user_id, workspace, [lead], request_id, force=True)
+    if ran_inline:
+        db.expire_all()
+        company = _scoped_company(db, workspace.id, company_id)
+    company_out = _crm_company_out(db, workspace, user.user_id, company)
+    return UsageActionOut(
+        status="success",
+        message="AI enrichment restarted. The company card will update as research, contacts and email draft are completed.",
+        company=company_out,
+        workflow_stages=company_out.workflow_stages,
+        next_action="Keep this company open or return to CRM while AI enrichment runs.",
+    )
+
+
+@router.post("/companies/{company_id}/enrichment/cancel", response_model=UsageActionOut)
+def cancel_company_auto_enrichment(company_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+    if not company.lead_id:
+        return UsageActionOut(status="error", message="This company does not have a running AI enrichment job.", company=_crm_company_out(db, workspace, user.user_id, company))
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id))
+    if not lead:
+        return UsageActionOut(status="error", message="This company does not have a running AI enrichment job.", company=_crm_company_out(db, workspace, user.user_id, company))
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    lead.notes = _merge_lead_metadata(
+        lead,
+        _enrichment_metadata_update(
+            "cancelled",
+            request_id,
+            {
+                "enrichment_cancel_requested": True,
+                "enrichment_message": "Automatic enrichment was stopped. You can restart it from this company card.",
+            },
+        ),
+    )
+    _set_workflow_stages(
+        lead,
+        {
+            "website_analysis": "waiting",
+            "decision_maker": "waiting",
+            "verified_email": "waiting",
+            "ai_email": "waiting",
+        },
+    )
+    company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    db.commit()
+    company_out = _crm_company_out(db, workspace, user.user_id, company)
+    return UsageActionOut(
+        status="success",
+        message="AI enrichment stopped. Saved company data stayed in CRM.",
+        company=company_out,
+        workflow_stages=company_out.workflow_stages,
+        next_action="Restart enrichment when you want OutreachAI to continue filling missing sales data.",
     )
 
 

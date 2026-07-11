@@ -957,9 +957,14 @@ def test_workspace_app_ai_lead_command_uses_fast_search_path(monkeypatch) -> Non
     monkeypatch.setattr("app.api.usage._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
 
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("AI command should not run full turnkey research inside the search request")
+        raise AssertionError("AI command should not run full turnkey research before the response is saved")
 
     monkeypatch.setattr("app.api.usage._complete_turnkey_b2b_research", fail_if_called)
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "app.api.usage._enqueue_auto_enrichment",
+        lambda request, user_id, workspace, leads, request_id, **kwargs: queued.extend([str(lead.id) for lead in leads]) or False,
+    )
     monkeypatch.setattr(
         "app.api.usage.search_google_places",
         lambda payload: GooglePlacesSearchResult(
@@ -1001,13 +1006,15 @@ def test_workspace_app_ai_lead_command_uses_fast_search_path(monkeypatch) -> Non
 
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "partial_success"
+    assert data["status"] == "success"
     assert data["companies_saved"] == 1
+    assert len(queued) == 1
     assert data["companies"][0]["name"] == "Usage Beauty Studio"
+    assert data["companies"][0]["workflow_stages"]["website_analysis"] == "running"
     assert data["filters"]["country"] == "Poland"
     assert data["filters"]["city"] == "Warsaw"
     assert data["filters"]["industry"] == "Beauty & cosmetics"
-    assert "Open any company to complete AI research" in data["message"]
+    assert "AI enrichment is now filling research" in data["message"]
 
 
 def test_workspace_app_lead_search_reports_reused_duplicates(monkeypatch) -> None:
@@ -1267,6 +1274,37 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent_payload["from_email"] == "sales@usage-email.example"
     assert sent_payload["from_name"] == "Usage Sales"
     assert sent_payload["reply_to"] == "reply@usage-email.example"
+
+
+def test_workspace_app_company_enrichment_restart_and_cancel(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-controls@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Enrichment Control", "website": "https://usage-enrichment.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "app.api.usage._enqueue_auto_enrichment",
+        lambda request, user_id, workspace, leads, request_id, **kwargs: queued.extend([str(lead.id) for lead in leads]) or False,
+    )
+
+    restarted = client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=headers)
+    assert restarted.status_code == 200
+    restart_payload = restarted.json()
+    assert restart_payload["status"] == "success"
+    assert len(queued) == 1
+    assert restart_payload["company"]["workflow_stages"]["website_analysis"] == "running"
+    assert restart_payload["company"]["workflow_stages"]["decision_maker"] == "running"
+
+    cancelled = client.post(f"/api/workspace-app/companies/{company_id}/enrichment/cancel", headers=headers)
+    assert cancelled.status_code == 200
+    cancel_payload = cancelled.json()
+    assert cancel_payload["status"] == "success"
+    assert cancel_payload["company"]["workflow_stages"]["website_analysis"] == "waiting"
+    assert cancel_payload["company"]["workflow_stages"]["decision_maker"] == "waiting"
 
 
 def test_workspace_app_complete_opportunity_prepares_research_contact_and_review_draft(monkeypatch) -> None:
