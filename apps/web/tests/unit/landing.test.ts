@@ -36,6 +36,10 @@ describe("i18n", () => {
       "Website analyzed",
       "Email generated",
       "Last activity",
+      "Inbox",
+      "Analytics",
+      "Emails generated",
+      "Workspace data",
     ];
 
     for (const phrase of phrases) {
