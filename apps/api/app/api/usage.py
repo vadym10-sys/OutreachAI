@@ -19,8 +19,10 @@ from app.api.routes import (
     _add_lead_activity,
     _analyze_lead_if_possible,
     _crm_company_out,
+    _crm_stage_for_lead,
     _company_duplicate_stmt,
     _current_workspace,
+    _email_status_for_lead,
     _ensure_crm_backfilled,
     _existing_duplicate_lead,
     _hunter_enriched_leads,
@@ -437,8 +439,12 @@ def _ensure_minimal_company(db: Session, user_id: str, workspace, lead: Lead, me
     company.outreach_strategy = str(metadata.get("outreach_strategy") or company.outreach_strategy or "")
     company.sales_angle = str(metadata.get("sales_angle") or company.sales_angle or "")
     company.expected_reply_rate = str(metadata.get("expected_reply_rate") or company.expected_reply_rate or "")
-    company.email_status = "Found" if lead.email else "Not prepared"
-    company.crm_stage = "Contact Found" if lead.email else "New Lead"
+    if metadata.get("email_status"):
+        company.email_status = _email_status_for_lead(lead)
+        company.crm_stage = _crm_stage_for_lead(lead)
+    else:
+        company.email_status = "Found" if lead.email else (company.email_status or "Not prepared")
+        company.crm_stage = "Contact Found" if lead.email else (company.crm_stage or "New Lead")
     company.metadata_json = {**(company.metadata_json or {}), **metadata}
     company.updated_at = now
     db.flush()

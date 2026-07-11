@@ -937,17 +937,20 @@ def _lead_metadata(lead: Lead | LeadOut) -> dict[str, Any]:
 
 def _crm_stage_for_lead(lead: Lead) -> str:
     metadata = _lead_metadata(lead)
+    email_status = str(metadata.get("email_status") or "")
     if _display_status(lead.status) == "Won":
         return "Won"
     if _display_status(lead.status) == "Lost":
         return "Lost"
     if _display_status(lead.status) == "Interested":
         return "Replied"
-    if metadata.get("email_status") == "Approved":
+    if email_status == "Sent":
+        return "Sent"
+    if email_status == "Approved":
         return "Approved"
     if _display_status(lead.status) == "Contacted":
         return "Sent"
-    if metadata.get("email_status") in {"Draft Ready", "draft"}:
+    if email_status in {"Draft Ready", "draft"}:
         return "Email Draft Ready"
     if lead.email or metadata.get("hunter_verified"):
         return "Contact Found"
@@ -960,11 +963,16 @@ def _crm_stage_for_lead(lead: Lead) -> str:
 
 def _email_status_for_lead(lead: Lead) -> str:
     metadata = _lead_metadata(lead)
+    email_status = str(metadata.get("email_status") or "")
+    if email_status in {"Sent", "Approved", "Draft Ready", "Needs review"}:
+        return email_status
+    if _display_status(lead.status) == "Contacted":
+        return "Sent"
     if lead.email:
         return "Verified" if metadata.get("hunter_verified") else "Found"
     if metadata.get("hunter_status") == "no_verified_email":
         return "No verified email"
-    return str(metadata.get("email_status") or "Not prepared")
+    return email_status or "Not prepared"
 
 
 def _company_duplicate_stmt(workspace: Workspace, user_id: str, lead: Lead):

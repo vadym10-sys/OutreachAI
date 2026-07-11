@@ -1432,6 +1432,7 @@ def test_workspace_app_complete_opportunity_prepares_research_contact_and_review
     assert data["email"]["subject"] == "B2B partner idea for Usage Complete"
     assert data["email"]["delivery_status"] == "draft"
     assert data["company"]["crm_stage"] == "Email Draft Ready"
+    assert data["company"]["email_status"] == "Draft Ready"
 
 
 def test_workspace_app_email_draft_uses_current_ui_locale(monkeypatch) -> None:
@@ -2555,6 +2556,7 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
     assert crm_response.status_code == 200
     company = crm_response.json()[0]
     assert company["crm_stage"] == "Email Draft Ready"
+    assert company["email_status"] == "Draft Ready"
     assert company["generated_emails"][0]["delivery_status"] == "draft"
     assert company["email_generated_at"]
     assert company["saved_to_crm_at"]
@@ -2570,6 +2572,7 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
 
     crm_after_approval = client.get("/api/crm/companies?search=Manual%20Draft", headers=AUTH).json()[0]
     assert crm_after_approval["crm_stage"] == "Approved"
+    assert crm_after_approval["email_status"] == "Approved"
     assert crm_after_approval["email_approved_at"]
     assert any(item["action"] == "email.approved" for item in crm_after_approval["activity"])
 
@@ -2580,6 +2583,7 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
 
     crm_after_send = client.get("/api/crm/companies?search=Manual%20Draft", headers=AUTH).json()[0]
     assert crm_after_send["crm_stage"] == "Sent"
+    assert crm_after_send["email_status"] == "Sent"
     assert crm_after_send["email_sent_at"]
     assert any(item["action"] == "email.sent" for item in crm_after_send["activity"])
 
