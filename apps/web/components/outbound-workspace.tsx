@@ -2677,7 +2677,11 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   const hasDraft = Boolean(company.generated_emails.length);
   const hasApproved = Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"));
   const intelligence = company.intelligence_quality || {};
-  const qualitySources = uniqueStrings(safeArray(intelligence.used_sources).map(String));
+  const companyIntelligence = company.company_intelligence || {};
+  const qualitySources = uniqueStrings([
+    ...safeArray(intelligence.used_sources).map(String),
+    ...safeArray(companyIntelligence.sources).map(String),
+  ]);
   const qualityBasis = uniqueStrings(safeArray(intelligence.decision_basis).map(String));
   const qualityGaps = uniqueStrings(safeArray(intelligence.gaps).map(String));
   const providerImprovements = uniqueStrings(safeArray(intelligence.provider_improvements).map(String));
