@@ -310,6 +310,9 @@ def _parse_lead_command(command: str, workspace) -> tuple[LeadFinderRequest | No
         workspace_industry = (getattr(workspace, "industry", "") or "").strip()
         industry = next((canonical for canonical, aliases in INDUSTRY_ALIASES.items() if workspace_industry == canonical or any(alias in workspace_industry.lower() for alias in aliases)), workspace_industry)
 
+    if not country and industry:
+        country = "Poland"
+
     if not city and country:
         city = COUNTRY_DEFAULT_CITY.get(country, "")
 
@@ -1522,6 +1525,17 @@ def _merge_lead_metadata_for_create(metadata: dict[str, Any]) -> str:
 
 @router.post("/leads/search", response_model=UsageLeadSearchOut)
 def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageLeadSearchOut:
+    return _search_leads_impl(payload, request, user, db, run_turnkey_research=True)
+
+
+def _search_leads_impl(
+    payload: LeadFinderRequest,
+    request: Request,
+    user: WorkspaceUserContext,
+    db: Session,
+    *,
+    run_turnkey_research: bool,
+) -> UsageLeadSearchOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     request_id = request.headers.get("x-request-id") or str(uuid4())
     warnings: list[str] = []
@@ -1573,17 +1587,21 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
         request_id=request_id,
         run_inline_analysis=False,
     )
-    _lead_trace(request_id, "turnkey_research_batch_started", leads=len(saved))
-    try:
-        warnings.extend(_complete_turnkey_b2b_research(db, request, user.user_id, workspace, saved, request_id))
-    except Exception as exc:
-        capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_research_batch", workspace_id=workspace.id, extra={"request_id": request_id})
-        warnings.append("Companies were saved. Some AI research is still being prepared and can be retried from the company profile.")
-        _lead_trace(request_id, "turnkey_research_batch_failed", reason=str(exc), error_type=type(exc).__name__)
+    if run_turnkey_research:
+        _lead_trace(request_id, "turnkey_research_batch_started", leads=len(saved))
         try:
-            db.rollback()
-        except Exception:
-            pass
+            warnings.extend(_complete_turnkey_b2b_research(db, request, user.user_id, workspace, saved, request_id))
+        except Exception as exc:
+            capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_research_batch", workspace_id=workspace.id, extra={"request_id": request_id})
+            warnings.append("Companies were saved. Some AI research is still being prepared and can be retried from the company profile.")
+            _lead_trace(request_id, "turnkey_research_batch_failed", reason=str(exc), error_type=type(exc).__name__)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    else:
+        warnings.append("Companies were saved quickly. Open a company and run missing AI research when needed.")
+        _lead_trace(request_id, "turnkey_research_batch_skipped", reason="ai_command_fast_path", leads=len(saved))
 
     companies: list[CrmCompanyOut] = []
     for lead in saved:
@@ -1615,6 +1633,8 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
         message = f"Found {len(companies)} companies. Added {new_saved_count} new and reused {duplicates_skipped} already in your CRM."
     elif duplicates_skipped:
         message = f"Found {len(companies)} companies. They were already in your CRM."
+    elif not run_turnkey_research:
+        message = f"Found and saved {len(companies)} companies. Open any company to complete AI research and outreach."
     else:
         message = f"Found, researched and saved {len(companies)} companies to your CRM."
     return UsageLeadSearchOut(
@@ -1650,7 +1670,7 @@ def search_leads_from_command(payload: UsageLeadCommandIn, request: Request, use
             warnings=["AI command needs a city, country and industry before search."],
             interpreted_query=payload.command,
         )
-    result = search_leads(filters, request, user, db)
+    result = _search_leads_impl(filters, request, user, db, run_turnkey_research=False)
     return UsageLeadCommandOut(**result.model_dump(), filters=filters, interpreted_query=payload.command)
 
 

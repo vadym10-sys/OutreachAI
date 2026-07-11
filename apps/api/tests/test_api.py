@@ -951,6 +951,53 @@ def test_workspace_app_ai_lead_command_parses_sales_search() -> None:
     assert "beauty" in beauty_filters.keyword
 
 
+def test_workspace_app_ai_lead_command_uses_fast_search_path(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-command-fast@example.com"}
+
+    monkeypatch.setattr("app.api.usage._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("AI command should not run full turnkey research inside the search request")
+
+    monkeypatch.setattr("app.api.usage._complete_turnkey_b2b_research", fail_if_called)
+    monkeypatch.setattr(
+        "app.api.usage.search_google_places",
+        lambda payload: GooglePlacesSearchResult(
+            leads=[
+                LeadOut(
+                    company="Usage Beauty Studio",
+                    website="https://usage-beauty.example",
+                    industry="Beauty & cosmetics",
+                    country="Poland",
+                    city="Warsaw",
+                    notes='{"source":"google_maps","domain":"usage-beauty.example","place_id":"usage-beauty-1"}',
+                    domain="usage-beauty.example",
+                    place_id="usage-beauty-1",
+                    source="google_maps",
+                )
+            ],
+            raw_count=1,
+            duration_ms=9,
+        ),
+    )
+
+    response = client.post(
+        "/api/workspace-app/leads/command",
+        headers=headers,
+        json={"command": "Хочу найти клиентов для своей продукции по косметике"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "partial_success"
+    assert data["companies_saved"] == 1
+    assert data["companies"][0]["name"] == "Usage Beauty Studio"
+    assert data["filters"]["country"] == "Poland"
+    assert data["filters"]["city"] == "Warsaw"
+    assert data["filters"]["industry"] == "Beauty & cosmetics"
+    assert "Open any company to complete AI research" in data["message"]
+
+
 def test_workspace_app_lead_search_reports_reused_duplicates(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-search-duplicates@example.com"}
     monkeypatch.setattr("app.api.usage._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
