@@ -514,6 +514,44 @@ def _set_workflow_stages(lead: Lead, updates: dict[str, Literal["waiting", "runn
         _set_workflow_stage(lead, key, status, (messages or {}).get(key, ""))
 
 
+def _finalize_enrichment_workflow(db: Session, workspace, lead: Lead) -> None:
+    metadata = _lead_metadata(lead)
+    has_research = bool(
+        metadata.get("website_analyzed_at")
+        or metadata.get("ai_summary")
+        or metadata.get("opportunity_analysis")
+        or metadata.get("suggested_offer")
+        or metadata.get("sales_angle")
+        or metadata.get("pain_points")
+    )
+    selected_decision_maker = metadata.get("selected_decision_maker")
+    has_decision_maker = bool(lead.contact or (isinstance(selected_decision_maker, dict) and selected_decision_maker))
+    has_verified_email = bool(lead.email or metadata.get("hunter_verified") or metadata.get("email_status") == "Verified")
+    existing_draft = _existing_review_draft(db, workspace.id, lead.id)
+    has_draft = bool(existing_draft or metadata.get("email_generated_at"))
+    approval_completed = bool(existing_draft and existing_draft.delivery_status in {"approved", "sent"})
+
+    _set_workflow_stages(
+        lead,
+        {
+            "company_profile": "completed",
+            "website_analysis": "completed" if has_research else "error",
+            "decision_maker": "completed" if has_decision_maker else "error",
+            "verified_email": "completed" if has_verified_email else "error",
+            "ai_email": "completed" if has_draft else "error",
+            "approval": "completed" if approval_completed else "waiting",
+        },
+        {
+            "company_profile": "Saved company profile and public business data.",
+            "website_analysis": "AI summary, services, sales angle, offer and useful personalization facts." if has_research else "Run website analysis to fill summary, pain points and opportunity angle.",
+            "decision_maker": "Decision maker selected." if has_decision_maker else "Find a decision maker or add the right contact manually.",
+            "verified_email": "Verified business email saved." if has_verified_email else "Find a verified email or add a known business email manually.",
+            "ai_email": "A personalized first email generated from the company research." if has_draft else "Generate a personalized email for review. Sending stays blocked until approval.",
+            "approval": "Human review completed. The email is ready to send." if approval_completed else "Review the draft, edit it if needed, then approve before sending.",
+        },
+    )
+
+
 def _is_placeholder_recipient(email: str | None) -> bool:
     if not email or "@" not in email:
         return True
@@ -1185,6 +1223,7 @@ def process_enrichment_job(job_id: UUID) -> None:
                 },
             ),
         )
+        _finalize_enrichment_workflow(db, workspace, lead)
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
         complete_job(db, job, partial=bool(warnings), warnings=warnings)
         _lead_trace(request_id, "durable_auto_enrichment_finished", lead_id=str(lead.id), job_id=str(job.id), status=status, warnings=len(warnings))
