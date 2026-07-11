@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     resend_webhook_secret: str = ""
     apollo_api_key: str = ""
     hunter_api_key: str = ""
+    builtwith_api_key: str = ""
     google_maps_api_key: str = Field(default_factory=_google_maps_api_key_default)
     clay_api_key: str = ""
     clay_workspace_id: str = ""

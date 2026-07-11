@@ -124,6 +124,50 @@ export type Lead = {
   decision_maker_roles_searched?: string[];
   workflow_stages?: Record<string, "waiting" | "running" | "completed" | "error" | string>;
   workflow_stage_messages?: Record<string, string>;
+  deep_contact_search?: DeepContactSearch | null;
+  intelligence_quality?: IntelligenceQuality | null;
+  technologies?: string[];
+  last_enriched_at?: string | null;
+};
+
+export type DeepContactCandidate = {
+  name?: string;
+  title?: string;
+  linkedin?: string;
+  email?: string;
+  source?: string;
+  confidence?: number;
+  verification_status?: string;
+  apollo_contact_id?: string;
+  reason?: string;
+};
+
+export type DeepContactSearch = {
+  status?: string;
+  cached?: boolean;
+  company_profile?: Record<string, unknown>;
+  candidates?: DeepContactCandidate[];
+  selected_decision_maker?: DeepContactCandidate | null;
+  verified_email?: string;
+  email_status?: string;
+  confidence_score?: number;
+  lead_score?: number;
+  technologies?: string[];
+  sources?: string[];
+  errors?: Array<{ stage?: string; message?: string }>;
+  stages?: Record<string, string>;
+  last_enriched_at?: string;
+};
+
+export type IntelligenceQuality = {
+  source?: string;
+  used_sources?: string[];
+  decision_basis?: string[];
+  gaps?: string[];
+  coverage_summary?: string;
+  confidence_reason?: string;
+  provider_improvements?: string[];
+  confidence_score?: number;
 };
 
 export type CrmContact = {
@@ -226,6 +270,10 @@ export type CrmCompany = {
   decision_maker_roles_searched?: string[];
   workflow_stages?: Record<string, "waiting" | "running" | "completed" | "error" | string>;
   workflow_stage_messages?: Record<string, string>;
+  deep_contact_search?: DeepContactSearch | null;
+  intelligence_quality?: IntelligenceQuality | null;
+  technologies?: string[];
+  last_enriched_at?: string | null;
 };
 
 export type CrmPipeline = {

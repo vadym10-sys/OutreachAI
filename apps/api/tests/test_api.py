@@ -52,6 +52,7 @@ from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchR
 from app.services.hunter import HunterRequestError  # noqa: E402
 from app.services.ai import ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
 from app.services.backups import backup_archive_is_readable  # noqa: E402
+from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -88,6 +89,85 @@ def test_website_url_normalization_adds_https_and_rejects_invalid_domains() -> N
 
     with pytest.raises(WebsiteValidationError):
         normalize_website_url("localhost")
+
+
+def test_deep_contact_normalizes_domains_and_rejects_invalid_values() -> None:
+    assert normalize_domain("https://www.example.com/about") == "example.com"
+    assert normalize_domain("Founder <person@example.com>") == "example.com"
+    assert normalize_domain("not a domain") == ""
+
+
+def test_deep_contact_selects_revenue_decision_maker() -> None:
+    candidates = [
+        DeepContactCandidate(name="Tech Lead", title="CTO", confidence=90, linkedin="https://linkedin.com/in/cto"),
+        DeepContactCandidate(name="Sales Lead", title="Head of Sales", confidence=75, email="sales@example.com"),
+        DeepContactCandidate(name="Admin", title="Office Manager", confidence=100, email="admin@example.com"),
+    ]
+    selected = select_best_decision_maker(candidates, company_profile={"industry": "SaaS"}, industry="SaaS", product_context="Outbound sales")
+    assert selected is not None
+    assert selected.name == "Sales Lead"
+    assert "revenue" in selected.reason.lower()
+
+
+def test_deep_contact_cache_is_fresh_for_recent_result() -> None:
+    metadata = {"deep_contact_search": {"last_enriched_at": datetime.utcnow().isoformat(), "status": "partial_success"}}
+    assert deep_contact_cache_is_fresh(metadata) is True
+
+
+def test_deep_contact_search_endpoint_saves_verified_decision_maker(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=USER_A_AUTH,
+        json={"name": "Deep Contact Co", "website": "https://deepcontact.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["company"]["id"]
+
+    def fake_deep_search(**_: object) -> DeepContactSearchResult:
+        return DeepContactSearchResult(
+            status="success",
+            company_profile={"domain": "deepcontact.example", "industry": "SaaS", "employee_count": 42},
+            candidates=[
+                DeepContactCandidate(
+                    name="Jane Founder",
+                    title="Founder",
+                    email="jane@deepcontact.example",
+                    linkedin="https://linkedin.com/in/jane-founder",
+                    source="hunter",
+                    confidence=97,
+                    verification_status="verified",
+                )
+            ],
+            selected_decision_maker=DeepContactCandidate(
+                name="Jane Founder",
+                title="Founder",
+                email="jane@deepcontact.example",
+                linkedin="https://linkedin.com/in/jane-founder",
+                source="hunter",
+                confidence=97,
+                verification_status="verified",
+            ),
+            verified_email="jane@deepcontact.example",
+            email_status="verified",
+            confidence_score=95,
+            lead_score=92,
+            technologies=["Next.js", "HubSpot"],
+            sources=["hunter_email_verifier", "builtwith"],
+            stages={"email_finder": "completed", "technographics": "completed"},
+            last_enriched_at=datetime.utcnow().isoformat(),
+        )
+
+    monkeypatch.setattr(usage_module, "run_deep_contact_search", fake_deep_search)
+    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
+    assert enriched.status_code == 200, enriched.text
+    payload = enriched.json()
+    assert payload["status"] == "success"
+    assert payload["company"]["email"] == "jane@deepcontact.example"
+    assert payload["company"]["contacts"][0]["name"] == "Jane Founder"
+    assert payload["company"]["deep_contact_search"]["verified_email"] == "jane@deepcontact.example"
+    assert "Next.js" in payload["company"]["technologies"]
 
 
 def test_website_analysis_passes_requested_language_to_ai(monkeypatch) -> None:
@@ -334,6 +414,13 @@ def test_workspace_data_is_private_between_users(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
     monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
 
+    before_user_a_dashboard = client.get("/api/dashboard", headers=USER_A_AUTH)
+    before_user_b_dashboard = client.get("/api/dashboard", headers=USER_B_AUTH)
+    assert before_user_a_dashboard.status_code == 200
+    assert before_user_b_dashboard.status_code == 200
+    before_user_a_leads_count = before_user_a_dashboard.json()["leads"]
+    before_user_b_leads_count = before_user_b_dashboard.json()["leads"]
+
     lead_payload = {
         "company": "Tenant A Berlin Builders",
         "website": "https://tenant-a-builders.example",
@@ -362,8 +449,8 @@ def test_workspace_data_is_private_between_users(monkeypatch) -> None:
     user_b_dashboard = client.get("/api/dashboard", headers=USER_B_AUTH)
     assert user_a_dashboard.status_code == 200
     assert user_b_dashboard.status_code == 200
-    assert user_a_dashboard.json()["leads"] == 1
-    assert user_b_dashboard.json()["leads"] == 0
+    assert user_a_dashboard.json()["leads"] == before_user_a_leads_count + 1
+    assert user_b_dashboard.json()["leads"] == before_user_b_leads_count
 
     user_a_companies = client.get("/api/crm/companies?search=Tenant%20A%20Berlin%20Builders", headers=USER_A_AUTH)
     user_b_companies = client.get("/api/crm/companies?search=Tenant%20A%20Berlin%20Builders", headers=USER_B_AUTH)

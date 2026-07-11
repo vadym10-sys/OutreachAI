@@ -394,8 +394,16 @@ function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
     replied_at: value.replied_at || null,
     last_activity_at: value.last_activity_at || null,
     stage_changed_at: value.stage_changed_at || null,
+    contact_search_checked_at: value.contact_search_checked_at || null,
+    contact_search_status: value.contact_search_status || null,
+    contact_search_message: value.contact_search_message || null,
+    decision_maker_roles_searched: safeArray(value.decision_maker_roles_searched).map(String),
     workflow_stages: value.workflow_stages || {},
-    workflow_stage_messages: value.workflow_stage_messages || {}
+    workflow_stage_messages: value.workflow_stage_messages || {},
+    deep_contact_search: value.deep_contact_search || null,
+    intelligence_quality: value.intelligence_quality || null,
+    technologies: safeArray(value.technologies).map(String),
+    last_enriched_at: value.last_enriched_at || null
   };
 }
 
@@ -2604,7 +2612,15 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   const hasResearch = Boolean(company.ai_summary || company.sales_angle || company.opportunity_analysis || company.partnership_fit);
   const hasDraft = Boolean(company.generated_emails.length);
   const hasApproved = Boolean(company.email_approved_at || company.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"));
-  const score = Math.max(0, Math.min(100, Math.round(((company.priority_score || healthScore) + (company.confidence_score || healthScore) + (company.icp_score || healthScore)) / 3)));
+  const intelligence = company.intelligence_quality || {};
+  const qualitySources = safeArray(intelligence.used_sources).map(String).filter(Boolean);
+  const qualityBasis = safeArray(intelligence.decision_basis).map(String).filter(Boolean);
+  const qualityGaps = safeArray(intelligence.gaps).map(String).filter(Boolean);
+  const providerImprovements = safeArray(intelligence.provider_improvements).map(String).filter(Boolean);
+  const deepSearch = company.deep_contact_search || {};
+  const deepSelected = deepSearch.selected_decision_maker || undefined;
+  const technologies = safeArray(company.technologies).map(String).filter(Boolean);
+  const score = Math.max(0, Math.min(100, Math.round(((company.priority_score || healthScore) + (company.confidence_score || intelligence.confidence_score || healthScore) + (company.icp_score || healthScore)) / 3)));
   const draft = latestCompanyEmail(company);
   const painPoints = safeArray(company.pain_points).filter(Boolean);
   const services = safeArray(company.services).filter(Boolean);
@@ -2626,23 +2642,23 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
     company.ai_summary ||
     (services.length ? services.slice(0, 3).join(", ") : "") ||
     [company.industry, company.city, company.country].filter(Boolean).join(" · ") ||
-    "Run AI research to summarize what this company does.";
+    "CRM profile is saved, but website research is still needed to explain the business precisely.";
   const whyFit =
     company.partnership_fit ||
     company.opportunity_analysis ||
     company.sales_angle ||
     company.ai_summary ||
-    "OutreachAI needs website research before it can explain why this company is a strong fit.";
+    (company.industry ? "The company matches the selected target market; verify the website and contact before outreach." : "Potential fit is not proven yet; verify the company website and decision maker before spending sales time.");
   const likelyNeed =
     painPoints[0] ||
     company.value_proposition ||
     company.weaknesses?.[0] ||
-    "Run AI research to identify the most likely business need.";
+    (hasResearch ? "Use the AI research above as the strongest current need signal." : "Likely need is still an inference until website research is complete.");
   const whyUs =
     company.suggested_offer ||
     company.outreach_strategy ||
     company.sales_angle ||
-    "Use OutreachAI to prepare a more relevant, research-backed sales conversation.";
+    "OutreachAI can turn the saved company profile into a researched, review-ready outreach path without manual tab switching.";
   const opener =
     company.recommended_cta ||
     company.sales_angle ||
@@ -2654,11 +2670,12 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   const firstMessageSubject = draft?.subject || "First personalized message";
   const replyProbability = company.expected_reply_rate || `${Math.max(10, Math.min(80, Math.round(score * 0.65)))}%`;
   const replyReason =
-    company.expected_reply_rate
+    intelligence.confidence_reason ||
+    (company.expected_reply_rate
       ? "AI estimated this from the company fit, available contact data and personalization strength."
       : hasResearch && hasContact
         ? "AI has enough company and contact context to estimate a practical reply chance."
-        : "The estimate is conservative because company research or verified contact data is still missing.";
+        : "The estimate is conservative because company research or verified contact data is still missing.");
   const blocker = !hasResearch
     ? "Company research is missing."
     : !hasContact
@@ -2672,14 +2689,19 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
     ? (company.suggested_offer || company.outreach_strategy || company.next_recommended_action || "Use the AI research to open with a specific business improvement.")
     : "Run AI research first, then use the summary and offer to prepare a call.";
   const nextBestAction = company.next_recommended_action || companyNextAction(company);
-  const decisionReason =
+  const decisionReason = intelligence.coverage_summary || (
     decision === "Work this lead now"
       ? "The company has enough research, a reachable contact path and a clear personalized angle."
       : decision === "Research before outreach"
         ? "The company looks relevant, but one missing field could reduce reply quality."
-        : "The lead is saved, but there is not enough verified context to justify outreach yet.";
+        : "The lead is saved, but there is not enough verified context to justify outreach yet."
+  );
   const strongestSignals = [
     ...buyingSignals,
+    ...qualityBasis,
+    ...qualitySources,
+    deepSelected?.title ? "Selected decision maker role is available." : "",
+    technologies.length ? "Technology data is available for personalization." : "",
     company.website || company.domain ? "Website available for personalization" : "",
     company.google_rating ? "Public reputation signal available" : "",
     hasContact ? "Contact path available" : "",
@@ -2687,6 +2709,7 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
   ].filter(Boolean).slice(0, 3);
   const topRisks = [
     ...risks,
+    ...qualityGaps,
     !hasContact ? "No verified decision-maker email yet" : "",
     !hasResearch ? "Company research is incomplete" : "",
     !hasApproved ? "Message still needs human approval" : "",
@@ -2696,7 +2719,7 @@ function companySalesBrief(company: CrmCompany, healthScore: number) {
     hasContact ? "Review the first message against the sales angle." : "Find or add the decision maker before sending.",
     hasApproved ? "Send the approved email and track reply intent." : "Approve only after the message is specific and safe to send.",
   ].filter(Boolean).slice(0, 3);
-  return { score, fit, decision, decisionReason, strongestSignals, topRisks, actionPlan, whatTheyDo, whyFit, likelyNeed, whyUs, opener, firstMessageSubject, firstMessage, replyProbability, replyReason, blocker, meetingPrep, nextBestAction };
+  return { score, fit, decision, decisionReason, strongestSignals, topRisks, actionPlan, whatTheyDo, whyFit, likelyNeed, whyUs, opener, firstMessageSubject, firstMessage, replyProbability, replyReason, blocker, meetingPrep, nextBestAction, qualitySources, qualityGaps, providerImprovements, technologies };
 }
 
 function companyPrimaryAction(company: CrmCompany) {
@@ -3138,6 +3161,13 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const contactSearchAttempted = Boolean(current.contact_search_checked_at || current.contact_search_status);
   const contactSearchEmpty = !current.email && !current.contacts.some((contact) => contact.email) && current.contact_search_status === "no_verified_email";
   const contactRolesSearched = safeArray(current.decision_maker_roles_searched).filter(Boolean);
+  const deepSearch = current.deep_contact_search || null;
+  const deepSelected = deepSearch?.selected_decision_maker || null;
+  const deepCandidates = safeArray(deepSearch?.candidates);
+  const deepSources = safeArray(deepSearch?.sources).map(String);
+  const deepTechnologies = safeArray(current.technologies?.length ? current.technologies : deepSearch?.technologies).map(String);
+  const deepErrors = safeArray(deepSearch?.errors).map((item) => typeof item === "object" && item !== null && "message" in item ? String((item as { message?: string }).message || "") : "").filter(Boolean);
+  const deepStages = deepSearch?.stages || {};
   const outreachSteps = [
     ["Draft", Boolean(current.email_generated_at || current.generated_emails.length)],
     ["Approved", Boolean(current.email_approved_at || current.generated_emails.some((email) => email.delivery_status === "approved" || email.delivery_status === "sent"))],
@@ -3334,6 +3364,47 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     }
   }
 
+  async function runDeepContactSearch(force = false) {
+    if (!current.lead_id) {
+      setActionError(t("Reconnect this company to a lead before finding contacts."));
+      return;
+    }
+    setActionBusy(force ? "deep-contact-retry" : "deep-contact");
+    setActionError("");
+    setActionNotice(t("Running deep contact search..."));
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/deep-contact-search`, {
+          method: "POST",
+          body: JSON.stringify({ force }),
+          timeoutMs: 45000
+        }),
+        50000,
+        "Deep contact search took too long. Saved data stayed in CRM; try again with a smaller company profile."
+      );
+      if (result.company) {
+        applyCompanyUpdate(normalizeCrmCompany(result.company));
+      }
+      setActionNotice(t(result.message || "Deep contact search finished."));
+      trackEvent("deep_contact_search_completed", {
+        company_id: current.id,
+        company: current.name,
+        force
+      });
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, t("Deep contact search could not be completed. Try again or add the contact manually."));
+      setActionError(reason);
+      setActionNotice("");
+      trackEvent("deep_contact_search_failed", {
+        company_id: current.id,
+        company: current.name,
+        reason
+      });
+    } finally {
+      setActionBusy("");
+    }
+  }
+
   function runPrimaryAction() {
     if (primaryAction.action === "prepare-company") {
       void prepareCompanyOpportunity();
@@ -3489,6 +3560,24 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <p className="text-xs font-bold uppercase text-slate-500">{t("Why AI expects this reply probability")}</p>
           <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.replyReason)}</p>
         </div>
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-bold uppercase text-slate-500">{t("Data used for this brief")}</p>
+            {salesBrief.qualitySources.length ? (
+              <ul className="mt-2 space-y-2 text-sm leading-6 text-slate-700">
+                {salesBrief.qualitySources.slice(0, 4).map((item) => <li key={item} className="flex gap-2"><CheckCircle2 className="mt-1 shrink-0 text-brand" size={15} />{t(item)}</li>)}
+              </ul>
+            ) : (
+              <p className="mt-2 text-sm leading-6 text-slate-700">{t("Only the saved CRM profile is available so far.")}</p>
+            )}
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-bold uppercase text-slate-500">{t("What would improve it")}</p>
+            <ul className="mt-2 space-y-2 text-sm leading-6 text-slate-700">
+              {(salesBrief.qualityGaps.length ? salesBrief.qualityGaps : salesBrief.providerImprovements.slice(0, 2)).slice(0, 4).map((item) => <li key={item} className="flex gap-2"><AlertTriangle className="mt-1 shrink-0 text-amber-700" size={15} />{t(item)}</li>)}
+            </ul>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -3502,7 +3591,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             <InfoCell label="Website" value={current.website || current.domain} help="Add a website to run company research." />
             <InfoCell label="LinkedIn" value={primaryContact?.linkedin} help="Add a public company or decision-maker profile." />
             <InfoCell label="Map listing" value={current.place_id ? t("Available") : null} help="Run lead discovery to connect the local business listing." />
-            <InfoCell label="Technologies" value={null} help="Technology data appears after website research detects it." />
+            <InfoCell label="Technologies" value={salesBrief.technologies.length ? salesBrief.technologies.slice(0, 5).join(", ") : null} help="Technology data appears after website research detects it." />
             <InfoCell label="Rating" value={current.google_rating ? `${current.google_rating}/5` : null} help="Rating appears when available from the business listing." />
             <InfoCell label="Data source" value={t(sourceLabel(current.source))} help="The source is shown as business-friendly verified data." />
           </div>
@@ -3527,9 +3616,9 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
             <div className="rounded-2xl bg-teal-50 p-4">
               <p className="text-sm font-bold text-brand">{t("AI summary")}</p>
-              <p className="mt-2 text-sm leading-6 text-slate-800">{displayCurrent.ai_summary || t("Not available. Analyze the company website to generate the summary, pain points and sales angle.")}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-800">{t(displayCurrent.ai_summary || salesBrief.whatTheyDo)}</p>
               <p className="mt-4 text-sm font-bold text-ink">{t("Why this company is interesting")}</p>
-              <p className="mt-2 text-sm leading-6 text-slate-700">{displayCurrent.opportunity_analysis || displayCurrent.partnership_fit || displayCurrent.sales_angle || displayCurrent.outreach_strategy || t("Not available. Complete sales research to identify the strongest outreach angle.")}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{t(displayCurrent.opportunity_analysis || displayCurrent.partnership_fit || displayCurrent.sales_angle || displayCurrent.outreach_strategy || salesBrief.whyFit)}</p>
               {(!displayCurrent.ai_summary || (!displayCurrent.sales_angle && !displayCurrent.outreach_strategy)) && (
                 <button
                   type="button"
@@ -3586,6 +3675,80 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
                 {t("Find contacts")}
               </button>
             </div>
+          </div>
+          <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Deep contact search")}</p>
+                <h4 className="mt-2 text-lg font-black text-ink">{deepSelected?.name || t("Find the best decision maker")}</h4>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {deepSelected
+                    ? `${deepSelected.title || t("Decision maker")} · ${deepSelected.reason || t("Selected by role fit, confidence and available verification data.")}`
+                    : t("Run one search to enrich the company, find up to 10 candidates, verify email and detect technologies.")}
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row lg:flex-col">
+                <button
+                  type="button"
+                  onClick={() => runDeepContactSearch(false)}
+                  disabled={actionBusy === "deep-contact" || actionBusy === "deep-contact-retry" || !current.lead_id}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {actionBusy === "deep-contact" ? <Loader2 className="animate-spin" size={17} /> : <UserRoundSearch size={17} />}
+                  {t("Run deep search")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runDeepContactSearch(true)}
+                  disabled={actionBusy === "deep-contact" || actionBusy === "deep-contact-retry" || !current.lead_id}
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {actionBusy === "deep-contact-retry" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+                  {t("Retry search")}
+                </button>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              <InfoCell label="Decision maker" value={deepSelected?.name || primaryContact?.name} help="Best contact selected by role, seniority and verification confidence." />
+              <InfoCell label="Verified email" value={deepSearch?.verified_email || current.email || primaryContact?.email} help="Only shown as complete when the email is verified or explicitly saved." />
+              <InfoCell label="Confidence" value={deepSearch?.confidence_score ? `${deepSearch.confidence_score}%` : null} help="Combined confidence from profile, contact, email verification and technologies." />
+            </div>
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase text-slate-500">{t("Progress")}</p>
+                <div className="mt-2 grid gap-2">
+                  {["apollo_company_profile", "apollo_people_search", "hunter_domain_search", "email_finder", "technographics"].map((stage) => (
+                    <div key={stage} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-xs font-bold">
+                      <span>{t(stage.replaceAll("_", " "))}</span>
+                      <span className={`rounded-full px-2 py-1 ${deepStages[stage] === "completed" ? "bg-teal-50 text-brand" : deepStages[stage] === "error" || deepStages[stage] === "missing_key" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{t(deepStages[stage] || "waiting")}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase text-slate-500">{t("Sources and technologies")}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(deepSources.length ? deepSources : [t("No source yet")]).map((source) => <span key={source} className="rounded-full bg-white px-2 py-1 text-xs font-bold text-slate-700">{t(source)}</span>)}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(deepTechnologies.length ? deepTechnologies.slice(0, 10) : [t("No technologies found yet")]).map((technology) => <span key={technology} className="rounded-full bg-teal-50 px-2 py-1 text-xs font-bold text-brand">{technology}</span>)}
+                </div>
+              </div>
+            </div>
+            {deepCandidates.length > 1 ? (
+              <details className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <summary className="cursor-pointer text-sm font-black text-ink">{t("Choose another candidate")}</summary>
+                <div className="mt-3 grid gap-2">
+                  {deepCandidates.slice(0, 10).map((candidate, index) => (
+                    <div key={`${candidate.email || candidate.linkedin || candidate.name || index}`} className="rounded-lg bg-white p-3 text-sm">
+                      <p className="font-bold text-ink">{candidate.name || t("Unnamed contact")}</p>
+                      <p className="mt-1 text-slate-600">{candidate.title || t("Role unavailable")} · {candidate.email || t("Email not verified")}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+            {deepErrors.length ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">{t(deepErrors[0])}</p> : null}
           </div>
           {current.contacts.length ? <div className="grid gap-3 lg:grid-cols-2">
             {current.contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-4">

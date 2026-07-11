@@ -43,6 +43,7 @@ from app.services.ai import ProviderConfigurationError, ProviderRequestError, pe
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
 from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
+from app.services.deep_contact_search import DeepContactSearchError, normalize_domain, run_deep_contact_search
 from app.services.website import normalize_website_url
 
 logger = logging.getLogger("outreachai.workspace_app")
@@ -148,6 +149,10 @@ class UsageContactCreateIn(BaseModel):
     email: Optional[EmailStr] = None
     phone: Optional[str] = Field(default=None, max_length=80)
     linkedin: Optional[str] = Field(default=None, max_length=500)
+
+
+class UsageDeepContactSearchIn(BaseModel):
+    force: bool = False
 
 
 class UsageLeadSearchOut(BaseModel):
@@ -768,6 +773,63 @@ def _sales_metadata_value(metadata: dict, key: str, fallback):
     return current
 
 
+def _company_intelligence_quality(lead: Lead, metadata: dict, workspace, source: str, language: str) -> dict[str, Any]:
+    has_website = bool(lead.website or metadata.get("domain"))
+    has_email = bool(lead.email)
+    has_contact = bool(lead.contact or metadata.get("contact_search_status") == "verified_email_found")
+    has_analysis = bool(metadata.get("ai_summary") or metadata.get("opportunity_analysis") or metadata.get("suggested_offer"))
+    technologies = metadata.get("technologies") if isinstance(metadata.get("technologies"), list) else []
+    deep_contact = metadata.get("deep_contact_search") if isinstance(metadata.get("deep_contact_search"), dict) else {}
+
+    used_sources = [
+        _localized_fallback_text(language, "profile_saved"),
+        _localized_fallback_text(language, "website_available") if has_website else "",
+        "AI website research" if has_analysis else "",
+        "Verified decision-maker contact" if has_email else "",
+        "Technology profile" if technologies or deep_contact.get("technologies") else "",
+    ]
+    used_sources = [item for item in used_sources if item]
+    gaps = [
+        _localized_fallback_text(language, "risk_website") if not has_website else "",
+        _localized_fallback_text(language, "risk_email") if not has_email else "",
+        "Decision maker is not verified yet." if not has_contact else "",
+        "Technology stack is unavailable until a technographic source is connected." if not technologies and not deep_contact.get("technologies") else "",
+    ]
+    gaps = [item for item in gaps if item]
+    score = int(metadata.get("confidence_score") or (82 if has_website and has_email and has_analysis else 68 if has_website and has_analysis else 52 if has_website else 38))
+    if gaps:
+        score = max(20, min(score, 88 - len(gaps) * 8))
+    basis = [
+        "Company profile is saved and scoped to this workspace.",
+        "Website context supports personalization." if has_website else "",
+        "AI research explains the sales angle." if has_analysis else "",
+        "Verified email makes outreach actionable." if has_email else "",
+    ]
+    basis = [item for item in basis if item]
+    return {
+        "source": source,
+        "used_sources": used_sources,
+        "decision_basis": basis,
+        "gaps": gaps,
+        "coverage_summary": (
+            "Enough verified context for a sales review."
+            if has_analysis and has_email
+            else "Useful starter brief; connect or verify the missing data before sending outreach."
+        ),
+        "confidence_reason": (
+            "High confidence because company research and a verified contact are available."
+            if has_analysis and has_email
+            else "Confidence is limited by missing verified contact or website research."
+        ),
+        "provider_improvements": [
+            "Connect company enrichment to improve firmographics and decision-maker coverage.",
+            "Connect contact verification to increase email confidence.",
+            "Connect technographic enrichment to personalize the sales angle by website stack.",
+        ],
+        "confidence_score": score,
+    }
+
+
 def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallback", language: str | None = None) -> None:
     """Fill useful sales fields from verified CRM data without inventing contacts."""
     metadata = _lead_metadata(lead)
@@ -836,6 +898,7 @@ def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallb
             _localized_fallback_text(language, "pain_manual"),
             _localized_fallback_text(language, "pain_context"),
         ]
+    updates["intelligence_quality"] = _company_intelligence_quality(lead, {**metadata, **updates}, workspace, source, language)
     lead.notes = _merge_lead_metadata(lead, updates)
 
 
@@ -1091,6 +1154,113 @@ def _apply_enriched_lead_to_record(lead: Lead, enriched: LeadOut) -> None:
             "contact_found_at": datetime.utcnow().isoformat() if enriched.email or lead.email else metadata.get("contact_found_at"),
         },
     )
+
+
+def _set_company_metadata_stage(company: Company, key: str, status: str, message: str) -> None:
+    metadata = dict(company.metadata_json or {})
+    workflow = dict(metadata.get("workflow_stages") or {})
+    messages = dict(metadata.get("workflow_stage_messages") or {})
+    workflow[key] = status
+    messages[key] = message
+    metadata["workflow_stages"] = workflow
+    metadata["workflow_stage_messages"] = messages
+    company.metadata_json = metadata
+    company.updated_at = datetime.utcnow()
+
+
+def _apply_deep_contact_result(db: Session, request: Request, user_id: str, workspace, company: Company, lead: Lead | None, result) -> None:
+    now = datetime.utcnow()
+    metadata = {**(company.metadata_json or {}), **result.to_metadata()}
+    metadata["decision_maker_roles_searched"] = list(DECISION_MAKER_TITLES)
+    metadata["contact_search_checked_at"] = now.isoformat()
+    metadata["contact_search_status"] = "verified_email_found" if result.verified_email else "no_verified_email"
+    metadata["contact_search_message"] = (
+        "Verified decision maker saved to CRM."
+        if result.verified_email
+        else "Deep search ran, but no verified business email was found. Choose another contact or add one manually."
+    )
+    metadata["confidence_score"] = result.confidence_score
+    metadata["priority_score"] = result.lead_score
+    metadata["technologies"] = result.technologies
+    metadata["last_enriched_at"] = result.last_enriched_at
+    company.metadata_json = metadata
+
+    profile = result.company_profile or {}
+    company.domain = company.domain or normalize_domain(str(profile.get("domain") or company.website or ""))
+    company.website = company.website or str(profile.get("website") or (f"https://{company.domain}" if company.domain else ""))
+    company.industry = company.industry or str(profile.get("industry") or "")
+    company.source = "deep_enrichment" if result.sources else company.source
+    company.email_status = "Verified" if result.verified_email else "No verified email"
+    company.crm_stage = "Contact Found" if result.verified_email else company.crm_stage
+    company.updated_at = now
+
+    selected = result.selected_decision_maker
+    if selected:
+        contact = _upsert_deep_contact(db, user_id, workspace, company, lead, selected, selected.email == result.verified_email and bool(result.verified_email))
+        if result.verified_email:
+            company.email = result.verified_email
+            if lead:
+                lead.contact = contact.name or lead.contact
+                lead.email = result.verified_email
+                lead.linkedin = contact.linkedin or lead.linkedin
+                lead.status = LeadStatus.qualified
+
+    for candidate in result.candidates:
+        if selected and (candidate.email or candidate.linkedin or candidate.name) == (selected.email or selected.linkedin or selected.name):
+            continue
+        _upsert_deep_contact(db, user_id, workspace, company, lead, candidate, False)
+
+    if lead:
+        lead.notes = _merge_lead_metadata(
+            lead,
+            {
+                **metadata,
+                "email_status": company.email_status,
+                "contact_found_at": now.isoformat() if result.verified_email else _lead_metadata(lead).get("contact_found_at"),
+                "last_enriched_at": result.last_enriched_at,
+            },
+        )
+        _set_workflow_stage(lead, "decision_maker", "completed" if selected else "error", "Decision maker selected." if selected else "Choose or add a decision maker manually.")
+        _set_workflow_stage(lead, "verified_email", "completed" if result.verified_email else "error", "Verified business email saved." if result.verified_email else "No verified email was found.")
+        _add_lead_activity(db, request, user_id, workspace, "contact.deep_search", lead, {"status": result.status, "verified": bool(result.verified_email)})
+        _sync_lead_to_crm(db, user_id, workspace, lead)
+
+    _set_company_metadata_stage(company, "decision_maker", "completed" if selected else "error", "Decision maker selected." if selected else "Choose or add a decision maker manually.")
+    _set_company_metadata_stage(company, "verified_email", "completed" if result.verified_email else "error", "Verified business email saved." if result.verified_email else "No verified email was found.")
+    _set_company_metadata_stage(company, "technographics", "completed" if result.technologies else "error", "Technology stack saved." if result.technologies else "Technology stack unavailable.")
+
+
+def _upsert_deep_contact(db: Session, user_id: str, workspace, company: Company, lead: Lead | None, candidate, selected: bool) -> Contact:
+    contact = None
+    if candidate.email:
+        contact = db.scalar(select(Contact).where(Contact.workspace_id == workspace.id, Contact.email == candidate.email).order_by(Contact.updated_at.desc()).limit(1))
+    if contact is None and candidate.linkedin:
+        contact = db.scalar(select(Contact).where(Contact.workspace_id == workspace.id, Contact.company_id == company.id, Contact.linkedin == candidate.linkedin).order_by(Contact.updated_at.desc()).limit(1))
+    if contact is None and candidate.name:
+        contact = db.scalar(select(Contact).where(Contact.workspace_id == workspace.id, Contact.company_id == company.id, Contact.name == candidate.name).order_by(Contact.updated_at.desc()).limit(1))
+    if contact is None:
+        contact = Contact(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id if lead else None)
+        db.add(contact)
+    contact.company_id = company.id
+    contact.lead_id = contact.lead_id or (lead.id if lead else None)
+    contact.name = candidate.name or contact.name or ""
+    contact.title = candidate.title or contact.title or ""
+    contact.email = candidate.email or contact.email
+    contact.linkedin = candidate.linkedin or contact.linkedin
+    contact.confidence = str(candidate.confidence or contact.confidence or "")
+    contact.source = candidate.source or "deep_enrichment"
+    contact.email_status = "Verified" if selected and candidate.email else ("Unverified" if candidate.email else "Unknown")
+    contact.metadata_json = {
+        **(contact.metadata_json or {}),
+        "selected_decision_maker": selected,
+        "verification_status": candidate.verification_status,
+        "apollo_contact_id": candidate.apollo_contact_id,
+        "reason": candidate.reason,
+        "source": candidate.source,
+        "last_enriched_at": datetime.utcnow().isoformat(),
+    }
+    contact.updated_at = datetime.utcnow()
+    return contact
 
 
 def _integration_status(key: str, label: str, configured: bool, ready_message: str, missing_message: str) -> UsageIntegrationStatus:
@@ -1518,6 +1688,84 @@ def analyze_company(company_id: UUID, request: Request, user: WorkspaceUserConte
     except Exception as exc:
         capture_provider_exception(exc, provider="openai", endpoint="workspace_app.company.analyze", workspace_id=workspace.id, lead_id=lead.id)
         return UsageActionOut(status="provider_unavailable", message=_safe_provider_warning(exc), company=_crm_company_out(db, workspace, user.user_id, company))
+
+
+@router.post("/companies/{company_id}/deep-contact-search", response_model=UsageActionOut)
+def deep_search_company_contacts(
+    company_id: UUID,
+    payload: UsageDeepContactSearchIn,
+    request: Request,
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+    domain = normalize_domain(company.domain or company.website or (lead.website if lead else "") or "")
+    if not domain:
+        return UsageActionOut(
+            status="error",
+            message="Add a company website before running deep contact search.",
+            company=_crm_company_out(db, workspace, user.user_id, company),
+            missing_fields=["website"],
+            recommended_actions=["Add website", "Add contact manually"],
+        )
+
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    _lead_trace(request_id, "deep_contact_search_started", lead_id=str(lead.id) if lead else "", company=company.name, domain=domain)
+    _set_company_metadata_stage(company, "decision_maker", "running", "Searching for decision makers across connected sources.")
+    _set_company_metadata_stage(company, "verified_email", "running", "Finding and verifying a usable business email.")
+    _set_company_metadata_stage(company, "technographics", "running", "Detecting the website technology stack.")
+    try:
+        result = run_deep_contact_search(
+            domain=domain,
+            company_name=company.name,
+            industry=company.industry or (lead.industry if lead else "") or "",
+            product_context=workspace.company or workspace.target_customer or "",
+            existing_metadata=company.metadata_json or {},
+            force=payload.force,
+        )
+    except DeepContactSearchError as exc:
+        capture_provider_exception(exc, provider="deep_contact_search", endpoint="workspace_app.company.deep_contact_search", workspace_id=workspace.id, lead_id=lead.id if lead else None)
+        _set_company_metadata_stage(company, "decision_maker", "error", str(exc))
+        _set_company_metadata_stage(company, "verified_email", "error", "No verified email was saved.")
+        db.commit()
+        return UsageActionOut(
+            status="provider_unavailable",
+            message=str(exc),
+            company=_crm_company_out(db, workspace, user.user_id, company),
+            missing_fields=["decision_maker", "verified_email"],
+            recommended_actions=["Retry search", "Add contact manually"],
+        )
+
+    _apply_deep_contact_result(db, request, user.user_id, workspace, company, lead, result)
+    db.commit()
+    db.refresh(company)
+    company_out = _crm_company_out(db, workspace, user.user_id, company)
+    _lead_trace(
+        request_id,
+        "deep_contact_search_finished",
+        lead_id=str(lead.id) if lead else "",
+        company=company.name,
+        status=result.status,
+        candidates=len(result.candidates),
+        verified=bool(result.verified_email),
+    )
+    return UsageActionOut(
+        status=result.status if result.status in {"success", "partial_success"} else "partial_success",
+        message=(
+            "Deep contact search completed with a verified decision maker."
+            if result.verified_email
+            else "Deep contact search completed, but no verified email was found. Add one manually or retry later."
+        ),
+        company=company_out,
+        warnings=[error.get("message", "") for error in result.errors if error.get("message")][:4],
+        completed_steps=[stage for stage, state in result.stages.items() if state == "completed"],
+        workflow_stages=company_out.workflow_stages,
+        missing_fields=[] if result.verified_email else ["verified_email"],
+        recommended_actions=["Generate email for review"] if result.verified_email else ["Add email manually", "Retry search"],
+        next_action="Generate email for review" if result.verified_email else "Add a verified email or choose another contact",
+    )
 
 
 @router.post("/companies/{company_id}/contacts", response_model=UsageActionOut)

@@ -1002,8 +1002,12 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     latest_activity_at = _latest_audit_time(db, workspace, user_id, company.lead_id)
     last_activity_at = max([value for value in [company.updated_at, found_at, saved_to_crm_at, website_analyzed_at, contact_found_at, email_generated_at, email_approved_at, email_sent_at, delivered_at, opened_at, replied_at, latest_activity_at] if value], default=company.updated_at)
     company_metadata = company.metadata_json or {}
+    deep_contact_search = company_metadata.get("deep_contact_search") if isinstance(company_metadata.get("deep_contact_search"), dict) else {}
+    technologies = deep_contact_search.get("technologies") if isinstance(deep_contact_search.get("technologies"), list) else []
+    last_enriched_at = _datetime_or_none(deep_contact_search.get("last_enriched_at")) if deep_contact_search else None
     contact_search_checked_at = _datetime_or_none(company_metadata.get("contact_search_checked_at"))
     roles_searched = company_metadata.get("decision_maker_roles_searched")
+    intelligence_quality = company_metadata.get("intelligence_quality") if isinstance(company_metadata.get("intelligence_quality"), dict) else {}
     workflow_stages, workflow_stage_messages = _company_workflow_statuses(
         company=company,
         metadata=company_metadata,
@@ -1075,6 +1079,10 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         decision_maker_roles_searched=[str(role) for role in roles_searched] if isinstance(roles_searched, list) else [],
         workflow_stages=workflow_stages,
         workflow_stage_messages=workflow_stage_messages,
+        deep_contact_search=deep_contact_search,
+        intelligence_quality=intelligence_quality,
+        technologies=[str(item) for item in technologies if item],
+        last_enriched_at=last_enriched_at,
     )
 
 

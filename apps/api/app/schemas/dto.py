@@ -322,6 +322,10 @@ class CrmCompanyOut(BaseModel):
     decision_maker_roles_searched: list[str] = Field(default_factory=list)
     workflow_stages: dict[str, str] = Field(default_factory=dict)
     workflow_stage_messages: dict[str, str] = Field(default_factory=dict)
+    deep_contact_search: dict[str, Any] = Field(default_factory=dict)
+    intelligence_quality: dict[str, Any] = Field(default_factory=dict)
+    technologies: list[str] = Field(default_factory=list)
+    last_enriched_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
