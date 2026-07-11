@@ -2347,18 +2347,9 @@ export function LeadFinderPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Start with one company you already know, or search a focused market when automatic search is connected. Every saved company stays in your private CRM." />
-      <section className="rounded-2xl border border-teal-200 bg-teal-50 p-5 shadow-sm">
-        <p className="text-sm font-black uppercase text-brand">{t("Recommended next step")}</p>
-        <h2 className="mt-2 text-2xl font-black tracking-tight text-ink">{t("Add one real company first.")}</h2>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-700">{t("You only need a company name and website to start. OutreachAI saves it to CRM, then you can analyze the website, find contacts and prepare an email for review.")}</p>
-        <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row">
-          <Link href="#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t("Add company manually")}</Link>
-          {automaticSearchReady ? <Link href="#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-teal-300 bg-white px-4 text-sm font-black text-brand shadow-sm">{t("Search market")}</Link> : <Link href="#lead-search-setup" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-amber-300 bg-white px-4 text-sm font-black text-amber-900 shadow-sm">{t("Automatic search setup")}</Link>}
-        </div>
-      </section>
+      <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search one focused market. OutreachAI saves real companies to CRM and prepares the best next action." />
       {!automaticSearchReady && <IntegrationStatusPanel api={api} ready={ready} />}
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      {automaticSearchReady && <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
             <p className="text-sm font-black uppercase text-brand">{t("AI Command Bar")}</p>
@@ -2386,8 +2377,7 @@ export function LeadFinderPage() {
             {commandBusy ? t("Running AI search") : t("Run AI search")}
           </button>
         </div>
-        {!automaticSearchReady && <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">{t("Automatic search needs setup. You can still add a company manually below.")}</p>}
-      </section>
+      </section>}
       <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
       {!automaticSearchReady && (
         <div id="lead-search-setup" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -2516,16 +2506,22 @@ export function LeadFinderPage() {
         </ol>}
       </form>
       </ActionPanel>
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <p className="text-sm font-bold uppercase text-brand">{t("Start here")}</p>
-            <h2 className="mt-1 text-xl font-bold text-ink">{t("Add a company in 20 seconds.")}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">{t("This is the fastest reliable path: save one real company, then run research and outreach from its opportunity card.")}</p>
+      <details id="manual-company" open={!automaticSearchReady} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <summary className="cursor-pointer list-none">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-bold uppercase text-brand">{t("Backup path")}</p>
+              <h2 className="mt-1 text-xl font-bold text-ink">{t("Add company manually")}</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{t("This is the fastest reliable path: save one real company, then run research and outreach from its opportunity card.")}</p>
+            </div>
+            <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Takes 20 seconds")}</span>
           </div>
-          <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Takes 20 seconds")}</span>
-        </div>
-        <form id="manual-company" aria-label="Manual company entry" onSubmit={addManualLead} className="mt-5 space-y-4">
+        </summary>
+        <div className="mt-5 border-t border-slate-100 pt-5">
+          <div>
+            <p className="text-sm font-semibold text-slate-600">{t("Use manual entry only when you already know the company. Lead search stays the main path.")}</p>
+          </div>
+        <form aria-label="Manual company entry" onSubmit={addManualLead} className="mt-4 space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             <label className="text-sm font-semibold text-slate-700">{t("Company name")}<input name="company" required placeholder="Acme Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
             <label className="text-sm font-semibold text-slate-700">{t("Website")}<input name="website" placeholder="https://company.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
@@ -2546,7 +2542,8 @@ export function LeadFinderPage() {
             <PrimaryButton type="submit" disabled={manualBusy}>{manualBusy ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />} {t("Save and prepare opportunity")}</PrimaryButton>
           </div>
         </form>
-      </section>
+        </div>
+      </details>
       {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={`${lead.id || lead.place_id || lead.company}:${lead.generated_emails?.[0]?.id || "no-draft"}:${lead.generated_emails?.[0]?.delivery_status || ""}`} lead={lead} api={api} onLeadUpdated={(updated) => {
         setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
         setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
