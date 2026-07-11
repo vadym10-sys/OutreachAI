@@ -191,11 +191,6 @@ const emptyMetrics: DashboardMetrics = {
 };
 
 const unavailable = "Not found yet. Add it manually or run research.";
-const completeOpportunityRequest: Pick<ClientApiInit, "timeoutMs" | "retries" | "retryDelayMs"> = {
-  timeoutMs: 95000,
-  retries: 1,
-  retryDelayMs: 1200
-};
 
 const crmStages = [
   "New Lead",
@@ -1561,96 +1556,35 @@ function OpportunityCard({
       company: lead.company,
       has_website: Boolean(lead.website || lead.domain)
     });
-    const warnings: string[] = [];
-    let latestLead: Lead | null = null;
     try {
-      setStatus(t("Preparing full sales opportunity..."));
-      const draftResult = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/complete-opportunity`, { method: "POST", ...completeOpportunityRequest }),
-        100000,
-        "Sales opportunity preparation took too long. The company stays saved in CRM."
+      setStatus(t("AI enrichment is running automatically"));
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${companyId}/enrichment/restart`, { method: "POST", timeoutMs: 15000 }),
+        16000,
+        "AI enrichment could not be restarted. The company stays saved in CRM."
       );
-      setAiNextAction(draftResult.next_action || "");
-      setAiRecommendedActions(safeArray(draftResult.recommended_actions).filter((item): item is string => Boolean(item)));
-      setAiMissingFields(safeArray(draftResult.missing_fields).filter((item): item is string => Boolean(item)));
-      if (draftResult.company) {
-        const updatedCompany = normalizeCrmCompany(draftResult.company);
-        latestLead = leadFromCrmCompany(updatedCompany);
+      setAiNextAction(result.next_action || "");
+      setAiRecommendedActions(safeArray(result.recommended_actions).filter((item): item is string => Boolean(item)));
+      setAiMissingFields(safeArray(result.missing_fields).filter((item): item is string => Boolean(item)));
+      if (result.company) {
+        const updatedCompany = normalizeCrmCompany(result.company);
         onCompanyUpdated?.(updatedCompany);
-        onLeadUpdated?.(latestLead);
+        onLeadUpdated?.(leadFromCrmCompany(updatedCompany));
       }
-      if (Array.isArray(draftResult.warnings)) {
-        warnings.push(...draftResult.warnings.map((item) => t(item)).filter(Boolean));
-      }
-      if (!draftResult.email) {
-        throw new Error(draftResult.message || "Email draft could not be created.");
-      }
-      const nextDraft = draftResult.email;
-      const aiLeadId = (latestLead?.id || lead.id || "").trim();
-      if (aiLeadId) {
-        setStatus(t("Calculating AI reply and priority scores..."));
-        try {
-          const result = await withTimeout(
-            api<SalesCopilot>(`/api/leads/${aiLeadId}/copilot`, { method: "POST", timeoutMs: 22000 }),
-            24000,
-            "AI scoring took too long. The company and email draft are still saved."
-          );
-          setCopilot(result);
-        } catch (err) {
-          warnings.push(friendlyErrorMessage(err, "AI scoring is temporarily unavailable. The opportunity stays saved."));
-        }
-
-        const leadForAudit = latestLead || lead;
-        if (leadForAudit.website || leadForAudit.domain) {
-          setStatus(t("Running AI website audit..."));
-          try {
-            const result = await withTimeout(
-              api<WebsiteAudit>(`/api/leads/${aiLeadId}/website-audit`, { method: "POST", timeoutMs: 26000 }),
-              28000,
-              "AI website audit took too long. The company and email draft are still saved."
-            );
-            setAudit(result);
-          } catch (err) {
-            warnings.push(friendlyErrorMessage(err, "AI website audit is temporarily unavailable. The opportunity stays saved."));
-          }
-        }
-
-        setStatus(t("Preparing follow-up sequence..."));
-        try {
-          const result = await withTimeout(
-            api<FollowUpSequence>(`/api/leads/${aiLeadId}/follow-ups`, { method: "POST", timeoutMs: 22000 }),
-            24000,
-            "Follow-up generation took too long. The first email draft is still ready for review."
-          );
-          setFollowUps(result);
-        } catch (err) {
-          warnings.push(friendlyErrorMessage(err, "Follow-up generation is temporarily unavailable. The first email draft is still ready."));
-        }
-      }
-      setStatus([
-        t("AI enrichment finished. Review the opportunity below, then approve the email when ready."),
-        ...warnings.slice(0, 2)
-      ].join(" "));
-      setDraft(nextDraft);
-      setReadyToSend(true);
-      trackEvent("sales_research_completed", {
+      setStatus(t(result.message || "AI enrichment restarted. This card will update as data arrives."));
+      trackEvent("sales_research_queued", {
         lead_id: lead.id,
-        company: latestLead?.company || lead.company,
-        has_verified_email: Boolean((latestLead || lead).email && (latestLead || lead).hunter_verified),
-        warnings: warnings.length
+        company: lead.company
       });
     } catch (err) {
-      const reason = friendlyErrorMessage(err, "Research could not be completed. Please check the lead details and try again.");
+      const reason = friendlyErrorMessage(err, "AI enrichment could not be restarted. The company stays saved in CRM.");
       setReadyToSend(false);
       setError(reason);
-      if (warnings.length) {
-        setStatus(warnings.slice(0, 2).join(" "));
-      }
+      setStatus("");
       trackEvent("sales_research_failed", {
         lead_id: lead.id,
         company: lead.company,
-        reason,
-        warnings: warnings.length
+        reason
       });
     } finally {
       setBusy(false);
@@ -2150,27 +2084,26 @@ export function LeadFinderPage() {
     setMessage(t("OutreachAI is preparing this company automatically..."));
     try {
       const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/complete-opportunity`, { method: "POST", ...completeOpportunityRequest }),
-        100000,
-        "Sales opportunity preparation took too long. The company is saved and you can retry later."
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${currentCompany.id}/enrichment/restart`, { method: "POST", timeoutMs: 15000 }),
+        16000,
+        "AI enrichment could not be restarted. The company is saved and you can retry later."
       );
       applyCompany(result.company);
       if (Array.isArray(result.warnings)) warnings.push(...result.warnings.map((item) => t(item)).filter(Boolean));
-      if (result.status !== "success" || !result.email) warnings.push(t(result.message || "Email draft could not be prepared yet."));
+      if (result.status !== "success") warnings.push(t(result.message || "AI enrichment could not be restarted. The company stays saved in CRM."));
     } catch (err) {
       warnings.push(friendlyErrorMessage(err, "Sales opportunity preparation is temporarily unavailable. The company stays saved."));
     }
 
     setSearchSteps([
       t("Saved to CRM"),
-      t("Website analysis checked"),
-      t("Contacts checked"),
+      t("AI enrichment is running automatically"),
       currentCompany.generated_emails?.length ? t("Email draft ready") : t("Email draft can be generated later")
     ]);
     setMessage(
       warnings.length
         ? `${t("Company saved. OutreachAI prepared everything available and shows what still needs attention.")} ${warnings.slice(0, 2).join(" ")}`
-        : t("Company saved and prepared. Review the opportunity, then approve the email when ready.")
+        : t("AI enrichment restarted. This card will update as data arrives.")
     );
     return currentLead;
   }
@@ -3465,18 +3398,18 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     setActionCurrentStep("Checking website analysis...");
     const markStepDone = (step: string) => setActionCompletedSteps((steps) => steps.includes(step) ? steps : [...steps, step]);
     try {
-      setActionCurrentStep("Preparing full sales opportunity...");
+      setActionCurrentStep("AI enrichment is running automatically");
       const result = await withTimeout(
-        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/complete-opportunity`, { method: "POST", ...completeOpportunityRequest }),
-        100000,
-        "Sales opportunity preparation took too long. The company stays saved in CRM."
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/enrichment/restart`, { method: "POST", timeoutMs: 15000 }),
+        16000,
+        "AI enrichment could not be restarted. The company stays saved in CRM."
       );
       if (result.company) {
         applyCompanyUpdate(normalizeCrmCompany(result.company));
       }
       const completedSteps = Array.isArray(result.completed_steps) && result.completed_steps.length
         ? result.completed_steps
-        : ["Website analysis checked", "Contact search checked", "Email draft checked"];
+        : ["AI enrichment is running automatically"];
       completedSteps.forEach(markStepDone);
       const warnings = Array.isArray(result.warnings) ? result.warnings.map((item) => t(item)).filter(Boolean) : [];
 
@@ -3484,9 +3417,9 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
       setActionNotice(
         warnings.length
           ? `${t("Company preparation finished with missing data.")} ${warnings.slice(0, 2).join(" ")}`
-          : t("Company preparation is ready. Review the email before approving anything.")
+          : t(result.message || "AI enrichment restarted. This card will update as data arrives.")
       );
-      trackEvent("company_preparation_completed", {
+      trackEvent("company_preparation_queued", {
         company_id: current.id,
         company: current.name,
         warnings: warnings.length
