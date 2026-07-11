@@ -1210,12 +1210,15 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     company_metadata = company.metadata_json or {}
     deep_contact_search = company_metadata.get("deep_contact_search") if isinstance(company_metadata.get("deep_contact_search"), dict) else {}
     technologies = deep_contact_search.get("technologies") if isinstance(deep_contact_search.get("technologies"), list) else []
+    if not technologies and isinstance(company_metadata.get("technologies"), list):
+        technologies = company_metadata.get("technologies") or []
     last_enriched_at = _datetime_or_none(deep_contact_search.get("last_enriched_at")) if deep_contact_search else None
     if last_enriched_at is None:
         last_enriched_at = _datetime_or_none(company_metadata.get("last_enriched_at"))
     contact_search_checked_at = _datetime_or_none(company_metadata.get("contact_search_checked_at"))
     roles_searched = company_metadata.get("decision_maker_roles_searched")
     intelligence_quality = company_metadata.get("intelligence_quality") if isinstance(company_metadata.get("intelligence_quality"), dict) else {}
+    company_intelligence = company_metadata.get("company_intelligence") if isinstance(company_metadata.get("company_intelligence"), dict) else {}
     workflow_stages, workflow_stage_messages = _company_workflow_statuses(
         company=company,
         metadata=company_metadata,
@@ -1289,6 +1292,7 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         workflow_stage_messages=workflow_stage_messages,
         deep_contact_search=deep_contact_search,
         intelligence_quality=intelligence_quality,
+        company_intelligence=company_intelligence,
         technologies=[str(item) for item in technologies if item],
         last_enriched_at=last_enriched_at,
     )

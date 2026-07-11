@@ -1413,6 +1413,12 @@ def test_workspace_app_complete_opportunity_prepares_research_contact_and_review
     assert data["company"]["ai_summary"] == "Usage Complete builds construction services for Berlin B2B buyers."
     assert data["company"]["opportunity_analysis"] == "Strong fit because the company can benefit from partner discovery."
     assert data["company"]["priority_score"] == 82
+    intelligence = data["company"]["company_intelligence"]
+    assert intelligence["lead_score"]["value"] == 82
+    assert intelligence["fields"]["official_website"]["value"] == "https://usage-complete.example"
+    assert intelligence["fields"]["verified_emails"]["value"] == ["eva@usage-complete.example"]
+    assert intelligence["fields"]["business_description"]["confidence"] > 0
+    assert "Website analysis" in intelligence["sources"]
     assert data["company"]["workflow_stages"]["company_profile"] == "completed"
     assert data["company"]["workflow_stages"]["website_analysis"] == "completed"
     assert data["company"]["workflow_stages"]["decision_maker"] == "completed"

@@ -373,6 +373,7 @@ def _minimal_crm_company_out(company: Company) -> CrmCompanyOut:
         found_at=company.created_at or now,
         saved_to_crm_at=company.created_at or now,
         last_activity_at=now,
+        company_intelligence=(company.metadata_json or {}).get("company_intelligence") if isinstance((company.metadata_json or {}).get("company_intelligence"), dict) else {},
     )
 
 
@@ -902,6 +903,300 @@ def _company_intelligence_quality(lead: Lead, metadata: dict, workspace, source:
     }
 
 
+def _dedupe_text_values(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = re.sub(r"\s+", " ", text).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _intelligence_field(value: Any, *, source: str, confidence: int) -> dict[str, Any]:
+    present = _metadata_value_present(value)
+    return {
+        "value": value if present else None,
+        "source": source if present else "",
+        "confidence": max(0, min(100, int(confidence if present else 0))),
+    }
+
+
+def _safe_score(value: Any, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return max(0, min(100, int(value)))
+    text = str(value).strip().lower()
+    if not text or text in {"unknown", "none", "null", "неизвестно", "n/a"}:
+        return default
+    match = re.search(r"-?\d+(?:[.,]\d+)?", text.replace(" ", ""))
+    if not match:
+        return default
+    try:
+        return max(0, min(100, int(float(match.group(0).replace(",", ".")))))
+    except ValueError:
+        return default
+
+
+def _company_intelligence_cache_key(lead: Lead, metadata: dict[str, Any], company: Company | None = None) -> str:
+    domain = normalize_domain(str((company.domain if company else "") or metadata.get("domain") or lead.website or lead.company or ""))
+    if domain:
+        return f"domain:{domain}"
+    place_id = str((company.place_id if company else "") or metadata.get("place_id") or "").strip()
+    if place_id:
+        return f"place:{place_id}"
+    city = str((company.city if company else "") or lead.city or "").strip().lower()
+    return f"name:{(lead.company or (company.name if company else '') or '').strip().lower()}:{city}"
+
+
+def _fresh_company_intelligence(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    payload = metadata.get("company_intelligence") if isinstance(metadata.get("company_intelligence"), dict) else None
+    if not payload:
+        return None
+    raw_updated = str(payload.get("generated_at") or metadata.get("company_intelligence_cached_at") or "").strip()
+    if not raw_updated:
+        return None
+    try:
+        updated_at = datetime.fromisoformat(raw_updated.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+    settings = get_settings()
+    cache_hours = max(1, min(168, int(settings.enrichment_cache_hours or 24)))
+    return payload if datetime.utcnow() - updated_at < timedelta(hours=cache_hours) else None
+
+
+def _build_company_intelligence(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    workspace,
+    company: Company | None = None,
+    contacts: list[Contact] | None = None,
+) -> dict[str, Any]:
+    contacts = contacts or []
+    deep_contact = metadata.get("deep_contact_search") if isinstance(metadata.get("deep_contact_search"), dict) else {}
+    profile = deep_contact.get("company_profile") if isinstance(deep_contact.get("company_profile"), dict) else {}
+    selected = deep_contact.get("selected_decision_maker") if isinstance(deep_contact.get("selected_decision_maker"), dict) else {}
+    candidates = deep_contact.get("candidates") if isinstance(deep_contact.get("candidates"), list) else []
+    source_types = _dedupe_text_values(
+        [
+            "CRM profile",
+            "Public business listing" if metadata.get("place_id") or metadata.get("google_maps_url") else "",
+            "Website analysis" if metadata.get("ai_summary") or metadata.get("opportunity_analysis") else "",
+            "Contact enrichment" if contacts or selected or candidates else "",
+            "Email verification" if lead.email or (company and company.email) or deep_contact.get("verified_email") else "",
+            "Technographic enrichment" if metadata.get("technologies") or deep_contact.get("technologies") else "",
+        ]
+    )
+    technologies = _dedupe_text_values(
+        [
+            *(metadata.get("technologies") if isinstance(metadata.get("technologies"), list) else []),
+            *(deep_contact.get("technologies") if isinstance(deep_contact.get("technologies"), list) else []),
+        ]
+    )
+    contact_linkedins = _dedupe_text_values(
+        [
+            *[contact.linkedin for contact in contacts if contact.linkedin],
+            *[item.get("linkedin") for item in candidates if isinstance(item, dict) and item.get("linkedin")],
+            selected.get("linkedin") if selected else "",
+        ]
+    )
+    verified_emails = _dedupe_text_values(
+        [
+            lead.email,
+            company.email if company else "",
+            deep_contact.get("verified_email"),
+            *[contact.email for contact in contacts if contact.email],
+        ]
+    )
+    phones = _dedupe_text_values([lead.phone, company.phone if company else "", metadata.get("phone")])
+    social_profiles = _dedupe_text_values(
+        [
+            metadata.get("company_linkedin"),
+            metadata.get("linkedin_url"),
+            metadata.get("facebook_url"),
+            metadata.get("instagram_url"),
+            metadata.get("twitter_url"),
+            metadata.get("google_maps_url"),
+        ]
+    )
+    official_site = (company.website if company else "") or lead.website or profile.get("website") or (
+        f"https://{company.domain}" if company and company.domain else ""
+    )
+    employee_count = (
+        metadata.get("employee_count")
+        or metadata.get("employees")
+        or profile.get("estimated_num_employees")
+        or profile.get("employee_count")
+    )
+    buying_signals = _dedupe_text_values(
+        [
+            *(metadata.get("buying_signals") if isinstance(metadata.get("buying_signals"), list) else []),
+            "Strong public reputation signal" if metadata.get("google_rating") else "",
+            "Website available for personalization" if official_site else "",
+            "Decision maker identified" if selected or contacts else "",
+            "Verified outreach path available" if verified_emails else "",
+            "Technology stack available for personalization" if technologies else "",
+            "Hiring or growth signal needs external source connection" if not metadata.get("jobs_signal") else metadata.get("jobs_signal"),
+        ]
+    )
+    score = 20
+    score += 12 if official_site else 0
+    score += 10 if metadata.get("ai_summary") or metadata.get("opportunity_analysis") else 0
+    score += 12 if selected or contacts else 0
+    score += 16 if verified_emails else 0
+    score += 8 if phones else 0
+    score += 8 if technologies else 0
+    score += 8 if employee_count else 0
+    score += min(12, len(buying_signals) * 3)
+    score = _safe_score(metadata.get("priority_score") or deep_contact.get("lead_score"), score)
+    missing = [
+        label
+        for label, present in [
+            ("official website", official_site),
+            ("decision maker", selected or contacts),
+            ("verified email", verified_emails),
+            ("employee count", employee_count),
+            ("company LinkedIn", metadata.get("company_linkedin") or metadata.get("linkedin_url")),
+            ("technologies", technologies),
+            ("growth signals", metadata.get("jobs_signal") or metadata.get("growth_signal") or metadata.get("funding_signal")),
+        ]
+        if not present
+    ]
+    ai_reason = str(
+        metadata.get("personalized_reason")
+        or metadata.get("opportunity_analysis")
+        or metadata.get("partnership_fit")
+        or metadata.get("sales_angle")
+        or metadata.get("suggested_offer")
+        or "Use the saved profile and AI summary to validate whether this company matches the workspace ICP before outreach."
+    )
+    ceo_founder = selected or next(
+        (
+            item
+            for item in candidates
+            if isinstance(item, dict) and re.search(r"\b(ceo|founder|owner)\b", str(item.get("title") or ""), flags=re.I)
+        ),
+        {},
+    )
+    fields = {
+        "official_website": _intelligence_field(official_site, source="CRM and public profile", confidence=90 if official_site else 0),
+        "business_description": _intelligence_field(metadata.get("ai_summary") or profile.get("short_description") or profile.get("description"), source="AI website analysis", confidence=84 if metadata.get("ai_summary") else 62),
+        "industry": _intelligence_field((company.industry if company else "") or lead.industry or lead.niche or metadata.get("business_category"), source="CRM and public profile", confidence=78),
+        "employee_count": _intelligence_field(employee_count, source="Company enrichment", confidence=72),
+        "technologies": _intelligence_field(technologies, source="Technographic enrichment", confidence=76),
+        "company_linkedin": _intelligence_field(metadata.get("company_linkedin") or metadata.get("linkedin_url") or profile.get("linkedin_url"), source="Public profile", confidence=70),
+        "key_employee_linkedin": _intelligence_field(contact_linkedins, source="Contact enrichment", confidence=75),
+        "ceo_founder": _intelligence_field(ceo_founder, source="Decision-maker ranking", confidence=int((ceo_founder or {}).get("confidence") or 72) if isinstance(ceo_founder, dict) and ceo_founder else 0),
+        "verified_emails": _intelligence_field(verified_emails, source="Email verification", confidence=92 if verified_emails else 0),
+        "phones": _intelligence_field(phones, source="Public profile and CRM", confidence=80 if phones else 0),
+        "social_profiles": _intelligence_field(social_profiles, source="Public profile", confidence=68 if social_profiles else 0),
+        "buying_signals": _intelligence_field(buying_signals, source="AI and public signals", confidence=70 if buying_signals else 0),
+        "ai_summary": _intelligence_field(metadata.get("ai_summary"), source="AI website analysis", confidence=82 if metadata.get("ai_summary") else 0),
+        "personalized_reason": _intelligence_field(ai_reason, source="AI sales reasoning", confidence=78 if ai_reason else 0),
+    }
+    return {
+        "version": 1,
+        "generated_at": datetime.utcnow().isoformat(),
+        "cache_key": _company_intelligence_cache_key(lead, metadata, company),
+        "sources": source_types,
+        "fields": fields,
+        "lead_score": {
+            "value": score,
+            "confidence": _safe_score(metadata.get("confidence_score") or deep_contact.get("confidence_score"), int(fields["personalized_reason"]["confidence"] or 55)),
+            "reasons": _dedupe_text_values([ai_reason, *buying_signals])[:5],
+        },
+        "missing_fields": missing,
+    }
+
+
+def _refresh_company_intelligence(db: Session, user_id: str, workspace, lead: Lead, company: Company | None = None) -> dict[str, Any]:
+    metadata = _lead_metadata(lead)
+    if company is None:
+        company = db.scalar(select(Company).where(Company.workspace_id == workspace.id, Company.lead_id == lead.id).order_by(Company.updated_at.desc()).limit(1))
+    contacts: list[Contact] = []
+    if company is not None:
+        contacts = list(db.scalars(select(Contact).where(Contact.workspace_id == workspace.id, Contact.company_id == company.id).order_by(Contact.updated_at.desc()).limit(20)).all())
+        metadata = {**metadata, **(company.metadata_json or {})}
+    intelligence = _build_company_intelligence(lead=lead, metadata=metadata, workspace=workspace, company=company, contacts=contacts)
+    lead.notes = _merge_lead_metadata(
+        lead,
+        {
+            "company_intelligence": intelligence,
+            "company_intelligence_cached_at": intelligence["generated_at"],
+            "company_intelligence_cache_key": intelligence["cache_key"],
+            "priority_score": intelligence["lead_score"]["value"],
+            "confidence_score": intelligence["lead_score"]["confidence"],
+        },
+    )
+    if company is not None:
+        company.metadata_json = {
+            **(company.metadata_json or {}),
+            "company_intelligence": intelligence,
+            "company_intelligence_cached_at": intelligence["generated_at"],
+            "company_intelligence_cache_key": intelligence["cache_key"],
+            "priority_score": intelligence["lead_score"]["value"],
+            "confidence_score": intelligence["lead_score"]["confidence"],
+        }
+        company.updated_at = datetime.utcnow()
+    return intelligence
+
+
+def _apply_cached_company_intelligence(db: Session, user_id: str, workspace, lead: Lead, request_id: str) -> bool:
+    own_company = db.scalar(select(Company).where(Company.workspace_id == workspace.id, Company.lead_id == lead.id).order_by(Company.updated_at.desc()).limit(1))
+    own_metadata = {**_lead_metadata(lead), **((own_company.metadata_json or {}) if own_company else {})}
+    cache_key = _company_intelligence_cache_key(lead, own_metadata, own_company)
+    if _fresh_company_intelligence(own_metadata):
+        _refresh_company_intelligence(db, user_id, workspace, lead, own_company)
+        return True
+    candidates = list(
+        db.scalars(
+            select(Company)
+            .where(Company.workspace_id == workspace.id)
+            .order_by(Company.updated_at.desc())
+            .limit(200)
+        ).all()
+    )
+    for candidate in candidates:
+        if own_company and candidate.id == own_company.id:
+            continue
+        metadata = candidate.metadata_json or {}
+        if str(metadata.get("company_intelligence_cache_key") or "") != cache_key:
+            continue
+        cached = _fresh_company_intelligence(metadata)
+        if not cached:
+            continue
+        lead.notes = _merge_lead_metadata(
+            lead,
+            {
+                **metadata,
+                "company_intelligence": cached,
+                "company_intelligence_reused_from_cache": True,
+                "company_intelligence_cached_at": datetime.utcnow().isoformat(),
+            },
+        )
+        if own_company:
+            own_company.metadata_json = {
+                **(own_company.metadata_json or {}),
+                **metadata,
+                "company_intelligence": cached,
+                "company_intelligence_reused_from_cache": True,
+                "company_intelligence_cached_at": datetime.utcnow().isoformat(),
+            }
+            own_company.updated_at = datetime.utcnow()
+        _lead_trace(request_id, "company_intelligence_cache_hit", lead_id=str(lead.id), company=lead.company)
+        return True
+    return False
+
+
 def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallback", language: str | None = None) -> None:
     """Fill useful sales fields from verified CRM data without inventing contacts."""
     metadata = _lead_metadata(lead)
@@ -970,7 +1265,11 @@ def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallb
             _localized_fallback_text(language, "pain_manual"),
             _localized_fallback_text(language, "pain_context"),
         ]
-    updates["intelligence_quality"] = _company_intelligence_quality(lead, {**metadata, **updates}, workspace, source, language)
+    combined_metadata = {**metadata, **updates}
+    updates["intelligence_quality"] = _company_intelligence_quality(lead, combined_metadata, workspace, source, language)
+    updates["company_intelligence"] = _build_company_intelligence(lead=lead, metadata={**combined_metadata, "intelligence_quality": updates["intelligence_quality"]}, workspace=workspace)
+    updates["company_intelligence_cached_at"] = updates["company_intelligence"]["generated_at"]
+    updates["company_intelligence_cache_key"] = updates["company_intelligence"]["cache_key"]
     lead.notes = _merge_lead_metadata(lead, updates)
 
 
@@ -1055,6 +1354,7 @@ def _complete_turnkey_b2b_research(
                         _add_lead_activity(db, request, user_id, workspace, "contact.found", lead, {"source": "turnkey_lead_research"})
                     else:
                         _add_lead_activity(db, request, user_id, workspace, "contact.search_empty", lead, {"source": "turnkey_lead_research"})
+                _refresh_company_intelligence(db, user_id, workspace, lead)
                 _sync_lead_to_crm(db, user_id, workspace, lead)
                 _lead_trace(request_id, "turnkey_contact_refresh_finished", lead_id=str(lead.id), company=lead.company, has_email=bool(lead.email))
             except Exception as exc:
@@ -1071,16 +1371,19 @@ def _complete_turnkey_b2b_research(
                 else:
                     warnings.append(f"{lead.company}: AI research could not complete yet.")
                     _lead_trace(request_id, "turnkey_ai_research_partial", lead_id=str(lead.id), company=lead.company)
+            _refresh_company_intelligence(db, user_id, workspace, lead)
             _sync_lead_to_crm(db, user_id, workspace, lead)
         except Exception as exc:
             capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_research", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id})
             _ensure_b2b_opportunity_metadata(lead, workspace, source="turnkey_fallback_after_ai_error", language=_workspace_language(request, workspace))
+            _refresh_company_intelligence(db, user_id, workspace, lead)
             _sync_lead_to_crm(db, user_id, workspace, lead)
             warnings.append(f"{lead.company}: AI research is temporarily unavailable.")
             _lead_trace(request_id, "turnkey_ai_research_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
         try:
             _create_review_email_draft(db, request, user_id, workspace, lead)
+            _refresh_company_intelligence(db, user_id, workspace, lead)
             _sync_lead_to_crm(db, user_id, workspace, lead)
         except Exception as exc:
             capture_provider_exception(exc, provider="openai", endpoint="workspace_app.turnkey_email_draft", workspace_id=workspace.id, lead_id=lead.id, extra={"request_id": request_id})
@@ -1200,6 +1503,24 @@ def process_enrichment_job(job_id: UUID) -> None:
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
         update_job_progress(db, job, stage="website_analysis", message="AI is analyzing the company and website.", percent=25)
         _lead_trace(request_id, "durable_auto_enrichment_started", lead_id=str(lead.id), job_id=str(job.id), company=lead.company, attempt=job.attempts)
+
+        if _apply_cached_company_intelligence(db, job.user_id, workspace, lead, request_id):
+            lead.notes = _merge_lead_metadata(
+                lead,
+                _enrichment_metadata_update(
+                    "completed",
+                    request_id,
+                    {
+                        "enrichment_job_id": str(job.id),
+                        "enrichment_message": "Recent company intelligence reused from CRM cache.",
+                    },
+                ),
+            )
+            _finalize_enrichment_workflow(db, workspace, lead)
+            _sync_lead_to_crm(db, job.user_id, workspace, lead)
+            complete_job(db, job, partial=False, warnings=[])
+            _lead_trace(request_id, "durable_auto_enrichment_cache_hit", lead_id=str(lead.id), job_id=str(job.id))
+            return
 
         warnings = _complete_turnkey_b2b_research(db, request, job.user_id, workspace, [lead], request_id)
         if job.cancel_requested:
@@ -1501,6 +1822,8 @@ def _apply_deep_contact_result(db: Session, request: Request, user_id: str, work
     _set_company_metadata_stage(company, "decision_maker", "completed" if selected else "error", "Decision maker selected." if selected else "Choose or add a decision maker manually.")
     _set_company_metadata_stage(company, "verified_email", "completed" if result.verified_email else "error", "Verified business email saved." if result.verified_email else "No verified email was found.")
     _set_company_metadata_stage(company, "technographics", "completed" if result.technologies else "error", "Technology stack saved." if result.technologies else "Technology stack unavailable.")
+    if lead:
+        _refresh_company_intelligence(db, user_id, workspace, lead, company)
 
 
 def _upsert_deep_contact(db: Session, user_id: str, workspace, company: Company, lead: Lead | None, candidate, selected: bool) -> Contact:

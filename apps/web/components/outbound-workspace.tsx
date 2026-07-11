@@ -433,6 +433,7 @@ function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
     workflow_stage_messages: value.workflow_stage_messages || {},
     deep_contact_search: value.deep_contact_search || null,
     intelligence_quality: value.intelligence_quality || null,
+    company_intelligence: value.company_intelligence || null,
     technologies: safeArray(value.technologies).map(String),
     last_enriched_at: value.last_enriched_at || null
   };
@@ -3146,6 +3147,21 @@ function InfoCell({ label, value, help }: { label: string; value?: string | numb
   );
 }
 
+function IntelligenceValue({ label, value, confidence }: { label: string; value: ReactNode; confidence?: number }) {
+  const { t } = useI18n();
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(label)}</p>
+        {typeof confidence === "number" && confidence > 0 ? (
+          <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600">{confidence}%</span>
+        ) : null}
+      </div>
+      <div className="mt-2 break-words text-sm font-semibold leading-6 text-ink">{value}</div>
+    </div>
+  );
+}
+
 function WorkspaceSection({ id, title, copy, children }: { id: string; title: string; copy: string; children: ReactNode }) {
   const { t } = useI18n();
   return (
@@ -3209,6 +3225,19 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   const currentSentAt = currentEmailSentAt(displayCurrent);
   const healthScore = companyHealthScore(displayCurrent);
   const salesBrief = companySalesBrief(displayCurrent, healthScore);
+  const intelligence = displayCurrent.company_intelligence || null;
+  const intelligenceFields = intelligence?.fields || {};
+  const intelligenceScore = intelligence?.lead_score?.value ?? salesBrief.score;
+  const intelligenceReasons = safeArray(intelligence?.lead_score?.reasons).map(String);
+  const intelligenceSources = safeArray(intelligence?.sources).map(String);
+  const intelligenceMissing = safeArray(intelligence?.missing_fields).map(String);
+  const intelligenceTechnologies = safeArray(intelligenceFields.technologies?.value).map(String);
+  const intelligenceSignals = safeArray(intelligenceFields.buying_signals?.value).map(String);
+  const intelligenceEmails = safeArray(intelligenceFields.verified_emails?.value).map(String);
+  const intelligencePhones = safeArray(intelligenceFields.phones?.value).map(String);
+  const intelligenceSocials = safeArray(intelligenceFields.social_profiles?.value).map(String);
+  const intelligenceEmployeeLinks = safeArray(intelligenceFields.key_employee_linkedin?.value).map(String);
+  const intelligenceCeo = intelligenceFields.ceo_founder?.value && typeof intelligenceFields.ceo_founder.value === "object" ? intelligenceFields.ceo_founder.value as Record<string, unknown> : null;
   const nextAction = companyNextAction(displayCurrent);
   const primaryAction = companyPrimaryAction(displayCurrent);
   const PrimaryActionIcon = primaryAction.icon;
@@ -3654,6 +3683,81 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           </div>
         </div>
       </div>
+    </div>
+
+    <div className="border-b border-slate-200 bg-white px-5 pb-5 sm:px-6">
+      <section className="rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI Company Intelligence")}</p>
+            <h3 className="mt-2 text-xl font-black tracking-tight text-ink">{t("Everything useful for deciding whether to work this account.")}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{t("OutreachAI merges public profile, website research, contact enrichment and CRM data, removes duplicates and scores field confidence.")}</p>
+          </div>
+          <div className="rounded-2xl border border-teal-200 bg-white p-4 text-left shadow-sm lg:min-w-48">
+            <p className="text-xs font-black uppercase text-slate-500">{t("Lead Score")}</p>
+            <p className="mt-1 text-3xl font-black text-brand">{intelligenceScore}/100</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">{t("Confidence")}: {intelligence?.lead_score?.confidence ?? displayCurrent.confidence_score ?? healthScore}%</p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <IntelligenceValue
+            label="Official website"
+            confidence={intelligenceFields.official_website?.confidence}
+            value={intelligenceFields.official_website?.value ? <a className="break-all text-brand hover:underline" href={String(intelligenceFields.official_website.value)} target="_blank" rel="noreferrer">{String(intelligenceFields.official_website.value)}</a> : t("Not available")}
+          />
+          <IntelligenceValue label="Business description" confidence={intelligenceFields.business_description?.confidence} value={String(intelligenceFields.business_description?.value || displayCurrent.ai_summary || t("Not available"))} />
+          <IntelligenceValue label="Industry" confidence={intelligenceFields.industry?.confidence} value={String(intelligenceFields.industry?.value || displayCurrent.industry || t("Not available"))} />
+          <IntelligenceValue label="Employees" confidence={intelligenceFields.employee_count?.confidence} value={String(intelligenceFields.employee_count?.value || t("Not available"))} />
+          <IntelligenceValue label="CEO / Founder" confidence={intelligenceFields.ceo_founder?.confidence} value={String(intelligenceCeo?.name || intelligenceCeo?.title || t("Not available"))} />
+          <IntelligenceValue label="Company LinkedIn" confidence={intelligenceFields.company_linkedin?.confidence} value={intelligenceFields.company_linkedin?.value ? <a className="break-all text-brand hover:underline" href={String(intelligenceFields.company_linkedin.value)} target="_blank" rel="noreferrer">{String(intelligenceFields.company_linkedin.value)}</a> : t("Not available")} />
+        </div>
+
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Useful data found")}</p>
+            <div className="mt-3 grid gap-2">
+              {(intelligenceTechnologies.length ? [`${t("Technologies")}: ${intelligenceTechnologies.slice(0, 8).join(", ")}`] : [])
+                .concat(intelligenceEmails.length ? [`${t("Verified emails")}: ${intelligenceEmails.slice(0, 3).join(", ")}`] : [])
+                .concat(intelligencePhones.length ? [`${t("Phones")}: ${intelligencePhones.slice(0, 3).join(", ")}`] : [])
+                .concat(intelligenceEmployeeLinks.length ? [`${t("Key employee LinkedIn")}: ${intelligenceEmployeeLinks.slice(0, 2).join(", ")}`] : [])
+                .concat(intelligenceSocials.length ? [`${t("Social profiles")}: ${intelligenceSocials.slice(0, 3).join(", ")}`] : [])
+                .slice(0, 5)
+                .map((item) => <p key={item} className="rounded-xl bg-teal-50 p-3 text-sm font-semibold leading-6 text-brand">{item}</p>)}
+              {!intelligenceTechnologies.length && !intelligenceEmails.length && !intelligencePhones.length && !intelligenceEmployeeLinks.length && !intelligenceSocials.length ? (
+                <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">{t("Run enrichment to collect contacts, technologies and social profiles.")}</p>
+              ) : null}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Why contact this company")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{String(intelligenceFields.personalized_reason?.value || salesBrief.whyFit)}</p>
+            <div className="mt-3 space-y-2">
+              {(intelligenceSignals.length ? intelligenceSignals : intelligenceReasons).slice(0, 4).map((signal) => (
+                <p key={signal} className="flex gap-2 rounded-xl bg-teal-50 p-3 text-sm font-semibold leading-6 text-brand"><ShieldCheck className="mt-1 shrink-0" size={15} />{t(signal)}</p>
+              ))}
+              {!intelligenceSignals.length && !intelligenceReasons.length ? <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">{t("No buying signal yet. Run company research first.")}</p> : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Sources used")}</p>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{(intelligenceSources.length ? intelligenceSources : salesBrief.qualitySources).map((item) => t(item)).join(", ") || t("Only the saved CRM profile is available so far.")}</p>
+          </div>
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-xs font-black uppercase tracking-wide text-amber-800">{t("What can still be improved")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-amber-950">{(intelligenceMissing.length ? intelligenceMissing : salesBrief.qualityGaps).slice(0, 5).map((item) => t(item)).join(", ") || t("No critical improvement needed right now.")}</p>
+            {intelligenceMissing.length ? (
+              <button type="button" onClick={prepareCompanyOpportunity} disabled={actionBusy === "prepare-company" || !current.lead_id} className="mt-3 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-md bg-brand px-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto">
+                {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
+                {t("Collect missing data")}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </section>
     </div>
 
     <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_18rem] xl:grid-cols-[minmax(0,1fr)_20rem]">

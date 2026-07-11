@@ -170,6 +170,41 @@ export type IntelligenceQuality = {
   confidence_score?: number;
 };
 
+export type CompanyIntelligenceField<T = unknown> = {
+  value?: T | null;
+  source?: string;
+  confidence?: number;
+};
+
+export type CompanyIntelligence = {
+  version?: number;
+  generated_at?: string;
+  cache_key?: string;
+  sources?: string[];
+  fields?: {
+    official_website?: CompanyIntelligenceField<string>;
+    business_description?: CompanyIntelligenceField<string>;
+    industry?: CompanyIntelligenceField<string>;
+    employee_count?: CompanyIntelligenceField<string | number>;
+    technologies?: CompanyIntelligenceField<string[]>;
+    company_linkedin?: CompanyIntelligenceField<string>;
+    key_employee_linkedin?: CompanyIntelligenceField<string[]>;
+    ceo_founder?: CompanyIntelligenceField<Record<string, unknown>>;
+    verified_emails?: CompanyIntelligenceField<string[]>;
+    phones?: CompanyIntelligenceField<string[]>;
+    social_profiles?: CompanyIntelligenceField<string[]>;
+    buying_signals?: CompanyIntelligenceField<string[]>;
+    ai_summary?: CompanyIntelligenceField<string>;
+    personalized_reason?: CompanyIntelligenceField<string>;
+  };
+  lead_score?: {
+    value?: number;
+    confidence?: number;
+    reasons?: string[];
+  };
+  missing_fields?: string[];
+};
+
 export type CrmContact = {
   id: string;
   company_id?: string | null;
@@ -272,6 +307,7 @@ export type CrmCompany = {
   workflow_stage_messages?: Record<string, string>;
   deep_contact_search?: DeepContactSearch | null;
   intelligence_quality?: IntelligenceQuality | null;
+  company_intelligence?: CompanyIntelligence | null;
   technologies?: string[];
   last_enriched_at?: string | null;
 };
