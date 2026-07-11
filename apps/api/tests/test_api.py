@@ -2865,6 +2865,70 @@ def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> N
     assert "subscription_sync_healthy" in diagnostics.json()
 
 
+def test_stripe_invoice_payment_failed_records_reason_and_keeps_access_inactive() -> None:
+    workspace = client.get("/api/workspace", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "payment-failure@example.com"}).json()
+    subscription_payload = {
+        "id": "evt_test_payment_failure_subscription",
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": "sub_payment_failure_test",
+                "customer": "cus_payment_failure_test",
+                "status": "incomplete",
+                "metadata": {"user_id": "payment-failure", "workspace_id": workspace["id"], "plan": "Pro"},
+                "items": {"data": [{"price": {"id": "price_pro_test"}}]},
+            }
+        },
+    }
+    raw, signature = stripe_signature(subscription_payload)
+    created = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert created.status_code == 200
+
+    failed_payload = {
+        "id": "evt_test_invoice_failed",
+        "type": "invoice.payment_failed",
+        "data": {
+            "object": {
+                "id": "in_payment_failure_test",
+                "customer": "cus_payment_failure_test",
+                "subscription": "sub_payment_failure_test",
+                "status": "open",
+                "payment_intent": {
+                    "id": "pi_payment_failure_test",
+                    "status": "requires_payment_method",
+                    "last_payment_error": {
+                        "type": "card_error",
+                        "decline_code": "insufficient_funds",
+                        "message": "Your card has insufficient funds.",
+                    },
+                },
+            }
+        },
+    }
+    raw, signature = stripe_signature(failed_payload)
+    failed = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert failed.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        subscription = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_payment_failure_test").one()
+        assert subscription.status == "past_due"
+        assert subscription.last_decline_code == "insufficient_funds"
+        assert subscription.last_failure_message == "Your card has insufficient funds."
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == subscription.workspace_id).one()
+        assert settings.billing["status"] == "past_due"
+        assert settings.billing["lastDeclineCode"] == "insufficient_funds"
+    finally:
+        db.close()
+
+    status = client.get("/api/billing/status", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "payment-failure@example.com"})
+    assert status.status_code == 200
+    data = status.json()
+    assert data["status"] == "past_due"
+    assert data["last_decline_code"] == "insufficient_funds"
+    assert data["last_failure_message"] == "Your card has insufficient funds."
+
+
 def test_starter_plan_blocks_sales_employee_limits_and_semi_auto_mode() -> None:
     workspace = client.get("/api/workspace", headers=AUTH).json()
     db = get_sessionmaker()()

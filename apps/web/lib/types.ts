@@ -611,6 +611,10 @@ export type BillingStatus = {
   trial_days_remaining: number;
   stripe_customer_id: string;
   stripe_subscription_id: string;
+  last_payment_error?: string;
+  last_decline_code?: string;
+  last_failure_message?: string;
+  last_payment_failed_at?: string | null;
   limits: PlanLimits;
   usage: Record<string, number>;
   sales_employees_used: number;

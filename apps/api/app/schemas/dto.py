@@ -1015,6 +1015,10 @@ class BillingStatusOut(BaseModel):
     trial_days_remaining: int = 0
     stripe_customer_id: str = ""
     stripe_subscription_id: str = ""
+    last_payment_error: str = ""
+    last_decline_code: str = ""
+    last_failure_message: str = ""
+    last_payment_failed_at: Optional[datetime] = None
     limits: dict[str, Any]
     usage: dict[str, int]
     sales_employees_used: int = 0

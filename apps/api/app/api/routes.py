@@ -521,8 +521,17 @@ def _sync_workspace_subscription(
     subscription.trial_end = trial_end
     subscription.current_period_end = current_period_end
     subscription.plan_limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])
+    if status in {"active", "trialing"}:
+        subscription.last_payment_error = None
+        subscription.last_decline_code = None
+        subscription.last_failure_message = None
+        subscription.last_payment_failed_at = None
+    billing = dict(settings.billing or {})
+    if status in {"active", "trialing"}:
+        for key in ("lastPaymentError", "lastDeclineCode", "lastFailureMessage", "lastPaymentFailedAt", "lastFailedInvoiceId", "lastFailedPaymentIntentId"):
+            billing.pop(key, None)
     settings.billing = {
-        **(settings.billing or {}),
+        **billing,
         "plan": plan,
         "status": status,
         "stripeCustomerId": stripe_customer_id,
@@ -4737,6 +4746,10 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
         trial_days_remaining=trial_days_remaining,
         stripe_customer_id=str(billing.get("stripeCustomerId") or (subscription.stripe_customer_id if subscription else "") or ""),
         stripe_subscription_id=str(billing.get("stripeSubscriptionId") or (subscription.stripe_subscription_id if subscription else "") or ""),
+        last_payment_error=str((subscription.last_payment_error if subscription else None) or billing.get("lastPaymentError") or ""),
+        last_decline_code=str((subscription.last_decline_code if subscription else None) or billing.get("lastDeclineCode") or ""),
+        last_failure_message=str((subscription.last_failure_message if subscription else None) or billing.get("lastFailureMessage") or ""),
+        last_payment_failed_at=(subscription.last_payment_failed_at if subscription else None) or _parse_billing_datetime(billing.get("lastPaymentFailedAt")),
         limits=PLAN_LIMITS[plan],
         usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
         sales_employees_used=int(sales_employees_used),

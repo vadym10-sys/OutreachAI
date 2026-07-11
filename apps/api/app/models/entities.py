@@ -125,6 +125,10 @@ class Subscription(Base):
     trial_end: Mapped[Optional[datetime]] = mapped_column(DateTime)
     current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime)
     plan_limits: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_payment_error: Mapped[Optional[str]] = mapped_column(String(500))
+    last_decline_code: Mapped[Optional[str]] = mapped_column(String(120))
+    last_failure_message: Mapped[Optional[str]] = mapped_column(Text)
+    last_payment_failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     user: Mapped[User] = relationship()
 
 

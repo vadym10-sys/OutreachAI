@@ -5,10 +5,11 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import time
 from datetime import datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,6 +23,8 @@ from app.services.ai import ProviderConfigurationError, ProviderRequestError, su
 from app.services.billing import plan_from_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+logger = logging.getLogger("outreachai.stripe")
+PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 
 
 def _verify_resend_signature(payload: bytes, request: Request, secret: str) -> None:
@@ -60,6 +63,96 @@ def _metadata_value(metadata: object, key: str) -> str:
     return str(getattr(metadata, key, "") or "")
 
 
+def _stripe_get(obj: object, key: str, default: object = None) -> object:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    getter = getattr(obj, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    return getattr(obj, key, default)
+
+
+def _stripe_id(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(_stripe_get(value, "id", "") or "")
+
+
+def _safe_text(value: object, *, max_length: int = 500) -> str:
+    text = str(value or "").strip()
+    return text[:max_length]
+
+
+def _billing_clear_failure(billing: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(billing or {})
+    for key in (
+        "lastPaymentError",
+        "lastDeclineCode",
+        "lastFailureMessage",
+        "lastPaymentFailedAt",
+        "lastFailedInvoiceId",
+        "lastFailedPaymentIntentId",
+    ):
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _billing_with_failure(billing: dict[str, Any], failure: dict[str, str]) -> dict[str, Any]:
+    return {
+        **dict(billing or {}),
+        "lastPaymentError": failure.get("last_payment_error") or "",
+        "lastDeclineCode": failure.get("decline_code") or "",
+        "lastFailureMessage": failure.get("failure_message") or "",
+        "lastPaymentFailedAt": failure.get("failed_at") or datetime.utcnow().isoformat(),
+        "lastFailedInvoiceId": failure.get("invoice_id") or "",
+        "lastFailedPaymentIntentId": failure.get("payment_intent_id") or "",
+    }
+
+
+def _payment_failure_details(invoice: object, payment_intent: object | None = None) -> dict[str, str]:
+    last_payment_error = _stripe_get(invoice, "last_payment_error") or _stripe_get(payment_intent or {}, "last_payment_error") or {}
+    charge = _stripe_get(invoice, "charge") or _stripe_get(payment_intent or {}, "latest_charge")
+    failure_message = (
+        _stripe_get(last_payment_error, "message")
+        or _stripe_get(invoice, "failure_message")
+        or _stripe_get(charge or {}, "failure_message")
+        or "Payment was declined. Please update the payment method and try again."
+    )
+    decline_code = (
+        _stripe_get(last_payment_error, "decline_code")
+        or _stripe_get(charge or {}, "failure_code")
+        or _stripe_get(invoice, "failure_code")
+        or ""
+    )
+    error_type = _stripe_get(last_payment_error, "type") or _stripe_get(invoice, "status") or "payment_failed"
+    return {
+        "last_payment_error": _safe_text(error_type, max_length=500),
+        "decline_code": _safe_text(decline_code, max_length=120),
+        "failure_message": _safe_text(failure_message, max_length=1000),
+        "invoice_id": _stripe_id(_stripe_get(invoice, "id")),
+        "payment_intent_id": _stripe_id(_stripe_get(invoice, "payment_intent") or payment_intent),
+        "failed_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _stripe_event_metadata(event: object, data: object, *, workspace_id: str = "") -> dict[str, Any]:
+    event_type = str(_stripe_get(event, "type", "") or "")
+    payment_intent = _stripe_get(data, "payment_intent")
+    return {
+        "event_id": str(_stripe_get(event, "id", "") or ""),
+        "event_type": event_type,
+        "object_id": _stripe_id(_stripe_get(data, "id")),
+        "customer_id": _stripe_id(_stripe_get(data, "customer")),
+        "subscription_id": _stripe_id(_stripe_get(data, "subscription")),
+        "payment_intent_id": _stripe_id(payment_intent),
+        "invoice_id": _stripe_id(_stripe_get(data, "invoice")),
+        "status": str(_stripe_get(data, "status", "") or ""),
+        "workspace_id": workspace_id,
+    }
+
+
 def _user_for_clerk(db: Session, clerk_user_id: str) -> User:
     user = db.scalar(select(User).where(User.clerk_user_id == clerk_user_id))
     if user is None:
@@ -76,11 +169,23 @@ def _workspace_uuid(workspace_id: str) -> UUID | None:
         return None
 
 
-def _settings_for_workspace(db: Session, workspace_id: str) -> AppSettings | None:
+def _settings_for_workspace(db: Session, workspace_id: str, user_id: str = "") -> AppSettings | None:
     parsed = _workspace_uuid(workspace_id)
     if parsed is None:
         return None
-    return db.scalar(select(AppSettings).where(AppSettings.workspace_id == parsed))
+    settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == parsed))
+    if settings is not None:
+        return settings
+    if not user_id:
+        return None
+    settings = db.scalar(select(AppSettings).where(AppSettings.user_id == user_id))
+    if settings is not None:
+        settings.workspace_id = parsed
+        return settings
+    settings = AppSettings(user_id=user_id, workspace_id=parsed, general={}, ai={}, email={}, billing={}, security={}, api={})
+    db.add(settings)
+    db.flush()
+    return settings
 
 
 def _sync_subscription(
@@ -113,11 +218,19 @@ def _sync_subscription(
     subscription.trial_end = trial_end
     subscription.current_period_end = current_period_end
     subscription.plan_limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])
+    if status in PAID_SUBSCRIPTION_STATUSES:
+        subscription.last_payment_error = None
+        subscription.last_decline_code = None
+        subscription.last_failure_message = None
+        subscription.last_payment_failed_at = None
 
-    settings = _settings_for_workspace(db, workspace_id)
+    settings = _settings_for_workspace(db, workspace_id, user_id=user_id)
     if settings:
+        billing = dict(settings.billing or {})
+        if status in PAID_SUBSCRIPTION_STATUSES:
+            billing = _billing_clear_failure(billing)
         settings.billing = {
-            **(settings.billing or {}),
+            **billing,
             "plan": plan,
             "status": status,
             "stripeCustomerId": customer_id,
@@ -145,6 +258,8 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
     stripe.api_key = settings.stripe_secret_key
     event_type = event["type"]
     data = event["data"]["object"]
+    event_workspace_id = _metadata_value(_stripe_get(data, "metadata", {}), "workspace_id")
+    logger.info("Stripe webhook received", extra=_stripe_event_metadata(event, data, workspace_id=event_workspace_id))
     if event_type == "checkout.session.completed":
         subscription_id = str(data.get("subscription") or "")
         customer_id = str(data.get("customer") or "")
@@ -172,23 +287,57 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         plan = _metadata_value(data.get("metadata"), "plan") or plan_from_price_id(price_id) or "Starter"
         status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
         _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=timestamp_to_datetime(data.get("trial_end")), current_period_end=timestamp_to_datetime(data.get("current_period_end")), price_id=price_id)
-    elif event_type == "invoice.payment_succeeded":
+    elif event_type in {"invoice.paid", "invoice.payment_succeeded"}:
         subscription_id = str(data.get("subscription") or "")
         subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
         if subscription:
             subscription.status = "active"
+            subscription.last_payment_error = None
+            subscription.last_decline_code = None
+            subscription.last_failure_message = None
+            subscription.last_payment_failed_at = None
             settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == subscription.workspace_id))
             if settings_row:
-                settings_row.billing = {**(settings_row.billing or {}), "status": "active", "plan": subscription.plan}
+                settings_row.billing = {**_billing_clear_failure(settings_row.billing or {}), "status": "active", "plan": subscription.plan}
     elif event_type == "invoice.payment_failed":
         subscription_id = str(data.get("subscription") or "")
         subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
         if subscription:
+            raw_payment_intent = _stripe_get(data, "payment_intent")
+            payment_intent: object | None = raw_payment_intent if raw_payment_intent and not isinstance(raw_payment_intent, str) else None
+            payment_intent_id = _stripe_id(raw_payment_intent)
+            if payment_intent is None and payment_intent_id and settings.stripe_secret_key:
+                try:
+                    payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+                except stripe.StripeError as exc:
+                    capture_provider_exception(exc, provider="stripe", endpoint="stripe.payment_intent.retrieve", workspace_id=str(subscription.workspace_id))
+            failure = _payment_failure_details(data, payment_intent)
             subscription.status = "past_due"
+            subscription.last_payment_error = failure["last_payment_error"]
+            subscription.last_decline_code = failure["decline_code"]
+            subscription.last_failure_message = failure["failure_message"]
+            subscription.last_payment_failed_at = datetime.utcnow()
             settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == subscription.workspace_id))
             if settings_row:
-                settings_row.billing = {**(settings_row.billing or {}), "status": "past_due", "plan": subscription.plan}
-    db.add(AuditLog(user_id=None, action=f"stripe.{event_type}", metadata_json={"event_id": event.get("id")}))
+                settings_row.billing = {**_billing_with_failure(settings_row.billing or {}, failure), "status": "past_due", "plan": subscription.plan}
+            logger.warning("Stripe payment failed", extra={**_stripe_event_metadata(event, data, workspace_id=str(subscription.workspace_id)), "decline_code": failure["decline_code"]})
+    elif event_type.startswith("payment_intent."):
+        invoice_id = _stripe_id(_stripe_get(data, "invoice"))
+        customer_id = _stripe_id(_stripe_get(data, "customer"))
+        if event_type == "payment_intent.payment_failed":
+            subscription = db.scalar(select(Subscription).where(Subscription.stripe_customer_id == customer_id).order_by(Subscription.current_period_end.desc().nullslast())) if customer_id else None
+            if subscription:
+                failure = _payment_failure_details({"id": invoice_id, "payment_intent": data, "status": _stripe_get(data, "status")}, data)
+                subscription.last_payment_error = failure["last_payment_error"]
+                subscription.last_decline_code = failure["decline_code"]
+                subscription.last_failure_message = failure["failure_message"]
+                subscription.last_payment_failed_at = datetime.utcnow()
+                settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == subscription.workspace_id))
+                if settings_row:
+                    settings_row.billing = {**_billing_with_failure(settings_row.billing or {}, failure), "status": subscription.status, "plan": subscription.plan}
+        logger.info("Stripe payment intent event processed", extra=_stripe_event_metadata(event, data, workspace_id=str(subscription.workspace_id) if "subscription" in locals() and subscription else event_workspace_id))
+    audit_metadata = _stripe_event_metadata(event, data, workspace_id=event_workspace_id)
+    db.add(AuditLog(user_id=None, action=f"stripe.{event_type}", metadata_json=audit_metadata))
     db.commit()
     return {"received": True, "type": event["type"]}
 
