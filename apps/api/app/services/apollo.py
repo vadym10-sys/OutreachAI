@@ -105,12 +105,12 @@ def _apollo_post(path: str, body: dict[str, Any], operation: str) -> dict[str, A
                 response.raise_for_status()
                 data = response.json()
                 logger.info(
-                    "%s succeeded attempt=%s status=%s duration_ms=%s raw_response_preview=%s",
+                    "%s succeeded attempt=%s status=%s duration_ms=%s records=%s",
                     operation,
                     attempt,
                     response.status_code,
                     _duration_ms(started),
-                    _preview(data),
+                    sum(len(_records(data, key)) for key in ("organizations", "companies", "accounts", "people", "contacts")),
                 )
                 return data
         except httpx.TimeoutException as exc:
@@ -345,7 +345,7 @@ def _safe_response_detail(response: httpx.Response) -> str:
         message = data.get("message") or data.get("error") or data.get("detail")
         if message:
             return str(message)
-        return _preview(data)
+        return f"HTTP {response.status_code}"
     except ValueError:
         pass
     return (response.text or f"HTTP {response.status_code}")[:4000]

@@ -195,7 +195,14 @@ def _hunter_get(path: str, params: dict[str, Any], operation: str) -> dict[str, 
                 response = client.get(f"{HUNTER_BASE_URL}{path}", params=query)
                 response.raise_for_status()
                 data = response.json()
-                logger.info("%s succeeded attempt=%s status=%s duration_ms=%s raw_response_preview=%s", operation, attempt, response.status_code, _duration_ms(started), _preview(data))
+                logger.info(
+                    "%s succeeded attempt=%s status=%s duration_ms=%s result=%s",
+                    operation,
+                    attempt,
+                    response.status_code,
+                    _duration_ms(started),
+                    _safe_hunter_result_summary(data),
+                )
                 return data
         except httpx.TimeoutException as exc:
             last_error = exc
@@ -314,10 +321,23 @@ def _safe_response_detail(response: httpx.Response) -> str:
         message = data.get("message") or data.get("error") or data.get("detail")
         if message:
             return str(message)
-        return _preview(data)
+        return f"HTTP {response.status_code}"
     except ValueError:
         pass
     return (response.text or f"HTTP {response.status_code}")[:4000]
+
+
+def _safe_hunter_result_summary(data: dict[str, Any]) -> dict[str, Any]:
+    payload = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(payload, dict):
+        return {"has_data": bool(payload)}
+    if isinstance(payload.get("emails"), list):
+        return {"emails": len(payload.get("emails") or []), "has_domain": bool(payload.get("domain"))}
+    return {
+        "has_data": True,
+        "status": payload.get("status") or payload.get("result"),
+        "score": payload.get("score"),
+    }
 
 
 def _preview(value: Any) -> str:

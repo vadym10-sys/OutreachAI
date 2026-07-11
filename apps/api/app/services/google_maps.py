@@ -160,12 +160,13 @@ def _google_places_post(body: dict[str, Any], operation: str) -> dict[str, Any]:
                 response.raise_for_status()
                 data = response.json()
                 logger.info(
-                    "%s succeeded attempt=%s status=%s duration_ms=%s raw_response_preview=%s",
+                    "%s succeeded attempt=%s status=%s duration_ms=%s places=%s has_next_page=%s",
                     operation,
                     attempt,
                     response.status_code,
                     _duration_ms(started),
-                    _preview(data),
+                    len(data.get("places") or []) if isinstance(data, dict) else 0,
+                    bool(data.get("nextPageToken")) if isinstance(data, dict) else False,
                 )
                 return data
         except httpx.TimeoutException as exc:
@@ -217,12 +218,13 @@ def _google_places_get(place_id: str, operation: str) -> dict[str, Any]:
                 response.raise_for_status()
                 data = response.json()
                 logger.info(
-                    "%s succeeded attempt=%s status=%s duration_ms=%s raw_response_preview=%s",
+                    "%s succeeded attempt=%s status=%s duration_ms=%s has_website=%s has_phone=%s",
                     operation,
                     attempt,
                     response.status_code,
                     _duration_ms(started),
-                    _preview(data),
+                    bool(data.get("websiteUri")) if isinstance(data, dict) else False,
+                    bool((data.get("nationalPhoneNumber") or data.get("internationalPhoneNumber"))) if isinstance(data, dict) else False,
                 )
                 return data
         except httpx.TimeoutException as exc:
@@ -398,7 +400,7 @@ def _safe_response_detail(response: httpx.Response) -> str:
         message = data.get("message") or data.get("detail")
         if message:
             return str(message)
-        return _preview(data)
+        return f"HTTP {response.status_code}"
     except ValueError:
         pass
     return (response.text or f"HTTP {response.status_code}")[:4000]
