@@ -48,6 +48,32 @@ describe("i18n", () => {
     }
   });
 
+  it("keeps AI company intelligence guidance fully Russian", () => {
+    const phrases = [
+      "The company matches the selected target market; verify the website and contact before outreach.",
+      "Potential fit is not proven yet; verify the company website and decision maker before spending sales time.",
+      "OutreachAI can turn the saved company profile into a researched, review-ready outreach path without manual tab switching.",
+      "Useful starter brief; connect or verify the missing data before sending outreach.",
+      "Company profile is saved and scoped to this workspace.",
+      "AI research explains the sales angle.",
+      "Selected decision maker role is available.",
+      "Decision maker is not verified yet.",
+      "Technology stack is unavailable until a technographic source is connected.",
+      "Connect company enrichment to improve firmographics and decision-maker coverage.",
+      "Connect technographic enrichment to personalize the sales angle by website stack.",
+      "AI prepared the sales brief and draft. Add a known business email to approve and send safely.",
+      "Finding decision makers and verified email...",
+      "Data used for this brief",
+    ];
+    const forbidden = /\b(workspace|outreach|sales|brief|decision maker|technographic|firmographics|company enrichment)\b/i;
+
+    for (const phrase of phrases) {
+      const translated = translateVisibleText(phrase, "ru");
+      expect(translated, phrase).not.toBe(phrase);
+      expect(translated, phrase).not.toMatch(forbidden);
+    }
+  });
+
   it("does not leak Cyrillic copy into non-Russian interface translations", () => {
     const nonRussianLocales = locales.filter((locale) => locale !== "ru");
     const cyrillic = /[А-Яа-яЁё]/;
