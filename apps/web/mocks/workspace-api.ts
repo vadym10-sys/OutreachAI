@@ -292,7 +292,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [qaCompany]);
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, qaCompany);
-    const workspaceCompanyAction = apiPath.match(/^\/api\/workspace-app\/companies\/([^/]+)\/(analyze|contacts|email-draft|complete-opportunity)$/);
+    const workspaceCompanyAction = apiPath.match(/^\/api\/workspace-app\/companies\/([^/]+)\/(analyze|contacts|email-draft|complete-opportunity|enrichment\/restart)$/);
     if (workspaceCompanyAction) {
       const [, companyId, action] = workspaceCompanyAction;
       const baseCompany = manualCompany?.id === companyId ? manualCompany : qaCompany;
@@ -306,7 +306,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
         if (manualCompany?.id === companyId) manualCompany = company;
         return fulfillJson(route, { status: "success", message: "Verified contact saved to CRM.", company });
       }
-      if (action === "complete-opportunity") {
+      if (action === "complete-opportunity" || action === "enrichment/restart") {
         const email = { ...qaCompany.generated_emails[0], lead_id: baseCompany.lead_id || qaLead.id, subject: `Quick idea for ${baseCompany.name}` };
         const company = {
           ...baseCompany,
@@ -327,7 +327,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
         if (manualCompany?.id === companyId) manualCompany = company;
         return fulfillJson(route, {
           status: "success",
-          message: "Sales opportunity prepared. Review the AI research and approve only when ready.",
+          message: action === "enrichment/restart" ? "AI enrichment restarted. This card will update as data arrives." : "Sales opportunity prepared. Review the AI research and approve only when ready.",
           completed_steps: ["Company profile checked", "Website analysis checked", "Contact search checked", "Email draft checked"],
           workflow_stages: {
             company_profile: "completed",

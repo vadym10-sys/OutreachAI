@@ -116,6 +116,7 @@ test("lead search retry reuses the last filters and can recover", async ({ page 
 test("manual company entry saves to CRM and becomes a research opportunity", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/leads");
+  await page.getByText("Backup path").click();
   const manualEntry = page.getByRole("form", { name: "Manual company entry" });
   await manualEntry.getByLabel("Company name").fill("Berlin Roof Systems");
   await manualEntry.getByLabel("Website").fill("https://berlin-roof.example");
@@ -147,7 +148,7 @@ test("campaign actions stay review-first and provide clear status", async ({ pag
 test("CRM stage and note actions do not silently fail", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/companies");
-  await page.getByRole("link", { name: /Continue work/ }).click();
+  await page.getByRole("link", { name: /Open company/ }).first().click();
   await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
   const stageSection = page.locator("section").filter({ hasText: "Update the pipeline when the sales situation changes." }).first();
   await stageSection.getByLabel("CRM stage").selectOption("Meeting Scheduled");

@@ -222,10 +222,10 @@ test.beforeEach(async ({ page }) => {
       body = { status: "success", message: "Verified contact saved to CRM.", company: { ...crmCompany, crm_stage: "Contact Found", contact_found_at: new Date().toISOString() } };
     } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/email-draft`) {
       body = { status: "success", message: "Email draft created for review. Nothing was sent.", company: { ...crmCompany, crm_stage: "Email Draft Ready", email_generated_at: new Date().toISOString() }, email: crmCompany.generated_emails[0] };
-    } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/complete-opportunity`) {
+    } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/complete-opportunity` || apiPath === `/api/workspace-app/companies/${crmCompany.id}/enrichment/restart`) {
       body = {
         status: "success",
-        message: "Sales opportunity prepared. Review the AI research and approve only when ready.",
+        message: apiPath.endsWith("/enrichment/restart") ? "AI enrichment restarted. This card will update as data arrives." : "Sales opportunity prepared. Review the AI research and approve only when ready.",
         completed_steps: ["Company profile checked", "Website analysis checked", "Contact search checked", "Email draft checked"],
         workflow_stages: {
           company_profile: "completed",
@@ -296,12 +296,12 @@ test.describe("redesigned B2B outbound workspace", () => {
     await expect(page.getByText("Verified email").first()).toBeVisible();
     await expect(page.getByText("jane@example.com").first()).toBeVisible();
     await page.getByRole("button", { name: /Run all missing steps/ }).click();
-    await expect(page.getByText("Review this draft before sending. No email has been sent yet.")).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText("Quick idea for Hill Country Build Co")).toBeVisible();
-    const approveButton = page.getByRole("button", { name: /Approve & send/ });
-    await expect(approveButton).toBeEnabled({ timeout: 15000 });
-    await approveButton.click();
-    await expect(page.getByText("Approved email was sent. CRM stage updated to Contacted.").first()).toBeVisible();
+    await expect(page.getByText("AI enrichment restarted. This card will update as data arrives.")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("Complete sales research to generate the first email.")).toBeVisible();
+    const approveButton = page.getByRole("button", { name: /Approve email/ });
+    await expect(approveButton).toBeDisabled();
+    const sendButton = page.getByRole("button", { name: /Send approved email/ });
+    await expect(sendButton).toBeDisabled();
   });
 
   test("campaign review never sends without approval", async ({ page }) => {
@@ -323,6 +323,7 @@ test.describe("redesigned B2B outbound workspace", () => {
 
   test("crm company stage move and note actions show reliable feedback", async ({ page }) => {
     await page.goto("/dashboard/companies");
+    await page.getByRole("link", { name: /Open company/ }).first().click();
     await page.getByRole("main").getByRole("combobox").selectOption("Meeting Scheduled");
     await page.getByRole("button", { name: /Move stage/ }).click();
     await expect(page.getByText("CRM stage moved to Meeting Scheduled.")).toBeVisible();

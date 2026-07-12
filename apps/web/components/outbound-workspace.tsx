@@ -1108,16 +1108,15 @@ function completedWorkflowSteps(metrics: DashboardMetrics, leads: Lead[], campai
 
 const coreCustomerActions = [
   ["Find leads", "Search one focused market.", "/dashboard/leads"],
-  ["Personalize email", "Turn company research into a reviewed email.", "/dashboard/companies"],
-  ["Launch campaign", "Send only after approval.", "/dashboard/campaigns"],
-  ["Handle replies", "Classify replies and move deals forward.", "/dashboard/inbox"],
-  ["Measure results", "See what creates meetings.", "/dashboard/analytics"]
+  ["Open company", "Review the best saved opportunity.", "/dashboard/companies"],
+  ["Prepare email", "Turn company research into a reviewed email.", "/dashboard/companies"],
+  ["Approve", "Send only after approval.", "/dashboard/campaigns"]
 ] as const;
 
 function CoreActionGrid({ activeHref }: { activeHref?: string }) {
   const { t } = useI18n();
   return (
-    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       {coreCustomerActions.map(([title, copy, href], index) => {
         const active = activeHref === href || (!activeHref && index === 0);
         return (
@@ -2511,7 +2510,7 @@ export function LeadFinderPage() {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-sm font-bold uppercase text-brand">{t("Backup path")}</p>
-              <h2 className="mt-1 text-xl font-bold text-ink">{t("Add company manually")}</h2>
+              <h2 className="mt-1 text-xl font-bold text-ink">{t("Add one real company first.")}</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">{t("This is the fastest reliable path: save one real company, then run research and outreach from its opportunity card.")}</p>
             </div>
             <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Takes 20 seconds")}</span>
@@ -4027,8 +4026,10 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           </div>
         </WorkspaceSection>
 
-        <WorkspaceSection id={`timeline-${current.id}`} title="CRM Timeline" copy="A complete audit trail of what happened, when it happened and what needs attention.">
-          <div className="space-y-3">
+        <details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Show activity history")}</summary>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{t("Open this only when you need to audit what happened with the company.")}</p>
+          <div className="mt-4 space-y-3">
             {lifecycle.map(([label, value, description]) => <div key={label} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[2rem_10rem_1fr]">
               <div className={`flex h-8 w-8 items-center justify-center rounded-full ${value ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-400"}`}><Clock3 size={16} /></div>
               <div>
@@ -4050,19 +4051,23 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
               </div>;
             })}
           </div>
-        </WorkspaceSection>
+        </details>
       </div>
 
       <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="text-sm font-bold text-ink">{t("Quick Actions")}</p>
-          <p className="mt-1 text-xs leading-5 text-slate-500">{t("Important actions stay within reach. Nothing is sent without approval.")}</p>
+          <p className="text-sm font-bold text-ink">{t("Next action")}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{t("One clear action is shown first. Details stay available below.")}</p>
           <div className="mt-4 grid gap-2">
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Sparkles size={17} /> {t("Review AI research")}</a>
-            <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> {t("Review contacts")}</a>
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> {t("Review email draft")}</a>
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Send size={17} /> {t("Review approval path")}</a>
-            <button type="button" onClick={prepareMeeting} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} {t("Prepare meeting")}</button>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Mail size={17} /> {t(current.generated_emails.length ? "Review and approve email" : "Prepare email")}</a>
+            <details className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <summary className="cursor-pointer text-xs font-black uppercase text-slate-600">{t("More actions")}</summary>
+              <div className="mt-3 grid gap-2">
+                <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> {t("Review contacts")}</a>
+                <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Sparkles size={17} /> {t("Review AI research")}</a>
+                <button type="button" onClick={prepareMeeting} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} {t("Prepare meeting")}</button>
+              </div>
+            </details>
           </div>
         </section>
 
@@ -4314,9 +4319,6 @@ export function CompaniesPage() {
       <div className="mt-4"><CrmFilters filters={filters} setFilters={setFilters} /></div>
     </details>
     {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : focusedCompany ? <WidgetBoundary name={`Company workspace: ${focusedCompany.name}`}><CrmCompanyCard company={focusedCompany} api={api} highlighted /></WidgetBoundary> : companies.length ? <div className="grid gap-4">
-      <WidgetBoundary name="Primary company actions">
-        <CoreActionGrid activeHref="/dashboard/companies" />
-      </WidgetBoundary>
       {primaryCompanies.map((company) => <WidgetBoundary key={company.id} name={`Company summary: ${company.name}`}><CompactCompanyCard company={company} api={api} /></WidgetBoundary>)}
       {secondaryCompanies.length > 0 && <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Show more companies")} · {secondaryCompanies.length}</summary>

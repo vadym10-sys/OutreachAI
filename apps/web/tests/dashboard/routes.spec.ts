@@ -236,6 +236,7 @@ test.describe("customer workspace routes", () => {
 
     await page.goto("/dashboard/leads", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: "Add one real company first." })).toBeVisible();
+    await page.getByText("Backup path").click();
     const manualForm = page.getByRole("form", { name: "Manual company entry" });
     await expect(manualForm.getByLabel("Company name")).toBeVisible();
     await expect(manualForm.getByLabel("Website")).toBeVisible();
@@ -345,7 +346,9 @@ test.describe("customer workspace routes", () => {
 
     await page.goto("/dashboard");
     await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
-    await expect(page.getByRole("main")).toContainText("Dashboard details are temporarily unavailable");
+    await expect(page.getByRole("main")).toContainText("Find leads");
+    await expect(page.getByRole("main")).toContainText("Open company");
+    await expect(page.getByRole("main")).not.toContainText("Dashboard details are temporarily unavailable");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("The page failed to render");
     expect(pageErrors).toEqual([]);
