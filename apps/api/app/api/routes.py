@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy import asc, desc, func, or_, select
+from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -266,20 +266,6 @@ def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
         set_workspace_context(workspace.id)
         return workspace
 
-    member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active").order_by(WorkspaceMember.created_at.asc()))
-    if member:
-        if email and not member.email:
-            member.email = email
-            db.add(member)
-            db.commit()
-        workspace = db.get(Workspace, member.workspace_id)
-        if workspace:
-            if workspace.name == "Outreach workspace":
-                workspace.name = _private_workspace_name(email)
-                db.add(workspace)
-                db.commit()
-            set_workspace_context(workspace.id)
-            return workspace
     workspace = Workspace(owner_user_id=user_id, name=_private_workspace_name(email))
     db.add(workspace)
     db.flush()
@@ -298,7 +284,21 @@ def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
 
 
 def _workspace_members(db: Session, workspace_id: UUID) -> list[WorkspaceMember]:
-    return list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace_id).order_by(WorkspaceMember.created_at.asc())).all())
+    workspace = db.get(Workspace, workspace_id)
+    if workspace is None:
+        return []
+    return list(
+        db.scalars(
+            select(WorkspaceMember)
+            .where(
+                WorkspaceMember.workspace_id == workspace_id,
+                WorkspaceMember.user_id == workspace.owner_user_id,
+                WorkspaceMember.role == WorkspaceRole.owner,
+                WorkspaceMember.status == "active",
+            )
+            .order_by(WorkspaceMember.created_at.asc())
+        ).all()
+    )
 
 
 def _workspace_out(db: Session, workspace: Workspace) -> WorkspaceOut:
@@ -318,8 +318,10 @@ def _workspace_out(db: Session, workspace: Workspace) -> WorkspaceOut:
 
 
 def _workspace_stmt(model, workspace: Workspace, user_id: str):
-    del user_id
-    return model.workspace_id == workspace.id
+    workspace_scope = model.workspace_id == workspace.id
+    if hasattr(model, "user_id"):
+        return and_(workspace_scope, model.user_id == user_id)
+    return workspace_scope
 
 
 INTERNAL_TEST_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
@@ -4788,17 +4790,8 @@ def update_workspace(payload: WorkspaceUpdate, request: Request, user: CurrentUs
 
 @router.post("/workspace/members", response_model=WorkspaceMemberOut)
 def invite_member(payload: MemberInvite, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> WorkspaceMember:
-    workspace = _current_workspace(db, user_id)
-    members = _workspace_members(db, workspace.id)
-    if len(members) >= _team_limit(db, user_id, workspace):
-        raise HTTPException(status_code=402, detail="Team member limit reached for the current plan")
-    role = WorkspaceRole(payload.role) if payload.role in [item.value for item in WorkspaceRole] else WorkspaceRole.member
-    member = WorkspaceMember(workspace_id=workspace.id, user_id=str(payload.email), email=str(payload.email), role=role, status="invited")
-    db.add(member)
-    log_event(db, request, user_id, "workspace.member_invited", {"email": str(payload.email), "role": role.value})
-    db.commit()
-    db.refresh(member)
-    return member
+    del payload, request, user_id, db
+    raise HTTPException(status_code=403, detail="Workspaces are private to one user. Team access is not enabled.")
 
 
 @router.get("/onboarding", response_model=WorkspaceOut)

@@ -658,6 +658,46 @@ def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> N
     assert any(member["email"] == user_email and member["role"].lower() == "owner" for member in data["members"])
 
 
+def test_workspace_me_ignores_shared_membership_without_owned_workspace() -> None:
+    SessionLocal = get_sessionmaker()
+    user_email = "isolated-member@example.com"
+    with SessionLocal() as db:
+        shared = Workspace(owner_user_id="another-owner", name="Shared Legacy Workspace")
+        db.add(shared)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=shared.id, user_id=user_email, email=user_email, role=WorkspaceRole.member, status="active"))
+        db.commit()
+        shared_id = str(shared.id)
+
+    response = client.get("/api/workspace/me", headers={"Authorization": "Bearer dev", "X-Test-User-Email": user_email})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] != shared_id
+    assert data["name"] == "isolated-member's workspace"
+    assert len(data["members"]) == 1
+    assert data["members"][0]["email"] == user_email
+    assert data["members"][0]["role"].lower() == "owner"
+
+
+def test_workspace_member_invites_are_disabled_for_private_accounts(monkeypatch) -> None:
+    SessionLocal = get_sessionmaker()
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "development")
+    try:
+        response = client.post(
+            "/api/workspace/members",
+            headers=OWNER_AUTH,
+            json={"email": "teammate@example.com", "role": "Member"},
+        )
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+    assert response.status_code == 403
+    with SessionLocal() as db:
+        member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.email == "teammate@example.com"))
+        assert member is None
+
+
 def test_workspace_app_bootstrap_creates_private_workspace() -> None:
     response = client.get("/api/workspace-app/bootstrap", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "usage-owner@example.com"})
     assert response.status_code == 200
