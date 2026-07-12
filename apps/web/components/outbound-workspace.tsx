@@ -808,14 +808,6 @@ function parseReplyRate(value: string) {
   return Math.round(values.reduce((sum, item) => sum + item, 0) / values.length);
 }
 
-function confidenceLabel(profile: ReturnType<typeof leadProfile>, copilot: SalesCopilot | undefined, t: (key: string) => string) {
-  if (copilot) return t("Purchase probability").replace("{count}", String(copilot.probability_to_buy));
-  if (typeof profile.icpScore === "number" && profile.icpScore > 0) return t("ICP fit score").replace("{count}", String(profile.icpScore));
-  const replyRate = parseReplyRate(profile.expectedReplyRate);
-  if (replyRate !== null) return t("Estimated from reply forecast").replace("{count}", String(replyRate));
-  return unavailable;
-}
-
 function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, followUps?: FollowUpSequence, audit?: WebsiteAudit) {
   const profile = leadProfile(lead);
   const noOpenFollowUps = safeArray(followUps?.no_open);
@@ -854,15 +846,6 @@ function opportunityCoverageHint(label: string) {
     "Priority score": "Complete research and email draft to calculate priority."
   };
   return hints[label] || "Complete sales research to fill this step.";
-}
-
-function priorityScore(profile: ReturnType<typeof leadProfile>, copilot?: SalesCopilot, draft?: Email) {
-  if (copilot) return Math.round((copilot.probability_to_reply * 0.45) + (copilot.probability_to_buy * 0.45) + Math.min((copilot.estimated_revenue ?? 0) / 1000, 10));
-  const icp = typeof profile.icpScore === "number" ? profile.icpScore : 0;
-  const replyRate = parseReplyRate(profile.expectedReplyRate) ?? 0;
-  if (!icp && !replyRate && !draft) return null;
-  const draftBonus = draft?.subject && draft.body ? 10 : 0;
-  return Math.max(0, Math.min(100, Math.round(icp * 0.7 + replyRate * 1.5 + draftBonus)));
 }
 
 function formatEstimatedRevenue(value: number | null | undefined) {
@@ -1502,7 +1485,6 @@ function OpportunityCard({
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
   const missingCoverage = coverage.filter(([, done]) => !done).map(([label]) => label);
-  const priority = priorityScore(profile, copilot, draft);
   const visibleStatus = status;
   const companyId = lead.crm_company_id || null;
   const nextStep = opportunityNextStep(lead, draft);
@@ -1510,6 +1492,13 @@ function OpportunityCard({
   const contactNeedsManualStep = !lead.email && (contactSearch.checked || lead.hunter_status === "no_verified_email");
   const dataFacts = opportunityDataFacts(lead, profile, t);
   const dataSummary = dataCollectionSummaryFromFacts(dataFacts, t);
+  const leadDecisionReason = safeArray(copilot?.reasoning)[0] || profile.opportunityAnalysis || profile.painAnalysis || profile.websiteAnalysis || "Potential fit is not proven yet; verify the company website and decision maker before spending sales time.";
+  const salesDecisionCards = [
+    { label: "Why this lead matters", value: leadDecisionReason, tone: "teal" },
+    { label: "Known now", value: dataSummary.foundText, tone: "slate" },
+    { label: "Needs review", value: dataSummary.missingText, tone: dataSummary.missing.length ? "amber" : "teal" },
+    { label: "Best next action", value: nextStep.title, tone: "ink" }
+  ];
   const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
   const recipientEmail = String(lead.email || "").trim();
 
@@ -1723,25 +1712,24 @@ function OpportunityCard({
         </div>
       </div>
 
-      <div className="mt-5 grid gap-3 lg:grid-cols-3">
-        {[
-          ["Company profile", `${profile.industry} · ${profile.location}`],
-          ["Decision maker", profile.decisionMaker],
-          ["Verified email", profile.verifiedEmail],
-          ["AI pain analysis", safeArray(audit?.priority_actions).join(", ") || profile.painAnalysis],
-          ["AI opportunity analysis", safeArray(copilot?.reasoning).join(" ") || profile.opportunityAnalysis],
-          ["Personalized offer", profile.offer],
-          ["Expected reply rate", copilot ? `${copilot.probability_to_reply}%` : profile.expectedReplyRate],
-          ["Confidence score", confidenceLabel(profile, copilot, t)],
-          ["Priority score", priority === null ? unavailable : `${priority}/100`]
-        ].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t(label)}</p><p className="mt-1 text-sm font-semibold text-slate-800">{t(value)}</p></div>)}
+      <div className="mt-5 grid gap-3 lg:grid-cols-4">
+        {salesDecisionCards.map((item) => {
+          const toneClass = item.tone === "teal"
+            ? "border-teal-100 bg-teal-50 text-brand"
+            : item.tone === "amber"
+              ? "border-amber-200 bg-amber-50 text-amber-800"
+              : item.tone === "ink"
+                ? "border-slate-900 bg-ink text-white"
+                : "border-slate-200 bg-slate-50 text-slate-700";
+          const bodyClass = item.tone === "ink" ? "text-white" : "text-slate-800";
+          return (
+            <div key={item.label} className={`rounded-xl border p-3 ${toneClass}`}>
+              <p className={`text-xs font-black uppercase ${item.tone === "ink" ? "text-white/75" : ""}`}>{t(item.label)}</p>
+              <p className={`mt-2 line-clamp-4 text-sm font-semibold leading-6 ${bodyClass}`}>{t(item.value)}</p>
+            </div>
+          );
+        })}
       </div>
-
-      <section className="mt-5 rounded-2xl border border-teal-200 bg-teal-50 p-4">
-        <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Next step")}</p>
-        <h3 className="mt-2 text-lg font-black text-ink">{t(nextStep.title)}</h3>
-        <p className="mt-2 text-sm leading-6 text-slate-700">{t(nextStep.copy)}</p>
-      </section>
 
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
