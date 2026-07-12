@@ -1604,9 +1604,10 @@ def _lead_context(db: Session, workspace: Workspace, user_id: str, lead_id: UUID
     return lead, analysis, campaign, messages
 
 
-def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Campaign | None, messages: list[EmailMessage]) -> dict:
+def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Campaign | None, messages: list[EmailMessage], language: str | None = None) -> dict:
     intelligence = _lead_metadata(lead)
     return {
+        "response_language": language or "English",
         "lead": {
             "company": lead.company,
             "website": lead.website,
@@ -4228,12 +4229,21 @@ def lead_copilot(lead_id: UUID, request: Request, user_id: CurrentUser, db: Sess
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
     try:
-        result = sales_copilot(_lead_ai_payload(lead, analysis, campaign, messages))
+        result = sales_copilot(_lead_ai_payload(lead, analysis, campaign, messages, workspace.language))
     except Exception as exc:
         raise _provider_error(exc) from exc
     if not lead.revenue and result.estimated_revenue is not None:
         lead.revenue = result.estimated_revenue
-    lead.notes = "\n".join(part for part in [lead.notes or "", f"Sales copilot: {result.probability_to_reply}% reply, {result.probability_to_buy}% buy. {result.best_cta}"] if part)
+    lead.notes = "\n".join(
+        part
+        for part in [
+            lead.notes or "",
+            f"Sales copilot: {result.probability_to_reply}% reply, {result.probability_to_buy}% buy. {result.best_cta}",
+            f"Fit reason: {result.fit_reason}" if result.fit_reason else "",
+            f"Next action: {result.next_best_action}" if result.next_best_action else "",
+        ]
+        if part
+    )
     log_event(db, request, user_id, "copilot.generated", {"lead_id": str(lead.id), "reply": result.probability_to_reply, "buy": result.probability_to_buy})
     db.commit()
     return result
@@ -4249,7 +4259,7 @@ def lead_website_audit(lead_id: UUID, request: Request, user_id: CurrentUser, db
     try:
         snapshot = collect_website(lead.website)
         heuristic = _website_audit_markers(snapshot.text, snapshot.technologies)
-        result = website_audit({**_lead_ai_payload(lead, analysis, campaign, messages), "website_text": snapshot.text[:10000], "detected_issues": heuristic})
+        result = website_audit({**_lead_ai_payload(lead, analysis, campaign, messages, workspace.language), "website_text": snapshot.text[:10000], "detected_issues": heuristic})
     except Exception as exc:
         raise _provider_error(exc) from exc
     db.add(
@@ -4283,7 +4293,7 @@ def lead_meeting_prep(lead_id: UUID, request: Request, user_id: CurrentUser, db:
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
     try:
-        result = meeting_preparation(_lead_ai_payload(lead, analysis, campaign, messages))
+        result = meeting_preparation(_lead_ai_payload(lead, analysis, campaign, messages, workspace.language))
     except Exception as exc:
         raise _provider_error(exc) from exc
     log_event(db, request, user_id, "meeting.prep_generated", {"lead_id": str(lead.id)})
@@ -4297,7 +4307,7 @@ def lead_follow_ups(lead_id: UUID, request: Request, user_id: CurrentUser, db: S
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
     try:
-        result = adaptive_follow_ups(_lead_ai_payload(lead, analysis, campaign, messages))
+        result = adaptive_follow_ups(_lead_ai_payload(lead, analysis, campaign, messages, workspace.language))
     except Exception as exc:
         raise _provider_error(exc) from exc
     log_event(db, request, user_id, "followups.generated", {"lead_id": str(lead.id)})

@@ -509,6 +509,9 @@ export type SalesCopilot = {
   best_first_contact: string;
   best_subject_line: string;
   best_cta: string;
+  fit_reason?: string | null;
+  risk_to_check?: string | null;
+  next_best_action?: string | null;
   estimated_revenue: number | null;
   estimated_revenue_reason?: string | null;
   reasoning: string[];

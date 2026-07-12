@@ -44,7 +44,7 @@ from app.core.reliability import database_backup_configured  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
-from app.api.routes import _audit_log_lead_id_clause, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
+from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
 from app.models.entities import AISalesEmployee, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
@@ -3071,24 +3071,48 @@ def test_llm_number_parser_handles_sales_copilot_revenue_shapes(value, expected)
 
 
 def test_sales_copilot_moves_textual_revenue_into_reason(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.services.ai._json_completion",
-        lambda system, payload: {
+    captured: dict[str, object] = {}
+
+    def fake_completion(system, payload):
+        captured["system"] = system
+        captured["payload"] = payload
+        return {
             "probability_to_reply": "66",
             "probability_to_buy": "41",
             "best_first_contact": "Personalized email",
             "best_subject_line": "Quick idea",
             "best_cta": "Book a call",
+            "fit_reason": "The company matches the target segment and has visible conversion gaps.",
+            "risk_to_check": "No verified decision maker is available yet.",
+            "next_best_action": "Find a verified decision maker before sending.",
             "estimated_revenue": "Revenue depends on contract size and cannot be estimated from the current data.",
             "reasoning": ["Good fit"],
-        },
+        }
+
+    monkeypatch.setattr(
+        "app.services.ai._json_completion",
+        fake_completion,
     )
 
-    result = sales_copilot({"lead": {"company": "Safe Revenue Co"}})
+    result = sales_copilot({"response_language": "Russian", "lead": {"company": "Safe Revenue Co"}})
 
     assert result.estimated_revenue is None
     assert "Revenue depends on contract size" in (result.estimated_revenue_reason or "")
     assert result.probability_to_reply == 66
+    assert result.fit_reason == "The company matches the target segment and has visible conversion gaps."
+    assert result.risk_to_check == "No verified decision maker is available yet."
+    assert result.next_best_action == "Find a verified decision maker before sending."
+    assert "payload.response_language" in str(captured["system"])
+    assert captured["payload"] == {"response_language": "Russian", "lead": {"company": "Safe Revenue Co"}}
+
+
+def test_lead_ai_payload_carries_workspace_language() -> None:
+    lead = Lead(company="Language Fit Co", website="https://example.com", industry="SaaS", country="Poland", city="Warsaw")
+
+    payload = _lead_ai_payload(lead, None, None, [], "French")
+
+    assert payload["response_language"] == "French"
+    assert payload["lead"]["company"] == "Language Fit Co"
 
 
 def test_sales_copilot_invalid_ai_response_returns_safe_defaults(monkeypatch) -> None:
@@ -3103,6 +3127,9 @@ def test_sales_copilot_invalid_ai_response_returns_safe_defaults(monkeypatch) ->
     assert result.probability_to_reply == 0
     assert result.probability_to_buy == 0
     assert result.best_first_contact == "Personalized email"
+    assert result.fit_reason is None
+    assert result.risk_to_check is None
+    assert result.next_best_action is None
 
 
 def test_resend_webhook_updates_delivery_metrics() -> None:

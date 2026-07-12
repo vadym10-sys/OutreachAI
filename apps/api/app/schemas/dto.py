@@ -344,6 +344,9 @@ class SalesCopilotOut(BaseModel):
     best_first_contact: str
     best_subject_line: str
     best_cta: str
+    fit_reason: Optional[str] = None
+    risk_to_check: Optional[str] = None
+    next_best_action: Optional[str] = None
     estimated_revenue: Optional[float] = None
     estimated_revenue_reason: Optional[str] = None
     reasoning: list[str] = Field(default_factory=list)

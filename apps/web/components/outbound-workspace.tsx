@@ -1492,12 +1492,14 @@ function OpportunityCard({
   const contactNeedsManualStep = !lead.email && (contactSearch.checked || lead.hunter_status === "no_verified_email");
   const dataFacts = opportunityDataFacts(lead, profile, t);
   const dataSummary = dataCollectionSummaryFromFacts(dataFacts, t);
-  const leadDecisionReason = safeArray(copilot?.reasoning)[0] || profile.opportunityAnalysis || profile.painAnalysis || profile.websiteAnalysis || "Potential fit is not proven yet; verify the company website and decision maker before spending sales time.";
+  const leadDecisionReason = copilot?.fit_reason || safeArray(copilot?.reasoning)[0] || profile.opportunityAnalysis || profile.painAnalysis || profile.websiteAnalysis || "Potential fit is not proven yet; verify the company website and decision maker before spending sales time.";
+  const riskToCheck = copilot?.risk_to_check || dataSummary.missingText;
+  const bestNextAction = copilot?.next_best_action || nextStep.title;
   const salesDecisionCards = [
     { label: "Why this lead matters", value: leadDecisionReason, tone: "teal" },
     { label: "Known now", value: dataSummary.foundText, tone: "slate" },
-    { label: "Needs review", value: dataSummary.missingText, tone: dataSummary.missing.length ? "amber" : "teal" },
-    { label: "Best next action", value: nextStep.title, tone: "ink" }
+    { label: "Needs review", value: riskToCheck, tone: dataSummary.missing.length || copilot?.risk_to_check ? "amber" : "teal" },
+    { label: "Best next action", value: bestNextAction, tone: "ink" }
   ];
   const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
   const recipientEmail = String(lead.email || "").trim();

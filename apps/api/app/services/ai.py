@@ -261,11 +261,17 @@ def sales_copilot(payload: dict[str, Any]) -> SalesCopilotOut:
     system = (
         "You are OutreachAI's AI sales copilot. Return only JSON with keys "
         "probability_to_reply, probability_to_buy, best_first_contact, best_subject_line, "
-        "best_cta, estimated_revenue, estimated_revenue_reason, reasoning. "
+        "best_cta, fit_reason, risk_to_check, next_best_action, estimated_revenue, "
+        "estimated_revenue_reason, reasoning. "
         "Strict schema: probability_to_reply and probability_to_buy are integers 0-100; "
         "estimated_revenue is a number or null only; estimated_revenue_reason is a short "
         "explanation string or null. Never put text inside estimated_revenue. "
-        "Base recommendations only on provided lead, website analysis, and campaign context."
+        "fit_reason must explain in one sentence why this lead is or is not worth time. "
+        "risk_to_check must name the biggest missing proof or blocker before outreach. "
+        "next_best_action must be one short seller action. "
+        "Base recommendations only on provided lead, website analysis, and campaign context. "
+        "Do not invent contacts, revenue, funding, employee counts, or unverified facts. "
+        "Write all user-facing text in payload.response_language."
     )
     data = _safe_json_completion(system, payload, operation="sales_copilot")
     estimated_revenue_raw = _first_present(data, "estimated_revenue", "szacowany_dochód", "szacowany_dochod")
@@ -278,6 +284,9 @@ def sales_copilot(payload: dict[str, Any]) -> SalesCopilotOut:
         best_first_contact=str(data.get("best_first_contact") or "Personalized email"),
         best_subject_line=str(data.get("best_subject_line") or "Quick idea for your team"),
         best_cta=str(data.get("best_cta") or "Book a quick call"),
+        fit_reason=str(data.get("fit_reason") or data.get("why_this_company") or "").strip() or None,
+        risk_to_check=str(data.get("risk_to_check") or data.get("main_risk") or "").strip() or None,
+        next_best_action=str(data.get("next_best_action") or data.get("recommended_next_action") or "").strip() or None,
         estimated_revenue=estimated_revenue,
         estimated_revenue_reason=estimated_revenue_reason,
         reasoning=_list(data.get("reasoning")),
@@ -289,7 +298,8 @@ def website_audit(payload: dict[str, Any]) -> WebsiteAuditOut:
         "You are OutreachAI's website conversion auditor. Return only JSON with keys "
         "missing_cta, missing_contact_form, poor_seo, weak_trust_signals, missing_reviews, "
         "slow_website, outdated_design, improvement_report, priority_actions. "
-        "Use booleans for detected issues and write a concise actionable report."
+        "Use booleans for detected issues and write a concise actionable report. "
+        "Write all user-facing text in payload.response_language."
     )
     data = _json_completion(system, payload)
     return WebsiteAuditOut(
@@ -309,7 +319,7 @@ def meeting_preparation(payload: dict[str, Any]) -> MeetingPrepOut:
     system = (
         "You prepare B2B sales meetings. Return only JSON with keys company_summary, "
         "decision_maker_profile, likely_objections, suggested_questions, sales_strategy. "
-        "Be specific and practical."
+        "Be specific and practical. Write all user-facing text in payload.response_language."
     )
     data = _json_completion(system, payload)
     return MeetingPrepOut(
@@ -325,7 +335,7 @@ def adaptive_follow_ups(payload: dict[str, Any]) -> FollowUpSequenceOut:
     system = (
         "You generate adaptive outbound follow-up sequences. Return only JSON with keys "
         "no_open, opened, clicked, replied. Each key must contain concise email bodies "
-        "for that behavior state."
+        "for that behavior state. Write all user-facing text in payload.response_language."
     )
     data = _json_completion(system, payload)
     return FollowUpSequenceOut(
