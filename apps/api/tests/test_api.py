@@ -1560,6 +1560,20 @@ def test_workspace_app_manual_company_fallback_uses_requested_locale() -> None:
     assert "Предложите" in company["suggested_offer"]
     assert "пока контакт не проверен" in company["expected_reply_rate"]
     assert "Ручное исследование" in company["pain_points"][0]
+    quality_text = " ".join(
+        [
+            *company["intelligence_quality"].get("used_sources", []),
+            *company["intelligence_quality"].get("gaps", []),
+            *company["intelligence_quality"].get("provider_improvements", []),
+            company["intelligence_quality"].get("coverage_summary", ""),
+            company["intelligence_quality"].get("confidence_reason", ""),
+        ]
+    )
+    assert "Technology stack is unavailable" not in quality_text
+    assert "Decision maker is not verified" not in quality_text
+    assert "Connect contact verification" not in quality_text
+    assert "Технологический стек" in quality_text
+    assert "Лицо, принимающее решение" in quality_text
 
 
 def test_workspace_app_relocalizes_previous_generic_sales_fallback() -> None:

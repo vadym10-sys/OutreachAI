@@ -523,6 +523,7 @@ def _set_workflow_stages(lead: Lead, updates: dict[str, Literal["waiting", "runn
 
 def _finalize_enrichment_workflow(db: Session, workspace, lead: Lead) -> None:
     metadata = _lead_metadata(lead)
+    language = workspace.language or "English"
     has_research = bool(
         metadata.get("website_analyzed_at")
         or metadata.get("ai_summary")
@@ -549,12 +550,12 @@ def _finalize_enrichment_workflow(db: Session, workspace, lead: Lead) -> None:
             "approval": "completed" if approval_completed else "waiting",
         },
         {
-            "company_profile": "Saved company profile and public business data.",
-            "website_analysis": "AI summary, services, sales angle, offer and useful personalization facts." if has_research else "Run website analysis to fill summary, pain points and opportunity angle.",
-            "decision_maker": "Decision maker selected." if has_decision_maker else "Find a decision maker or add the right contact manually.",
-            "verified_email": "Verified business email saved." if has_verified_email else "Find a verified email or add a known business email manually.",
-            "ai_email": "A personalized first email generated from the company research." if has_draft else "Generate a personalized email for review. Sending stays blocked until approval.",
-            "approval": "Human review completed. The email is ready to send." if approval_completed else "Review the draft, edit it if needed, then approve before sending.",
+            "company_profile": _workflow_message(language, "workflow_company_profile"),
+            "website_analysis": _workflow_message(language, "workflow_website_done") if has_research else _workflow_message(language, "workflow_website_missing"),
+            "decision_maker": _workflow_message(language, "workflow_decision_done") if has_decision_maker else _workflow_message(language, "workflow_decision_missing"),
+            "verified_email": _workflow_message(language, "workflow_email_verified") if has_verified_email else _workflow_message(language, "workflow_email_missing"),
+            "ai_email": _workflow_message(language, "workflow_ai_email_done") if has_draft else _workflow_message(language, "workflow_ai_email_missing"),
+            "approval": _workflow_message(language, "workflow_approval_done") if approval_completed else _workflow_message(language, "workflow_approval_waiting"),
         },
     )
 
@@ -693,6 +694,15 @@ def _localized_fallback_text(language: str | None, key: str, **values: str) -> s
             "pl": "Zaproponuj {offer_focus} dopasowane do {company}.",
             "uk": "Запропонуйте {offer_focus}, адаптоване під {company}.",
         },
+        "offer_focus": {
+            "en": "a focused B2B partnership and outbound workflow",
+            "ru": "точное B2B-партнёрство и outbound-процесс",
+            "es": "una alianza B2B enfocada y un flujo outbound",
+            "fr": "un partenariat B2B ciblé et un processus outbound",
+            "it": "una partnership B2B mirata e un flusso outbound",
+            "pl": "ukierunkowane partnerstwo B2B i proces outbound",
+            "uk": "точне B2B-партнерство та outbound-процес",
+        },
         "strategy": {
             "en": "Use review mode: research the company, prepare a concise email, verify the recipient, then approve before sending.",
             "ru": "Используйте режим проверки: исследуйте компанию, подготовьте короткое письмо, проверьте получателя и только потом утвердите отправку.",
@@ -792,6 +802,267 @@ def _localized_fallback_text(language: str | None, key: str, **values: str) -> s
             "pl": "Znajdź lub dodaj zweryfikowany email osoby decyzyjnej przed wysyłką.",
             "uk": "Знайдіть або додайте перевірений email особи, що приймає рішення, перед відправкою.",
         },
+        "workflow_company_profile": {
+            "en": "Saved company profile and public business data.",
+            "ru": "Профиль компании и публичные бизнес-данные сохранены.",
+            "es": "Perfil de empresa y datos públicos guardados.",
+            "fr": "Profil entreprise et données publiques enregistrés.",
+            "it": "Profilo azienda e dati pubblici salvati.",
+            "pl": "Profil firmy i dane publiczne zapisane.",
+            "uk": "Профіль компанії та публічні бізнес-дані збережено.",
+        },
+        "workflow_website_done": {
+            "en": "AI summary, services, sales angle, offer and useful personalization facts.",
+            "ru": "AI подготовил резюме, услуги, угол продажи, предложение и полезные факты для персонализации.",
+            "es": "IA preparó resumen, servicios, ángulo comercial, oferta y datos útiles de personalización.",
+            "fr": "L’IA a préparé résumé, services, angle commercial, offre et faits utiles de personnalisation.",
+            "it": "AI ha preparato riepilogo, servizi, angolo vendita, offerta e dati utili per personalizzare.",
+            "pl": "AI przygotowała podsumowanie, usługi, kąt sprzedaży, ofertę i fakty do personalizacji.",
+            "uk": "AI підготував резюме, послуги, кут продажу, пропозицію та факти для персоналізації.",
+        },
+        "workflow_website_missing": {
+            "en": "Run website analysis to fill summary, pain points and opportunity angle.",
+            "ru": "Запустите анализ сайта, чтобы заполнить резюме, боли и угол возможности.",
+            "es": "Ejecuta análisis del sitio para completar resumen, dolores y ángulo de oportunidad.",
+            "fr": "Lancez l’analyse du site pour compléter résumé, douleurs et angle d’opportunité.",
+            "it": "Esegui analisi del sito per completare riepilogo, pain point e angolo opportunità.",
+            "pl": "Uruchom analizę strony, aby uzupełnić podsumowanie, problemy i kąt szansy.",
+            "uk": "Запустіть аналіз сайту, щоб заповнити резюме, болі та кут можливості.",
+        },
+        "workflow_decision_done": {
+            "en": "Decision maker selected.",
+            "ru": "Лицо, принимающее решение, выбрано.",
+            "es": "Decisor seleccionado.",
+            "fr": "Décideur sélectionné.",
+            "it": "Decision maker selezionato.",
+            "pl": "Osoba decyzyjna wybrana.",
+            "uk": "Особу, що приймає рішення, вибрано.",
+        },
+        "workflow_decision_missing": {
+            "en": "Find a decision maker or add the right contact manually.",
+            "ru": "Найдите лицо, принимающее решение, или добавьте правильный контакт вручную.",
+            "es": "Busca un decisor o añade el contacto correcto manualmente.",
+            "fr": "Trouvez un décideur ou ajoutez le bon contact manuellement.",
+            "it": "Trova un decision maker o aggiungi manualmente il contatto giusto.",
+            "pl": "Znajdź osobę decyzyjną albo dodaj właściwy kontakt ręcznie.",
+            "uk": "Знайдіть особу, що приймає рішення, або додайте правильний контакт вручну.",
+        },
+        "workflow_email_verified": {
+            "en": "Verified business email saved.",
+            "ru": "Проверенный рабочий email сохранён.",
+            "es": "Email empresarial verificado guardado.",
+            "fr": "Email professionnel vérifié enregistré.",
+            "it": "Email aziendale verificata salvata.",
+            "pl": "Zweryfikowany email biznesowy zapisany.",
+            "uk": "Перевірений робочий email збережено.",
+        },
+        "workflow_email_missing": {
+            "en": "Find a verified email or add a known business email manually.",
+            "ru": "Найдите проверенный email или добавьте известный рабочий email вручную.",
+            "es": "Busca un email verificado o añade manualmente un email empresarial conocido.",
+            "fr": "Trouvez un email vérifié ou ajoutez manuellement un email professionnel connu.",
+            "it": "Trova un’email verificata o aggiungi manualmente un’email aziendale nota.",
+            "pl": "Znajdź zweryfikowany email albo dodaj znany email biznesowy ręcznie.",
+            "uk": "Знайдіть перевірений email або додайте відомий робочий email вручну.",
+        },
+        "workflow_ai_email_done": {
+            "en": "A personalized first email generated from the company research.",
+            "ru": "Первое персональное письмо создано на основе исследования компании.",
+            "es": "Primer email personalizado generado a partir de la investigación.",
+            "fr": "Premier email personnalisé généré à partir de l’analyse entreprise.",
+            "it": "Prima email personalizzata generata dalla ricerca aziendale.",
+            "pl": "Pierwszy spersonalizowany email wygenerowany na podstawie analizy firmy.",
+            "uk": "Перший персональний лист створено на основі дослідження компанії.",
+        },
+        "workflow_ai_email_missing": {
+            "en": "Generate a personalized email for review. Sending stays blocked until approval.",
+            "ru": "Создайте персональное письмо для проверки. Отправка заблокирована до утверждения.",
+            "es": "Genera un email personalizado para revisar. El envío queda bloqueado hasta aprobar.",
+            "fr": "Générez un email personnalisé à relire. L’envoi reste bloqué jusqu’à approbation.",
+            "it": "Genera un’email personalizzata da rivedere. L’invio resta bloccato fino ad approvazione.",
+            "pl": "Wygeneruj spersonalizowany email do sprawdzenia. Wysyłka jest zablokowana do akceptacji.",
+            "uk": "Створіть персональний лист для перевірки. Відправка заблокована до затвердження.",
+        },
+        "workflow_approval_done": {
+            "en": "Human review completed. The email is ready to send.",
+            "ru": "Проверка человеком завершена. Письмо готово к отправке.",
+            "es": "Revisión humana completada. El email está listo para enviar.",
+            "fr": "Revue humaine terminée. L’email est prêt à être envoyé.",
+            "it": "Revisione umana completata. L’email è pronta per l’invio.",
+            "pl": "Weryfikacja człowieka zakończona. Email jest gotowy do wysyłki.",
+            "uk": "Перевірка людиною завершена. Лист готовий до відправки.",
+        },
+        "workflow_approval_waiting": {
+            "en": "Review the draft, edit it if needed, then approve before sending.",
+            "ru": "Проверьте черновик, при необходимости отредактируйте и утвердите перед отправкой.",
+            "es": "Revisa el borrador, edítalo si hace falta y aprueba antes de enviar.",
+            "fr": "Relisez le brouillon, modifiez-le si besoin puis approuvez avant l’envoi.",
+            "it": "Rivedi la bozza, modificala se serve e approva prima dell’invio.",
+            "pl": "Sprawdź szkic, popraw go w razie potrzeby i zatwierdź przed wysyłką.",
+            "uk": "Перевірте чернетку, за потреби відредагуйте й затвердіть перед відправкою.",
+        },
+        "source_ai_research": {
+            "en": "AI website research",
+            "ru": "AI-исследование сайта",
+            "es": "Investigación IA del sitio",
+            "fr": "Analyse IA du site",
+            "it": "Analisi AI del sito",
+            "pl": "Analiza strony przez AI",
+            "uk": "AI-дослідження сайту",
+        },
+        "source_verified_contact": {
+            "en": "Verified decision-maker contact",
+            "ru": "Проверенный контакт лица, принимающего решение",
+            "es": "Contacto verificado del decisor",
+            "fr": "Contact décideur vérifié",
+            "it": "Contatto verificato del decision maker",
+            "pl": "Zweryfikowany kontakt osoby decyzyjnej",
+            "uk": "Перевірений контакт особи, що приймає рішення",
+        },
+        "source_technology": {
+            "en": "Technology profile",
+            "ru": "Технологический профиль",
+            "es": "Perfil tecnológico",
+            "fr": "Profil technologique",
+            "it": "Profilo tecnologico",
+            "pl": "Profil technologiczny",
+            "uk": "Технологічний профіль",
+        },
+        "gap_decision": {
+            "en": "Decision maker is not verified yet.",
+            "ru": "Лицо, принимающее решение, пока не проверено.",
+            "es": "El decisor aún no está verificado.",
+            "fr": "Le décideur n’est pas encore vérifié.",
+            "it": "Il decision maker non è ancora verificato.",
+            "pl": "Osoba decyzyjna nie jest jeszcze zweryfikowana.",
+            "uk": "Особа, що приймає рішення, поки не перевірена.",
+        },
+        "gap_technology": {
+            "en": "Technology stack is unavailable until a technographic source is connected.",
+            "ru": "Технологический стек недоступен, пока не подключён технографический источник.",
+            "es": "El stack tecnológico no está disponible hasta conectar una fuente tecnográfica.",
+            "fr": "La stack technologique est indisponible tant qu’une source technographique n’est pas connectée.",
+            "it": "Lo stack tecnologico non è disponibile finché non viene collegata una fonte tecnografica.",
+            "pl": "Stack technologiczny jest niedostępny, dopóki nie podłączysz źródła technograficznego.",
+            "uk": "Технологічний стек недоступний, доки не підключено технографічне джерело.",
+        },
+        "coverage_ready": {
+            "en": "Enough verified context for a sales review.",
+            "ru": "Достаточно проверенного контекста для проверки продажи.",
+            "es": "Hay suficiente contexto verificado para una revisión comercial.",
+            "fr": "Contexte vérifié suffisant pour une revue commerciale.",
+            "it": "Contesto verificato sufficiente per una revisione commerciale.",
+            "pl": "Wystarczający zweryfikowany kontekst do przeglądu sprzedażowego.",
+            "uk": "Достатньо перевіреного контексту для перевірки продажу.",
+        },
+        "coverage_partial": {
+            "en": "Useful starter brief; connect or verify the missing data before sending outreach.",
+            "ru": "Полезный стартовый brief; подключите или проверьте недостающие данные перед отправкой.",
+            "es": "Brief inicial útil; conecta o verifica los datos faltantes antes de enviar outreach.",
+            "fr": "Brief initial utile ; connectez ou vérifiez les données manquantes avant l’envoi.",
+            "it": "Brief iniziale utile; collega o verifica i dati mancanti prima dell’invio.",
+            "pl": "Przydatny brief startowy; podłącz lub zweryfikuj brakujące dane przed wysyłką.",
+            "uk": "Корисний стартовий brief; підключіть або перевірте відсутні дані перед відправкою.",
+        },
+        "confidence_high": {
+            "en": "High confidence because company research and a verified contact are available.",
+            "ru": "Высокая уверенность: есть исследование компании и проверенный контакт.",
+            "es": "Alta confianza porque hay investigación de empresa y contacto verificado.",
+            "fr": "Confiance élevée : analyse entreprise et contact vérifié disponibles.",
+            "it": "Alta confidenza perché sono disponibili ricerca aziendale e contatto verificato.",
+            "pl": "Wysoka pewność, bo dostępna jest analiza firmy i zweryfikowany kontakt.",
+            "uk": "Висока впевненість: є дослідження компанії та перевірений контакт.",
+        },
+        "confidence_limited": {
+            "en": "Confidence is limited by missing verified contact or website research.",
+            "ru": "Уверенность ограничена из-за отсутствия проверенного контакта или исследования сайта.",
+            "es": "La confianza está limitada por falta de contacto verificado o análisis del sitio.",
+            "fr": "La confiance est limitée par l’absence de contact vérifié ou d’analyse du site.",
+            "it": "La confidenza è limitata dalla mancanza di contatto verificato o analisi sito.",
+            "pl": "Pewność ogranicza brak zweryfikowanego kontaktu albo analizy strony.",
+            "uk": "Впевненість обмежена через відсутність перевіреного контакту або аналізу сайту.",
+        },
+        "provider_improve_company": {
+            "en": "Connect company enrichment to improve firmographics and decision-maker coverage.",
+            "ru": "Подключите обогащение компаний, чтобы улучшить фирмографику и покрытие decision makers.",
+            "es": "Conecta enriquecimiento de empresas para mejorar firmografía y decisores.",
+            "fr": "Connectez l’enrichissement entreprise pour améliorer firmographie et décideurs.",
+            "it": "Collega enrichment aziende per migliorare firmografia e decision maker.",
+            "pl": "Podłącz enrichment firm, aby poprawić firmografię i osoby decyzyjne.",
+            "uk": "Підключіть збагачення компаній, щоб покращити фірмографіку та decision makers.",
+        },
+        "provider_improve_contact": {
+            "en": "Connect contact verification to increase email confidence.",
+            "ru": "Подключите проверку контактов, чтобы повысить уверенность в email.",
+            "es": "Conecta verificación de contactos para aumentar confianza en email.",
+            "fr": "Connectez la vérification des contacts pour augmenter la confiance email.",
+            "it": "Collega verifica contatti per aumentare confidenza email.",
+            "pl": "Podłącz weryfikację kontaktów, aby zwiększyć pewność emaila.",
+            "uk": "Підключіть перевірку контактів, щоб підвищити впевненість в email.",
+        },
+        "provider_improve_tech": {
+            "en": "Connect technographic enrichment to personalize the sales angle by website stack.",
+            "ru": "Подключите технографическое обогащение, чтобы персонализировать угол продажи по стеку сайта.",
+            "es": "Conecta enriquecimiento tecnográfico para personalizar el ángulo por stack del sitio.",
+            "fr": "Connectez l’enrichissement technographique pour personnaliser l’angle selon la stack.",
+            "it": "Collega enrichment tecnografico per personalizzare l’angolo in base allo stack.",
+            "pl": "Podłącz enrichment technograficzny, aby personalizować kąt według stacku strony.",
+            "uk": "Підключіть технографічне збагачення, щоб персоналізувати кут за стеком сайту.",
+        },
+        "enrichment_stopped": {
+            "en": "Automatic enrichment was stopped.",
+            "ru": "Автоматическое обогащение остановлено.",
+            "es": "Enriquecimiento automático detenido.",
+            "fr": "Enrichissement automatique arrêté.",
+            "it": "Enrichment automatico fermato.",
+            "pl": "Automatyczne enrichment zatrzymane.",
+            "uk": "Автоматичне збагачення зупинено.",
+        },
+        "enrichment_cache": {
+            "en": "Recent company intelligence reused from CRM cache.",
+            "ru": "Свежие данные Company Intelligence взяты из кеша CRM.",
+            "es": "Inteligencia reciente reutilizada desde caché CRM.",
+            "fr": "Intelligence entreprise récente réutilisée depuis le cache CRM.",
+            "it": "Company intelligence recente riutilizzata dalla cache CRM.",
+            "pl": "Najnowsza inteligencja firmy użyta ponownie z cache CRM.",
+            "uk": "Свіжі дані Company Intelligence взято з кешу CRM.",
+        },
+        "enrichment_completed": {
+            "en": "Automatic enrichment completed.",
+            "ru": "Автоматическое обогащение завершено.",
+            "es": "Enriquecimiento automático completado.",
+            "fr": "Enrichissement automatique terminé.",
+            "it": "Enrichment automatico completato.",
+            "pl": "Automatyczne enrichment zakończone.",
+            "uk": "Автоматичне збагачення завершено.",
+        },
+        "enrichment_partial": {
+            "en": "Automatic enrichment finished with missing fields.",
+            "ru": "Автоматическое обогащение завершилось, но часть полей отсутствует.",
+            "es": "Enriquecimiento automático terminado con campos faltantes.",
+            "fr": "Enrichissement automatique terminé avec des champs manquants.",
+            "it": "Enrichment automatico terminato con campi mancanti.",
+            "pl": "Automatyczne enrichment zakończone z brakującymi polami.",
+            "uk": "Автоматичне збагачення завершилося, але частина полів відсутня.",
+        },
+        "enrichment_failed": {
+            "en": "Automatic enrichment could not finish. Retry from the company card.",
+            "ru": "Автоматическое обогащение не завершилось. Повторите из карточки компании.",
+            "es": "El enriquecimiento automático no pudo terminar. Reintenta desde la ficha.",
+            "fr": "L’enrichissement automatique n’a pas pu finir. Réessayez depuis la fiche.",
+            "it": "L’enrichment automatico non è terminato. Riprova dalla scheda azienda.",
+            "pl": "Automatyczne enrichment nie zakończyło się. Spróbuj ponownie z karty firmy.",
+            "uk": "Автоматичне збагачення не завершилося. Повторіть із картки компанії.",
+        },
+        "progress_ai_analyzing": {
+            "en": "AI is analyzing the company and website.",
+            "ru": "AI анализирует компанию и сайт.",
+            "es": "IA analiza la empresa y el sitio.",
+            "fr": "L’IA analyse l’entreprise et le site.",
+            "it": "AI sta analizzando azienda e sito.",
+            "pl": "AI analizuje firmę i stronę.",
+            "uk": "AI аналізує компанію та сайт.",
+        },
         "pain_manual": {
             "en": "Manual prospect research takes time.",
             "ru": "Ручное исследование потенциальных клиентов занимает время.",
@@ -852,6 +1123,10 @@ def _sales_metadata_value(metadata: dict, key: str, fallback):
     return current
 
 
+def _workflow_message(language: str | None, key: str) -> str:
+    return _localized_fallback_text(language, key)
+
+
 def _company_intelligence_quality(lead: Lead, metadata: dict, workspace, source: str, language: str) -> dict[str, Any]:
     has_website = bool(lead.website or metadata.get("domain"))
     has_email = bool(lead.email)
@@ -863,16 +1138,16 @@ def _company_intelligence_quality(lead: Lead, metadata: dict, workspace, source:
     used_sources = [
         _localized_fallback_text(language, "profile_saved"),
         _localized_fallback_text(language, "website_available") if has_website else "",
-        "AI website research" if has_analysis else "",
-        "Verified decision-maker contact" if has_email else "",
-        "Technology profile" if technologies or deep_contact.get("technologies") else "",
+        _localized_fallback_text(language, "source_ai_research") if has_analysis else "",
+        _localized_fallback_text(language, "source_verified_contact") if has_email else "",
+        _localized_fallback_text(language, "source_technology") if technologies or deep_contact.get("technologies") else "",
     ]
     used_sources = [item for item in used_sources if item]
     gaps = [
         _localized_fallback_text(language, "risk_website") if not has_website else "",
         _localized_fallback_text(language, "risk_email") if not has_email else "",
-        "Decision maker is not verified yet." if not has_contact else "",
-        "Technology stack is unavailable until a technographic source is connected." if not technologies and not deep_contact.get("technologies") else "",
+        _localized_fallback_text(language, "gap_decision") if not has_contact else "",
+        _localized_fallback_text(language, "gap_technology") if not technologies and not deep_contact.get("technologies") else "",
     ]
     gaps = [item for item in gaps if item]
     score = int(metadata.get("confidence_score") or (82 if has_website and has_email and has_analysis else 68 if has_website and has_analysis else 52 if has_website else 38))
@@ -891,19 +1166,19 @@ def _company_intelligence_quality(lead: Lead, metadata: dict, workspace, source:
         "decision_basis": basis,
         "gaps": gaps,
         "coverage_summary": (
-            "Enough verified context for a sales review."
+            _localized_fallback_text(language, "coverage_ready")
             if has_analysis and has_email
-            else "Useful starter brief; connect or verify the missing data before sending outreach."
+            else _localized_fallback_text(language, "coverage_partial")
         ),
         "confidence_reason": (
-            "High confidence because company research and a verified contact are available."
+            _localized_fallback_text(language, "confidence_high")
             if has_analysis and has_email
-            else "Confidence is limited by missing verified contact or website research."
+            else _localized_fallback_text(language, "confidence_limited")
         ),
         "provider_improvements": [
-            "Connect company enrichment to improve firmographics and decision-maker coverage.",
-            "Connect contact verification to increase email confidence.",
-            "Connect technographic enrichment to personalize the sales angle by website stack.",
+            _localized_fallback_text(language, "provider_improve_company"),
+            _localized_fallback_text(language, "provider_improve_contact"),
+            _localized_fallback_text(language, "provider_improve_tech"),
         ],
         "confidence_score": score,
     }
@@ -1232,7 +1507,7 @@ def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallb
         location=_localized_fallback_text(language, "location", location=location) if location else "",
         signals=signal_sentence,
     )
-    offer_focus = workspace.company or getattr(workspace, "offer", "") or "a focused B2B partnership and outbound workflow"
+    offer_focus = workspace.company or getattr(workspace, "offer", "") or _localized_fallback_text(language, "offer_focus")
     updates = {
         "ai_summary": _sales_metadata_value(metadata, "ai_summary", summary),
         "sales_angle": _sales_metadata_value(metadata, "sales_angle", _localized_fallback_text(language, "sales_angle", industry=industry)),
@@ -1289,14 +1564,15 @@ def _existing_review_draft(db: Session, workspace_id: UUID, lead_id: UUID) -> Em
 
 
 def _create_review_email_draft(db: Session, request: Request, user_id: str, workspace, lead: Lead) -> EmailMessage | None:
+    language = _workspace_language(request, workspace)
     existing = _existing_review_draft(db, workspace.id, lead.id)
     if existing:
-        _set_workflow_stage(lead, "ai_email", "completed", "A personalized first email generated from the company research.")
+        _set_workflow_stage(lead, "ai_email", "completed", _workflow_message(language, "workflow_ai_email_done"))
         _set_workflow_stage(
             lead,
             "approval",
             "completed" if existing.delivery_status in {"approved", "sent"} else "waiting",
-            "Human review completed. The email is ready to send." if existing.delivery_status in {"approved", "sent"} else "Review the draft, edit it if needed, then approve before sending.",
+            _workflow_message(language, "workflow_approval_done") if existing.delivery_status in {"approved", "sent"} else _workflow_message(language, "workflow_approval_waiting"),
         )
         return existing
     metadata = _lead_metadata(lead)
@@ -1305,10 +1581,10 @@ def _create_review_email_draft(db: Session, request: Request, user_id: str, work
             company=lead.company,
             niche=lead.industry or lead.niche or "",
             website_summary=str(metadata.get("ai_summary") or ""),
-            offer=str(metadata.get("suggested_offer") or workspace.company or "AI-powered B2B lead generation"),
-            cta=str(metadata.get("recommended_cta") or "Book a quick call"),
+            offer=str(metadata.get("suggested_offer") or workspace.company or _localized_fallback_text(language, "offer_focus")),
+            cta=str(metadata.get("recommended_cta") or _localized_fallback_text(language, "cta")),
             tone=str(metadata.get("recommended_tone") or "Professional"),
-            language=_workspace_language(request, workspace),
+            language=language,
             signature="",
         )
     )
@@ -1328,8 +1604,8 @@ def _create_review_email_draft(db: Session, request: Request, user_id: str, work
     db.add(email)
     lead.status = LeadStatus.email_generated
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
-    _set_workflow_stage(lead, "ai_email", "completed", "A personalized first email generated from the company research.")
-    _set_workflow_stage(lead, "approval", "waiting", "Review the draft, edit it if needed, then approve before sending.")
+    _set_workflow_stage(lead, "ai_email", "completed", _workflow_message(language, "workflow_ai_email_done"))
+    _set_workflow_stage(lead, "approval", "waiting", _workflow_message(language, "workflow_approval_waiting"))
     _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"source": "turnkey_lead_research"})
     return email
 
@@ -1426,7 +1702,8 @@ def _enrichment_metadata_update(status: str, request_id: str, extra: dict[str, A
     return payload
 
 
-def _mark_auto_enrichment_queued(lead: Lead, request_id: str) -> None:
+def _mark_auto_enrichment_queued(lead: Lead, request_id: str, language: str | None = None) -> None:
+    language = language or "English"
     lead.notes = _merge_lead_metadata(lead, _enrichment_metadata_update("queued", request_id))
     _set_workflow_stages(
         lead,
@@ -1439,12 +1716,12 @@ def _mark_auto_enrichment_queued(lead: Lead, request_id: str) -> None:
             "approval": "waiting",
         },
         {
-            "company_profile": "Saved company profile and public business data.",
-            "website_analysis": "AI enrichment is running automatically in the background.",
-            "decision_maker": "Contact discovery is running automatically in the background.",
-            "verified_email": "Email verification is running automatically when a contact source is available.",
-            "ai_email": "A review draft will be prepared after company research.",
-            "approval": "Sending stays blocked until you approve the draft.",
+            "company_profile": _workflow_message(language, "workflow_company_profile"),
+            "website_analysis": _localized_fallback_text(language, "progress_ai_analyzing"),
+            "decision_maker": _workflow_message(language, "workflow_decision_missing"),
+            "verified_email": _workflow_message(language, "workflow_email_missing"),
+            "ai_email": _workflow_message(language, "workflow_ai_email_missing"),
+            "approval": _workflow_message(language, "workflow_approval_waiting"),
         },
     )
 
@@ -1482,10 +1759,11 @@ def process_enrichment_job(job_id: UUID) -> None:
             mark_cancelled(db, job, message="Workspace or lead no longer exists.")
             return
         request = _background_request(job.language or "English")
+        language = job.language or workspace.language or "English"
         if job.cancel_requested or _lead_enrichment_cancelled(lead):
             lead.notes = _merge_lead_metadata(
                 lead,
-                _enrichment_metadata_update("cancelled", request_id, {"enrichment_message": "Automatic enrichment was stopped."}),
+                _enrichment_metadata_update("cancelled", request_id, {"enrichment_message": _localized_fallback_text(language, "enrichment_stopped")}),
             )
             _set_workflow_stages(
                 lead,
@@ -1507,7 +1785,7 @@ def process_enrichment_job(job_id: UUID) -> None:
             ),
         )
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
-        update_job_progress(db, job, stage="website_analysis", message="AI is analyzing the company and website.", percent=25)
+        update_job_progress(db, job, stage="website_analysis", message=_localized_fallback_text(language, "progress_ai_analyzing"), percent=25)
         _lead_trace(request_id, "durable_auto_enrichment_started", lead_id=str(lead.id), job_id=str(job.id), company=lead.company, attempt=job.attempts)
 
         if _apply_cached_company_intelligence(db, job.user_id, workspace, lead, request_id):
@@ -1518,7 +1796,7 @@ def process_enrichment_job(job_id: UUID) -> None:
                     request_id,
                     {
                         "enrichment_job_id": str(job.id),
-                        "enrichment_message": "Recent company intelligence reused from CRM cache.",
+                        "enrichment_message": _localized_fallback_text(language, "enrichment_cache"),
                     },
                 ),
             )
@@ -1545,7 +1823,7 @@ def process_enrichment_job(job_id: UUID) -> None:
                 request_id,
                 {
                     "enrichment_job_id": str(job.id),
-                    "enrichment_message": "Automatic enrichment finished with missing fields." if warnings else "Automatic enrichment completed.",
+                    "enrichment_message": _localized_fallback_text(language, "enrichment_partial") if warnings else _localized_fallback_text(language, "enrichment_completed"),
                     "enrichment_warnings": warnings[:5],
                 },
             ),
@@ -1572,7 +1850,7 @@ def mark_enrichment_job_failed(job_id: UUID, exc: Exception, *, final: bool = Fa
             return
         lead.notes = _merge_lead_metadata(
             lead,
-            _enrichment_metadata_update("error", job.request_id or str(job.id), {"enrichment_message": "Automatic enrichment could not finish. Retry from the company card."}),
+            _enrichment_metadata_update("error", job.request_id or str(job.id), {"enrichment_message": _localized_fallback_text(workspace.language if workspace else job.language, "enrichment_failed")}),
         )
         _set_workflow_stages(lead, {"website_analysis": "error", "decision_maker": "error", "verified_email": "error", "ai_email": "error"})
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
@@ -2163,7 +2441,7 @@ def _search_leads_impl(
         for lead in saved:
             if _lead_recently_enriched(lead):
                 continue
-            _mark_auto_enrichment_queued(lead, request_id)
+            _mark_auto_enrichment_queued(lead, request_id, _workspace_language(request, workspace))
             queued_for_enrichment.append(lead)
         _lead_trace(request_id, "auto_enrichment_batch_queued", leads=len(queued_for_enrichment), skipped_recent=len(saved) - len(queued_for_enrichment), run_turnkey_research=run_turnkey_research)
 
@@ -2596,6 +2874,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         )
 
     request_id = request.headers.get("x-request-id") or str(uuid4())
+    language = _workspace_language(request, workspace)
     warnings: list[str] = []
     completed_steps: list[str] = []
     email: EmailMessage | None = None
@@ -2615,7 +2894,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
     _lead_trace(request_id, "complete_opportunity_profile_started", lead_id=str(lead.id), company=lead.company)
     try:
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request_id)
-        _set_workflow_stage(lead, "company_profile", "completed", "Saved company, location, website, phone and business listing data.")
+        _set_workflow_stage(lead, "company_profile", "completed", _workflow_message(language, "workflow_company_profile"))
         completed_steps.append("Company profile checked")
         _lead_trace(request_id, "complete_opportunity_profile_finished", lead_id=str(lead.id), company=lead.company)
     except Exception as exc:
@@ -2634,7 +2913,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
 
     _lead_trace(request_id, "complete_opportunity_analysis_started", lead_id=str(lead.id), company=lead.company)
     try:
-        _set_workflow_stage(lead, "website_analysis", "running", "AI is analyzing the company website and sales angle.")
+        _set_workflow_stage(lead, "website_analysis", "running", _localized_fallback_text(language, "progress_ai_analyzing"))
         metadata = _lead_metadata(lead)
         has_completed_research = bool(metadata.get("website_analyzed_at"))
         if (lead.website or metadata.get("domain")) and (_needs_ai_research(lead) or not has_completed_research):
@@ -2643,9 +2922,9 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         metadata = _lead_metadata(lead)
         if not any(metadata.get(key) for key in ("ai_summary", "opportunity_analysis", "suggested_offer", "pain_points")):
             warnings.append("AI research could not complete yet. The company is saved and can be retried.")
-            _set_workflow_stage(lead, "website_analysis", "error", "Run website analysis to fill summary, pain points and opportunity angle.")
+            _set_workflow_stage(lead, "website_analysis", "error", _workflow_message(language, "workflow_website_missing"))
         else:
-            _set_workflow_stage(lead, "website_analysis", "completed", "AI summary, services, sales angle, offer and useful personalization facts.")
+            _set_workflow_stage(lead, "website_analysis", "completed", _workflow_message(language, "workflow_website_done"))
             _add_lead_activity(db, request, user.user_id, workspace, "website.analyzed", lead, {"source": "complete_opportunity"})
         completed_steps.append("Website analysis checked")
         _lead_trace(request_id, "complete_opportunity_analysis_finished", lead_id=str(lead.id), company=lead.company)
@@ -2666,8 +2945,8 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
 
     _lead_trace(request_id, "complete_opportunity_contacts_started", lead_id=str(lead.id), company=lead.company)
     try:
-        _set_workflow_stage(lead, "decision_maker", "running", "Finding a decision maker or usable contact role.")
-        _set_workflow_stage(lead, "verified_email", "running", "Verifying a usable business email when available.")
+        _set_workflow_stage(lead, "decision_maker", "running", _workflow_message(language, "workflow_decision_missing"))
+        _set_workflow_stage(lead, "verified_email", "running", _workflow_message(language, "workflow_email_missing"))
         if not lead.email:
             metadata = _lead_metadata(lead)
             if hunter_key_loaded() and (lead.website or metadata.get("domain")):
@@ -2679,8 +2958,8 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
                         _add_lead_activity(db, request, user.user_id, workspace, "contact.found", lead, {"source": "complete_opportunity"})
                 if not lead.email:
                     warnings.append("No verified business email was found yet. Add a decision maker manually or continue with research.")
-                    _set_workflow_stage(lead, "decision_maker", "error", "Find a decision maker or add the right contact manually.")
-                    _set_workflow_stage(lead, "verified_email", "error", "Find a verified email or add a known business email manually.")
+                    _set_workflow_stage(lead, "decision_maker", "error", _workflow_message(language, "workflow_decision_missing"))
+                    _set_workflow_stage(lead, "verified_email", "error", _workflow_message(language, "workflow_email_missing"))
                     _add_lead_activity(db, request, user.user_id, workspace, "contact.search_empty", lead, {"source": "complete_opportunity"})
             else:
                 lead.notes = _merge_lead_metadata(
@@ -2694,12 +2973,12 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
                     },
                 )
                 warnings.append("Contact discovery needs setup. Add a decision maker email manually and continue.")
-                _set_workflow_stage(lead, "decision_maker", "error", "Find a decision maker or add the right contact manually.")
-                _set_workflow_stage(lead, "verified_email", "error", "Find a verified email or add a known business email manually.")
+                _set_workflow_stage(lead, "decision_maker", "error", _workflow_message(language, "workflow_decision_missing"))
+                _set_workflow_stage(lead, "verified_email", "error", _workflow_message(language, "workflow_email_missing"))
                 _add_lead_activity(db, request, user.user_id, workspace, "contact.search_empty", lead, {"source": "complete_opportunity"})
         if lead.email:
-            _set_workflow_stage(lead, "decision_maker", "completed", "A real person or role to contact. If not verified, add it manually.")
-            _set_workflow_stage(lead, "verified_email", "completed", "A usable business email. OutreachAI never invents missing email addresses.")
+            _set_workflow_stage(lead, "decision_maker", "completed", _workflow_message(language, "workflow_decision_done"))
+            _set_workflow_stage(lead, "verified_email", "completed", _workflow_message(language, "workflow_email_verified"))
         completed_steps.append("Contact search checked")
         _lead_trace(request_id, "complete_opportunity_contacts_finished", lead_id=str(lead.id), company=lead.company, has_email=bool(lead.email))
     except Exception as exc:
@@ -2721,20 +3000,20 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             },
         )
         warnings.append("Contact search is temporarily unavailable. Add a contact manually and continue.")
-        _set_workflow_stage(lead, "decision_maker", "error", "Contact search is temporarily unavailable. Add a contact manually and continue.")
-        _set_workflow_stage(lead, "verified_email", "error", "Contact search is temporarily unavailable. Add a contact manually and continue.")
+        _set_workflow_stage(lead, "decision_maker", "error", _workflow_message(language, "workflow_decision_missing"))
+        _set_workflow_stage(lead, "verified_email", "error", _workflow_message(language, "workflow_email_missing"))
         completed_steps.append("Contact search checked")
         _lead_trace(request_id, "complete_opportunity_contacts_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
     _lead_trace(request_id, "complete_opportunity_email_started", lead_id=str(lead.id), company=lead.company)
     try:
-        _set_workflow_stage(lead, "ai_email", "running", "Generating a personalized email for review.")
+        _set_workflow_stage(lead, "ai_email", "running", _workflow_message(language, "workflow_ai_email_missing"))
         _ensure_b2b_opportunity_metadata(lead, workspace, source="complete_opportunity_before_draft", language=_workspace_language(request, workspace))
         email = _create_review_email_draft(db, request, user.user_id, workspace, lead)
         db.flush()
         if email:
-            _set_workflow_stage(lead, "ai_email", "completed", "A personalized first email generated from the company research.")
-            _set_workflow_stage(lead, "approval", "waiting", "Review the draft, edit it if needed, then approve before sending.")
+            _set_workflow_stage(lead, "ai_email", "completed", _workflow_message(language, "workflow_ai_email_done"))
+            _set_workflow_stage(lead, "approval", "waiting", _workflow_message(language, "workflow_approval_waiting"))
         completed_steps.append("Email draft checked")
         _lead_trace(request_id, "complete_opportunity_email_finished", lead_id=str(lead.id), company=lead.company, has_email_draft=bool(email))
     except Exception as exc:
@@ -2747,7 +3026,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
             extra={"request_id": request_id},
         )
         warnings.append("Email draft could not be prepared yet. Review the company and try again.")
-        _set_workflow_stage(lead, "ai_email", "error", "Generate a personalized email for review. Sending stays blocked until approval.")
+        _set_workflow_stage(lead, "ai_email", "error", _workflow_message(language, "workflow_ai_email_missing"))
         completed_steps.append("Email draft checked")
         _lead_trace(request_id, "complete_opportunity_email_failed", lead_id=str(lead.id), company=lead.company, reason=str(exc))
 
@@ -2788,7 +3067,7 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
     if not lead:
         return UsageActionOut(status="error", message="This company needs a saved lead before AI enrichment.", company=_crm_company_out(db, workspace, user.user_id, company))
     request_id = request.headers.get("x-request-id") or str(uuid4())
-    _mark_auto_enrichment_queued(lead, request_id)
+    _mark_auto_enrichment_queued(lead, request_id, _workspace_language(request, workspace))
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     db.commit()
     ran_inline = _enqueue_auto_enrichment(db, request, user.user_id, workspace, [lead], request_id, force=True)
