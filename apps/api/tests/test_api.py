@@ -1617,6 +1617,38 @@ def test_workspace_app_company_enrichment_restart_handles_sync_failure(monkeypat
     assert payload["warnings"]
 
 
+def test_workspace_app_company_enrichment_restart_handles_company_out_failure(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-restart-out-failure@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Enrichment Restart Out Failure", "website": "https://usage-enrichment-out-failure.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    monkeypatch.setattr("app.api.usage._enqueue_auto_enrichment", lambda *args, **kwargs: False)
+
+    original_company_out = usage_module._crm_company_out
+    calls = {"count": 0}
+
+    def fail_first_company_out(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("company output failed")
+        return original_company_out(*args, **kwargs)
+
+    monkeypatch.setattr("app.api.usage._crm_company_out", fail_first_company_out)
+
+    restarted = client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=headers)
+    assert restarted.status_code == 200
+    payload = restarted.json()
+    assert payload["status"] == "partial_success"
+    assert payload["warnings"]
+
+
 def test_workspace_app_monitoring_returns_only_changes_and_regenerates_report(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-monitoring@example.com"}
     company_response = client.post(

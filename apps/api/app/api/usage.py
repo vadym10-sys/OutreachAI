@@ -7098,14 +7098,26 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
             extra={"request_id": request_id, "company_id": str(company_id)},
         )
         latest_company = _scoped_company(db, workspace.id, company_id)
-        company_out = _crm_company_out(db, workspace, user.user_id, latest_company)
+        try:
+            company_out = _crm_company_out(db, workspace, user.user_id, latest_company)
+        except Exception as out_exc:
+            logger.exception("Workspace enrichment restart setup fallback serialization failed")
+            capture_provider_exception(
+                out_exc,
+                provider="workspace_app",
+                endpoint="workspace_app.enrichment_restart_setup_out",
+                workspace_id=workspace.id,
+                lead_id=lead.id,
+                extra={"request_id": request_id, "company_id": str(company_id)},
+            )
+            company_out = None
         return UsageActionOut(
             status="partial_success",
             message="AI enrichment restart is temporarily unavailable. Saved company data remains available.",
             company=company_out,
             warnings=["AI enrichment restart is temporarily unavailable. Saved company data remains available."],
-            workflow_stages=company_out.workflow_stages,
-            workflow_state=company_out.ai_workflow_engine,
+            workflow_stages=company_out.workflow_stages if company_out else {},
+            workflow_state=company_out.ai_workflow_engine if company_out else {},
             next_action="Keep this company open and continue manual steps while enrichment service recovers.",
         )
 
@@ -7127,7 +7139,20 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
     if ran_inline and not warnings:
         db.expire_all()
         company = _scoped_company(db, workspace.id, company_id)
-    company_out = _crm_company_out(db, workspace, user.user_id, company)
+    company_out = None
+    try:
+        company_out = _crm_company_out(db, workspace, user.user_id, company)
+    except Exception as out_exc:
+        logger.exception("Workspace enrichment restart response serialization failed")
+        capture_provider_exception(
+            out_exc,
+            provider="workspace_app",
+            endpoint="workspace_app.enrichment_restart_out",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            extra={"request_id": request_id, "company_id": str(company_id)},
+        )
+        warnings.append("Company card update is temporarily unavailable. Reload the page to continue.")
     return UsageActionOut(
         status="partial_success" if warnings else "success",
         message=(
@@ -7137,8 +7162,8 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
         ),
         company=company_out,
         warnings=warnings,
-        workflow_stages=company_out.workflow_stages,
-        workflow_state=company_out.ai_workflow_engine,
+        workflow_stages=company_out.workflow_stages if company_out else {},
+        workflow_state=company_out.ai_workflow_engine if company_out else {},
         next_action="Keep this company open or return to CRM while AI enrichment runs.",
     )
 

@@ -26,6 +26,8 @@ Mode: Continuous production QA + targeted bug fixing
 - Verified first deployment still produced 500 in production for restart action
 - Hardened restart setup path (queue mark + CRM sync stage) to fail-safe with `partial_success`
 - Added regression test for setup/sync failure path
+- Hardened restart response serialization path to prevent final-stage 500s
+- Added regression test for `_crm_company_out` failure during restart response build
 - Ran targeted and full backend tests successfully
 
 ## Open QA Items
