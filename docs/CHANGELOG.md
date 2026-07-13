@@ -3,6 +3,13 @@
 ## 2026-07-13
 
 ### feat(frontend)
+- Completed the Autonomous AI Sales Workspace epic in the embedded Leads workflow.
+- Aligned the visible workflow rail to the single-screen sequence: Open Lead, AI Summary, Decision Maker, Buying Intent, Opportunity Score, Competitor Snapshot, Email Draft, Review, Send, Schedule Follow-up, Next Lead.
+- Added a compact autonomous decision strip so users can identify the next action quickly from AI context.
+- Kept email review, editing, approval, and send controls visible in one screen context to reduce extra clicks.
+- Updated workspace copy from AI Outreach Workspace to Autonomous AI Sales Workspace.
+
+### feat(frontend)
 - Completed the AI Outreach Workspace epic inside the existing embedded Leads workflow.
 - Added inline draft editing in the outreach workspace using the existing `PATCH /api/emails/{email_id}` endpoint.
 - Kept the existing approve-before-send safety flow while reducing clicks between review, edit, approve, and send.

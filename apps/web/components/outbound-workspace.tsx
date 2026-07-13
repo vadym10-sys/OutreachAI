@@ -3097,9 +3097,9 @@ export function LeadFinderPage() {
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-sm font-black uppercase tracking-wide text-brand">{t("AI Outreach Workspace")}</p>
-                <h2 className="mt-1 text-2xl font-black tracking-tight text-ink">{t("Complete the full sales workflow without leaving this workspace.")}</h2>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Open one lead, review AI summary and decision maker, edit and send the ready email, schedule follow-up, move the CRM stage, and then open the next lead from the same page.")}</p>
+                <p className="text-sm font-black uppercase tracking-wide text-brand">{t("Autonomous AI Sales Workspace")}</p>
+                <h2 className="mt-1 text-2xl font-black tracking-tight text-ink">{t("Decide the next action in under 30 seconds.")}</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Open one lead, review AI summary, decision maker, buying intent, opportunity score, competitor snapshot, email draft, review, send, schedule follow-up, and continue to the next lead without leaving this screen.")}</p>
               </div>
               <div className="flex flex-col gap-2 sm:items-end">
                 {nextWorkflowLead?.crm_company_id ? <button type="button" onClick={() => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "")} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Return to Next Lead")} <ArrowRight size={16} /></button> : null}
@@ -3107,7 +3107,7 @@ export function LeadFinderPage() {
               </div>
             </div>
             <div className="mt-5">
-              {workflowLoading && !activeWorkflowCompany ? <LoadingSkeleton title="Loading company workflow" /> : activeWorkflowCompany ? <CrmCompanyCard company={activeWorkflowCompany} api={api} highlighted onOpenNextLead={nextWorkflowLead?.crm_company_id ? () => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "") : undefined} nextLeadName={nextWorkflowLead?.company || ""} /> : <EmptyState title="Select one lead to continue the workflow" copy="Open a company from the lead cards above. The full AI Outreach Workspace will load here without page switching." />}
+              {workflowLoading && !activeWorkflowCompany ? <LoadingSkeleton title="Loading company workflow" /> : activeWorkflowCompany ? <CrmCompanyCard company={activeWorkflowCompany} api={api} highlighted onOpenNextLead={nextWorkflowLead?.crm_company_id ? () => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "") : undefined} nextLeadName={nextWorkflowLead?.company || ""} /> : <EmptyState title="Select one lead to continue the workflow" copy="Open a company from the lead cards above. The full Autonomous AI Sales Workspace will load here without page switching." />}
             </div>
           </section>
         </div>
@@ -4055,18 +4055,51 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     : opportunityScore >= 50
       ? t("Probably, after one quick review")
       : t("Not yet, collect more evidence first");
+  const competitorSnapshot = competitorAdvantages[0] || competitorNames[0] || t("No competitor edge surfaced yet.");
+  const autonomousDecisionCards = [
+    {
+      label: "AI Summary",
+      value: executiveSummary,
+      tone: "teal"
+    },
+    {
+      label: "Decision Maker",
+      value: `${decisionMaker.name} · ${decisionMaker.title}`,
+      tone: "slate"
+    },
+    {
+      label: "Buying Intent",
+      value: `${buyingIntentScore} · ${buyingIntentUrgency}`,
+      tone: "slate"
+    },
+    {
+      label: "Opportunity Score",
+      value: `${opportunityScore} · ${opportunityReason}`,
+      tone: "slate"
+    },
+    {
+      label: "Competitor Snapshot",
+      value: competitorSnapshot,
+      tone: "slate"
+    },
+    {
+      label: "Email Draft",
+      value: readyEmailSubject || t("No draft ready yet"),
+      tone: "ink"
+    }
+  ] as const;
   const workspaceFlow = [
     { label: "Open Lead", status: "completed" as const },
-    { label: "Review AI Summary", status: displayCurrent.ai_summary || displayCurrent.opportunity_analysis ? "completed" as const : "active" as const },
-    { label: "Review Decision Maker", status: decisionMaker.name !== t("Decision maker not confirmed") ? "completed" as const : "pending" as const },
-    { label: "Review Buying Intent", status: buyingIntentScore > 0 ? "completed" as const : "pending" as const },
-    { label: "Review Opportunity Score", status: opportunityScore > 0 ? "completed" as const : "pending" as const },
-    { label: "Review Ready Email", status: currentDraft ? "completed" as const : "pending" as const },
-    { label: "Edit Email", status: currentDraft ? (currentDraft.delivery_status === "approved" || currentDraft.delivery_status === "sent" ? "completed" as const : "active" as const) : "pending" as const },
-    { label: "Send Email", status: currentSentAt ? "completed" as const : currentDraft?.delivery_status === "approved" ? "active" as const : "pending" as const },
+    { label: "AI Summary", status: displayCurrent.ai_summary || displayCurrent.opportunity_analysis ? "completed" as const : "active" as const },
+    { label: "Decision Maker", status: decisionMaker.name !== t("Decision maker not confirmed") ? "completed" as const : "pending" as const },
+    { label: "Buying Intent", status: buyingIntentScore > 0 ? "completed" as const : "pending" as const },
+    { label: "Opportunity Score", status: opportunityScore > 0 ? "completed" as const : "pending" as const },
+    { label: "Competitor Snapshot", status: competitorNames.length || competitorAdvantages.length || competitorWeaknesses.length ? "completed" as const : "pending" as const },
+    { label: "Email Draft", status: currentDraft ? "completed" as const : "pending" as const },
+    { label: "Review", status: currentDraft ? (currentDraft.delivery_status === "approved" || currentDraft.delivery_status === "sent" ? "completed" as const : "active" as const) : "pending" as const },
+    { label: "Send", status: currentSentAt ? "completed" as const : currentDraft?.delivery_status === "approved" ? "active" as const : "pending" as const },
     { label: "Schedule Follow-up", status: currentSentAt ? (current.notes.length || current.replied_at ? "completed" as const : "active" as const) : "pending" as const },
-    { label: "Move CRM Stage", status: current.crm_stage !== "New Lead" && current.crm_stage !== "Qualified" ? "completed" as const : currentSentAt ? "active" as const : "pending" as const },
-    { label: "Open Next Lead", status: onOpenNextLead ? ((currentSentAt || current.replied_at || current.crm_stage === "Meeting Scheduled" || current.crm_stage === "Won" || current.crm_stage === "Lost") ? "active" as const : "pending" as const) : "pending" as const }
+    { label: "Next Lead", status: onOpenNextLead ? ((currentSentAt || current.replied_at || current.crm_stage === "Meeting Scheduled" || current.crm_stage === "Won" || current.crm_stage === "Lost") ? "active" as const : "pending" as const) : "pending" as const }
   ];
 
   function applyCompanyUpdate(updatedCompany: CrmCompany) {
@@ -4408,6 +4441,23 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           </article>
         </div>
 
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {autonomousDecisionCards.map((card) => {
+            const toneClass = card.tone === "teal"
+              ? "border-teal-100 bg-teal-50 text-brand"
+              : card.tone === "ink"
+                ? "border-slate-900 bg-slate-900 text-white"
+                : "border-slate-200 bg-white text-slate-700";
+            const bodyClass = card.tone === "ink" ? "text-white" : "text-slate-800";
+            return (
+              <article key={card.label} className={`rounded-2xl border p-4 shadow-sm ${toneClass}`}>
+                <p className={`text-xs font-black uppercase tracking-[0.16em] ${card.tone === "ink" ? "text-white/70" : ""}`}>{t(card.label)}</p>
+                <p className={`mt-2 line-clamp-4 text-sm font-semibold leading-6 ${bodyClass}`}>{t(card.value)}</p>
+              </article>
+            );
+          })}
+        </div>
+
         <div className="mt-4 grid gap-4 xl:grid-cols-2">
           <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("3. Buying Intent")}</p>
@@ -4479,7 +4529,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           </article>
 
           <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("8. Competitors")}</p>
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("8. Competitor Snapshot")}</p>
             <div className="mt-3 space-y-3 text-sm">
               <div className="rounded-xl bg-slate-50 p-3">
                 <p className="font-bold text-slate-900">{t("Top competitors")}</p>
@@ -4796,13 +4846,13 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           )}
           <div className="mt-5">
             {current.lead_id ? (
-              <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <summary className="cursor-pointer text-sm font-black text-ink">{t("Open email review and sending controls")}</summary>
-                <p className="mt-2 text-sm leading-6 text-slate-600">{t("Use this to review the ready email, edit it in place, approve it, and then send it without leaving the workspace.")}</p>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-black text-ink">{t("Email review and sending controls")}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{t("Review the ready email, edit it in place, approve it, and send it here on the same screen.")}</p>
                 <div className="mt-4">
                   <OpportunityCard key={`${current.id}:${currentDraft?.id || "no-draft"}:${currentDraft?.delivery_status || ""}`} lead={lead} api={api} onCompanyUpdated={applyCompanyUpdate} initialDraft={currentDraft} />
                 </div>
-              </details>
+              </div>
             ) : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
           </div>
           <div className="mt-5 grid gap-4 lg:grid-cols-2">

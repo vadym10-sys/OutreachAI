@@ -1,5 +1,41 @@
 # Project Progress
 
+## 2026-07-13 - Autonomous AI Sales Workspace Epic (Frontend Only)
+
+### Scope Completed
+- Focused only on customer-value workflow speed and single-screen execution.
+- Kept all changes frontend-only with no backend or API modifications.
+- Reused existing AI outputs and existing workspace components.
+
+### Workflow Completed In One Workspace
+- Open Lead
+- AI Summary
+- Decision Maker
+- Buying Intent
+- Opportunity Score
+- Competitor Snapshot
+- Email Draft
+- Review
+- Send
+- Schedule Follow-up
+- Next Lead
+
+### Customer Experience Improvements
+- Reordered and relabeled the visible workflow rail to match the autonomous sales sequence.
+- Added a compact decision surface so the user can scan core AI context quickly before acting.
+- Kept email review, editing, approval, and send controls visible on the same screen instead of hiding them behind an extra expand action.
+- Preserved inline follow-up planning and next-lead continuation inside the same workspace shell.
+- Reduced unnecessary action options in the side action stack to keep focus on immediate next steps.
+
+### Validation Status
+- Lint: passed (`npm run lint` in `apps/web`)
+- Frontend tests: passed (`npm test -- --run` in `apps/web`)
+- Build: passed (`npm run build` in `apps/web`)
+
+### Notes
+- No backend, API, database, worker, or migration changes were required.
+- Existing unrelated backend changes in the repository remain untouched.
+
 ## 2026-07-13 - AI Outreach Workspace Epic (Frontend Only)
 
 ### Scope Completed
