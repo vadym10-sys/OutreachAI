@@ -6652,10 +6652,26 @@ def deep_search_company_contacts(
             recommended_actions=["Retry search", "Add contact manually"],
         )
 
-    _apply_deep_contact_result(db, request, user.user_id, workspace, company, lead, result)
-    db.commit()
-    db.refresh(company)
-    company_out = _crm_company_out(db, workspace, user.user_id, company)
+    try:
+        _apply_deep_contact_result(db, request, user.user_id, workspace, company, lead, result)
+        db.commit()
+        db.refresh(company)
+        company_out = _crm_company_out(db, workspace, user.user_id, company)
+    except Exception as exc:
+        db.rollback()
+        capture_provider_exception(exc, provider="deep_contact_search", endpoint="workspace_app.company.deep_contact_search.apply", workspace_id=workspace.id, lead_id=lead.id if lead else None)
+        _set_company_metadata_stage(company, "decision_maker", "error", "Decision maker could not be saved.")
+        _set_company_metadata_stage(company, "verified_email", "error", "Verified email could not be saved.")
+        _set_company_metadata_stage(company, "technographics", "error", "Technology stack could not be saved.")
+        db.commit()
+        return UsageActionOut(
+            status="provider_unavailable",
+            message="Deep contact search completed, but CRM updates could not be saved. Please retry.",
+            company=_crm_company_out(db, workspace, user.user_id, company),
+            missing_fields=["decision_maker", "verified_email"],
+            recommended_actions=["Retry search", "Add contact manually"],
+        )
+
     _lead_trace(
         request_id,
         "deep_contact_search_finished",

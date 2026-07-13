@@ -174,6 +174,65 @@ def test_deep_contact_search_endpoint_saves_verified_decision_maker(monkeypatch)
     assert payload["company"]["deep_contact_search"]["verified_email"] == "jane@deepcontact.example"
     assert "Next.js" in payload["company"]["technologies"]
 
+
+def test_deep_contact_search_endpoint_downgrades_crm_apply_failure(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=USER_A_AUTH,
+        json={"name": "Deep Contact Apply Co", "website": "https://deepcontact-apply.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["company"]["id"]
+
+    def fake_deep_search(**_: object) -> DeepContactSearchResult:
+        return DeepContactSearchResult(
+            status="success",
+            company_profile={"domain": "deepcontact-apply.example", "industry": "SaaS", "employee_count": 42},
+            candidates=[
+                DeepContactCandidate(
+                    name="Jane Founder",
+                    title="Founder",
+                    email="jane@deepcontact-apply.example",
+                    linkedin="https://linkedin.com/in/jane-founder",
+                    source="hunter",
+                    confidence=97,
+                    verification_status="verified",
+                )
+            ],
+            selected_decision_maker=DeepContactCandidate(
+                name="Jane Founder",
+                title="Founder",
+                email="jane@deepcontact-apply.example",
+                linkedin="https://linkedin.com/in/jane-founder",
+                source="hunter",
+                confidence=97,
+                verification_status="verified",
+            ),
+            verified_email="jane@deepcontact-apply.example",
+            email_status="verified",
+            confidence_score=95,
+            lead_score=92,
+            technologies=["Next.js", "HubSpot"],
+            sources=["hunter_email_verifier", "builtwith"],
+            stages={"email_finder": "completed", "technographics": "completed"},
+            last_enriched_at=datetime.utcnow().isoformat(),
+        )
+
+    def fake_apply(*_: object, **__: object) -> None:
+        raise RuntimeError("crm apply failed")
+
+    monkeypatch.setattr(usage_module, "run_deep_contact_search", fake_deep_search)
+    monkeypatch.setattr(usage_module, "_apply_deep_contact_result", fake_apply)
+
+    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
+    assert enriched.status_code == 200, enriched.text
+    payload = enriched.json()
+    assert payload["status"] == "provider_unavailable"
+    assert "could not be saved" in payload["message"]
+    assert payload["company"]["id"] == company_id
+
 def test_website_analysis_passes_requested_language_to_ai(monkeypatch) -> None:
     from app.services import ai as ai_service
 
