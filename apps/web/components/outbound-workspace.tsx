@@ -1548,13 +1548,15 @@ function OpportunityCard({
   api,
   onLeadUpdated,
   onCompanyUpdated,
-  initialDraft
+  initialDraft,
+  onOpenWorkflow
 }: {
   lead: Lead;
   api: ApiFn;
   onLeadUpdated?: (lead: Lead) => void;
   onCompanyUpdated?: (company: CrmCompany) => void;
   initialDraft?: Email | null;
+  onOpenWorkflow?: (companyId: string) => void;
 }) {
   const { t } = useI18n();
   const savedDraft = initialDraft || lead.generated_emails?.[0] || null;
@@ -1862,7 +1864,11 @@ function OpportunityCard({
         <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
           <a href={contactNowHref} className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Contact Now")}</a>
           <a href={reviewEmailHref} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Review Email")}</a>
-          <Link href={openCompanyHref} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Open Company")}</Link>
+          {companyId && onOpenWorkflow ? (
+            <button type="button" onClick={() => onOpenWorkflow(companyId)} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Open Company")}</button>
+          ) : (
+            <Link href={openCompanyHref} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Open Company")}</Link>
+          )}
           <Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Add to Campaign")}</Link>
         </div>
       </section>
@@ -2337,6 +2343,9 @@ export function LeadFinderPage() {
   const [lastSearchPayload, setLastSearchPayload] = useState<LeadSearchPayload | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
   const [leadSearchStatus, setLeadSearchStatus] = useState<WorkspaceIntegrationStatus["status"] | "unknown">("unknown");
+  const [workflowCompanies, setWorkflowCompanies] = useState<CrmCompany[]>([]);
+  const [activeWorkflowCompanyId, setActiveWorkflowCompanyId] = useState("");
+  const [workflowLoading, setWorkflowLoading] = useState(false);
   const { t } = useI18n();
   const visibleMessage = message;
   const automaticSearchReady = leadSearchStatus === "connected";
@@ -2353,6 +2362,10 @@ export function LeadFinderPage() {
     [visibleLeads]
   );
   const todaysBestLead = rankedLeads[0] || null;
+  const activeWorkflowCompany = workflowCompanies.find((company) => company.id === activeWorkflowCompanyId) || null;
+  const nextWorkflowLead = activeWorkflowCompanyId
+    ? rankedLeads.find((lead) => lead.crm_company_id && lead.crm_company_id !== activeWorkflowCompanyId) || null
+    : rankedLeads[0] || null;
   const summaryMetrics = useMemo(() => {
     const list = visibleLeads;
     const hotLeads = list.filter((lead) => leadOpportunityScoreForWorkspace(lead) >= 75).length;
@@ -2367,6 +2380,23 @@ export function LeadFinderPage() {
       meetingsPotential: list.length ? Math.round(meetingsPotential / Math.max(1, list.length)) : 0
     };
   }, [visibleLeads]);
+
+  const syncWorkflowCompanies = useCallback(async () => {
+    if (!ready) return;
+    setWorkflowLoading(true);
+    try {
+      const companies = await api<CrmCompany[]>("/api/workspace-app/companies");
+      const normalized = safeArray(companies).map(normalizeCrmCompany);
+      setWorkflowCompanies(normalized);
+      setActiveWorkflowCompanyId((current) => {
+        return current && normalized.some((company) => company.id === current) ? current : "";
+      });
+    } catch (err) {
+      reportWidgetFailure(err, "lead-workflow-companies", { endpoint: "/api/workspace-app/companies" });
+    } finally {
+      setWorkflowLoading(false);
+    }
+  }, [api, ready]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2387,6 +2417,12 @@ export function LeadFinderPage() {
   }, [api, ready]);
 
   useEffect(() => {
+    // Initial workflow company sync; updates happen asynchronously inside the callback.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void syncWorkflowCompanies();
+  }, [syncWorkflowCompanies]);
+
+  useEffect(() => {
     if (!ready || !hasSearched || !searchResults.some(leadHasRunningWorkflow)) return;
     let cancelled = false;
     const refreshSearchCompanies = async () => {
@@ -2394,6 +2430,7 @@ export function LeadFinderPage() {
         const companies = await api<CrmCompany[]>("/api/workspace-app/companies");
         if (cancelled) return;
         const normalized = safeArray(companies).map(normalizeCrmCompany);
+        setWorkflowCompanies(normalized);
         setSearchResults((items) => {
           const visibleIds = new Set(items.map((lead) => lead.crm_company_id).filter(Boolean));
           const updates = normalized.filter((company) => visibleIds.has(company.id)).map(leadFromCrmCompany);
@@ -2457,6 +2494,10 @@ export function LeadFinderPage() {
       setLeads((items) => mergeLeads([currentLead], items));
       setSearchResults((items) => mergeLeads([currentLead], items));
       setOpportunityReadiness(opportunityReadinessFromCompanies([currentCompany]));
+      setWorkflowCompanies((items) => {
+        const next = items.filter((item) => item.id !== currentCompany.id);
+        return [currentCompany, ...next];
+      });
     };
 
     setSearchSteps([t("Saved to CRM"), t("Preparing full sales opportunity...")]);
@@ -2525,6 +2566,11 @@ export function LeadFinderPage() {
       setSearchResults((items) => mergeLeads([lead], items));
       setSearchSummary({ found: 1, saved: saved.status === "reused" ? 0 : 1, duplicates: saved.status === "reused" ? 1 : 0 });
       setOpportunityReadiness(opportunityReadinessFromCompanies([saved.company]));
+      setWorkflowCompanies((items) => {
+        const normalized = normalizeCrmCompany(saved.company);
+        const next = items.filter((item) => item.id !== normalized.id);
+        return [normalized, ...next];
+      });
       setMessage(t("Company saved. OutreachAI is preparing research, contacts and the first email automatically."));
       setSearchSteps([t("Saved to CRM"), t("Preparing sales opportunity...")]);
       form.reset();
@@ -2572,6 +2618,7 @@ export function LeadFinderPage() {
     setOpportunityReadiness(readiness);
     setLeads((items) => mergeLeads(found, items));
     setSearchResults(found);
+    setWorkflowCompanies(companies);
     setLastSearchPayload(payload);
     setMessage(workspaceSearchMessage(result, found.length, t));
     trackEvent(found.length ? "lead_finder_search_completed" : "lead_finder_search_empty", {
@@ -2973,7 +3020,24 @@ export function LeadFinderPage() {
           {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : visibleLeads.length ? <div className="grid gap-5">{visibleLeads.map((lead) => <OpportunityCard key={`${lead.id || lead.place_id || lead.company}:${lead.generated_emails?.[0]?.id || "no-draft"}:${lead.generated_emails?.[0]?.delivery_status || ""}`} lead={lead} api={api} onLeadUpdated={(updated) => {
             setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
             setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
-          }} />)}</div> : <EmptyState title={hasSearched || aiFilters.length ? "No matching companies found" : "No real leads yet"} copy={hasSearched || aiFilters.length ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}
+          }} onOpenWorkflow={setActiveWorkflowCompanyId} />)}</div> : <EmptyState title={hasSearched || aiFilters.length ? "No matching companies found" : "No real leads yet"} copy={hasSearched || aiFilters.length ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}
+
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-black uppercase tracking-wide text-brand">{t("AI Sales Workspace")}</p>
+                <h2 className="mt-1 text-2xl font-black tracking-tight text-ink">{t("Complete the full sales workflow without leaving this workspace.")}</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Review AI summary, decision maker, opportunity score, buying intent, ready email, follow-up, CRM stage, and then move to the next lead from the same page.")}</p>
+              </div>
+              <div className="flex flex-col gap-2 sm:items-end">
+                {nextWorkflowLead?.crm_company_id ? <button type="button" onClick={() => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "")} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Return to Next Lead")} <ArrowRight size={16} /></button> : null}
+                {activeWorkflowCompany ? <button type="button" onClick={() => setActiveWorkflowCompanyId("")} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Hide workflow")}</button> : null}
+              </div>
+            </div>
+            <div className="mt-5">
+              {workflowLoading && !activeWorkflowCompany ? <LoadingSkeleton title="Loading company workflow" /> : activeWorkflowCompany ? <CrmCompanyCard company={activeWorkflowCompany} api={api} highlighted /> : <EmptyState title="Select one lead to continue the workflow" copy="Open a company from the lead cards above. The full AI Sales Workspace will load here without page switching." />}
+            </div>
+          </section>
         </div>
 
         <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
