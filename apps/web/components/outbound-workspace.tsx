@@ -2087,6 +2087,16 @@ function OpportunityCard({
 
       {visibleStatus && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
+      {draft?.delivery_status === "approved" && senderStatus && !senderStatus.connected ? (
+        <div className="mt-3 flex flex-col gap-2 min-[430px]:flex-row">
+          <Link href="/dashboard/settings#email-sending" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">
+            {t("Set up sender")}
+          </Link>
+          <Link href="/dashboard/settings#email-sending" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">
+            {t("Open sender settings")}
+          </Link>
+        </div>
+      ) : null}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Run all missing steps" : "Refresh AI research")}</PrimaryButton>
         <SecondaryButton onClick={() => setEditingDraft(true)} disabled={busy || !draft || sending || savingDraft || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{savingDraft ? <Loader2 className="animate-spin" size={17} /> : <FileText size={17} />} {t("Edit email")}</SecondaryButton>

@@ -162,3 +162,44 @@ test("CRM stage and note actions do not silently fail", async ({ page }, testInf
   await expect(page.getByText("Note saved to the activity history.")).toBeVisible();
   await guards.assertClean();
 });
+
+test("blocked send shows direct sender setup action", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.route("**/api/outreach/sender/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider: "resend",
+        connected: false,
+        status: "needs_setup",
+        sender_name: "",
+        sender_email: null,
+        reply_to: null,
+        daily_send_limit: 25,
+        sent_today: 0,
+        remaining_today: 25,
+        spf_status: "not_checked",
+        dkim_status: "not_checked",
+        dmarc_status: "not_checked",
+        next_action: "Connect your sending email in Settings before sending.",
+        smtp_host: "",
+        smtp_port: 587,
+        smtp_username: "",
+        smtp_configured: false
+      })
+    });
+  });
+
+  await page.goto("/dashboard/leads");
+  const approveButton = page.getByRole("button", { name: "Approve email" }).first();
+  await expect(approveButton).toBeVisible();
+  await approveButton.click();
+  await expect(page.getByText("Email approved. Nothing was sent yet.").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Send approved email" }).first().click();
+  const setupSender = page.getByRole("link", { name: "Set up sender" }).first();
+  await expect(setupSender).toBeVisible();
+  await expect(setupSender).toHaveAttribute("href", "/dashboard/settings#email-sending");
+  await guards.assertClean();
+});

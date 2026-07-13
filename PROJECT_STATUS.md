@@ -15,6 +15,15 @@ Date: 2026-07-13
 
 This workflow is ready for customer onboarding review and can be released independently from broader dashboard or backend initiatives.
 
+## Latest Update - Customer Activation Blocker (First Send)
+
+- Activation audit identified a dead-end in the first approved-email send path when sender setup was missing.
+- Fixed by adding explicit, in-context recovery actions from the blocked-send state to `/dashboard/settings#email-sending`.
+- Added regression coverage for this exact failure and recovery path.
+- Validation completed for blocker fix:
+	- `npm run lint` in `apps/web`: passed
+	- `npx playwright test tests/regression/critical-actions.spec.ts -g "blocked send shows direct sender setup action"` in `apps/web`: passed
+
 ## 1. Executive Summary
 
 OutreachAI has strong frontend momentum, a broad backend feature surface, and credible deployment scaffolding. The product is in an advanced pre-production state with major customer workflows implemented, while backend stabilization and release discipline are the main blockers to fully predictable production operations.

@@ -1,5 +1,23 @@
 # Project Progress
 
+## 2026-07-13 - Customer Activation Blocker Fix (Frontend Only)
+
+### Activation Audit Scope
+- Audited the activation path from registration through first send readiness.
+- Verified the first hard blocker in the flow: sending could fail with no direct setup action when sender configuration was missing.
+
+### Blocker Fixed
+- Added direct sender-setup actions in the blocked-send state inside the opportunity card.
+- New actions now route customers directly to `/dashboard/settings#email-sending` from the exact failure point.
+
+### Validation Status
+- Lint: passed (`npm run lint` in `apps/web`)
+- Targeted e2e regression: passed (`npx playwright test tests/regression/critical-actions.spec.ts -g "blocked send shows direct sender setup action"` in `apps/web`)
+
+### Notes
+- Scope intentionally limited to one blocker per activation instructions.
+- No backend, API, database, worker, or migration files changed.
+
 ## 2026-07-13 - New Customer Onboarding and Workspace Setup (Frontend Only)
 
 ### Scope Completed

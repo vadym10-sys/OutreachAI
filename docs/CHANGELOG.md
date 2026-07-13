@@ -2,6 +2,15 @@
 
 ## 2026-07-13
 
+### fix(frontend)
+- Fixed a Customer Activation blocker in the first-send flow.
+- When an approved email cannot be sent because sender setup is missing, the opportunity card now shows direct actions to open sender setup.
+- Added direct routing from blocked-send state to `/dashboard/settings#email-sending`.
+
+### test(frontend)
+- Added regression coverage for blocked-send sender setup recovery:
+	- `tests/regression/critical-actions.spec.ts` validates that the direct sender setup action appears and links to `/dashboard/settings#email-sending`.
+
 ### feat(frontend)
 - Delivered a dedicated New Customer Onboarding and Workspace Setup page component for `/onboarding`.
 - Replaced the legacy onboarding render path with a focused workspace setup flow.
