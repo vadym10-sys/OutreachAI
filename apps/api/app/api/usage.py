@@ -6615,12 +6615,26 @@ def deep_search_company_contacts(
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
     lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+
+    def _safe_company_out() -> Optional[CrmCompanyOut]:
+        try:
+            return _crm_company_out(db, workspace, user.user_id, company)
+        except Exception as exc:
+            capture_provider_exception(
+                exc,
+                provider="deep_contact_search",
+                endpoint="workspace_app.company.deep_contact_search.company_out",
+                workspace_id=workspace.id,
+                lead_id=lead.id if lead else None,
+            )
+            return None
+
     domain = normalize_domain(company.domain or company.website or (lead.website if lead else "") or "")
     if not domain:
         return UsageActionOut(
             status="error",
             message="Add a company website before running deep contact search.",
-            company=_crm_company_out(db, workspace, user.user_id, company),
+            company=_safe_company_out(),
             missing_fields=["website"],
             recommended_actions=["Add website", "Add contact manually"],
         )
@@ -6648,7 +6662,7 @@ def deep_search_company_contacts(
         return UsageActionOut(
             status="provider_unavailable",
             message=str(exc),
-            company=_crm_company_out(db, workspace, user.user_id, company),
+            company=_safe_company_out(),
             missing_fields=["decision_maker", "verified_email"],
             recommended_actions=["Retry search", "Add contact manually"],
         )
@@ -6662,7 +6676,7 @@ def deep_search_company_contacts(
         return UsageActionOut(
             status="provider_unavailable",
             message="Deep contact search is temporarily unavailable. Please retry.",
-            company=_crm_company_out(db, workspace, user.user_id, company),
+            company=_safe_company_out(),
             missing_fields=["decision_maker", "verified_email"],
             recommended_actions=["Retry search", "Add contact manually"],
         )
@@ -6671,7 +6685,7 @@ def deep_search_company_contacts(
         _apply_deep_contact_result(db, request, user.user_id, workspace, company, lead, result)
         db.commit()
         db.refresh(company)
-        company_out = _crm_company_out(db, workspace, user.user_id, company)
+        company_out = _safe_company_out()
     except Exception as exc:
         db.rollback()
         capture_provider_exception(exc, provider="deep_contact_search", endpoint="workspace_app.company.deep_contact_search.apply", workspace_id=workspace.id, lead_id=lead.id if lead else None)
@@ -6682,7 +6696,7 @@ def deep_search_company_contacts(
         return UsageActionOut(
             status="provider_unavailable",
             message="Deep contact search completed, but CRM updates could not be saved. Please retry.",
-            company=_crm_company_out(db, workspace, user.user_id, company),
+            company=_safe_company_out(),
             missing_fields=["decision_maker", "verified_email"],
             recommended_actions=["Retry search", "Add contact manually"],
         )

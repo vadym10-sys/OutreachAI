@@ -315,6 +315,28 @@ def test_deep_contact_search_endpoint_handles_provider_unavailable(monkeypatch) 
     assert payload["status"] == "provider_unavailable"
     assert payload["message"] == "Apollo is not connected."
 
+
+def test_deep_contact_search_endpoint_handles_company_serialization_failure(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=USER_A_AUTH,
+        json={"name": "Deep Contact Serialization Co", "website": "https://deepcontact-serialization.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["company"]["id"]
+
+    monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(usage_module, "_crm_company_out", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("crm serialization failed")))
+
+    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
+    assert enriched.status_code == 200, enriched.text
+    payload = enriched.json()
+    assert payload["status"] == "provider_unavailable"
+    assert payload["message"] == "Deep contact search is temporarily unavailable. Please retry."
+    assert payload["company"] is None
+
 def test_website_analysis_passes_requested_language_to_ai(monkeypatch) -> None:
     from app.services import ai as ai_service
 
