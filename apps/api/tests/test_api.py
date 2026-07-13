@@ -3228,11 +3228,42 @@ def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
         assert saved.bounced_at is not None
         assert saved.replied_at is not None
         assert saved.reply_body == "Interested."
+        sales_inbox = saved.reply_assistant.get("sales_inbox") if isinstance(saved.reply_assistant, dict) else None
+        assert isinstance(sales_inbox, dict)
+        assert sales_inbox.get("classified_as") == "Meeting Requested"
+        assert sales_inbox.get("next_action")
+        assert sales_inbox.get("recommended_reply")
+        assert isinstance(sales_inbox.get("meeting_preparation"), dict)
+        assert isinstance(sales_inbox.get("crm_update"), dict)
+        assert isinstance(sales_inbox.get("task_creation"), dict)
         lead = db.get(Lead, saved.lead_id)
         assert lead and lead.status == LeadStatus.meeting
         inbound = db.query(EmailMessage).filter(EmailMessage.provider_message_id == "reply:resend-msg-2").one()
         assert inbound.direction == "inbound"
-        assert inbound.tags["category"] == "Meeting"
+        assert inbound.tags["category"] == "Meeting Requested"
+        company = db.query(Company).filter(Company.lead_id == saved.lead_id).order_by(Company.updated_at.desc()).first()
+        assert company is not None
+        metadata = company.metadata_json or {}
+        assert isinstance(metadata.get("ai_sales_inbox_latest"), dict)
+        assert isinstance(metadata.get("ai_sales_inbox_history"), list)
+        assert metadata["ai_sales_inbox_latest"].get("classified_as") == "Meeting Requested"
+        assert metadata["ai_sales_inbox_history"]
+        task_note = (
+            db.query(Note)
+            .filter(Note.lead_id == saved.lead_id)
+            .filter(Note.kind == "sales_inbox_task")
+            .order_by(Note.created_at.desc())
+            .first()
+        )
+        assert task_note is not None
+        assert "Sales Inbox" in (task_note.body or "")
+        settings = db.query(AppSettings).filter(AppSettings.user_id == "dev_user").first()
+        assert settings is not None
+        ai = settings.ai if isinstance(settings.ai, dict) else {}
+        continuous_learning = ai.get("continuous_learning") if isinstance(ai.get("continuous_learning"), dict) else {}
+        outcomes = continuous_learning.get("outcomes") if isinstance(continuous_learning.get("outcomes"), dict) else {}
+        assert outcomes.get("reply", 0) >= 1
+        assert outcomes.get("meeting", 0) >= 1
     finally:
         db.close()
 

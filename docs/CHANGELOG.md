@@ -1,5 +1,13 @@
 # Changelog
 
+### fix(api)
+- Hardened billing status resolution so ended subscription periods now resolve as `expired` instead of remaining active.
+- Added explicit billing lifecycle coverage for renewal, downgrade, cancel, and expiry transitions.
+
+### test(api)
+- Added a focused billing regression slice covering subscription lifecycle transitions and adjacent billing endpoints.
+- Verified the deployed API health endpoint at `https://outreachai-api-production.up.railway.app/api/health`.
+
 ## 2026-07-13
 
 ### fix(frontend)

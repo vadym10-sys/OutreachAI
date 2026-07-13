@@ -656,7 +656,7 @@ def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str
 
     subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
     if subscription and subscription.status in {"active", "trialing"}:
-        return subscription.status
+        return "expired" if _subscription_is_expired(subscription) else subscription.status
     if _workspace_trial_is_active(workspace):
         return "trialing"
 
@@ -669,7 +669,7 @@ def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str
     if billing_status == "active" and not has_stripe_subscription:
         return "active"
     if subscription:
-        return subscription.status
+        return "expired" if _subscription_is_expired(subscription) else subscription.status
     return billing_status
 
 
@@ -679,6 +679,15 @@ def _has_active_subscription(db: Session, workspace: Workspace) -> bool:
 
 def _latest_subscription(db: Session, workspace: Workspace) -> Subscription | None:
     return db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
+
+
+def _subscription_is_expired(subscription: Subscription) -> bool:
+    now = datetime.utcnow()
+    if subscription.current_period_end and subscription.current_period_end <= now:
+        return True
+    if subscription.status == "trialing" and subscription.trial_end and subscription.trial_end <= now:
+        return True
+    return False
 
 
 def _user_for_subscription(db: Session, user_id: str) -> User:

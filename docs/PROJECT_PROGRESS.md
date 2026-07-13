@@ -1,5 +1,20 @@
 # Project Progress
 
+## 2026-07-13 - Billing Hardening (Backend Lifecycle Coverage)
+
+### Scope Completed
+- Hardened the billing status resolver so ended subscription periods now resolve as `expired` instead of continuing to look active.
+- Added a focused billing lifecycle regression for renewal, downgrade, cancel, and expiry transitions.
+- Verified the deployed API health endpoint responded successfully at `/api/health`.
+
+### Validation Status
+- Backend billing slice: passed (`pytest -q apps/api/tests/test_api.py -k 'billing_subscription_lifecycle_handles_renewal_downgrade_cancel_and_expiry or stripe_invoice_payment_failed_records_reason_and_keeps_access_inactive or stripe_webhook_activates_subscription or billing_sync_latest_subscription_repairs_paid_workspace or billing_checkout_creates_pending_subscription_session or billing_diagnostics or billing_portal'` in `apps/api`)
+- Deployed health check: passed (`curl -fsS https://outreachai-api-production.up.railway.app/api/health`)
+
+### Notes
+- This change set is backend-only and documents the remaining billing lifecycle behavior more explicitly.
+- Existing unrelated backend diffs in the worktree remain untouched.
+
 ## 2026-07-13 - Customer Activation Blocker Fix (Sender Provider Dead End)
 
 ### Activation Audit Scope
