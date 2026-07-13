@@ -3,6 +3,15 @@
 ## 2026-07-13
 
 ### fix(frontend)
+- Fixed a Customer Activation blocker in sender setup provider selection.
+- Removed non-actionable Gmail/Outlook OAuth provider options from the sender dropdown.
+- Added clear guidance that Gmail/Outlook mailboxes can connect through SMTP app passwords.
+
+### test(frontend)
+- Added settings regression assertions that sender provider options include only actionable paths and show SMTP guidance copy:
+	- `tests/settings/settings.spec.ts`
+
+### fix(frontend)
 - Fixed a Customer Activation blocker in first-send success confirmation.
 - After a successful send, messaging now correctly states that CRM stage is updated to `Sent`.
 - Removed outdated `Contacted` stage wording from send success surfaces.

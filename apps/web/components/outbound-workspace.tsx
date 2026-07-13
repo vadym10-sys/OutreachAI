@@ -5692,10 +5692,11 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
                 <select value={form.provider} onChange={(event) => setForm((current) => ({ ...current, provider: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-semibold">
                   <option value="resend">{t("Connected API sender")}</option>
                   <option value="smtp">{t("SMTP mailbox")}</option>
-                  <option value="gmail">{t("Gmail (needs OAuth)")}</option>
-                  <option value="outlook">{t("Outlook (needs OAuth)")}</option>
                 </select>
               </label>
+              <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-700 sm:col-span-2">
+                {t("Choose Connected API sender for the fastest setup, or SMTP mailbox if you use your own provider. Gmail and Outlook mailboxes can connect through SMTP with an app password.")}
+              </p>
               <label className="text-sm font-bold text-ink">{t("Sender name")}<input value={form.sender_name} onChange={(event) => setForm((current) => ({ ...current, sender_name: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="Sales Team" /></label>
               <label className="text-sm font-bold text-ink">{t("Sender email")}<input value={form.sender_email} onChange={(event) => setForm((current) => ({ ...current, sender_email: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="you@company.com" type="email" /></label>
               <label className="text-sm font-bold text-ink">{t("Reply-to email")}<input value={form.reply_to} onChange={(event) => setForm((current) => ({ ...current, reply_to: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="reply@company.com" type="email" /></label>

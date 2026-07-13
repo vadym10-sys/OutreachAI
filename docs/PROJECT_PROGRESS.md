@@ -1,5 +1,26 @@
 # Project Progress
 
+## 2026-07-13 - Customer Activation Blocker Fix (Sender Provider Dead End)
+
+### Activation Audit Scope
+- Continued first-time customer simulation through sender setup in the first sent-email journey.
+- Verified blocker: provider dropdown surfaced Gmail/Outlook OAuth options without an OAuth connection flow in-product.
+
+### Blocker Fixed
+- Removed dead-end provider options from sender setup.
+- Kept only actionable paths: Connected API sender and SMTP mailbox.
+- Added clear guidance that Gmail/Outlook mailboxes can be connected through SMTP app passwords.
+
+### Validation Status
+- Lint: passed (`npm run lint` in `apps/web`)
+- Frontend tests: passed (`npm test` in `apps/web`)
+- Relevant Playwright tests: passed (`npx playwright test tests/settings/settings.spec.ts -g "sender setup validates required fields and blocks false success"` in `apps/web`)
+- Build: passed (`npm run build` in `apps/web`)
+
+### Notes
+- Scope intentionally limited to one activation blocker.
+- No backend, API, database, worker, or migration files changed.
+
 ## 2026-07-13 - Customer Activation Blocker Fix (First Send Success Clarity)
 
 ### Activation Audit Scope

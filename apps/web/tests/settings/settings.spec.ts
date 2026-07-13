@@ -75,6 +75,12 @@ test("sender setup validates required fields and blocks false success", async ({
 
   await page.goto("/dashboard/settings");
   await expect(page.getByRole("heading", { name: "Send from your workspace" })).toBeVisible();
+  const providerSelect = page.getByLabel("Provider").first();
+  await expect(providerSelect).toContainText("Connected API sender");
+  await expect(providerSelect).toContainText("SMTP mailbox");
+  await expect(page.getByRole("option", { name: "Gmail (needs OAuth)" })).toHaveCount(0);
+  await expect(page.getByRole("option", { name: "Outlook (needs OAuth)" })).toHaveCount(0);
+  await expect(page.getByText("Gmail and Outlook mailboxes can connect through SMTP with an app password.")).toBeVisible();
 
   await page.getByRole("button", { name: "Save sending setup" }).click();
   await expect(page.getByText("Enter sender name and sender email before saving.")).toBeVisible();
