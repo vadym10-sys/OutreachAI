@@ -7,6 +7,7 @@ import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRe
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Rocket, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
+import { AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
 import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
@@ -1005,112 +1006,46 @@ function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: 
   const { t } = useI18n();
   const translatedTitle = t(title);
   return (
-    <header className="min-w-0 max-w-full overflow-hidden rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6 lg:flex lg:items-end lg:justify-between lg:gap-6">
-      <div className="min-w-0 max-w-3xl">
-        <p className="text-sm font-bold uppercase tracking-wide text-brand">{t(eyebrow)}</p>
-        <h1 aria-label={translatedTitle} className="mt-2 text-[clamp(2rem,7vw,3.5rem)] font-black leading-[0.98] tracking-tight text-ink">{translatedTitle}</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-600 min-[390px]:text-base">{t(copy)}</p>
-      </div>
-      {action && <div className="mt-5 min-w-0 max-w-full shrink-0 [&>a]:w-full [&>button]:w-full min-[430px]:[&>a]:w-auto min-[430px]:[&>button]:w-auto lg:mt-0">{action}</div>}
-    </header>
+    <PageHero eyebrow={t(eyebrow)} title={translatedTitle} copy={t(copy)} action={action} />
   );
 }
 
 function PrimaryButton({ children, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }) {
-  return <button type={type} {...props} className="inline-flex min-h-12 max-w-full items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-black text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-teal-700 disabled:cursor-not-allowed disabled:translate-y-0 disabled:opacity-60">{children}</button>;
+  return <AppButton type={type} {...props}>{children}</AppButton>;
 }
 
 function SecondaryButton({ children, type = "button", ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }) {
-  return <button type={type} {...props} className="inline-flex min-h-12 max-w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm transition hover:-translate-y-0.5 hover:border-slate-400 disabled:cursor-not-allowed disabled:translate-y-0 disabled:opacity-60">{children}</button>;
+  return <AppButton type={type} variant="secondary" {...props}>{children}</AppButton>;
 }
 
 function EmptyState({ title, copy, action }: { title: string; copy: string; action?: React.ReactNode }) {
   const { t } = useI18n();
-  return <section className="rounded-3xl border border-dashed border-slate-300 bg-white p-6 text-center shadow-sm sm:p-8"><div className="mx-auto grid size-12 place-items-center rounded-2xl bg-teal-50 text-brand"><Sparkles size={22} /></div><h2 className="mt-4 text-xl font-black text-ink">{t(title)}</h2><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-600">{t(copy)}</p>{action && <div className="mt-5 flex justify-center">{action}</div>}</section>;
+  return <EmptyStateView title={t(title)} copy={t(copy)} action={action} />;
 }
 
 function WidgetErrorCard({ title, copy = "This section could not update. The rest of your workspace is still available.", onRetry }: { title: string; copy?: string; onRetry?: () => void }) {
   const { t } = useI18n();
-  return (
-    <section role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-sm font-bold text-amber-950">{t(title)}</p>
-          <p className="mt-1 text-sm leading-6 text-amber-800">{t(copy)}</p>
-        </div>
-        {onRetry && (
-          <button type="button" onClick={onRetry} className="inline-flex min-h-11 items-center justify-center rounded-md bg-white px-4 text-sm font-bold text-amber-950 shadow-sm">
-            {t("Retry")}
-          </button>
-        )}
-      </div>
-    </section>
-  );
+  return <ErrorStateView title={t(title)} copy={t(copy)} onRetry={onRetry} />;
 }
 
 function MetricCard({ label, value, help }: { label: string; value: string; help: string }) {
   const { t } = useI18n();
-  return <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm font-bold text-slate-500">{t(label)}</p><p className="mt-2 text-3xl font-black text-ink">{value}</p><p className="mt-2 text-sm leading-6 text-slate-600">{t(help)}</p></article>;
+  return <MetricSurface label={t(label)} value={value} detail={t(help)} />;
 }
 
 function ActionPanel({ eyebrow, title, copy, children }: { eyebrow: string; title: string; copy: string; children: ReactNode }) {
   const { t } = useI18n();
-  return (
-    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-      <p className="text-sm font-bold uppercase text-brand">{t(eyebrow)}</p>
-      <h2 className="mt-2 text-2xl font-black tracking-tight text-ink">{t(title)}</h2>
-      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t(copy)}</p>
-      <div className="mt-5">{children}</div>
-    </section>
-  );
+  return <SectionPanel eyebrow={t(eyebrow)} title={t(title)} copy={t(copy)}>{children}</SectionPanel>;
 }
 
 function LoadingSkeleton({ title = "Loading workspace" }: { title?: string }) {
   const { t } = useI18n();
-  return (
-    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-      <p className="text-sm font-bold uppercase text-brand">{t(title)}</p>
-      <div className="mt-5 grid gap-3">
-        <div className="h-8 w-2/3 animate-pulse rounded-xl bg-slate-200" />
-        <div className="h-4 w-full animate-pulse rounded-xl bg-slate-100" />
-        <div className="h-4 w-5/6 animate-pulse rounded-xl bg-slate-100" />
-        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
-          <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
-          <div className="h-24 animate-pulse rounded-2xl bg-slate-100" />
-        </div>
-      </div>
-    </section>
-  );
+  return <LoadingStateView title={t(title)} />;
 }
 
 function WorkflowTracker({ activeStep, completedSteps }: { activeStep: string; completedSteps: string[] }) {
   const { t } = useI18n();
-  return (
-    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-sm font-bold uppercase text-brand">{t("Sales workflow")}</p>
-          <h2 className="mt-1 text-xl font-bold text-ink">{t("One path from prospect to customer.")}</h2>
-        </div>
-        <p className="text-sm font-semibold text-slate-600">{t("Current step")}: {t(activeStep)}</p>
-      </div>
-      <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-        {salesWorkflow.map((step) => {
-          const done = completedSteps.includes(step);
-          const active = activeStep === step;
-          return (
-            <div key={step} className={`rounded-xl border p-3 text-sm ${active ? "border-teal-300 bg-teal-50 text-brand" : done ? "border-slate-200 bg-slate-50 text-slate-700" : "border-slate-200 bg-white text-slate-500"}`}>
-              <div className="flex items-center gap-2">
-                <CheckCircle2 size={16} className={done || active ? "text-brand" : "text-slate-300"} />
-                <span className="font-bold">{t(step)}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
+  return <TimelineRail items={salesWorkflow.map((step) => t(step))} activeStep={t(activeStep)} completedSteps={completedSteps.map((step) => t(step))} eyebrow={t("Sales workflow")} title={t("One path from prospect to customer.")} />;
 }
 
 function dashboardNextStep(metrics: DashboardMetrics, leads: Lead[], campaigns: Campaign[]) {
@@ -1806,7 +1741,7 @@ function OpportunityCard({
   }
 
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <OpportunityCardShell>
       <div className="flex flex-col gap-4 min-[520px]:flex-row min-[520px]:items-start min-[520px]:justify-between">
         <div>
           <h2 className="text-xl font-bold text-ink">{lead.company}</h2>
@@ -2021,7 +1956,7 @@ function OpportunityCard({
         <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve email")}</SecondaryButton>
         <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || senderLoading || draft.delivery_status !== "approved"}>{sending || senderLoading ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
-    </article>
+    </OpportunityCardShell>
   );
 }
 
@@ -4211,7 +4146,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     }
   }
 
-  return <article id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden rounded-3xl border bg-slate-50 shadow-sm ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
+  return <CompanyCardShell id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden bg-slate-50 ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
     <div className="border-b border-slate-200 bg-white p-5 sm:p-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
       <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f7fbff] to-[#edf6ff] p-5 shadow-sm sm:p-6">
         <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-[#b7e3ff] opacity-40 blur-3xl" />
@@ -4592,7 +4527,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             {deepErrors.length ? <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">{t(deepErrors[0])}</p> : null}
           </div>
           {current.contacts.length ? <div className="grid gap-3 lg:grid-cols-2">
-            {current.contacts.map((contact) => <article key={contact.id} className="rounded-2xl border border-slate-200 bg-white p-4">
+            {current.contacts.map((contact) => <DecisionMakerCardShell key={contact.id} className="p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h4 className="break-words font-bold text-ink">{contact.name ? contact.name : t(contactDisplayName(contact))}</h4>
@@ -4606,7 +4541,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
                 <p className="flex items-center gap-2 text-slate-700"><ExternalLink size={16} />{contact.linkedin || t("Not available")}</p>
                 <p className="text-xs font-bold uppercase text-slate-500">{t("Data")}: {t(sourceLabel(contact.source))}</p>
               </div>
-            </article>)}
+            </DecisionMakerCardShell>)}
           </div> : <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5">
             <p className="font-bold text-ink">{t("No decision makers yet.")}</p>
             <p className="mt-2 text-sm leading-6 text-slate-600">{t("Use the outreach research action to find or add a verified contact. Emails are never invented.")}</p>
@@ -4760,7 +4695,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
         <ActionProgress current={actionCurrentStep} completed={actionCompletedSteps} />
       </aside>
     </div>
-  </article>;
+  </CompanyCardShell>;
 }
 
 function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn }) {

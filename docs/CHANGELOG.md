@@ -3,6 +3,13 @@
 ## 2026-07-13
 
 ### feat(frontend)
+- Built a reusable OutreachAI design system layer in `apps/web/components/design-system.tsx`.
+- Added standardized primitives for surfaces, buttons, badges, page heroes, metrics, section panels, AI panels, timeline rails, loading states, empty states, and error states.
+- Added reusable opportunity, company, and decision-maker card shells.
+- Introduced shared global design tokens and utility classes in `apps/web/app/globals.css` for color, typography, spacing, surfaces, animations, dark mode, and mobile-friendly behavior.
+- Refactored core workspace helpers and buttons to use the shared design vocabulary instead of duplicated local UI definitions.
+
+### feat(frontend)
 - Completed the AI Sales Workspace workflow epic by embedding the existing company workspace directly into Leads.
 - Enabled a sales rep to stay in one workspace for company review, AI review, outreach review, follow-up planning, CRM stage movement, and next-lead continuation.
 - Added explicit inline workflow opening from Leads cards instead of forcing route switching.
@@ -27,6 +34,7 @@
 - `npm test -- --run` passed.
 - Relevant Leads e2e command passed after final UI fix.
 - Embedded workflow e2e slices passed for actionable lead flow and stable default route behavior.
+- Design-system validation slice passed across dashboard, leads, companies, and CRM workspace routes.
 
 ### scope safety
 - No backend, API, database, worker, or migration files modified as part of this task.
