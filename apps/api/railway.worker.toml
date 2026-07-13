@@ -3,6 +3,6 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "OUTREACHAI_PROCESS_ROLE=worker python -m app.serve"
+startCommand = "python -m app.serve"
 healthcheckPath = "/api/health"
 restartPolicyType = "ON_FAILURE"
