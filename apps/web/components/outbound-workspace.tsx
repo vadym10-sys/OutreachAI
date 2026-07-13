@@ -167,6 +167,8 @@ type OpportunityReadiness = {
   ready: number;
 };
 
+type EditableDraftFields = Pick<Email, "subject" | "preview" | "body" | "cta" | "follow_up_1" | "follow_up_2">;
+
 const emptyMetrics: DashboardMetrics = {
   leads: 0,
   campaigns: 0,
@@ -263,6 +265,17 @@ function mergeLeads(newLeads: Lead[], existingLeads: Lead[]) {
 
 function latestCompanyEmail(company: CrmCompany): Email | undefined {
   return safeArray(company.generated_emails)[0];
+}
+
+function editableDraftFields(email?: Email | null): EditableDraftFields {
+  return {
+    subject: email?.subject || "",
+    preview: email?.preview || "",
+    body: email?.body || "",
+    cta: email?.cta || "",
+    follow_up_1: email?.follow_up_1 || "",
+    follow_up_2: email?.follow_up_2 || ""
+  };
 }
 
 function cleanGeneratedText(value?: string | null): string {
@@ -1499,6 +1512,9 @@ function OpportunityCard({
   const [audit, setAudit] = useState<WebsiteAudit | undefined>();
   const [followUps, setFollowUps] = useState<FollowUpSequence | undefined>();
   const [draft, setDraft] = useState<Email | undefined>(() => savedDraft || undefined);
+  const [editingDraft, setEditingDraft] = useState(false);
+  const [draftFields, setDraftFields] = useState<EditableDraftFields>(() => editableDraftFields(savedDraft || undefined));
+  const [savingDraft, setSavingDraft] = useState(false);
   const [readyToSend, setReadyToSend] = useState(() => Boolean(savedDraft && savedDraft.delivery_status !== "approved" && savedDraft.delivery_status !== "sent"));
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
@@ -1670,6 +1686,52 @@ function OpportunityCard({
     }
   }
 
+  async function saveDraftEdits() {
+    if (!draft?.id) {
+      setError(t("Generate the email before editing it."));
+      return;
+    }
+    if (draft.delivery_status === "approved" || draft.delivery_status === "sent") {
+      setError(t("Edit the draft before approval. Approved or sent emails stay locked for safety."));
+      return;
+    }
+    setSavingDraft(true);
+    setError("");
+    setStatus(t("Saving email edits..."));
+    try {
+      const updated = await withTimeout(
+        api<Email>(`/api/emails/${draft.id}`, {
+          method: "PATCH",
+          body: JSON.stringify(draftFields)
+        }),
+        15000,
+        "Email edits could not be saved. Please try again."
+      );
+      setDraft(updated);
+      setDraftFields(editableDraftFields(updated));
+      setEditingDraft(false);
+      setReadyToSend(true);
+      setStatus(t("Email edits saved. Review and approve when ready."));
+      trackEvent("email_draft_edited", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company
+      });
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, "Email edits could not be saved. Please try again.");
+      setError(t(reason));
+      setStatus("");
+      trackEvent("email_draft_edit_failed", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company,
+        reason
+      });
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
   async function sendApprovedEmail(confirmed = false) {
     if (!draft?.id || draft.delivery_status !== "approved") {
       setError(t("Approve the draft before sending."));
@@ -1710,6 +1772,7 @@ function OpportunityCard({
         throw new Error(sentResult.message || "Email could not be sent.");
       }
       setDraft(sentResult.email);
+      setDraftFields(editableDraftFields(sentResult.email));
       setReadyToSend(false);
       setSendConfirmOpen(false);
       setStatus(t("Approved email was sent. CRM stage updated to Contacted."));
@@ -1928,12 +1991,85 @@ function OpportunityCard({
             <span className="font-semibold text-ink">{senderStatus?.sender_email || t("Checked before sending.")}</span>
           </div>
         </div>
-        <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
-        <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{draft.body}</p>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <div className="whitespace-pre-line rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 1")}:</span> {cleanGeneratedText(draft.follow_up_1 || followUps?.no_open?.[0]) || t(unavailable)}</div>
-          <div className="whitespace-pre-line rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 2")}:</span> {cleanGeneratedText(draft.follow_up_2 || followUps?.opened?.[0]) || t(unavailable)}</div>
-        </div>
+        {editingDraft ? (
+          <div className="mt-4 space-y-3">
+            <label className="block text-sm font-semibold text-slate-700">
+              {t("Subject")}
+              <input
+                value={draftFields.subject}
+                onChange={(event) => setDraftFields((current) => ({ ...current, subject: event.target.value }))}
+                className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+              />
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
+              {t("Preview")}
+              <input
+                value={draftFields.preview}
+                onChange={(event) => setDraftFields((current) => ({ ...current, preview: event.target.value }))}
+                className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+              />
+            </label>
+            <label className="block text-sm font-semibold text-slate-700">
+              {t("Email body")}
+              <textarea
+                value={draftFields.body}
+                onChange={(event) => setDraftFields((current) => ({ ...current, body: event.target.value }))}
+                className="mt-2 min-h-40 w-full rounded-md border border-slate-300 bg-white p-3 text-sm leading-6"
+              />
+            </label>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="block text-sm font-semibold text-slate-700">
+                {t("CTA")}
+                <input
+                  value={draftFields.cta}
+                  onChange={(event) => setDraftFields((current) => ({ ...current, cta: event.target.value }))}
+                  className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                />
+              </label>
+              <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-600">
+                <p className="font-bold text-slate-800">{t("Approval safety")}</p>
+                <p className="mt-1 leading-6">{t("Save edits first. Approval and sending stay blocked until the message looks right.")}</p>
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="block text-sm font-semibold text-slate-700">
+                {t("Follow-up 1")}
+                <textarea
+                  value={draftFields.follow_up_1}
+                  onChange={(event) => setDraftFields((current) => ({ ...current, follow_up_1: event.target.value }))}
+                  className="mt-2 min-h-28 w-full rounded-md border border-slate-300 bg-white p-3 text-sm leading-6"
+                />
+              </label>
+              <label className="block text-sm font-semibold text-slate-700">
+                {t("Follow-up 2")}
+                <textarea
+                  value={draftFields.follow_up_2}
+                  onChange={(event) => setDraftFields((current) => ({ ...current, follow_up_2: event.target.value }))}
+                  className="mt-2 min-h-28 w-full rounded-md border border-slate-300 bg-white p-3 text-sm leading-6"
+                />
+              </label>
+            </div>
+            <div className="flex flex-col gap-2 min-[430px]:flex-row">
+              <PrimaryButton onClick={saveDraftEdits} disabled={savingDraft || sending}>{savingDraft ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {t("Save email edits")}</PrimaryButton>
+              <SecondaryButton onClick={() => {
+                setDraftFields(editableDraftFields(draft));
+                setEditingDraft(false);
+                setError("");
+                setStatus(t("Returned to the saved draft."));
+              }} disabled={savingDraft || sending}>{t("Cancel editing")}</SecondaryButton>
+            </div>
+          </div>
+        ) : (
+          <>
+            <h3 className="mt-2 font-bold text-ink">{draft.subject}</h3>
+            {draft.preview ? <p className="mt-2 rounded-lg bg-white p-3 text-sm font-semibold text-slate-700">{draft.preview}</p> : null}
+            <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{draft.body}</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="whitespace-pre-line rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 1")}:</span> {cleanGeneratedText(draft.follow_up_1 || followUps?.no_open?.[0]) || t(unavailable)}</div>
+              <div className="whitespace-pre-line rounded-lg bg-white p-3 text-sm"><span className="font-bold">{t("Follow-up 2")}:</span> {cleanGeneratedText(draft.follow_up_2 || followUps?.opened?.[0]) || t(unavailable)}</div>
+            </div>
+          </>
+        )}
       </section>}
 
       {sendConfirmOpen && draft?.delivery_status === "approved" && <section className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -1953,8 +2089,9 @@ function OpportunityCard({
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Run all missing steps" : "Refresh AI research")}</PrimaryButton>
-        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve email")}</SecondaryButton>
-        <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || senderLoading || draft.delivery_status !== "approved"}>{sending || senderLoading ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
+        <SecondaryButton onClick={() => setEditingDraft(true)} disabled={busy || !draft || sending || savingDraft || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{savingDraft ? <Loader2 className="animate-spin" size={17} /> : <FileText size={17} />} {t("Edit email")}</SecondaryButton>
+        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || savingDraft || editingDraft || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve email")}</SecondaryButton>
+        <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || savingDraft || editingDraft || senderLoading || draft.delivery_status !== "approved"}>{sending || senderLoading ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </OpportunityCardShell>
   );
@@ -2960,9 +3097,9 @@ export function LeadFinderPage() {
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-sm font-black uppercase tracking-wide text-brand">{t("AI Sales Workspace")}</p>
+                <p className="text-sm font-black uppercase tracking-wide text-brand">{t("AI Outreach Workspace")}</p>
                 <h2 className="mt-1 text-2xl font-black tracking-tight text-ink">{t("Complete the full sales workflow without leaving this workspace.")}</h2>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Review AI summary, decision maker, opportunity score, buying intent, ready email, follow-up, CRM stage, and then move to the next lead from the same page.")}</p>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Open one lead, review AI summary and decision maker, edit and send the ready email, schedule follow-up, move the CRM stage, and then open the next lead from the same page.")}</p>
               </div>
               <div className="flex flex-col gap-2 sm:items-end">
                 {nextWorkflowLead?.crm_company_id ? <button type="button" onClick={() => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "")} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Return to Next Lead")} <ArrowRight size={16} /></button> : null}
@@ -2970,7 +3107,7 @@ export function LeadFinderPage() {
               </div>
             </div>
             <div className="mt-5">
-              {workflowLoading && !activeWorkflowCompany ? <LoadingSkeleton title="Loading company workflow" /> : activeWorkflowCompany ? <CrmCompanyCard company={activeWorkflowCompany} api={api} highlighted /> : <EmptyState title="Select one lead to continue the workflow" copy="Open a company from the lead cards above. The full AI Sales Workspace will load here without page switching." />}
+              {workflowLoading && !activeWorkflowCompany ? <LoadingSkeleton title="Loading company workflow" /> : activeWorkflowCompany ? <CrmCompanyCard company={activeWorkflowCompany} api={api} highlighted onOpenNextLead={nextWorkflowLead?.crm_company_id ? () => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "") : undefined} nextLeadName={nextWorkflowLead?.company || ""} /> : <EmptyState title="Select one lead to continue the workflow" copy="Open a company from the lead cards above. The full AI Outreach Workspace will load here without page switching." />}
             </div>
           </section>
         </div>
@@ -3669,7 +3806,7 @@ function contactConfidenceLabel(confidence: CrmContact["confidence"], t: (key: s
   return t("Confidence: {value}").replace("{value}", value);
 }
 
-function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCompany; api: ApiFn; highlighted?: boolean }) {
+function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nextLeadName = "" }: { company: CrmCompany; api: ApiFn; highlighted?: boolean; onOpenNextLead?: () => void; nextLeadName?: string }) {
   const { t, locale } = useI18n();
   const [current, setCurrent] = useState(company);
   const [stageValue, setStageValue] = useState(company.crm_stage);
@@ -3918,6 +4055,19 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     : opportunityScore >= 50
       ? t("Probably, after one quick review")
       : t("Not yet, collect more evidence first");
+  const workspaceFlow = [
+    { label: "Open Lead", status: "completed" as const },
+    { label: "Review AI Summary", status: displayCurrent.ai_summary || displayCurrent.opportunity_analysis ? "completed" as const : "active" as const },
+    { label: "Review Decision Maker", status: decisionMaker.name !== t("Decision maker not confirmed") ? "completed" as const : "pending" as const },
+    { label: "Review Buying Intent", status: buyingIntentScore > 0 ? "completed" as const : "pending" as const },
+    { label: "Review Opportunity Score", status: opportunityScore > 0 ? "completed" as const : "pending" as const },
+    { label: "Review Ready Email", status: currentDraft ? "completed" as const : "pending" as const },
+    { label: "Edit Email", status: currentDraft ? (currentDraft.delivery_status === "approved" || currentDraft.delivery_status === "sent" ? "completed" as const : "active" as const) : "pending" as const },
+    { label: "Send Email", status: currentSentAt ? "completed" as const : currentDraft?.delivery_status === "approved" ? "active" as const : "pending" as const },
+    { label: "Schedule Follow-up", status: currentSentAt ? (current.notes.length || current.replied_at ? "completed" as const : "active" as const) : "pending" as const },
+    { label: "Move CRM Stage", status: current.crm_stage !== "New Lead" && current.crm_stage !== "Qualified" ? "completed" as const : currentSentAt ? "active" as const : "pending" as const },
+    { label: "Open Next Lead", status: onOpenNextLead ? ((currentSentAt || current.replied_at || current.crm_stage === "Meeting Scheduled" || current.crm_stage === "Won" || current.crm_stage === "Lost") ? "active" as const : "pending" as const) : "pending" as const }
+  ];
 
   function applyCompanyUpdate(updatedCompany: CrmCompany) {
     setCurrent(updatedCompany);
@@ -3947,16 +4097,40 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     }
   }
 
-  async function prepareMeeting() {
-    const template = t("Meeting note template").replace("{company}", current.name);
-    if (!noteBody.trim()) {
-      setNoteBody(template);
-      window.setTimeout(() => noteTextareaRef.current?.focus(), 0);
+  function scheduleFollowUp() {
+    const timelineSuggestions = safeArray(displayCurrent.ai_sales_timeline?.steps)
+      .map((step) => String(step?.reminder || step?.action || "").trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    const strategySuggestions = safeArray(displayCurrent.ai_outreach_strategy?.follow_up_schedule)
+      .map((step) => String(step || "").trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    const draftSuggestions = [cleanGeneratedText(currentDraft?.follow_up_1), cleanGeneratedText(currentDraft?.follow_up_2)].filter(Boolean);
+    const suggestions = uniqueStrings([...timelineSuggestions, ...strategySuggestions, ...draftSuggestions]).slice(0, 3);
+    if (!suggestions.length && !currentSentAt && !currentDraft) {
+      setActionError(t("Generate or review the first email before scheduling follow-up."));
+      return;
     }
-    const updated = await moveStage("Meeting Scheduled");
-    if (updated) {
-      setActionNotice(t("Meeting step prepared. Add the date, time and calendar link in the note, then save it."));
-    }
+    const template = [
+      `${t("Follow-up plan for")} ${current.name}`,
+      currentDraft?.subject ? `${t("Latest email")}: ${currentDraft.subject}` : "",
+      currentSentAt ? `${t("Initial send")}: ${formatDateTime(currentSentAt)}` : "",
+      "",
+      t("Suggested follow-up steps"),
+      ...(suggestions.length ? suggestions.map((step, index) => `${index + 1}. ${step}`) : [t("1. Add the owner, due date and next message before sending or following up.")]),
+      "",
+      `${t("Owner")}:`,
+      `${t("Due date")}:`,
+      `${t("Expected result")}:`
+    ].filter(Boolean).join("\n");
+    setNoteBody(template);
+    setActionError("");
+    setActionNotice(t("Follow-up plan added to notes. Confirm the owner and due date, then update the CRM stage when the outcome changes."));
+    window.setTimeout(() => {
+      noteTextareaRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      noteTextareaRef.current?.focus();
+    }, 0);
   }
 
   async function addNote(event: FormEvent<HTMLFormElement>) {
@@ -4192,6 +4366,16 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
 
         <div className="mt-5 grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
           <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex flex-wrap gap-2">
+              {workspaceFlow.map((step) => (
+                <span
+                  key={step.label}
+                  className={`inline-flex min-h-9 items-center justify-center rounded-full border px-3 text-xs font-black ${step.status === "completed" ? "border-teal-200 bg-teal-50 text-brand" : step.status === "active" ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-500"}`}
+                >
+                  {t(step.label)}
+                </span>
+              ))}
+            </div>
             <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("1. Executive Summary")}</p>
             <h3 className="mt-2 text-2xl font-black text-slate-900">{verdict}</h3>
             <p className="mt-3 text-sm leading-7 text-slate-700">{executiveSummary}</p>
@@ -4614,12 +4798,34 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
             {current.lead_id ? (
               <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <summary className="cursor-pointer text-sm font-black text-ink">{t("Open email review and sending controls")}</summary>
-                <p className="mt-2 text-sm leading-6 text-slate-600">{t("Use this only when you are ready to review, approve or send. Nothing is sent without confirmation.")}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600">{t("Use this to review the ready email, edit it in place, approve it, and then send it without leaving the workspace.")}</p>
                 <div className="mt-4">
                   <OpportunityCard key={`${current.id}:${currentDraft?.id || "no-draft"}:${currentDraft?.delivery_status || ""}`} lead={lead} api={api} onCompanyUpdated={applyCompanyUpdate} initialDraft={currentDraft} />
                 </div>
               </details>
             ) : <p className="rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">{t("Reconnect this company to a lead before generating outreach.")}</p>}
+          </div>
+          <div className="mt-5 grid gap-4 lg:grid-cols-2">
+            <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Follow-up plan")}</p>
+              <div className="mt-3 space-y-2 text-sm text-slate-700">
+                {uniqueStrings([
+                  ...safeArray(displayCurrent.ai_outreach_strategy?.follow_up_schedule).map(String),
+                  ...safeArray(displayCurrent.ai_sales_timeline?.steps).map((step) => String(step?.action || step?.reminder || ""))
+                ]).slice(0, 4).map((item) => (
+                  <p key={item} className="rounded-xl bg-slate-50 p-3 font-semibold">{t(item)}</p>
+                ))}
+                {!uniqueStrings([
+                  ...safeArray(displayCurrent.ai_outreach_strategy?.follow_up_schedule).map(String),
+                  ...safeArray(displayCurrent.ai_sales_timeline?.steps).map((step) => String(step?.action || step?.reminder || ""))
+                ]).length ? <p className="rounded-xl bg-slate-50 p-3">{t("Generate the outreach draft to unlock the suggested follow-up sequence.")}</p> : null}
+              </div>
+            </article>
+            <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Execution next step")}</p>
+              <p className="mt-3 text-lg font-black text-slate-900">{t(nextAction)}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{t("Schedule the follow-up in notes, move the CRM stage when the situation changes, and then continue with the next lead from this same workspace.")}</p>
+            </article>
           </div>
         </WorkspaceSection>
 
@@ -4658,8 +4864,9 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
           <div className="mt-4 grid gap-2">
             <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Phone size={17} /> {t("Contact Now")}</a>
             <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> {t("Review Email")}</a>
-            <button type="button" onClick={prepareMeeting} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} {t("Schedule Follow-up")}</button>
+            <button type="button" onClick={scheduleFollowUp} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><CalendarDays size={17} /> {t("Schedule Follow-up")}</button>
             <Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Rocket size={17} /> {t("Add to Campaign")}</Link>
+            {onOpenNextLead ? <button type="button" onClick={onOpenNextLead} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-slate-900 px-4 text-sm font-bold text-white"><ArrowRight size={17} /> {t(nextLeadName ? `Open Next Lead: ${nextLeadName}` : "Open Next Lead")}</button> : null}
           </div>
         </section>
 

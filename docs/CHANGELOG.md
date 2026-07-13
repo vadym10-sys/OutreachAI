@@ -3,6 +3,14 @@
 ## 2026-07-13
 
 ### feat(frontend)
+- Completed the AI Outreach Workspace epic inside the existing embedded Leads workflow.
+- Added inline draft editing in the outreach workspace using the existing `PATCH /api/emails/{email_id}` endpoint.
+- Kept the existing approve-before-send safety flow while reducing clicks between review, edit, approve, and send.
+- Separated follow-up scheduling from CRM stage movement so both actions can happen independently inside one workspace.
+- Added direct next-lead continuation from the embedded company workspace.
+- Added a compact outbound workflow rail to the top of the company workspace and updated visible workspace copy to AI Outreach Workspace.
+
+### feat(frontend)
 - Built a reusable OutreachAI design system layer in `apps/web/components/design-system.tsx`.
 - Added standardized primitives for surfaces, buttons, badges, page heroes, metrics, section panels, AI panels, timeline rails, loading states, empty states, and error states.
 - Added reusable opportunity, company, and decision-maker card shells.

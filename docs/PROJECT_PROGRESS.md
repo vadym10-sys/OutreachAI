@@ -1,5 +1,45 @@
 # Project Progress
 
+## 2026-07-13 - AI Outreach Workspace Epic (Frontend Only)
+
+### Scope Completed
+- Focused only on outbound customer-value workflow improvements.
+- Kept all changes frontend-only and reused existing backend endpoints and AI outputs.
+- Extended the existing embedded company workspace instead of starting another design-system pass.
+
+### Workflow Completed In One Workspace
+- Open Lead
+- Review AI Summary
+- Review Decision Maker
+- Review Buying Intent
+- Review Opportunity Score
+- Review Ready Email
+- Edit Email
+- Approve Email
+- Send Email
+- Schedule Follow-up
+- Move CRM Stage
+- Open Next Lead
+
+### Customer Experience Improvements
+- Added true inline email editing inside the existing outreach review flow using the existing draft update endpoint.
+- Kept human approval in place before sending so the workflow stays safe while reducing page switching.
+- Split follow-up scheduling from CRM stage movement so both actions can happen independently inside the same company workspace.
+- Added an explicit next-lead action directly inside the embedded workspace.
+- Added a compact workflow rail at the top of the embedded company workspace so the rep can see the full outbound path at a glance.
+- Updated the embedded Leads workspace copy from AI Sales Workspace to AI Outreach Workspace.
+
+### Validation Status
+- Lint: passed (`npm run lint` in `apps/web`)
+- Build: passed (`npm run build` in `apps/web`)
+- Frontend tests: passed (`npm test -- --run` in `apps/web`)
+- Relevant e2e tests: passed
+  - `npm run e2e -- tests/dashboard/routes.spec.ts -g "(/dashboard/leads loads as a stable customer page|lead search shows saved CRM summary and keeps the result actionable|CRM pipeline opens the selected company workspace)" --reporter=line`
+
+### Notes
+- No backend, API, database, worker, or migration changes were required.
+- Existing unrelated backend changes in the repository remain untouched.
+
 ## 2026-07-13 - Design System Build-Out (Frontend Only)
 
 ### Scope Completed
