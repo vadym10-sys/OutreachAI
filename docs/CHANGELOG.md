@@ -1,6 +1,21 @@
 # Changelog
 
 ### fix(api)
+- Tightened API readiness so production now reports `degraded` when required runtime environment variables or PostgreSQL connectivity are missing.
+- Added explicit startup logs for required environment validation and PostgreSQL connectivity checks.
+
+### test(api)
+- Added regressions for production readiness failures caused by missing environment variables and non-PostgreSQL database connectivity.
+- Added a startup logging regression that confirms validation logs are emitted before fail-fast database errors.
+
+### fix(api)
+- Fixed the Railway worker deploy profile so the worker service explicitly starts with `OUTREACHAI_PROCESS_ROLE=worker`.
+- Prevented the worker profile from accidentally booting the API process at launch.
+
+### test(api)
+- Added a regression that verifies `app.serve.main()` dispatches to the worker entrypoint when the worker role is set.
+
+### fix(api)
 - Hardened billing status resolution so ended subscription periods now resolve as `expired` instead of remaining active.
 - Added explicit billing lifecycle coverage for renewal, downgrade, cancel, and expiry transitions.
 

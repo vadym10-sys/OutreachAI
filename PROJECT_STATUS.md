@@ -2,6 +2,25 @@
 
 Date: 2026-07-13
 
+## Latest Update - API Startup and Readiness Behavior
+
+- Tightened the API readiness path so production now reports `degraded` whenever PostgreSQL connectivity or required runtime environment variables are unavailable or invalid.
+- Added explicit startup logs for required environment validation and PostgreSQL connectivity checks.
+- Added regression coverage for production readiness failures caused by missing environment variables and non-PostgreSQL database connectivity.
+- Validation completed for this backend launch-hardening fix:
+	- `PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'readiness_returns_503_when_postgresql_is_unavailable_in_production or readiness_returns_503_when_required_environment_is_missing_in_production or startup_logs_validation_steps_and_fails_fast_on_database_error or liveness_and_readiness_are_public or validate_required_environment_fails_fast_in_production or validate_database_connectivity_requires_postgresql_in_production'` in `apps/api`: passed
+
+This ensures the API never reports itself as ready when critical production dependencies are unavailable.
+
+## Latest Update - Backend Stability in Core Flows (Worker Process Role)
+
+- Fixed the Railway worker deploy profile so it explicitly starts `app.serve` with `OUTREACHAI_PROCESS_ROLE=worker`, preventing the worker service from booting the API process by mistake.
+- Added a regression test that proves `app.serve.main()` dispatches to the worker entrypoint when the worker role is set.
+- Validation completed for this backend stability fix:
+	- `PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'serve_main_routes_worker_role_to_worker_entrypoint or validate_database_connectivity_requires_postgresql_in_production'` in `apps/api`: passed
+
+This closes a real production launch issue in the worker deployment path and keeps the API and worker roles separated at startup.
+
 ## Latest Update - New Customer Onboarding and Workspace Setup
 
 - Completed a production-ready dedicated onboarding setup surface at `/onboarding` for first-run customer workspace configuration.
@@ -104,7 +123,7 @@ OutreachAI has strong frontend momentum, a broad backend feature surface, and cr
 ### Workers
 - Enrichment worker pipeline with claim, retry, and failure handling
 - Embedded background scheduler threads for enrichment, nightly prioritization, and company monitoring
-- Dedicated worker deploy profile present
+- Dedicated worker deploy profile now sets `OUTREACHAI_PROCESS_ROLE=worker` explicitly
 
 ### AI
 - OpenAI-backed enrichment and personalization paths
@@ -163,6 +182,7 @@ OutreachAI has strong frontend momentum, a broad backend feature surface, and cr
 ### Platform and Reliability
 - Health, liveness, and readiness endpoints
 - Startup environment validation and connectivity checks
+- Readiness now fails closed in production when required env vars or PostgreSQL connectivity are unavailable
 - CI pipeline covering lint, typecheck, test, build, and e2e
 - PostgreSQL schema and migration assets
 

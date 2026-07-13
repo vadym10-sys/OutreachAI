@@ -1,5 +1,32 @@
 # Project Progress
 
+## 2026-07-13 - API Startup and Readiness Behavior
+
+### Scope Completed
+- Tightened `/api/ready` so production now returns `503` when PostgreSQL connectivity or required runtime environment variables are unavailable or invalid.
+- Added explicit startup logging for required environment validation and PostgreSQL connectivity checks.
+- Added regression coverage for the healthy path plus two production failure modes: missing runtime environment and non-PostgreSQL database connectivity.
+
+### Validation Status
+- Backend startup/readiness regression slice: passed (`PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'readiness_returns_503_when_postgresql_is_unavailable_in_production or readiness_returns_503_when_required_environment_is_missing_in_production or startup_logs_validation_steps_and_fails_fast_on_database_error or liveness_and_readiness_are_public or validate_required_environment_fails_fast_in_production or validate_database_connectivity_requires_postgresql_in_production'` in `apps/api`)
+
+### Notes
+- Readiness now fails closed instead of reporting healthy when critical production dependencies are unavailable.
+- Startup validation still aborts the app on missing required environment or invalid database connectivity.
+
+## 2026-07-13 - Backend Stability in Core Flows (Worker Process Role)
+
+### Scope Completed
+- Fixed the Railway worker deploy profile so it now starts `app.serve` with `OUTREACHAI_PROCESS_ROLE=worker`.
+- Added regression coverage proving the serve entrypoint dispatches to the worker main loop when the worker role is set.
+
+### Validation Status
+- Backend worker-role regression: passed (`PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'serve_main_routes_worker_role_to_worker_entrypoint or validate_database_connectivity_requires_postgresql_in_production'` in `apps/api`)
+
+### Notes
+- This closes a production launch issue where the worker profile could otherwise start the API process instead of the worker loop.
+- The API and worker process roles are now separated explicitly in the Railway worker profile.
+
 ## 2026-07-13 - Billing Hardening (Backend Lifecycle Coverage)
 
 ### Scope Completed

@@ -18,9 +18,9 @@ from app.api.routes import router as api_router
 from app.api.usage import router as usage_router
 from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
-from app.core.database import Base, ensure_runtime_schema, get_engine, get_sessionmaker
+from app.core.database import ensure_runtime_schema, get_engine, get_sessionmaker
 from app.core.observability import init_sentry, sentry_transaction_name, set_request_context
-from app.core.reliability import required_environment_status, validate_required_environment
+from app.core.reliability import required_environment_issues, required_environment_status, validate_database_connectivity, validate_required_environment
 from app.core.security import authenticated_user_id_from_authorization, rate_limit
 from app.models.entities import AuditLog, Workspace
 from app.services.backups import database_backups_operational
@@ -214,23 +214,29 @@ def api_liveness() -> dict[str, str]:
 @app.get("/api/ready")
 def api_readiness() -> JSONResponse:
     env_status = required_environment_status(settings)
-    missing_env = [name for name, loaded in env_status.items() if not loaded]
+    env_issues = required_environment_issues(settings)
     database_ready = False
     database_backups_configured = False
     warnings: list[str] = []
+    critical_failures: list[str] = []
     try:
-        with get_engine().connect() as connection:
-            connection.execute(text("SELECT 1"))
+        validate_database_connectivity(settings)
         database_ready = True
         with get_sessionmaker()() as db:
             database_backups_configured = database_backups_operational(db, settings)
     except Exception as exc:
-        logger.exception("Readiness database check failed")
+        logger.exception("Readiness database check failed: %s", exc)
         sentry_sdk.capture_exception(exc)
+        critical_failures.append(str(exc))
 
-    ready = database_ready and (not missing_env or not settings.strict_startup_env_validation)
+    if env_issues:
+        critical_failures.append(f"Missing or invalid required environment: {', '.join(env_issues)}")
+
+    ready = database_ready and not env_issues
     if not database_backups_configured:
         warnings.append("database_backups_not_confirmed")
+    if critical_failures:
+        warnings.extend(critical_failures)
     status_code = 200 if ready else 503
     return JSONResponse(
         status_code=status_code,
@@ -240,6 +246,7 @@ def api_readiness() -> JSONResponse:
             "required_environment": env_status,
             "database_backups_configured": database_backups_configured,
             "warnings": warnings,
+            "critical_failures": critical_failures,
         },
     )
 
@@ -261,6 +268,7 @@ def startup() -> None:
     try:
         logger.info("Starting OutreachAI API app_env=%s", settings.app_env)
         validate_required_environment(settings)
+        logger.info("Startup validation: required environment verified")
         logger.info(
             "Startup diagnostics: registered routes=%s",
             ", ".join(f"{route.path}:{','.join(sorted(route.methods or []))}" for route in app.routes)
@@ -274,9 +282,10 @@ def startup() -> None:
             return
 
         engine = get_engine()
-        Base.metadata.create_all(bind=engine)
+        validate_database_connectivity(settings)
+        logger.info("Startup validation: PostgreSQL connectivity verified")
         ensure_runtime_schema(engine)
-        logger.info("Database tables verified")
+        logger.info("Database schema verified")
         with get_sessionmaker()() as db:
             backup_ready = database_backups_operational(db, settings)
         if not backup_ready:
@@ -284,9 +293,10 @@ def startup() -> None:
         from app.jobs.worker import start_embedded_enrichment_worker
 
         start_embedded_enrichment_worker()
-    except Exception:
-        logger.exception("Startup initialization failed; API will keep running so /api/health remains available")
+    except Exception as exc:
+        logger.exception("Startup initialization failed; aborting application startup")
         traceback.print_exc(file=sys.stdout)
+        raise RuntimeError("Startup initialization failed") from exc
 
 
 @app.on_event("shutdown")

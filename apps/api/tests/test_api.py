@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import tempfile
 import os
 import time
@@ -37,15 +38,17 @@ os.environ["GOOGLE_MAPS_API_KEY"] = "google_maps_test"
 os.environ["OPENAI_API_KEY"] = "openai_test"
 os.environ["RESEND_API_KEY"] = "resend_test"
 os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
+os.environ["CLERK_SECRET_KEY"] = "clerk_test"
+os.environ["CLERK_JWT_ISSUER"] = "https://example.clerk.accounts.dev"
 
-from app.core.database import Base, get_engine, get_sessionmaker  # noqa: E402
+from app.core.database import Base, get_engine, get_sessionmaker, initialize_database_schema  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
-from app.core.reliability import database_backup_configured  # noqa: E402
+from app.core.reliability import database_backup_configured, validate_database_connectivity, validate_required_environment  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AISalesEmployee, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -55,9 +58,10 @@ from app.services.backups import backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
 from app.services.emailer import EmailProviderRequestError  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
+import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
 
-Base.metadata.create_all(bind=get_engine())
+initialize_database_schema(get_engine())
 
 client = TestClient(app)
 AUTH = {"Authorization": "Bearer dev"}
@@ -170,7 +174,6 @@ def test_deep_contact_search_endpoint_saves_verified_decision_maker(monkeypatch)
     assert payload["company"]["deep_contact_search"]["verified_email"] == "jane@deepcontact.example"
     assert "Next.js" in payload["company"]["technologies"]
 
-
 def test_website_analysis_passes_requested_language_to_ai(monkeypatch) -> None:
     from app.services import ai as ai_service
 
@@ -241,6 +244,68 @@ def _auth_test_keypair() -> tuple[bytes, dict]:
     return private_pem, {"keys": [jwk]}
 
 
+def test_initialize_database_schema_creates_tables_for_sqlite(tmp_path) -> None:
+    from sqlalchemy import create_engine, inspect
+
+    db_path = tmp_path / "migration-bootstrap.sqlite"
+    engine = create_engine(f"sqlite:///{db_path}")
+    initialize_database_schema(engine)
+
+    inspector = inspect(engine)
+    assert "users" in inspector.get_table_names()
+
+
+def test_validate_required_environment_fails_fast_in_production(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
+
+    settings = Settings(app_env="production", strict_startup_env_validation=False, required_runtime_envs="DATABASE_URL,CLERK_SECRET_KEY")
+
+    with pytest.raises(RuntimeError, match="CLERK_SECRET_KEY"):
+        validate_required_environment(settings)
+
+
+def test_validate_required_environment_rejects_placeholder_values_in_production(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CLERK_SECRET_KEY", "dev")
+    monkeypatch.setenv("CLERK_JWT_ISSUER", "https://example.clerk.accounts.dev")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./outreachai.db")
+
+    settings = Settings(app_env="production", strict_startup_env_validation=False, required_runtime_envs="DATABASE_URL,CLERK_SECRET_KEY,CLERK_JWT_ISSUER")
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL|CLERK_SECRET_KEY|CLERK_JWT_ISSUER"):
+        validate_required_environment(settings)
+
+
+def test_validate_database_connectivity_requires_postgresql_in_production(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+
+    settings = Settings(app_env="production", strict_startup_env_validation=False, database_url="sqlite:///./outreachai.db")
+
+    with pytest.raises(RuntimeError, match="PostgreSQL"):
+        validate_database_connectivity(settings)
+
+
+def test_serve_main_routes_worker_role_to_worker_entrypoint(monkeypatch) -> None:
+    monkeypatch.setenv("OUTREACHAI_PROCESS_ROLE", "worker")
+
+    called = {"worker": False, "uvicorn": False}
+
+    def fake_worker_main() -> None:
+        called["worker"] = True
+
+    def fake_uvicorn_run(*args, **kwargs) -> None:
+        called["uvicorn"] = True
+
+    monkeypatch.setattr("app.jobs.worker.main", fake_worker_main)
+    monkeypatch.setattr(serve_module.uvicorn, "run", fake_uvicorn_run)
+
+    serve_module.main()
+
+    assert called["worker"] is True
+    assert called["uvicorn"] is False
+
+
 def test_health() -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
@@ -263,6 +328,47 @@ def test_liveness_and_readiness_are_public() -> None:
     assert "database_backups_not_confirmed" in payload["warnings"]
 
 
+def test_readiness_returns_503_when_postgresql_is_unavailable_in_production(monkeypatch) -> None:
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        Settings(app_env="production", strict_startup_env_validation=False, database_url="sqlite:///./outreachai.db"),
+    )
+
+    response = client.get("/api/ready")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["status"] == "degraded"
+    assert payload["database"] is False
+    assert any("PostgreSQL" in warning for warning in payload["warnings"])
+    assert any("PostgreSQL" in failure for failure in payload["critical_failures"])
+
+
+def test_readiness_returns_503_when_required_environment_is_missing_in_production(monkeypatch) -> None:
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        Settings(app_env="production", strict_startup_env_validation=False, required_runtime_envs="DATABASE_URL,CLERK_SECRET_KEY", database_url="postgresql+psycopg://db.example/outreachai"),
+    )
+    monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
+    monkeypatch.setattr(main_module, "validate_database_connectivity", lambda settings: None)
+
+    response = client.get("/api/ready")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["status"] == "degraded"
+    assert payload["database"] is True
+    assert payload["required_environment"]["CLERK_SECRET_KEY"] is False
+    assert any("CLERK_SECRET_KEY" in warning for warning in payload["warnings"])
+    assert any("CLERK_SECRET_KEY" in failure for failure in payload["critical_failures"])
+
+
 def test_database_backup_readiness_requires_strict_true() -> None:
     assert database_backup_configured(Settings(database_backups_enabled="true")) is True
     assert database_backup_configured(Settings(database_backups_enabled="TRUE")) is True
@@ -281,6 +387,29 @@ def test_backup_status_is_owner_only_and_reports_not_configured() -> None:
     assert payload["backups_enabled"] is False
     assert payload["provider"] == "not_configured"
     assert payload["restore_verified"] is False
+
+
+def test_startup_logs_validation_steps_and_fails_fast_on_database_error(monkeypatch, caplog) -> None:
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        Settings(app_env="production", strict_startup_env_validation=False, database_url="sqlite:///./outreachai.db"),
+    )
+    monkeypatch.setattr(main_module, "validate_required_environment", lambda settings: [])
+    monkeypatch.setattr(main_module, "validate_database_connectivity", lambda settings: (_ for _ in ()).throw(RuntimeError("Production startup requires PostgreSQL")))
+    monkeypatch.setattr(main_module, "ensure_runtime_schema", lambda engine: None)
+    monkeypatch.setattr(main_module, "database_backups_operational", lambda db, settings: True)
+    monkeypatch.setattr("app.jobs.worker.start_embedded_enrichment_worker", lambda: None)
+
+    with caplog.at_level(logging.INFO, logger="outreachai.api"):
+        with pytest.raises(RuntimeError, match="Startup initialization failed"):
+            main_module.startup()
+
+    assert "Starting OutreachAI API app_env=production" in caplog.text
+    assert "Startup validation: required environment verified" in caplog.text
+    assert "Startup initialization failed; aborting application startup" in caplog.text
 
 
 def test_manual_backup_fails_safely_when_provider_is_missing() -> None:
@@ -1316,6 +1445,27 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent_payload["reply_to"] == "reply@usage-email.example"
 
 
+def test_workspace_app_company_creation_queues_enrichment_job() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-company-enrichment-queue@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Enrichment Queue", "website": "https://usage-enrichment-queue.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        lead = db.scalar(select(Lead).where(Lead.company == "Usage Enrichment Queue"))
+        assert lead is not None
+        job = db.scalar(select(EnrichmentJob).where(EnrichmentJob.workspace_id == lead.workspace_id, EnrichmentJob.lead_id == lead.id))
+        assert job is not None
+        assert job.status == "pending"
+        assert job.job_type == "company_enrichment"
+    finally:
+        db.close()
+
+
 def test_workspace_app_company_enrichment_restart_and_cancel(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-controls@example.com"}
     company_response = client.post(
@@ -1345,6 +1495,74 @@ def test_workspace_app_company_enrichment_restart_and_cancel(monkeypatch) -> Non
     assert cancel_payload["status"] == "success"
     assert cancel_payload["company"]["workflow_stages"]["website_analysis"] == "waiting"
     assert cancel_payload["company"]["workflow_stages"]["decision_maker"] == "waiting"
+
+
+def test_workspace_app_monitoring_returns_only_changes_and_regenerates_report(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-monitoring@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Monitor Co", "website": "https://usage-monitor.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = UUID(company_response.json()["company"]["id"])
+
+    db = get_sessionmaker()()
+    try:
+        company = db.get(Company, company_id)
+        assert company is not None
+        lead = db.get(Lead, company.lead_id)
+        assert lead is not None
+        company.metadata_json = {
+            **(company.metadata_json or {}),
+            "company_intelligence": {
+                "report": {
+                    "competitors": {"value": ["Legacy Competitor", "New Rival Inc"]},
+                }
+            },
+            "ai_live_buying_signals": {
+                "generated_at": datetime.utcnow().isoformat(),
+                "latest_changes": [],
+                "change_timeline": [],
+                "snapshot": {
+                    "new_competitors": ["Legacy Competitor"],
+                },
+            },
+            "ai_revenue_engine_report": {"source_fingerprint": "old"},
+        }
+        db.commit()
+    finally:
+        db.close()
+
+    called = {"count": 0}
+
+    def fake_refresh(db, user_id, workspace, lead, company=None):
+        called["count"] += 1
+        target = company
+        assert target is not None
+        target.metadata_json = {
+            **(target.metadata_json or {}),
+            "ai_revenue_engine_report": {
+                "source_fingerprint": "new",
+                "generated_at": datetime.utcnow().isoformat(),
+            },
+        }
+        return {}
+
+    monkeypatch.setattr("app.api.usage._refresh_company_intelligence", fake_refresh)
+    run_response = client.post("/api/workspace-app/monitoring/run", headers=headers)
+    assert run_response.status_code == 200
+    payload = run_response.json()
+    assert payload["status"] == "success"
+    assert payload["changed_companies"] >= 1
+    assert payload["changes"]
+    monitored = next(item for item in payload["changes"] if item["company_id"] == str(company_id))
+    assert monitored["report_regenerated"] is True
+    assert monitored["changes"]
+    change = monitored["changes"][0]
+    assert change["change_type"] == "new_competitors"
+    assert change["added"] == ["New Rival Inc"]
+    assert called["count"] >= 1
 
 
 def test_workspace_app_enrichment_queue_persists_and_cancels_job() -> None:
@@ -1406,7 +1624,24 @@ def test_workspace_app_complete_opportunity_prepares_research_contact_and_review
             {
                 "ai_summary": "Usage Complete builds construction services for Berlin B2B buyers.",
                 "opportunity_analysis": "Strong fit because the company can benefit from partner discovery.",
+                "products": ["Construction services", "B2B partnership sourcing"],
+                "icp": "Construction firms needing partner discovery in Berlin.",
+                "estimated_company_size": "50-100 employees",
                 "buying_signals": ["Public B2B footprint", "Clear local market"],
+                "hiring_signals": ["Hiring for sales roles"],
+                "jobs_signal": "Hiring SDR and account executive roles in Berlin.",
+                "funding_signal": "Raised a seed round in 2025.",
+                "pricing_signals": ["Introduced new pricing plans for enterprise customers"],
+                "blog_news_activity": ["Published product update blog posts this month"],
+                "technologies": ["WordPress", "HubSpot"],
+                "competitors": ["Local construction brokers"],
+                "pain_points": ["Needs partner discovery"],
+                "best_outreach_angle": "Offer qualified B2B partnership leads.",
+                "recommended_decision_maker": "Founder or growth lead",
+                "personalization_bullets": [
+                    "Already has a public-facing site for outreach",
+                    "Shows local market activity in Berlin",
+                ],
                 "risks": ["No reply history yet"],
                 "suggested_offer": "Offer qualified B2B partnership leads.",
                 "expected_reply_rate": "10-14%",
@@ -1454,6 +1689,419 @@ def test_workspace_app_complete_opportunity_prepares_research_contact_and_review
     assert data["company"]["opportunity_analysis"] == "Strong fit because the company can benefit from partner discovery."
     assert data["company"]["priority_score"] == 82
     intelligence = data["company"]["company_intelligence"]
+    assert intelligence["report"]["company_summary"]["value"] == "Usage Complete builds construction services for Berlin B2B buyers."
+    assert intelligence["report"]["products"]["value"] == ["Construction services", "B2B partnership sourcing"]
+    assert intelligence["report"]["icp"]["value"] == "Construction firms needing partner discovery in Berlin."
+    assert intelligence["report"]["estimated_company_size"]["value"] == "50-100 employees"
+    assert intelligence["report"]["buying_signals"]["value"] == ["Public B2B footprint", "Clear local market"]
+    assert intelligence["report"]["hiring_signals"]["value"] == ["Hiring for sales roles"]
+    assert intelligence["report"]["technology_stack"]["value"] == ["WordPress", "HubSpot"]
+    assert intelligence["report"]["competitors"]["value"] == ["Local construction brokers"]
+    assert intelligence["report"]["possible_pain_points"]["value"] == ["Needs partner discovery"]
+    assert intelligence["report"]["best_outreach_angle"]["value"] == "Offer qualified B2B partnership leads."
+    assert intelligence["report"]["recommended_decision_maker"]["value"] == "Founder or growth lead"
+    assert intelligence["report"]["personalization_bullets"]["value"] == [
+        "Already has a public-facing site for outreach",
+        "Shows local market activity in Berlin",
+    ]
+    assert intelligence["report"]["ai_confidence_score"]["value"] == 88
+    assert intelligence["report"]["company_summary"]["sources"]
+    buying_intent = intelligence["buying_intent"]
+    assert buying_intent["buying_signal_score"] > 0
+    assert buying_intent["urgency"] in {"watch", "low", "medium", "high"}
+    assert buying_intent["explanation"]
+    assert buying_intent["confidence"] > 0
+    assert buying_intent["recommended_outreach_timing"]
+    assert buying_intent["evidence"]
+    assert all(item.get("source_field") and item.get("value") for item in buying_intent["evidence"])
+    assert data["company"]["buying_signal_score"] == buying_intent["buying_signal_score"]
+    assert data["company"]["buying_signal_urgency"] == buying_intent["urgency"]
+    assert data["company"]["buying_signal_explanation"] == buying_intent["explanation"]
+    assert data["company"]["buying_signal_confidence"] == buying_intent["confidence"]
+    assert data["company"]["recommended_outreach_timing"] == buying_intent["recommended_outreach_timing"]
+    assert data["company"]["buying_signal_evidence"] == buying_intent["evidence"]
+    decision_intel = data["company"]["decision_maker_intelligence"]
+    assert decision_intel["profiles"]
+    top_profile = decision_intel["profiles"][0]
+    assert top_profile["name"] == "Eva Founder"
+    assert top_profile["title"] == "Founder"
+    assert top_profile["is_verified_contact"] is True
+    assert top_profile["why_best_decision_maker"]
+    assert top_profile["estimated_responsibilities"]
+    assert top_profile["probable_business_goals"]
+    assert top_profile["likely_kpis"]
+    assert top_profile["possible_pain_points"]
+    assert top_profile["communication_style"]
+    assert top_profile["preferred_outreach_angle"]
+    assert top_profile["recommended_first_sentence"]
+    assert top_profile["estimated_authority_level"] == "executive"
+    assert top_profile["confidence_score"] > 0
+    assert top_profile["evidence_used"]
+    assert all(item.get("source_field") and item.get("value") for item in top_profile["evidence_used"])
+    assert decision_intel["top_contact_id"] == top_profile["contact_id"]
+    assert data["company"]["contacts"]
+    matching_contact = next(item for item in data["company"]["contacts"] if item["name"] == "Eva Founder")
+    assert matching_contact["decision_maker_intelligence"]["contact_id"] == top_profile["contact_id"]
+    assert matching_contact["decision_maker_intelligence"]["confidence_score"] == top_profile["confidence_score"]
+    ranking = data["company"]["opportunity_ranking"]
+    assert isinstance(ranking, dict)
+    assert 0 <= ranking["overall_score"] <= 100
+    assert ranking["reasoning"]
+    assert ranking["top_positive_signals"]
+    assert ranking["recommended_next_action"]
+    assert 0 <= ranking["confidence"] <= 100
+    assert isinstance(ranking["factors"], dict)
+    assert ranking["factors"]["Buying Intent"] >= 0
+    assert ranking["factors"]["Decision Maker Quality"] >= 0
+    assert ranking["factors"]["Verified Contacts"] >= 0
+    assert data["company"]["overall_score"] == ranking["overall_score"]
+    assert data["company"]["reasoning"] == ranking["reasoning"]
+    assert data["company"]["top_positive_signals"] == ranking["top_positive_signals"]
+    assert data["company"]["top_negative_signals"] == ranking["top_negative_signals"]
+    assert data["company"]["recommended_next_action"] == ranking["recommended_next_action"]
+    assert data["company"]["confidence"] == ranking["confidence"]
+    outreach_strategy = data["company"]["ai_outreach_strategy"]
+    assert isinstance(outreach_strategy, dict)
+    assert outreach_strategy["why_contact_now"]
+    assert outreach_strategy["why_contact_now_evidence"]
+    assert outreach_strategy["best_timing"]
+    assert outreach_strategy["best_timing_evidence"]
+    assert outreach_strategy["best_communication_channel"] in {"Email", "LinkedIn", "Phone"}
+    assert outreach_strategy["best_communication_channel_evidence"]
+    assert outreach_strategy["best_email_length"]
+    assert outreach_strategy["best_email_length_evidence"]
+    assert outreach_strategy["best_subject_line"]
+    assert outreach_strategy["best_subject_line_evidence"]
+    assert outreach_strategy["first_sentence"]
+    assert outreach_strategy["first_sentence_evidence"]
+    assert outreach_strategy["strongest_value_proposition"]
+    assert outreach_strategy["strongest_value_proposition_evidence"]
+    assert outreach_strategy["strongest_pain_point"]
+    assert outreach_strategy["strongest_pain_point_evidence"]
+    assert outreach_strategy["expected_objections"]
+    assert outreach_strategy["expected_objections_evidence"]
+    assert outreach_strategy["cta"]
+    assert outreach_strategy["cta_evidence"]
+    assert outreach_strategy["follow_up_schedule"]
+    assert outreach_strategy["follow_up_schedule_evidence"]
+    assert 0 <= outreach_strategy["estimated_reply_probability"] <= 100
+    assert outreach_strategy["estimated_reply_probability_evidence"]
+    assert all(item.get("source_field") and item.get("value") for item in outreach_strategy["why_contact_now_evidence"])
+    assert all(item.get("source_field") and item.get("value") for item in outreach_strategy["best_subject_line_evidence"])
+    assert all(item.get("source_field") and item.get("value") for item in outreach_strategy["first_sentence_evidence"])
+    assert all(item.get("source_field") and item.get("value") for item in outreach_strategy["strongest_value_proposition_evidence"])
+    assert all(item.get("source_field") and item.get("value") for item in outreach_strategy["strongest_pain_point_evidence"])
+    assert outreach_strategy["decision_maker_strategies"]
+    dm_strategy = outreach_strategy["decision_maker_strategies"][0]
+    assert dm_strategy["contact_id"] == top_profile["contact_id"]
+    assert dm_strategy["best_subject_line"]
+    assert dm_strategy["first_sentence"]
+    assert dm_strategy["strongest_value_proposition"]
+    assert dm_strategy["strongest_pain_point"]
+    assert dm_strategy["expected_objections"]
+    assert dm_strategy["cta"]
+    assert 0 <= dm_strategy["estimated_reply_probability"] <= 100
+    assert dm_strategy["evidence"]
+    assert all(item.get("source_field") and item.get("value") for item in dm_strategy["evidence"])
+    competitor_intelligence = data["company"]["ai_competitor_intelligence"]
+    assert isinstance(competitor_intelligence, dict)
+    assert competitor_intelligence["competitors"]
+    assert competitor_intelligence["technologies"]
+    assert competitor_intelligence["positioning"]
+    assert competitor_intelligence["strengths"]
+    assert competitor_intelligence["weaknesses"]
+    assert competitor_intelligence["market_gaps"]
+    assert competitor_intelligence["opportunity_to_sell"]
+    company_timeline = data["company"]["ai_company_timeline"]
+    assert isinstance(company_timeline, dict)
+    assert isinstance(company_timeline.get("events"), list)
+    timeline_categories = [
+        "funding_events",
+        "hiring_events",
+        "technology_changes",
+        "website_changes",
+        "leadership_changes",
+        "new_locations",
+        "product_launches",
+        "partnerships",
+    ]
+    for category in timeline_categories:
+        assert category in company_timeline
+        assert isinstance(company_timeline.get(category), list)
+    timeline_events = company_timeline.get("events") or []
+    timeline_timestamps = [str(item.get("timestamp")) for item in timeline_events if isinstance(item, dict) and item.get("timestamp")]
+    assert timeline_timestamps == sorted(timeline_timestamps)
+    company_predictions = data["company"]["ai_company_predictions"]
+    assert isinstance(company_predictions, dict)
+    for prediction_key in ["estimated_arr", "company_maturity", "growth_probability", "sales_readiness"]:
+        prediction = company_predictions.get(prediction_key)
+        assert isinstance(prediction, dict)
+        assert 0 <= prediction["score"] <= 100
+        assert prediction["reasoning"]
+        assert 0 <= prediction["confidence"] <= 100
+    specialized_agents = data["company"]["ai_specialized_agents"]
+    assert isinstance(specialized_agents, dict)
+    for agent_key in [
+        "company_analyst",
+        "decision_maker_analyst",
+        "buying_signal_analyst",
+        "competitor_analyst",
+        "email_writer",
+        "sales_coach",
+    ]:
+        agent_payload = specialized_agents.get(agent_key)
+        assert isinstance(agent_payload, dict)
+        assert agent_payload["agent"]
+        assert isinstance(agent_payload.get("output"), dict)
+        assert 0 <= agent_payload["confidence"] <= 100
+    intermediate_reasoning = data["company"]["ai_agent_intermediate_reasoning"]
+    assert isinstance(intermediate_reasoning, dict)
+    assert "company_analyst" in intermediate_reasoning
+    assert "final_orchestrator" in intermediate_reasoning
+    assert isinstance(intermediate_reasoning["company_analyst"].get("reasoning"), list)
+    assert isinstance(intermediate_reasoning["company_analyst"].get("evidence"), list)
+    final_orchestrator = data["company"]["ai_final_orchestrator"]
+    assert isinstance(final_orchestrator, dict)
+    assert final_orchestrator["agent"] == "Final Orchestrator"
+    assert isinstance(final_orchestrator.get("output"), dict)
+    assert 0 <= final_orchestrator["confidence"] <= 100
+    executive_dashboard = data["company"]["ai_executive_dashboard"]
+    assert isinstance(executive_dashboard, dict)
+    assert executive_dashboard["source"] == "cached_orchestrator"
+    assert isinstance(executive_dashboard.get("overall_opportunity_score"), dict)
+    assert isinstance(executive_dashboard.get("buying_intent"), dict)
+    assert isinstance(executive_dashboard.get("decision_maker"), dict)
+    assert isinstance(executive_dashboard.get("top_risks"), list)
+    assert isinstance(executive_dashboard.get("top_opportunities"), list)
+    assert executive_dashboard.get("recommended_next_action")
+    assert isinstance(executive_dashboard.get("recommended_email"), dict)
+    assert isinstance(executive_dashboard.get("recommended_follow_up"), str)
+    assert isinstance(executive_dashboard.get("competitor_summary"), dict)
+    assert isinstance(executive_dashboard.get("evidence"), list)
+    assert 0 <= executive_dashboard["confidence"] <= 100
+    revenue_report = data["company"]["ai_revenue_engine_report"]
+    assert isinstance(revenue_report, dict)
+    assert revenue_report.get("executive_summary")
+    assert isinstance(revenue_report.get("overall_opportunity_score"), dict)
+    assert isinstance(revenue_report.get("buying_intent"), dict)
+    assert isinstance(revenue_report.get("decision_maker"), dict)
+    assert isinstance(revenue_report.get("best_contact_reason"), str)
+    assert isinstance(revenue_report.get("top_pain_points"), list)
+    assert isinstance(revenue_report.get("top_opportunities"), list)
+    assert isinstance(revenue_report.get("top_risks"), list)
+    assert isinstance(revenue_report.get("competitor_position"), dict)
+    assert isinstance(revenue_report.get("technology_summary"), dict)
+    assert isinstance(revenue_report.get("recommended_outreach_strategy"), dict)
+    assert isinstance(revenue_report.get("recommended_first_email"), dict)
+    assert isinstance(revenue_report.get("recommended_follow_up_strategy"), dict)
+    assert isinstance(revenue_report.get("recommended_cta"), str)
+    assert 0 <= revenue_report.get("confidence", 0) <= 100
+    assert isinstance(revenue_report.get("evidence"), list)
+    assert all(item.get("source_field") and item.get("value") for item in revenue_report.get("evidence", []))
+    assert revenue_report.get("source_fingerprint")
+    ai_crm = data["company"]["ai_crm"]
+    assert isinstance(ai_crm, dict)
+    assert ai_crm.get("generated_at")
+    assert ai_crm.get("auto_updated") is True
+    assert isinstance(ai_crm.get("priority"), dict)
+    assert ai_crm["priority"].get("tier") in {"Hot", "Warm", "Cold", "Needs More Data"}
+    assert isinstance(ai_crm["priority"].get("score"), int)
+    assert isinstance(ai_crm.get("health"), dict)
+    assert ai_crm["health"].get("status") in {"Healthy", "Watch", "At Risk"}
+    assert isinstance(ai_crm["health"].get("score"), int)
+    assert isinstance(ai_crm.get("buying_intent"), dict)
+    assert isinstance(ai_crm["buying_intent"].get("score"), int)
+    assert isinstance(ai_crm.get("risk"), dict)
+    assert ai_crm["risk"].get("level") in {"Low", "Medium", "High"}
+    assert isinstance(ai_crm.get("relationship_status"), str)
+    assert ai_crm.get("next_action")
+    assert ai_crm.get("last_ai_review")
+    assert isinstance(ai_crm.get("upcoming_opportunity"), str)
+    ai_ceo_dashboard = data["company"].get("ai_ceo_dashboard")
+    assert isinstance(ai_ceo_dashboard, dict)
+    assert ai_ceo_dashboard.get("generated_at")
+    assert ai_ceo_dashboard.get("auto_updated") is True
+    assert isinstance(ai_ceo_dashboard.get("todays_best_opportunities"), list)
+    assert isinstance(ai_ceo_dashboard.get("new_buying_signals"), list)
+    assert isinstance(ai_ceo_dashboard.get("companies_at_risk"), list)
+    assert isinstance(ai_ceo_dashboard.get("competitors"), dict)
+    assert isinstance(ai_ceo_dashboard.get("sales_pipeline"), dict)
+    assert isinstance(ai_ceo_dashboard.get("expected_revenue"), dict)
+    assert isinstance(ai_ceo_dashboard.get("ai_recommendations"), list)
+    assert isinstance(ai_ceo_dashboard.get("top_priorities"), list)
+    assert len(ai_ceo_dashboard.get("top_priorities", [])) >= 3
+    assert isinstance(ai_ceo_dashboard.get("daily_summary"), str)
+    assert ai_ceo_dashboard.get("daily_summary")
+    ai_sales_os = data["company"].get("ai_sales_os")
+    assert isinstance(ai_sales_os, dict)
+    assert ai_sales_os.get("autonomous") is True
+    safety = ai_sales_os.get("safety")
+    assert isinstance(safety, dict)
+    assert safety.get("never_fabricate_facts") is True
+    agents = ai_sales_os.get("agents")
+    assert isinstance(agents, dict)
+    required_agents = {
+        "research_agent",
+        "company_agent",
+        "buying_agent",
+        "decision_maker_agent",
+        "competitor_agent",
+        "email_agent",
+        "follow_up_agent",
+        "crm_agent",
+        "analytics_agent",
+        "ceo_agent",
+    }
+    assert required_agents.issubset(set(agents.keys()))
+    for agent_key in required_agents:
+        payload = agents[agent_key]
+        assert isinstance(payload, dict)
+        assert payload.get("agent")
+        assert isinstance(payload.get("output"), dict)
+        assert isinstance(payload.get("reasoning"), list)
+        assert isinstance(payload.get("evidence"), list)
+        assert payload.get("no_fabrication") is True
+    intermediate_reasoning = ai_sales_os.get("intermediate_reasoning")
+    assert isinstance(intermediate_reasoning, dict)
+    assert "orchestrator" in intermediate_reasoning
+    orchestrator = ai_sales_os.get("orchestrator")
+    assert isinstance(orchestrator, dict)
+    assert orchestrator.get("agent") == "The Orchestrator"
+    assert orchestrator.get("autonomous") is True
+    assert isinstance(orchestrator.get("execution_order"), list)
+    assert isinstance(orchestrator.get("output"), dict)
+    assert orchestrator.get("coordination_summary")
+
+    cached_company = client.get("/api/crm/companies?search=Usage%20Complete", headers=headers).json()[0]
+    cached_revenue_report = cached_company["ai_revenue_engine_report"]
+    assert cached_revenue_report.get("source_fingerprint") == revenue_report.get("source_fingerprint")
+    assert cached_revenue_report.get("generated_at") == revenue_report.get("generated_at")
+    assert isinstance(cached_company.get("ai_crm"), dict)
+    assert cached_company["ai_crm"].get("next_action")
+    assert isinstance(cached_company.get("ai_ceo_dashboard"), dict)
+    assert cached_company["ai_ceo_dashboard"].get("daily_summary")
+    assert isinstance(cached_company.get("ai_sales_os"), dict)
+    assert isinstance(cached_company["ai_sales_os"].get("orchestrator"), dict)
+    assert isinstance(cached_company.get("ai_workflow_engine"), dict)
+    assert cached_company["ai_workflow_engine"].get("current_state") in {"needs_manual_review", "workflow_completed"}
+    assert cached_company["ai_workflow_engine"].get("states", {}).get("needs_email", {}).get("status") == "completed"
+    live_buying_signals = data["company"]["ai_live_buying_signals"]
+    assert isinstance(live_buying_signals, dict)
+    assert isinstance(live_buying_signals.get("latest_changes"), list)
+    assert isinstance(live_buying_signals.get("change_timeline"), list)
+    assert isinstance(live_buying_signals.get("snapshot"), dict)
+    allowed_change_types = {
+        "new_hiring",
+        "technology_changes",
+        "website_changes",
+        "pricing_changes",
+        "new_products",
+        "new_competitors",
+        "leadership_changes",
+        "market_expansion",
+        "new_funding",
+    }
+    for change in live_buying_signals.get("latest_changes", []):
+        assert change.get("change_type") in allowed_change_types
+        assert change.get("added")
+    for entry in live_buying_signals.get("change_timeline", []):
+        assert entry.get("change_type") in allowed_change_types
+        assert entry.get("detected_at")
+    lead_prioritization = data["company"]["ai_lead_prioritization"]
+    assert isinstance(lead_prioritization, dict)
+    assert lead_prioritization.get("tier") in {"Hot", "Warm", "Cold", "Needs More Data"}
+    assert 0 <= lead_prioritization.get("score", 0) <= 100
+    assert lead_prioritization.get("reasoning")
+    assert 0 <= lead_prioritization.get("confidence", 0) <= 100
+    assert isinstance(lead_prioritization.get("factors"), dict)
+    assert lead_prioritization["factors"].get("buying_intent") is not None
+    assert lead_prioritization["factors"].get("opportunity_score") is not None
+    assert lead_prioritization["factors"].get("decision_maker_quality") is not None
+    assert lead_prioritization["factors"].get("website_activity") is not None
+    assert lead_prioritization["factors"].get("freshness") is not None
+    assert lead_prioritization["factors"].get("ai_confidence") is not None
+    sales_timeline = data["company"]["ai_sales_timeline"]
+    assert isinstance(sales_timeline, dict)
+    assert sales_timeline["today"]["step"] == "Today"
+    assert sales_timeline["plus_2_days"]["step"] == "+2 days"
+    assert sales_timeline["plus_5_days"]["step"] == "+5 days"
+    assert sales_timeline["plus_8_days"]["step"] == "+8 days"
+    assert sales_timeline["plus_14_days"]["step"] == "+14 days"
+    assert sales_timeline["steps"]
+    assert len(sales_timeline["steps"]) == 5
+    for step in sales_timeline["steps"]:
+        assert step["action"]
+        assert step["email"]["subject"]
+        assert step["email"]["body"]
+        assert step["linkedin"]["message"]
+        assert isinstance(step["linkedin"]["recommended"], bool)
+        assert step["phone"]["script"]
+        assert isinstance(step["phone"]["recommended"], bool)
+        assert step["reminder"]
+        assert 0 <= step["success_probability"] <= 100
+        assert step["evidence"]
+        assert all(item.get("source_field") and item.get("value") for item in step["evidence"])
+    risk_analyzer = data["company"]["ai_risk_analyzer"]
+    assert isinstance(risk_analyzer, dict)
+    assert 0 <= risk_analyzer["probability_company_will_ignore_outreach"] <= 100
+    assert 0 <= risk_analyzer["missing_data"] <= 100
+    assert 0 <= risk_analyzer["weak_personalization"] <= 100
+    assert 0 <= risk_analyzer["missing_decision_maker"] <= 100
+    assert 0 <= risk_analyzer["low_confidence"] <= 100
+    assert 0 <= risk_analyzer["stale_enrichment"] <= 100
+    assert 0 <= risk_analyzer["risk_score"] <= 100
+    assert risk_analyzer["reasons"]
+    assert risk_analyzer["recommended_improvements"]
+    assert 0 <= risk_analyzer["confidence"] <= 100
+    assert isinstance(risk_analyzer["factors"], dict)
+    assert risk_analyzer["factors"]["missing_data"]["evidence"]
+    assert risk_analyzer["factors"]["weak_personalization"]["evidence"]
+    assert risk_analyzer["factors"]["missing_decision_maker"]["evidence"]
+    assert risk_analyzer["factors"]["low_confidence"]["evidence"]
+    assert risk_analyzer["factors"]["stale_enrichment"]["evidence"]
+    assert all(item.get("source_field") and item.get("value") for item in risk_analyzer["factors"]["missing_data"]["evidence"])
+    assert all(item.get("source_field") and item.get("value") for item in risk_analyzer["factors"]["weak_personalization"]["evidence"])
+    assert all(item.get("source_field") and item.get("value") for item in risk_analyzer["factors"]["missing_decision_maker"]["evidence"])
+    assert all(item.get("source_field") and item.get("value") for item in risk_analyzer["factors"]["low_confidence"]["evidence"])
+    assert all(item.get("source_field") and item.get("value") for item in risk_analyzer["factors"]["stale_enrichment"]["evidence"])
+    sales_coach = data["company"]["ai_sales_coach"]
+    assert isinstance(sales_coach, dict)
+    assert sales_coach["why_this_company"]
+    assert sales_coach["why_now"]
+    assert sales_coach["why_this_decision_maker"]
+    assert sales_coach["what_could_fail"]
+    assert sales_coach["how_to_increase_reply_rate"]
+    assert sales_coach["alternative_strategy"]
+    assert isinstance(sales_coach["target_contact"], dict)
+    assert sales_coach["evidence"]
+    assert all(item.get("source_field") and item.get("value") for item in sales_coach["evidence"])
+    assert 0 <= sales_coach["confidence"] <= 100
+    evidence_engine = data["company"]["ai_evidence_engine"]
+    assert isinstance(evidence_engine, dict)
+    assert evidence_engine["generated_at"]
+    assert evidence_engine["provider"]
+    assert evidence_engine["model_version"]
+    assert evidence_engine["prompt_version"]
+    assert evidence_engine["entries"]
+    first_entry = evidence_engine["entries"][0]
+    assert first_entry["provider"]
+    assert first_entry["raw_source"]
+    assert first_entry["evidence_snippet"]
+    assert first_entry["confidence"] >= 0
+    assert first_entry["timestamp"]
+    assert first_entry["enrichment_step"]
+    assert first_entry["model_version"]
+    assert first_entry["prompt_version"]
+    assert "prompt" not in first_entry.get("reasoning", "").lower()
+    assert isinstance(evidence_engine["by_insight"], dict)
+    assert evidence_engine["by_insight"]
+    insight_items = next(iter(evidence_engine["by_insight"].values()))
+    assert insight_items
+    explain_item = insight_items[0]
+    assert explain_item["source"]
+    assert explain_item["evidence"]
+    assert explain_item["reasoning"]
+    assert 0 <= explain_item["confidence"] <= 100
     assert intelligence["lead_score"]["value"] == 82
     assert intelligence["fields"]["official_website"]["value"] == "https://usage-complete.example"
     assert intelligence["fields"]["verified_emails"]["value"] == ["eva@usage-complete.example"]
@@ -1465,7 +2113,19 @@ def test_workspace_app_complete_opportunity_prepares_research_contact_and_review
     assert data["company"]["workflow_stages"]["verified_email"] == "completed"
     assert data["company"]["workflow_stages"]["ai_email"] == "completed"
     assert data["company"]["workflow_stages"]["approval"] == "waiting"
+    workflow_engine = data["company"]["ai_workflow_engine"]
+    assert isinstance(workflow_engine, dict)
+    assert workflow_engine["version"] == 1
+    assert workflow_engine["current_state"] == "needs_manual_review"
+    assert workflow_engine["needs"]["manual_review"] is True
+    assert workflow_engine["needs"]["email"] is False
+    assert workflow_engine["states"]["needs_ai_report"]["status"] == "completed"
+    assert workflow_engine["states"]["needs_email"]["status"] == "completed"
+    assert workflow_engine["states"]["needs_manual_review"]["status"] == "pending"
+    assert workflow_engine["next_action"]
     assert data["workflow_stages"]["ai_email"] == "completed"
+    assert isinstance(data["workflow_state"], dict)
+    assert data["workflow_state"]["current_state"] == "needs_manual_review"
     assert data["missing_fields"] == ["Approval"]
     assert data["recommended_actions"] == ["Review and approve the draft before anything is sent."]
     assert data["next_action"] == "Review and approve the draft before anything is sent."
@@ -2942,6 +3602,17 @@ def test_crm_stage_move_and_note_are_persisted(monkeypatch) -> None:
     assert refreshed["notes"][0]["body"] == "Customer asked to review next week."
     assert any(item["action"] == "crm.stage_changed" for item in refreshed["activity"])
     assert any(item["action"] == "note.added" for item in refreshed["activity"])
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    db = get_sessionmaker()()
+    try:
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).first()
+        assert settings is not None
+        ai = settings.ai if isinstance(settings.ai, dict) else {}
+        continuous_learning = ai.get("continuous_learning") if isinstance(ai.get("continuous_learning"), dict) else {}
+        outcomes = continuous_learning.get("outcomes") if isinstance(continuous_learning.get("outcomes"), dict) else {}
+        assert outcomes.get("meeting", 0) >= 1
+    finally:
+        db.close()
 
 
 def test_crm_pipeline_activity_query_uses_postgres_json_key_extraction() -> None:
@@ -2976,6 +3647,88 @@ def test_crm_pipeline_returns_company_cards_with_activity_timeline(monkeypatch) 
     company = next(item for item in response.json()["companies"] if item["lead_id"] == lead["id"])
     assert company["name"] == "Pipeline Activity Build"
     assert any(item["action"] == "lead.pipeline_activity_test" for item in company["activity"])
+
+
+def test_crm_company_and_pipeline_default_sort_by_overall_score(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+
+    first = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Ranking Lower", "website": "https://ranking-lower.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    second = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Ranking Higher", "website": "https://ranking-higher.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        low = db.scalar(select(Company).where(Company.name == "Ranking Lower"))
+        high = db.scalar(select(Company).where(Company.name == "Ranking Higher"))
+        assert low is not None
+        assert high is not None
+        low.metadata_json = {
+            **(low.metadata_json or {}),
+            "overall_score": 32,
+            "reasoning": "Low readiness",
+            "top_positive_signals": ["Basic profile"],
+            "top_negative_signals": ["No verified contact"],
+            "recommended_next_action": "Enrich contact",
+            "confidence": 40,
+            "opportunity_ranking": {
+                "overall_score": 32,
+                "reasoning": "Low readiness",
+                "top_positive_signals": ["Basic profile"],
+                "top_negative_signals": ["No verified contact"],
+                "recommended_next_action": "Enrich contact",
+                "confidence": 40,
+                "factors": {"Verified Contacts": 20},
+            },
+        }
+        high.metadata_json = {
+            **(high.metadata_json or {}),
+            "overall_score": 91,
+            "reasoning": "Strong fit and verified decision maker",
+            "top_positive_signals": ["Buying Intent: 90", "Verified Contacts: 100"],
+            "top_negative_signals": [],
+            "recommended_next_action": "Send outreach now",
+            "confidence": 89,
+            "opportunity_ranking": {
+                "overall_score": 91,
+                "reasoning": "Strong fit and verified decision maker",
+                "top_positive_signals": ["Buying Intent: 90", "Verified Contacts: 100"],
+                "top_negative_signals": [],
+                "recommended_next_action": "Send outreach now",
+                "confidence": 89,
+                "factors": {"Verified Contacts": 100},
+            },
+        }
+        db.commit()
+    finally:
+        db.close()
+
+    companies_response = client.get("/api/crm/companies?search=Ranking%20", headers=AUTH)
+    assert companies_response.status_code == 200
+    companies = [item for item in companies_response.json() if item["name"] in {"Ranking Lower", "Ranking Higher"}]
+    assert len(companies) == 2
+    assert companies[0]["name"] == "Ranking Higher"
+    assert companies[0]["overall_score"] == 91
+    assert companies[1]["name"] == "Ranking Lower"
+    assert companies[1]["overall_score"] == 32
+
+    pipeline_response = client.get("/api/crm/pipeline", headers=AUTH)
+    assert pipeline_response.status_code == 200
+    ranked = [item for item in pipeline_response.json()["companies"] if item["name"] in {"Ranking Lower", "Ranking Higher"}]
+    assert len(ranked) == 2
+    assert ranked[0]["name"] == "Ranking Higher"
+    assert ranked[0]["overall_score"] == 91
+    assert ranked[1]["name"] == "Ranking Lower"
+    assert ranked[1]["overall_score"] == 32
 
 
 def test_ai_sales_copilot_endpoints(monkeypatch) -> None:
@@ -3183,12 +3936,22 @@ def test_resend_webhook_updates_delivery_metrics() -> None:
 
     lead_page = client.get("/api/leads?search=Webhook", headers=AUTH).json()
     assert lead_page["items"][0]["status"] == "Contacted"
+    db = get_sessionmaker()()
+    try:
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == workspace_id).first()
+        assert settings is not None
+        ai = settings.ai if isinstance(settings.ai, dict) else {}
+        continuous_learning = ai.get("continuous_learning") if isinstance(ai.get("continuous_learning"), dict) else {}
+        outcomes = continuous_learning.get("outcomes") if isinstance(continuous_learning.get("outcomes"), dict) else {}
+        assert outcomes.get("sent", 0) >= 1
+    finally:
+        db.close()
 
 
 def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.api.webhooks.suggest_reply",
-        lambda payload: type("Assistant", (), {"model_dump": lambda self: {"next_step": "Book meeting", "qualification_score": 80}})(),
+        lambda payload: type("Assistant", (), {"model_dump": lambda self: {"next_step": "Book meeting", "suggested_response": "Let's lock in a time", "qualification_score": 80}})(),
     )
     db = get_sessionmaker()()
     try:
@@ -3197,6 +3960,9 @@ def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
         db.flush()
         lead = Lead(user_id="dev_user", campaign_id=campaign.id, company="Reply Build Co", email="reply@example.com", status=LeadStatus.sent)
         db.add(lead)
+        db.flush()
+        company = Company(user_id="dev_user", lead_id=lead.id, name="Reply Build Co", source="crm")
+        db.add(company)
         db.flush()
         message = EmailMessage(
             user_id="dev_user",
