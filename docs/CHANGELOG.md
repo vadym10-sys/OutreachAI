@@ -1,6 +1,16 @@
 # Changelog
 
 ### fix(api)
+- Verified worker restart recovery by safely reclaiming stale running enrichment jobs and preventing old claims from completing reclaimed work.
+- Added owner-only queue observability at `/api/admin/queue/health` with depth, active-job, retry, dead-letter, stale-running, and latency metrics.
+
+### docs
+- Added final launch-readiness documentation covering approved release commits, remaining risks, and deployment checklist.
+
+### test(api)
+- Added regressions for worker restart recovery and queue health endpoint access/metrics.
+
+### fix(api)
 - Hardened enrichment queue claims with unique per-attempt ownership tokens and worker heartbeats so stale workers cannot overwrite reclaimed jobs.
 - Switched queue retries to exponential backoff and mark exhausted jobs as explicit dead-lettered failures.
 

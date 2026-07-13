@@ -266,3 +266,67 @@ def queue_status(db: Session, *, workspace_id: UUID | None = None) -> dict[str, 
         "failed": counts.get("failed", 0),
         "cancelled": counts.get("cancelled", 0),
     }
+
+
+def queue_health_summary(db: Session, *, stale_after_seconds: int = 900, workspace_id: UUID | None = None) -> dict[str, Any]:
+    stmt = select(EnrichmentJob).where(EnrichmentJob.job_type == "company_enrichment")
+    if workspace_id:
+        stmt = stmt.where(EnrichmentJob.workspace_id == workspace_id)
+    jobs = list(db.scalars(stmt).all())
+    now = datetime.utcnow()
+    stale_before = now - timedelta(seconds=stale_after_seconds)
+
+    queue_depth = sum(1 for job in jobs if job.status in {"pending", "retrying"})
+    active_jobs = [job for job in jobs if job.status == "running"]
+    retry_jobs = [job for job in jobs if job.status == "retrying"]
+    dead_letter_jobs = [job for job in jobs if job.status == "failed" and isinstance(job.progress_json, dict) and bool(job.progress_json.get("dead_lettered"))]
+    stale_running_jobs = [job for job in active_jobs if job.locked_at and job.locked_at < stale_before]
+
+    completed_latencies_ms: list[int] = []
+    active_latencies_ms: list[int] = []
+    for job in jobs:
+        if job.started_at and job.completed_at:
+            completed_latencies_ms.append(max(0, int((job.completed_at - job.started_at).total_seconds() * 1000)))
+        elif job.started_at and job.status == "running":
+            active_latencies_ms.append(max(0, int((now - job.started_at).total_seconds() * 1000)))
+
+    sorted_completed = sorted(completed_latencies_ms)
+    p95_index = int(len(sorted_completed) * 0.95) - 1 if sorted_completed else -1
+    p95_latency_ms = sorted_completed[max(0, p95_index)] if sorted_completed else 0
+    average_latency_ms = int(sum(sorted_completed) / len(sorted_completed)) if sorted_completed else 0
+    max_latency_ms = max(sorted_completed) if sorted_completed else 0
+    oldest_active_job_age_seconds = max((int((now - job.started_at).total_seconds()) for job in active_jobs if job.started_at), default=0)
+    retry_attempts_total = sum(max(0, int(job.attempts or 0) - 1) for job in jobs)
+
+    terminal_counts = {
+        "completed": sum(1 for job in jobs if job.status == "succeeded"),
+        "failed": sum(1 for job in jobs if job.status == "failed"),
+        "cancelled": sum(1 for job in jobs if job.status == "cancelled"),
+    }
+    active_terminal_missing = sum(1 for job in jobs if job.status not in TERMINAL_JOB_STATUSES and not job.locked_at and job.status != "pending")
+
+    if stale_running_jobs or active_terminal_missing:
+        status = "degraded"
+    elif dead_letter_jobs:
+        status = "warning"
+    else:
+        status = "healthy"
+
+    return {
+        "status": status,
+        "queue_depth": queue_depth,
+        "active_jobs": len(active_jobs),
+        "retry_count": len(retry_jobs),
+        "retry_attempts_total": retry_attempts_total,
+        "dead_letter_count": len(dead_letter_jobs),
+        "processing_latency_ms": {
+            "average": average_latency_ms,
+            "p95": p95_latency_ms,
+            "max": max_latency_ms,
+            "active_max": max(active_latencies_ms) if active_latencies_ms else 0,
+        },
+        "terminal_counts": terminal_counts,
+        "stale_running_jobs": len(stale_running_jobs),
+        "oldest_active_job_age_seconds": oldest_active_job_age_seconds,
+        "active_without_lock_count": active_terminal_missing,
+    }

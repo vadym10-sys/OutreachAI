@@ -1,5 +1,22 @@
 # Project Progress
 
+## 2026-07-13 - Worker Restart Recovery, Queue Observability, and Release Candidate Cleanup
+
+### Scope Completed
+- Verified stale running enrichment jobs are reclaimed safely after a worker restart and that old claims cannot complete reclaimed jobs.
+- Added `/api/admin/queue/health` for owner-only queue observability: queue depth, active jobs, retry count, dead-letter count, stale-running jobs, and processing latency.
+- Reviewed the local backend release candidate and separated approved committed launch fixes from unrelated uncommitted backend work.
+- Added `LAUNCH_READINESS_FINAL.md` summarizing readiness percentage, remaining risks, release recommendation, and final deployment checklist.
+
+### Validation Status
+- Combined backend launch-hardening regression slice: passed (`PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'readiness_returns_503_when_postgresql_is_unavailable_in_production or readiness_returns_503_when_required_environment_is_missing_in_production or startup_logs_validation_steps_and_fails_fast_on_database_error or liveness_and_readiness_are_public or validate_required_environment_fails_fast_in_production or validate_database_connectivity_requires_postgresql_in_production or workspace_app_company_creation_queues_enrichment_job or enrichment_queue_persists_and_cancels_job or enrichment_queue_reuses_active_job_for_duplicate_enqueue or enrichment_queue_reclaims_stale_job_and_blocks_old_claim_completion or enrichment_queue_retry_uses_exponential_backoff_and_dead_letters or admin_queue_health_is_owner_only_and_reports_metrics or worker_restart_recovers_stale_job_without_duplicate_execution'` in `apps/api`)
+- Queue health endpoint regression: passed (`PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'admin_queue_health_is_owner_only_and_reports_metrics'` in `apps/api`)
+- API production container build: blocked in this environment because `docker` is not installed
+
+### Notes
+- Approved release commits are the local backend launch-hardening commits already recorded on `main`; unrelated backend changes remain uncommitted.
+- The release recommendation remains conditional on validating the API container build in an environment with Docker before deployment.
+
 ## 2026-07-13 - Queue and Worker Reliability
 
 ### Scope Completed

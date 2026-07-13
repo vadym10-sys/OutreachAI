@@ -2,6 +2,17 @@
 
 Date: 2026-07-13
 
+## Latest Update - Worker Restart Recovery, Queue Observability, and Release Candidate Cleanup
+
+- Verified stale running jobs are reclaimed safely after a worker restart and that old claimants cannot complete reclaimed jobs.
+- Added an owner-only queue health endpoint at `/api/admin/queue/health` with queue depth, active jobs, retry count, dead-letter count, processing latency, and stale-running-job visibility.
+- Reviewed the local backend release candidate and separated approved launch-hardening commits from unrelated uncommitted backend work.
+- Validation completed for this backend launch-hardening fix:
+	- `PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'readiness_returns_503_when_postgresql_is_unavailable_in_production or readiness_returns_503_when_required_environment_is_missing_in_production or startup_logs_validation_steps_and_fails_fast_on_database_error or liveness_and_readiness_are_public or validate_required_environment_fails_fast_in_production or validate_database_connectivity_requires_postgresql_in_production or workspace_app_company_creation_queues_enrichment_job or enrichment_queue_persists_and_cancels_job or enrichment_queue_reuses_active_job_for_duplicate_enqueue or enrichment_queue_reclaims_stale_job_and_blocks_old_claim_completion or enrichment_queue_retry_uses_exponential_backoff_and_dead_letters or admin_queue_health_is_owner_only_and_reports_metrics or worker_restart_recovers_stale_job_without_duplicate_execution'` in `apps/api`: passed
+	- API production container build: could not be executed in this shell because `docker` is not installed
+
+Approved release commits are the launch-hardening backend fixes already committed locally. Unrelated backend edits remain uncommitted and should stay out of deployment until separately reviewed.
+
 ## Latest Update - Queue and Worker Reliability
 
 - Hardened the durable enrichment queue so each claim now uses a unique claim token, active workers refresh the lock with a heartbeat, and stale claimants can no longer overwrite a reclaimed job.
@@ -195,6 +206,7 @@ OutreachAI has strong frontend momentum, a broad backend feature surface, and cr
 - Startup environment validation and connectivity checks
 - Readiness now fails closed in production when required env vars or PostgreSQL connectivity are unavailable
 - Queue retries now back off exponentially and exhausted jobs terminate as explicit failed/dead-lettered jobs
+- Owner-only queue health endpoint now exposes depth, active jobs, retry pressure, dead-letter count, stale-running jobs, and processing latency
 - CI pipeline covering lint, typecheck, test, build, and e2e
 - PostgreSQL schema and migration assets
 
@@ -204,6 +216,7 @@ OutreachAI has strong frontend momentum, a broad backend feature surface, and cr
 - Backend AI enrichment expansion and workflow automation hardening
 - Continuous learning and workflow engine modules in local development
 - Extended AI outputs and CRM payload enrichment under active edits
+- Unapproved backend work remains uncommitted in local files and is not part of the launch-ready commit set
 
 ### Changed Files (Local, Uncommitted)
 - apps/api/app/api/routes.py

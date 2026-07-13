@@ -540,6 +540,79 @@ def test_admin_summary_and_logs_are_owner_only() -> None:
     assert logs.status_code == 200
 
 
+def test_admin_queue_health_is_owner_only_and_reports_metrics() -> None:
+    denied = client.get("/api/admin/queue/health", headers=NON_OWNER_AUTH)
+    assert denied.status_code == 403
+
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    workspace_id = UUID(workspace["id"])
+    db = get_sessionmaker()()
+    try:
+        campaign = Campaign(user_id="dev_user", workspace_id=workspace_id, name="Queue Health Campaign", industry="Construction")
+        db.add(campaign)
+        db.flush()
+        pending_lead = Lead(user_id="dev_user", workspace_id=workspace_id, campaign_id=campaign.id, company="Queue Pending Co")
+        running_lead = Lead(user_id="dev_user", workspace_id=workspace_id, campaign_id=campaign.id, company="Queue Running Co")
+        dead_lead = Lead(user_id="dev_user", workspace_id=workspace_id, campaign_id=campaign.id, company="Queue Dead Co")
+        db.add_all([pending_lead, running_lead, dead_lead])
+        db.flush()
+        now = datetime.utcnow()
+        db.add_all([
+            EnrichmentJob(
+                workspace_id=workspace_id,
+                user_id="dev_user",
+                lead_id=pending_lead.id,
+                job_type="company_enrichment",
+                status="pending",
+                request_id="queue-health-pending",
+                language="English",
+                run_after=now,
+            ),
+            EnrichmentJob(
+                workspace_id=workspace_id,
+                user_id="dev_user",
+                lead_id=running_lead.id,
+                job_type="company_enrichment",
+                status="running",
+                request_id="queue-health-running",
+                language="English",
+                locked_by="worker-health",
+                locked_at=now,
+                started_at=now - timedelta(seconds=15),
+                run_after=now,
+            ),
+            EnrichmentJob(
+                workspace_id=workspace_id,
+                user_id="dev_user",
+                lead_id=dead_lead.id,
+                job_type="company_enrichment",
+                status="failed",
+                request_id="queue-health-dead",
+                language="English",
+                started_at=now - timedelta(seconds=10),
+                completed_at=now - timedelta(seconds=5),
+                progress_json={"dead_lettered": True, "terminal_state": "failed"},
+                run_after=now,
+            ),
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/admin/queue/health", headers=OWNER_AUTH)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["queue_depth"] >= 1
+    assert payload["active_jobs"] >= 1
+    assert payload["retry_count"] >= 0
+    assert payload["dead_letter_count"] >= 1
+    assert payload["processing_latency_ms"]["average"] >= 0
+    assert payload["processing_latency_ms"]["max"] >= 0
+    assert payload["worker_claim_timeout_seconds"] > 0
+    assert payload["terminal_states"] == ["completed", "failed", "cancelled"]
+
+
+
 def test_workspace_data_is_private_between_users(monkeypatch) -> None:
     monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
     monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
@@ -1782,6 +1855,76 @@ def test_enrichment_queue_retry_uses_exponential_backoff_and_dead_letters() -> N
         assert third.completed_at is not None
         assert third.progress_json["dead_lettered"] is True
         assert third.progress_json["terminal_state"] == "failed"
+    finally:
+        db.close()
+
+
+def test_worker_restart_recovers_stale_job_without_duplicate_execution(monkeypatch) -> None:
+    import app.jobs.worker as worker_module
+    from app.services.enrichment_queue import claim_next_enrichment_job, complete_job, enqueue_company_enrichment_job
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-worker-restart@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Worker Restart", "website": "https://usage-worker-restart.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        lead = db.scalar(select(Lead).where(Lead.company == "Usage Worker Restart"))
+        assert lead is not None
+        workspace = db.get(Workspace, lead.workspace_id)
+        assert workspace is not None
+
+        queued = enqueue_company_enrichment_job(
+            db,
+            user_id=lead.user_id,
+            workspace_id=workspace.id,
+            lead=lead,
+            request_id="worker-restart",
+            language="English",
+            max_attempts=2,
+        )
+        db.commit()
+        assert queued is not None
+        crashed_claim = claim_next_enrichment_job(db, worker_id="worker-crashed:claim-1", stale_after_seconds=900)
+        assert crashed_claim is not None
+        reclaimed_job_id = crashed_claim.id
+        crashed_claim.locked_at = datetime.utcnow() - timedelta(seconds=901)
+        db.commit()
+    finally:
+        db.close()
+
+    processed: list[str] = []
+
+    def fake_process(job_id: UUID, claim_token=None) -> bool:
+        assert claim_token is not None
+        processed.append(claim_token)
+        inner = get_sessionmaker()()
+        try:
+            job = inner.get(EnrichmentJob, job_id)
+            assert job is not None
+            return complete_job(inner, job, claim_token=claim_token)
+        finally:
+            inner.close()
+
+    monkeypatch.setattr(worker_module, "process_enrichment_job", fake_process)
+
+    assert worker_module.run_enrichment_worker_once("restart-worker") is True
+    assert len(processed) == 1
+    assert processed[0].startswith("restart-worker:")
+
+    db = get_sessionmaker()()
+    try:
+        recovered = db.get(EnrichmentJob, reclaimed_job_id)
+        assert recovered is not None
+        assert recovered.status == "succeeded"
+        assert recovered.progress_json["terminal_state"] == "completed"
+        assert complete_job(db, recovered, claim_token="worker-crashed:claim-1") is False
+        db.refresh(recovered)
+        assert recovered.status == "succeeded"
     finally:
         db.close()
 
