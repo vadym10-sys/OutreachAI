@@ -7084,15 +7084,35 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
     _mark_auto_enrichment_queued(lead, request_id, _workspace_language(request, workspace))
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     db.commit()
-    ran_inline = _enqueue_auto_enrichment(db, request, user.user_id, workspace, [lead], request_id, force=True)
-    if ran_inline:
+    warnings: list[str] = []
+    ran_inline = False
+    try:
+        ran_inline = _enqueue_auto_enrichment(db, request, user.user_id, workspace, [lead], request_id, force=True)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Workspace enrichment restart enqueue failed")
+        capture_provider_exception(
+            exc,
+            provider="workspace_app",
+            endpoint="workspace_app.enrichment_restart",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            extra={"request_id": request_id, "company_id": str(company_id)},
+        )
+        warnings.append("AI enrichment restart is temporarily unavailable. Saved company data remains available.")
+    if ran_inline and not warnings:
         db.expire_all()
         company = _scoped_company(db, workspace.id, company_id)
     company_out = _crm_company_out(db, workspace, user.user_id, company)
     return UsageActionOut(
-        status="success",
-        message="AI enrichment restarted. The company card will update as research, contacts and email draft are completed.",
+        status="partial_success" if warnings else "success",
+        message=(
+            "AI enrichment restart is temporarily unavailable. Saved company data remains available."
+            if warnings
+            else "AI enrichment restarted. The company card will update as research, contacts and email draft are completed."
+        ),
         company=company_out,
+        warnings=warnings,
         workflow_stages=company_out.workflow_stages,
         workflow_state=company_out.ai_workflow_engine,
         next_action="Keep this company open or return to CRM while AI enrichment runs.",

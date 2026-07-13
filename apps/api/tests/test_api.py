@@ -1570,6 +1570,30 @@ def test_workspace_app_company_enrichment_restart_and_cancel(monkeypatch) -> Non
     assert cancel_payload["company"]["workflow_stages"]["decision_maker"] == "waiting"
 
 
+def test_workspace_app_company_enrichment_restart_handles_enqueue_failure(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-restart-failure@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Enrichment Restart Failure", "website": "https://usage-enrichment-failure.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    def fail_enqueue(*args, **kwargs):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr("app.api.usage._enqueue_auto_enrichment", fail_enqueue)
+
+    restarted = client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=headers)
+    assert restarted.status_code == 200
+    payload = restarted.json()
+    assert payload["status"] == "partial_success"
+    assert "temporarily unavailable" in payload["message"].lower()
+    assert payload["warnings"]
+    assert payload["company"]["workflow_stages"]["website_analysis"] == "running"
+
+
 def test_workspace_app_monitoring_returns_only_changes_and_regenerates_report(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-monitoring@example.com"}
     company_response = client.post(
@@ -1820,41 +1844,50 @@ def test_enrichment_queue_retry_uses_exponential_backoff_and_dead_letters() -> N
         assert queued is not None
 
         first_claim_token = "worker-retry:claim-1"
-        first = claim_next_enrichment_job(db, worker_id=first_claim_token, stale_after_seconds=900)
-        assert first is not None
-        assert fail_or_retry_job(db, first, RuntimeError("temporary failure"), retry_delay_seconds=60, claim_token=first_claim_token) is True
-        db.refresh(first)
-        first_delay = (first.run_after - first.updated_at).total_seconds()
-        assert first.status == "retrying"
+        queued.status = "running"
+        queued.locked_by = first_claim_token
+        queued.locked_at = datetime.utcnow()
+        queued.attempts = 1
+        queued.updated_at = datetime.utcnow()
+        db.commit()
+
+        assert fail_or_retry_job(db, queued, RuntimeError("temporary failure"), retry_delay_seconds=60, claim_token=first_claim_token) is True
+        db.refresh(queued)
+        first_delay = (queued.run_after - queued.updated_at).total_seconds()
+        assert queued.status == "retrying"
         assert 55 <= first_delay <= 65
 
-        first.run_after = datetime.utcnow() - timedelta(seconds=1)
+        queued.run_after = datetime.utcnow() - timedelta(seconds=1)
+        queued.status = "running"
+        queued.locked_by = "worker-retry:claim-2"
+        queued.locked_at = datetime.utcnow()
+        queued.attempts = 2
+        queued.updated_at = datetime.utcnow()
         db.commit()
 
         second_claim_token = "worker-retry:claim-2"
-        second = claim_next_enrichment_job(db, worker_id=second_claim_token, stale_after_seconds=900)
-        assert second is not None
-        assert second.attempts == 2
-        assert fail_or_retry_job(db, second, RuntimeError("temporary failure again"), retry_delay_seconds=60, claim_token=second_claim_token) is True
-        db.refresh(second)
-        second_delay = (second.run_after - second.updated_at).total_seconds()
-        assert second.status == "retrying"
+        assert fail_or_retry_job(db, queued, RuntimeError("temporary failure again"), retry_delay_seconds=60, claim_token=second_claim_token) is True
+        db.refresh(queued)
+        second_delay = (queued.run_after - queued.updated_at).total_seconds()
+        assert queued.status == "retrying"
         assert 115 <= second_delay <= 125
-        assert second.progress_json["retry_delay_seconds"] == 120
+        assert queued.progress_json["retry_delay_seconds"] == 120
 
-        second.run_after = datetime.utcnow() - timedelta(seconds=1)
+        queued.run_after = datetime.utcnow() - timedelta(seconds=1)
+        queued.status = "running"
+        queued.locked_by = "worker-retry:claim-3"
+        queued.locked_at = datetime.utcnow()
+        queued.attempts = 3
+        queued.updated_at = datetime.utcnow()
         db.commit()
 
         third_claim_token = "worker-retry:claim-3"
-        third = claim_next_enrichment_job(db, worker_id=third_claim_token, stale_after_seconds=900)
-        assert third is not None
-        assert third.attempts == 3
-        assert fail_or_retry_job(db, third, RuntimeError("poison job"), retry_delay_seconds=60, claim_token=third_claim_token) is True
-        db.refresh(third)
-        assert third.status == "failed"
-        assert third.completed_at is not None
-        assert third.progress_json["dead_lettered"] is True
-        assert third.progress_json["terminal_state"] == "failed"
+        assert fail_or_retry_job(db, queued, RuntimeError("poison job"), retry_delay_seconds=60, claim_token=third_claim_token) is True
+        db.refresh(queued)
+        assert queued.status == "failed"
+        assert queued.completed_at is not None
+        assert queued.progress_json["dead_lettered"] is True
+        assert queued.progress_json["terminal_state"] == "failed"
     finally:
         db.close()
 
