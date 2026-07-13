@@ -124,6 +124,37 @@ export type Lead = {
   decision_maker_roles_searched?: string[];
   workflow_stages?: Record<string, "waiting" | "running" | "completed" | "error" | string>;
   workflow_stage_messages?: Record<string, string>;
+  ai_workflow_engine?: {
+    version?: number;
+    generated_at?: string;
+    status?: string;
+    current_state?: string;
+    next_action?: string;
+    states?: Record<
+      string,
+      {
+        status?: string;
+        reason?: string;
+        next_if_pending?: string;
+      }
+    >;
+    state_order?: string[];
+    transitions?: Array<{
+      from?: string;
+      to?: string;
+      condition?: string;
+    }>;
+    needs?: {
+      enrichment?: boolean;
+      website_analysis?: boolean;
+      decision_maker?: boolean;
+      ai_report?: boolean;
+      email?: boolean;
+      follow_up?: boolean;
+      retry?: boolean;
+      manual_review?: boolean;
+    };
+  } | null;
   deep_contact_search?: DeepContactSearch | null;
   intelligence_quality?: IntelligenceQuality | null;
   technologies?: string[];
@@ -181,6 +212,47 @@ export type CompanyIntelligence = {
   generated_at?: string;
   cache_key?: string;
   sources?: string[];
+  buying_intent?: {
+    buying_signal_score?: number;
+    urgency?: string;
+    explanation?: string;
+    evidence?: Array<{
+      signal?: string;
+      source_field?: string;
+      value?: string;
+      confidence?: number;
+    }>;
+    confidence?: number;
+    recommended_outreach_timing?: string;
+    signals?: Array<{
+      signal?: string;
+      detected?: boolean;
+      weight?: number;
+      score?: number;
+      confidence?: number;
+      evidence?: Array<{
+        signal?: string;
+        source_field?: string;
+        value?: string;
+        confidence?: number;
+      }>;
+    }>;
+  };
+  report?: {
+    company_summary?: CompanyIntelligenceField<string>;
+    products?: CompanyIntelligenceField<string[]>;
+    icp?: CompanyIntelligenceField<string>;
+    estimated_company_size?: CompanyIntelligenceField<string | number>;
+    buying_signals?: CompanyIntelligenceField<string[]>;
+    hiring_signals?: CompanyIntelligenceField<string[]>;
+    technology_stack?: CompanyIntelligenceField<string[]>;
+    competitors?: CompanyIntelligenceField<string[]>;
+    possible_pain_points?: CompanyIntelligenceField<string[]>;
+    best_outreach_angle?: CompanyIntelligenceField<string>;
+    recommended_decision_maker?: CompanyIntelligenceField<string>;
+    personalization_bullets?: CompanyIntelligenceField<string[]>;
+    ai_confidence_score?: CompanyIntelligenceField<number>;
+  };
   fields?: {
     official_website?: CompanyIntelligenceField<string>;
     business_description?: CompanyIntelligenceField<string>;
@@ -218,6 +290,23 @@ export type CrmContact = {
   confidence: string;
   source: string;
   email_status: string;
+  decision_maker_intelligence?: {
+    contact_id?: string;
+    name?: string;
+    title?: string;
+    is_verified_contact?: boolean;
+    why_best_decision_maker?: string;
+    estimated_responsibilities?: string[];
+    probable_business_goals?: string[];
+    likely_kpis?: string[];
+    possible_pain_points?: string[];
+    communication_style?: string;
+    preferred_outreach_angle?: string;
+    recommended_first_sentence?: string;
+    estimated_authority_level?: string;
+    confidence_score?: number;
+    evidence_used?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+  };
   created_at: string;
 };
 
@@ -275,6 +364,18 @@ export type CrmCompany = {
   risks?: string[];
   opportunity_analysis?: string | null;
   partnership_fit?: string | null;
+  buying_signal_score?: number | null;
+  buying_signal_urgency?: string | null;
+  buying_signal_explanation?: string | null;
+  buying_signal_evidence?: Array<Record<string, unknown>>;
+  buying_signal_confidence?: number | null;
+  recommended_outreach_timing?: string | null;
+  overall_score?: number | null;
+  reasoning?: string | null;
+  top_positive_signals?: string[];
+  top_negative_signals?: string[];
+  recommended_next_action?: string | null;
+  confidence?: number | null;
   priority_score?: number | null;
   confidence_score?: number | null;
   next_recommended_action?: string | null;
@@ -306,6 +407,557 @@ export type CrmCompany = {
   workflow_stages?: Record<string, "waiting" | "running" | "completed" | "error" | string>;
   workflow_stage_messages?: Record<string, string>;
   deep_contact_search?: DeepContactSearch | null;
+  decision_maker_intelligence?: {
+    generated_at?: string;
+    profiles?: Array<{
+      contact_id?: string;
+      name?: string;
+      title?: string;
+      is_verified_contact?: boolean;
+      why_best_decision_maker?: string;
+      estimated_responsibilities?: string[];
+      probable_business_goals?: string[];
+      likely_kpis?: string[];
+      possible_pain_points?: string[];
+      communication_style?: string;
+      preferred_outreach_angle?: string;
+      recommended_first_sentence?: string;
+      estimated_authority_level?: string;
+      confidence_score?: number;
+      evidence_used?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    }>;
+    top_contact_id?: string | null;
+  } | null;
+  opportunity_ranking?: {
+    overall_score?: number;
+    reasoning?: string;
+    top_positive_signals?: string[];
+    top_negative_signals?: string[];
+    recommended_next_action?: string;
+    confidence?: number;
+    factors?: Record<string, number>;
+  } | null;
+  ai_outreach_strategy?: {
+    why_contact_now?: string;
+    why_contact_now_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    best_timing?: string;
+    best_timing_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    best_communication_channel?: string;
+    best_communication_channel_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    best_channel?: string;
+    best_email_length?: string;
+    best_email_length_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    best_subject_line?: string;
+    best_subject_line_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    first_sentence?: string;
+    first_sentence_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    strongest_value_proposition?: string;
+    strongest_value_proposition_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    strongest_pain_point?: string;
+    strongest_pain_point_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    expected_objections?: string[];
+    expected_objections_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    follow_up_schedule?: string[];
+    follow_up_schedule_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    objections?: string[];
+    cta?: string;
+    cta_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    estimated_reply_probability?: number;
+    estimated_reply_probability_evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    probability_of_reply?: number;
+    target_contact?: {
+      name?: string;
+      title?: string;
+    };
+    decision_maker_strategies?: Array<{
+      contact_id?: string;
+      name?: string;
+      title?: string;
+      best_subject_line?: string;
+      first_sentence?: string;
+      strongest_value_proposition?: string;
+      strongest_pain_point?: string;
+      expected_objections?: string[];
+      cta?: string;
+      estimated_reply_probability?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    }>;
+  } | null;
+  ai_competitor_intelligence?: {
+    competitors?: string[];
+    technologies?: string[];
+    positioning?: string;
+    strengths?: string[];
+    weaknesses?: string[];
+    market_gaps?: string[];
+    opportunity_to_sell?: string;
+  } | null;
+  ai_company_timeline?: {
+    generated_at?: string;
+    funding_events?: Array<Record<string, unknown>>;
+    hiring_events?: Array<Record<string, unknown>>;
+    technology_changes?: Array<Record<string, unknown>>;
+    website_changes?: Array<Record<string, unknown>>;
+    leadership_changes?: Array<Record<string, unknown>>;
+    new_locations?: Array<Record<string, unknown>>;
+    product_launches?: Array<Record<string, unknown>>;
+    partnerships?: Array<Record<string, unknown>>;
+    events?: Array<{
+      event_type?: string;
+      event_date?: string;
+      timestamp?: string;
+      title?: string;
+      details?: string;
+      source?: string;
+      evidence_snippet?: string;
+      confidence?: number;
+      provider?: string;
+      enrichment_step?: string;
+      model_version?: string;
+      prompt_version?: string;
+    }>;
+  } | null;
+  ai_company_predictions?: {
+    generated_at?: string;
+    estimated_arr?: {
+      score?: number;
+      reasoning?: string;
+      confidence?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+    company_maturity?: {
+      score?: number;
+      reasoning?: string;
+      confidence?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+    growth_probability?: {
+      score?: number;
+      reasoning?: string;
+      confidence?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+    sales_readiness?: {
+      score?: number;
+      reasoning?: string;
+      confidence?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+  } | null;
+  ai_sales_timeline?: {
+    today?: {
+      step?: string;
+      day_offset?: number;
+      action?: string;
+      email?: { subject?: string; body?: string };
+      linkedin?: { message?: string; recommended?: boolean };
+      phone?: { script?: string; recommended?: boolean };
+      reminder?: string;
+      success_probability?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+    plus_2_days?: {
+      step?: string;
+      day_offset?: number;
+      action?: string;
+      email?: { subject?: string; body?: string };
+      linkedin?: { message?: string; recommended?: boolean };
+      phone?: { script?: string; recommended?: boolean };
+      reminder?: string;
+      success_probability?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+    plus_5_days?: {
+      step?: string;
+      day_offset?: number;
+      action?: string;
+      email?: { subject?: string; body?: string };
+      linkedin?: { message?: string; recommended?: boolean };
+      phone?: { script?: string; recommended?: boolean };
+      reminder?: string;
+      success_probability?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+    plus_8_days?: {
+      step?: string;
+      day_offset?: number;
+      action?: string;
+      email?: { subject?: string; body?: string };
+      linkedin?: { message?: string; recommended?: boolean };
+      phone?: { script?: string; recommended?: boolean };
+      reminder?: string;
+      success_probability?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+    plus_14_days?: {
+      step?: string;
+      day_offset?: number;
+      action?: string;
+      email?: { subject?: string; body?: string };
+      linkedin?: { message?: string; recommended?: boolean };
+      phone?: { script?: string; recommended?: boolean };
+      reminder?: string;
+      success_probability?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    };
+    steps?: Array<{
+      step?: string;
+      day_offset?: number;
+      action?: string;
+      email?: { subject?: string; body?: string };
+      linkedin?: { message?: string; recommended?: boolean };
+      phone?: { script?: string; recommended?: boolean };
+      reminder?: string;
+      success_probability?: number;
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    }>;
+  } | null;
+  ai_risk_analyzer?: {
+    probability_company_will_ignore_outreach?: number;
+    missing_data?: number;
+    weak_personalization?: number;
+    missing_decision_maker?: number;
+    low_confidence?: number;
+    stale_enrichment?: number;
+    risk_score?: number;
+    reasons?: string[];
+    recommended_improvements?: string[];
+    confidence?: number;
+    factors?: {
+      missing_data?: { risk?: number; evidence?: Array<{ source_field?: string; value?: string; confidence?: number }> };
+      weak_personalization?: { risk?: number; evidence?: Array<{ source_field?: string; value?: string; confidence?: number }> };
+      missing_decision_maker?: { risk?: number; evidence?: Array<{ source_field?: string; value?: string; confidence?: number }> };
+      low_confidence?: { risk?: number; evidence?: Array<{ source_field?: string; value?: string; confidence?: number }> };
+      stale_enrichment?: { risk?: number; age_days?: number; evidence?: Array<{ source_field?: string; value?: string; confidence?: number }> };
+    };
+  } | null;
+  ai_sales_coach?: {
+    why_this_company?: string;
+    why_now?: string;
+    why_this_decision_maker?: string;
+    what_could_fail?: string[];
+    how_to_increase_reply_rate?: string[];
+    alternative_strategy?: string;
+    target_contact?: {
+      name?: string;
+      title?: string;
+    };
+    evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    confidence?: number;
+  } | null;
+  ai_specialized_agents?: {
+    company_analyst?: { agent?: string; status?: string; output?: Record<string, unknown>; confidence?: number };
+    decision_maker_analyst?: { agent?: string; status?: string; output?: Record<string, unknown>; confidence?: number };
+    buying_signal_analyst?: { agent?: string; status?: string; output?: Record<string, unknown>; confidence?: number };
+    competitor_analyst?: { agent?: string; status?: string; output?: Record<string, unknown>; confidence?: number };
+    email_writer?: { agent?: string; status?: string; output?: Record<string, unknown>; confidence?: number };
+    sales_coach?: { agent?: string; status?: string; output?: Record<string, unknown>; confidence?: number };
+  } | null;
+  ai_agent_intermediate_reasoning?: Record<
+    string,
+    {
+      reasoning?: string[];
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    }
+  > | null;
+  ai_final_orchestrator?: {
+    agent?: string;
+    status?: string;
+    output?: Record<string, unknown>;
+    confidence?: number;
+  } | null;
+  ai_executive_dashboard?: {
+    generated_at?: string;
+    source?: string;
+    overall_opportunity_score?: { score?: number; reasoning?: string };
+    buying_intent?: { score?: number; urgency?: string; reasoning?: string };
+    decision_maker?: {
+      contact_id?: string;
+      name?: string;
+      title?: string;
+      authority_level?: string;
+      is_verified_contact?: boolean;
+    };
+    top_risks?: string[];
+    top_opportunities?: string[];
+    recommended_next_action?: string;
+    recommended_email?: { subject?: string; first_sentence?: string; cta?: string; channel?: string };
+    recommended_follow_up?: string;
+    competitor_summary?: { competitors?: string[]; market_gaps?: string[]; opportunity_to_sell?: string };
+    evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    confidence?: number;
+  } | null;
+  ai_revenue_engine_report?: {
+    generated_at?: string;
+    source?: string;
+    source_fingerprint?: string;
+    executive_summary?: string;
+    overall_opportunity_score?: { score?: number; reasoning?: string };
+    buying_intent?: { score?: number; urgency?: string; reasoning?: string };
+    decision_maker?: {
+      contact_id?: string;
+      name?: string;
+      title?: string;
+      authority_level?: string;
+      is_verified_contact?: boolean;
+    };
+    best_contact_reason?: string;
+    top_pain_points?: string[];
+    top_opportunities?: string[];
+    top_risks?: string[];
+    competitor_position?: {
+      positioning?: string;
+      competitors?: string[];
+      market_gaps?: string[];
+      opportunity_to_sell?: string;
+    };
+    technology_summary?: {
+      products?: string[];
+      technology_stack?: string[];
+    };
+    recommended_outreach_strategy?: {
+      why_contact_now?: string;
+      best_timing?: string;
+      best_channel?: string;
+      strongest_value_proposition?: string;
+    };
+    recommended_first_email?: {
+      subject?: string;
+      first_sentence?: string;
+      cta?: string;
+    };
+    recommended_follow_up_strategy?: {
+      schedule?: string[];
+      strategy?: string;
+    };
+    recommended_cta?: string;
+    confidence?: number;
+    evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+  } | null;
+  ai_crm?: {
+    generated_at?: string;
+    auto_updated?: boolean;
+    priority?: {
+      tier?: string;
+      score?: number;
+      reasoning?: string;
+    };
+    health?: {
+      status?: string;
+      score?: number;
+      reasoning?: string;
+    };
+    buying_intent?: {
+      score?: number;
+      urgency?: string;
+      reasoning?: string;
+    };
+    risk?: {
+      score?: number;
+      level?: string;
+      top_reasons?: string[];
+    };
+    relationship_status?: string;
+    next_action?: string;
+    last_ai_review?: string;
+    upcoming_opportunity?: string;
+  } | null;
+  ai_ceo_dashboard?: {
+    generated_at?: string;
+    auto_updated?: boolean;
+    todays_best_opportunities?: string[];
+    new_buying_signals?: Array<{
+      change_type?: string;
+      added?: string[];
+      detected_at?: string;
+    }>;
+    companies_at_risk?: Array<{
+      company?: string;
+      risk_score?: number;
+      risk_level?: string;
+      top_reasons?: string[];
+    }>;
+    competitors?: {
+      companies?: string[];
+      market_gaps?: string[];
+      positioning?: string;
+      opportunity_to_sell?: string;
+    };
+    sales_pipeline?: {
+      crm_stage?: string;
+      relationship_status?: string;
+      next_action?: string;
+    };
+    expected_revenue?: {
+      estimated_arr_score?: number;
+      estimated_arr_reasoning?: string;
+      opportunity_score?: number;
+    };
+    ai_recommendations?: string[];
+    top_priorities?: string[];
+    daily_summary?: string;
+  } | null;
+  ai_sales_os?: {
+    generated_at?: string;
+    autonomous?: boolean;
+    safety?: {
+      never_fabricate_facts?: boolean;
+      policy?: string;
+    };
+    agents?: Record<
+      string,
+      {
+        agent?: string;
+        status?: string;
+        output?: Record<string, unknown>;
+        reasoning?: string[];
+        evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+        confidence?: number;
+        no_fabrication?: boolean;
+      }
+    >;
+    intermediate_reasoning?: Record<
+      string,
+      {
+        reasoning?: string[];
+        evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+      }
+    >;
+    orchestrator?: {
+      agent?: string;
+      status?: string;
+      autonomous?: boolean;
+      execution_order?: string[];
+      coordination_summary?: string;
+      output?: Record<string, unknown>;
+      confidence?: number;
+    };
+  } | null;
+  ai_live_buying_signals?: {
+    generated_at?: string;
+    latest_changes?: Array<{
+      change_type?: string;
+      added?: string[];
+      previous?: string[];
+      current?: string[];
+      detected_at?: string;
+    }>;
+    change_timeline?: Array<{
+      change_type?: string;
+      added?: string[];
+      detected_at?: string;
+    }>;
+    snapshot?: {
+      new_hiring?: string[];
+      technology_changes?: string[];
+      website_changes?: string[];
+      pricing_changes?: string[];
+      new_products?: string[];
+      leadership_changes?: string[];
+      market_expansion?: string[];
+      new_funding?: string[];
+    };
+  } | null;
+  ai_lead_prioritization?: {
+    generated_at?: string;
+    tier?: "Hot" | "Warm" | "Cold" | "Needs More Data" | string;
+    score?: number;
+    reasoning?: string;
+    confidence?: number;
+    factors?: {
+      buying_intent?: number;
+      opportunity_score?: number;
+      decision_maker_quality?: number;
+      website_activity?: number;
+      freshness?: number;
+      ai_confidence?: number;
+    };
+  } | null;
+  ai_sales_inbox_latest?: {
+    at?: string;
+    email_id?: string;
+    provider_message_id?: string;
+    classified_as?:
+      | "Interested"
+      | "Not Interested"
+      | "Need Follow-up"
+      | "Meeting Requested"
+      | "Referral"
+      | "Spam"
+      | string;
+    next_action?: string;
+    recommended_reply?: string;
+    reply_excerpt?: string;
+    meeting_preparation?: {
+      is_required?: boolean;
+      agenda?: string[];
+      materials?: string[];
+    };
+    crm_update?: {
+      crm_stage?: string;
+      email_status?: string;
+      lead_status?: string;
+    };
+    task_creation?: {
+      title?: string;
+      description?: string;
+      due_in_hours?: number;
+    };
+  } | null;
+  ai_sales_inbox_history?: Array<{
+    at?: string;
+    email_id?: string;
+    provider_message_id?: string;
+    classified_as?: string;
+    next_action?: string;
+    recommended_reply?: string;
+    reply_excerpt?: string;
+    meeting_preparation?: {
+      is_required?: boolean;
+      agenda?: string[];
+      materials?: string[];
+    };
+    crm_update?: {
+      crm_stage?: string;
+      email_status?: string;
+      lead_status?: string;
+    };
+    task_creation?: {
+      title?: string;
+      description?: string;
+      due_in_hours?: number;
+    };
+  }>;
+  ai_evidence_engine?: {
+    generated_at?: string;
+    provider?: string;
+    model_version?: string;
+    prompt_version?: string;
+    entries?: Array<{
+      insight_key?: string;
+      provider?: string;
+      source?: string;
+      raw_source?: string;
+      evidence_snippet?: string;
+      reasoning?: string;
+      confidence?: number;
+      timestamp?: string;
+      enrichment_step?: string;
+      model_version?: string;
+      prompt_version?: string;
+    }>;
+    by_insight?: Record<
+      string,
+      Array<{
+        source?: string;
+        evidence?: string;
+        reasoning?: string;
+        confidence?: number;
+        timestamp?: string;
+        provider?: string;
+      }>
+    >;
+  } | null;
   intelligence_quality?: IntelligenceQuality | null;
   company_intelligence?: CompanyIntelligence | null;
   technologies?: string[];

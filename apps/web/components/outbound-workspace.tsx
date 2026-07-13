@@ -490,6 +490,7 @@ function reportWidgetFailure(error: unknown, area: string, extra: Record<string,
 type CachedDashboardData = {
   metrics: DashboardMetrics;
   leads: Lead[];
+  recentCompanies?: CrmCompany[];
   campaigns: Campaign[];
   employees: AISalesEmployee[];
   activity: Activity[];
@@ -512,6 +513,7 @@ function readCachedDashboardData() {
     const parsed = JSON.parse(raw) as {
       metrics?: Partial<DashboardMetrics>;
       leads?: Lead[];
+      recentCompanies?: CrmCompany[];
       campaigns?: Campaign[];
       employees?: AISalesEmployee[];
       activity?: Activity[];
@@ -520,6 +522,7 @@ function readCachedDashboardData() {
     return {
       metrics: safeDashboardMetrics(parsed.metrics),
       leads: safeArray(parsed.leads),
+      recentCompanies: safeArray(parsed.recentCompanies).map(normalizeCrmCompany),
       campaigns: safeArray(parsed.campaigns).map(safeCampaign),
       employees: safeArray(parsed.employees),
       activity: safeArray(parsed.activity),
@@ -1352,6 +1355,7 @@ function useDashboardData() {
   const { api, ready } = useTokenApi();
   const [metrics, setMetrics] = useState<DashboardMetrics>(emptyMetrics);
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [recentCompanies, setRecentCompanies] = useState<CrmCompany[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [employees, setEmployees] = useState<AISalesEmployee[]>([]);
   const [activity, setActivity] = useState<Activity[]>([]);
@@ -1376,6 +1380,7 @@ function useDashboardData() {
       if (cached && !cancelled) {
         setMetrics(cached.metrics);
         setLeads(cached.leads);
+        setRecentCompanies(safeArray(cached.recentCompanies));
         setCampaigns(cached.campaigns);
         setEmployees(cached.employees);
         setActivity(cached.activity);
@@ -1391,6 +1396,7 @@ function useDashboardData() {
         const nextMetrics = metricsFromWorkspaceBootstrap(bootstrap);
         setMetrics(nextMetrics);
         setLeads(bootstrapLeads);
+        setRecentCompanies(bootstrapCompanies);
         setCachedAt(null);
         setSupportingError("");
 
@@ -1414,6 +1420,7 @@ function useDashboardData() {
           cacheDashboardData({
             metrics: refreshedMetrics,
             leads: bootstrapLeads,
+            recentCompanies: bootstrapCompanies,
             campaigns: nextCampaigns,
             employees: nextEmployees,
             activity: nextActivity
@@ -1448,7 +1455,7 @@ function useDashboardData() {
     };
   }, [api, ready]);
 
-  return { metrics, leads, campaigns, employees, activity, loading, error, supportingError, cachedAt };
+  return { metrics, leads, recentCompanies, campaigns, employees, activity, loading, error, supportingError, cachedAt };
 }
 
 function OpportunityCard({
@@ -1886,74 +1893,304 @@ function OpportunityCard({
 }
 
 export function DashboardHome() {
-  const { metrics, leads, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
+  const { metrics, leads, recentCompanies, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
   const { t } = useI18n();
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
   const nextStep = dashboardNextStep(metrics, leads, campaigns);
-  const activeSignals = [
-    { label: "Leads found", value: String(metrics.leads || leads.length), help: "Real workspace leads", show: metrics.leads > 0 || leads.length > 0 },
-    { label: "Campaigns", value: String(metrics.campaigns || campaigns.length), help: "Saved campaigns", show: metrics.campaigns > 0 || campaigns.length > 0 },
-    { label: "Emails sent", value: String(metrics.emails_sent), help: "Approved sends only", show: metrics.emails_sent > 0 },
-    { label: "Reply rate", value: `${metrics.reply_rate || 0}%`, help: "From tracked replies", show: metrics.replies > 0 || metrics.emails_sent > 0 }
-  ].filter((signal) => signal.show);
+  const companies = recentCompanies.length ? recentCompanies : [];
+
+  const opportunities = [...companies]
+    .sort((left, right) => {
+      const leftScore = Number(left.ai_crm?.priority?.score || left.overall_score || 0);
+      const rightScore = Number(right.ai_crm?.priority?.score || right.overall_score || 0);
+      return rightScore - leftScore;
+    })
+    .slice(0, 6);
+
+  const readyToSendEmails = companies
+    .map((company) => ({
+      company,
+      email: safeArray(company.generated_emails)[0]
+    }))
+    .filter((item) => {
+      if (!item.email) return false;
+      const status = String(item.email.delivery_status || "").toLowerCase();
+      return status === "approved" || status === "draft";
+    })
+    .slice(0, 5);
+
+  const needsReviewCount = companies.filter((company) => {
+    const hasErrorStage = Object.values(company.workflow_stages || {}).some((stage) => String(stage).toLowerCase() === "error");
+    const hasReviewMessage = Object.values(company.workflow_stage_messages || {}).some((message) => String(message || "").toLowerCase().includes("review"));
+    const stage = String(company.crm_stage || "");
+    return hasErrorStage || hasReviewMessage || stage === "Email Draft Ready" || stage === "Approved";
+  }).length;
+
+  const allBuyingChanges = companies.flatMap((company) => safeArray(company.ai_live_buying_signals?.latest_changes));
+  const buyingSignalBuckets = {
+    hiring: allBuyingChanges.filter((item) => item?.change_type === "new_hiring"),
+    technology: allBuyingChanges.filter((item) => item?.change_type === "technology_changes"),
+    expansion: allBuyingChanges.filter((item) => item?.change_type === "market_expansion"),
+    funding: allBuyingChanges.filter((item) => item?.change_type === "new_funding"),
+    product: allBuyingChanges.filter((item) => item?.change_type === "new_products")
+  };
+
+  const summaryCards = [
+    {
+      label: t("Hot Opportunities"),
+      value: opportunities.filter((item) => Number(item.ai_crm?.priority?.score || item.overall_score || 0) >= 70).length,
+      helper: t("High-priority accounts")
+    },
+    {
+      label: t("New Buying Signals"),
+      value: allBuyingChanges.length,
+      helper: t("Recent signal changes")
+    },
+    {
+      label: t("Emails Ready"),
+      value: readyToSendEmails.length,
+      helper: t("Draft or approved")
+    },
+    {
+      label: t("Active Pipeline"),
+      value: metrics.revenue_forecast.toLocaleString(),
+      helper: t("Current pipeline value")
+    },
+    {
+      label: t("Companies Needing Review"),
+      value: needsReviewCount,
+      helper: t("Awaiting manual review")
+    }
+  ];
+
+  const primaryCompany = opportunities[0] || null;
+  const primaryContact = primaryCompany?.contacts?.[0] || null;
+  const who = primaryContact
+    ? `${primaryContact.name || "Decision maker"}${primaryContact.title ? ` · ${primaryContact.title}` : ""}`
+    : (primaryCompany?.name || t("No company selected yet"));
+  const why = String(
+    primaryCompany?.ai_crm?.buying_intent?.reasoning
+    || primaryCompany?.ai_sales_os?.orchestrator?.coordination_summary
+    || primaryCompany?.reasoning
+    || t("AI ranked this account based on current buying intent, risk and verified signals.")
+  );
+  const whatNext = String(
+    primaryCompany?.ai_crm?.next_action
+    || primaryCompany?.ai_sales_os?.orchestrator?.output?.next_action
+    || primaryCompany?.recommended_next_action
+    || t(nextStep.title)
+  );
+
+  const aiRecommendation = {
+    bestCompany: primaryCompany?.name || t("No best company yet"),
+    whyNow: String(primaryCompany?.ai_crm?.buying_intent?.reasoning || primaryCompany?.ai_revenue_engine_report?.recommended_outreach_strategy?.why_contact_now || why),
+    whoToContact: who,
+    outreachAngle: String(primaryCompany?.ai_outreach_strategy?.strongest_value_proposition || primaryCompany?.ai_competitor_intelligence?.opportunity_to_sell || t("Use the strongest value proposition from the company card.")),
+    href: primaryCompany ? `/dashboard/companies?company=${primaryCompany.id}` : "/dashboard/companies"
+  };
+
   return (
-    <div className="space-y-6">
-      <PageHeader
-        eyebrow={t("Today")}
-        title={t("What should I do now?")}
-        copy={t(hasAnyData ? "OutreachAI keeps one obvious next action so you can move from lead search to meetings without thinking through the whole system." : "This is your private account. Leads, CRM, campaigns, billing and settings are visible only to your workspace. Start with one real company or a focused lead search.")}
-        action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={17} /></Link>}
-      />
-      {loading && <WidgetErrorCard title="Loading your private workspace" copy="Your dashboard is opening. You can already use the main actions below." />}
-      {supportingError && !hasAnyData && <WidgetErrorCard title={cachedAt ? "Updating workspace data" : "Dashboard details are temporarily unavailable"} copy={supportingError} />}
-      {error && <WidgetErrorCard title="Dashboard metrics could not update" copy={error} />}
+    <div className="space-y-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
+      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f4f7ff] to-[#eef6ff] p-5 shadow-sm sm:p-7">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-[#b7e3ff] opacity-40 blur-3xl" />
+        <div className="pointer-events-none absolute -left-10 bottom-0 h-44 w-44 rounded-full bg-[#dff5eb] opacity-50 blur-3xl" />
+        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#0f4f77]">{t("Executive Dashboard")}</p>
+            <h1 className="mt-2 text-3xl font-bold leading-tight text-slate-900 sm:text-4xl">{t("What should I do now?")}</h1>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-700">{t("AI-first control center. Every card explains who to target, why this matters now, and what next action creates the most momentum.")}</p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={16} /></Link>
+            <Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Building2 size={16} /> {t("Open Companies")}</Link>
+            <Link href="/dashboard/inbox" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Inbox size={16} /> {t("Open Inbox")}</Link>
+          </div>
+        </div>
+      </section>
+
+      {(loading || supportingError || error) && (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          {loading ? t("Loading executive context…") : null}
+          {!loading && (supportingError || error) ? supportingError || error : null}
+          {cachedAt ? ` ${t("Showing last successful refresh.")}` : ""}
+        </section>
+      )}
+
+      {!hasAnyData && (
+        <WidgetBoundary name="Private workspace onboarding">
+          <section className="rounded-3xl border border-teal-100 bg-gradient-to-br from-white to-teal-50/70 p-5 shadow-sm sm:p-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-bold uppercase text-brand">{t("Private workspace")}</p>
+                <h2 className="mt-2 text-2xl font-bold text-ink">{t("Your private workspace is ready")}</h2>
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">{t("No shared demo CRM is loaded. Add your first company or run Lead Finder, and every saved lead will belong only to this account.")}</p>
+              </div>
+              <div className="grid min-w-0 gap-2 sm:grid-cols-3 lg:w-[34rem]">
+                <Link href="/dashboard/leads#manual-company" className="inline-flex min-h-12 items-center justify-center rounded-md border border-teal-200 bg-white px-3 text-center text-sm font-bold text-brand shadow-sm">{t("Add your first company")}</Link>
+                <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center rounded-md bg-brand px-3 text-center text-sm font-bold text-white shadow-sm">{t("Find leads")}</Link>
+                <Link href="/dashboard/campaigns" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-center text-sm font-bold text-slate-800 shadow-sm">{t("Create your first campaign")}</Link>
+              </div>
+            </div>
+          </section>
+        </WidgetBoundary>
+      )}
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        {summaryCards.map((card) => (
+          <article key={card.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">{card.label}</p>
+            <p className="mt-2 text-2xl font-bold text-slate-900">{card.value}</p>
+            <p className="mt-1 text-sm text-slate-600">{card.helper}</p>
+          </article>
+        ))}
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-3">
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("Who?")}</p>
+          <p className="mt-3 text-lg font-bold text-slate-900">{who}</p>
+          <p className="mt-2 text-sm text-slate-600">{primaryCompany?.name || t("No prioritized account yet. Run lead search to create opportunities.")}</p>
+        </article>
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("Why?")}</p>
+          <p className="mt-3 text-sm leading-6 text-slate-800">{why}</p>
+        </article>
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("What next?")}</p>
+          <p className="mt-3 text-sm leading-6 text-slate-800">{whatNext}</p>
+          <Link href={nextStep.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#0f4f77] px-4 text-sm font-bold text-white">{t("Do next action")} <ArrowRight size={16} /></Link>
+        </article>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-3">
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-bold text-slate-900">{t("Today's Best Opportunities")}</h2>
+            <Link href="/dashboard/companies" className="text-sm font-bold text-[#0f4f77]">{t("View all")}</Link>
+          </div>
+          <div className="mt-4 grid gap-3">
+            {opportunities.length ? opportunities.map((company) => {
+              const score = Number(company.ai_crm?.priority?.score || company.overall_score || 0);
+              const urgency = String(company.ai_crm?.buying_intent?.urgency || "");
+              const buyingScore = Number(company.ai_crm?.buying_intent?.score || company.buying_signal_score || 0);
+              const decisionMaker = company.decision_maker_intelligence?.profiles?.[0] || null;
+              const whoLine = decisionMaker?.name
+                ? `${decisionMaker.name}${decisionMaker.title ? ` · ${decisionMaker.title}` : ""}`
+                : (company.contacts?.[0]?.name || company.email || t("Decision maker pending"));
+              const whyLine = String(company.ai_crm?.buying_intent?.reasoning || company.ai_revenue_engine_report?.recommended_outreach_strategy?.why_contact_now || company.reasoning || t("Signals still loading."));
+              const nextLine = String(company.ai_crm?.next_action || company.recommended_next_action || t("Open company card and continue workflow."));
+              return (
+                <article key={company.id} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-base font-bold text-slate-900">{company.name}</p>
+                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-slate-700">{t("Priority")} {score}</span>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-sm">
+                    <p><span className="font-bold text-slate-900">{t("Opportunity score")}</span> <span className="text-slate-700">{score}</span></p>
+                    <p><span className="font-bold text-slate-900">{t("Buying intent")}</span> <span className="text-slate-700">{buyingScore}{urgency ? ` · ${urgency}` : ""}</span></p>
+                    <p><span className="font-bold text-slate-900">{t("Decision maker")}</span> <span className="text-slate-700">{whoLine}</span></p>
+                    <p><span className="font-bold text-slate-900">{t("Top reason to contact")}</span> <span className="text-slate-700">{whyLine}</span></p>
+                    <p><span className="font-bold text-slate-900">{t("Recommended next action")}</span> <span className="text-slate-700">{nextLine}</span></p>
+                  </div>
+                </article>
+              );
+            }) : (
+              <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-600">
+                {t("No opportunity cards yet. Add a company or run lead search to let AI prioritize accounts.")}
+              </div>
+            )}
+          </div>
+        </article>
+
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-bold text-slate-900">{t("AI Recommendation")}</h2>
+          <div className="mt-4 space-y-3 text-sm">
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="font-bold text-slate-900">{t("Best company to contact today")}</p>
+              <p className="mt-1 text-slate-700">{aiRecommendation.bestCompany}</p>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="font-bold text-slate-900">{t("Why now")}</p>
+              <p className="mt-1 text-slate-700">{aiRecommendation.whyNow}</p>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="font-bold text-slate-900">{t("Who to contact")}</p>
+              <p className="mt-1 text-slate-700">{aiRecommendation.whoToContact}</p>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="font-bold text-slate-900">{t("Recommended outreach angle")}</p>
+              <p className="mt-1 text-slate-700">{aiRecommendation.outreachAngle}</p>
+            </div>
+          </div>
+          <Link href={aiRecommendation.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#0f4f77] px-4 text-sm font-bold text-white">{t("Open company")} <ArrowRight size={16} /></Link>
+        </article>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-3">
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-bold text-slate-900">{t("Recent Buying Signals")}</h2>
+          <div className="mt-4 space-y-2">
+            {[
+              { key: "hiring", label: t("Hiring"), items: buyingSignalBuckets.hiring },
+              { key: "technology", label: t("Technology changes"), items: buyingSignalBuckets.technology },
+              { key: "expansion", label: t("Expansion"), items: buyingSignalBuckets.expansion },
+              { key: "funding", label: t("Funding"), items: buyingSignalBuckets.funding },
+              { key: "product", label: t("Product launches"), items: buyingSignalBuckets.product }
+            ].map((bucket) => (
+              <div key={bucket.key} className="rounded-xl bg-slate-50 p-3 text-sm">
+                <p className="font-bold text-slate-900">{bucket.label}</p>
+                <p className="mt-1 text-slate-700">{bucket.items.length ? safeArray(bucket.items[0]?.added).slice(0, 2).join(", ") || t("Updated") : t("No new signal")}</p>
+                <p className="mt-1 text-xs text-slate-500">{t("Count")}: {bucket.items.length}</p>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-bold text-slate-900">{t("Ready-to-Send Emails")}</h2>
+          <div className="mt-4 space-y-2">
+            {readyToSendEmails.length ? readyToSendEmails.map(({ company, email }) => {
+              const contact = company.contacts?.[0];
+              const confidence = Number(company.ai_outreach_strategy?.estimated_reply_probability || company.ai_revenue_engine_report?.confidence || 0);
+              return (
+                <div key={company.id} className="rounded-xl border border-slate-200 p-3 text-sm">
+                  <p className="font-bold text-slate-900">{company.name}</p>
+                  <p className="mt-1 text-slate-700">{t("Contact")}: {contact?.name || contact?.email || company.email || t("Not available")}</p>
+                  <p className="mt-1 text-slate-700">{t("Subject")}: {email?.subject || t("No subject yet")}</p>
+                  <p className="mt-1 text-slate-700">{t("Confidence")}: {confidence}%</p>
+                  <Link href={`/dashboard/companies?company=${company.id}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-slate-900 px-3 text-xs font-bold text-white">{t("Review")}</Link>
+                </div>
+              );
+            }) : <p className="text-sm text-slate-600">{t("No emails ready yet.")}</p>}
+          </div>
+        </article>
+
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-bold text-slate-900">{t("AI Timeline")}</h2>
+          <div className="mt-4 space-y-2">
+            {primaryCompany?.ai_live_buying_signals?.change_timeline?.length ? safeArray(primaryCompany.ai_live_buying_signals.change_timeline).slice(0, 5).map((item, index) => (
+              <div key={`${item.change_type || "timeline"}-${index}`} className="rounded-xl border border-slate-200 p-3 text-sm">
+                <p className="font-bold text-slate-900">{item.change_type || t("Timeline event")}</p>
+                <p className="mt-1 text-slate-700">{Array.isArray(item.added) ? item.added.join(", ") : ""}</p>
+              </div>
+            )) : <p className="text-sm text-slate-600">{t("Timeline fills automatically after company monitoring runs.")}</p>}
+          </div>
+        </article>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-bold text-slate-900">{t("Daily Summary")}</h2>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{t("Auto-generated")}</span>
+        </div>
+        <p className="mt-3 text-sm leading-6 text-slate-700">{primaryCompany?.ai_ceo_dashboard?.daily_summary || t("AI summary appears once opportunities are enriched. Continue with lead search or company review.")}</p>
+      </section>
+
       <WidgetBoundary name="Main customer actions">
         <CoreActionGrid activeHref={nextStep.href} />
       </WidgetBoundary>
-      {!hasAnyData && <WidgetBoundary name="Private workspace onboarding"><section className="rounded-3xl border border-teal-100 bg-gradient-to-br from-white to-teal-50/70 p-5 shadow-sm sm:p-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <p className="text-sm font-bold uppercase text-brand">{t("Private workspace")}</p>
-            <h2 className="mt-2 text-2xl font-bold text-ink">{t("Your private workspace is ready")}</h2>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">{t("No shared demo CRM is loaded. Add your first company or run Lead Finder, and every saved lead will belong only to this account.")}</p>
-          </div>
-          <div className="grid min-w-0 gap-2 sm:grid-cols-3 lg:w-[34rem]">
-            <Link href="/dashboard/leads#manual-company" className="inline-flex min-h-12 items-center justify-center rounded-md border border-teal-200 bg-white px-3 text-center text-sm font-bold text-brand shadow-sm">{t("Add your first company")}</Link>
-            <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center rounded-md bg-brand px-3 text-center text-sm font-bold text-white shadow-sm">{t("Find leads")}</Link>
-            <Link href="/dashboard/campaigns" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-center text-sm font-bold text-slate-800 shadow-sm">{t("Create your first campaign")}</Link>
-          </div>
-        </div>
-      </section></WidgetBoundary>}
-      <WidgetBoundary name="Today’s priority">
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-          <p className="text-sm font-bold uppercase text-brand">{t(nextStep.step)}</p>
-          <h2 className="mt-2 text-2xl font-bold text-ink">{t(nextStep.title)}</h2>
-          <p className="mt-3 text-sm leading-6 text-slate-600">{t(nextStep.copy)}</p>
-          <Link href={nextStep.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white">{t(nextStep.label)}<ArrowRight size={17} /></Link>
-        </section>
-      </WidgetBoundary>
-      {activeSignals.length > 0 && <WidgetBoundary name="Workspace metrics"><details className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-        <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Show workspace details")}</summary>
-        <section className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {activeSignals.map((signal) => <MetricCard key={signal.label} label={signal.label} value={signal.value} help={signal.help} />)}
-        </section>
-      </details></WidgetBoundary>}
+
       {!hasAnyData && <WidgetBoundary name="Dashboard onboarding"><EmptyState title={t("Start with one focused lead search.")} copy={t("Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after verified data exists.")} action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} /></WidgetBoundary>}
-      {(employees.length > 0 || activity.length > 0) && <WidgetBoundary name="Latest workspace activity"><details className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-        <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Show recent activity")}</summary>
-        <section className="mt-4 grid gap-4 lg:grid-cols-2">
-        {employees.length > 0 && <WidgetBoundary name="AI employee summary"><article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-ink">{t("AI Employees")}</h2>
-          <p className="mt-2 text-sm text-slate-600">{t("Active AI workers connected to this workspace.")}</p>
-          <div className="mt-4 space-y-2">{employees.slice(0, 3).map((employee) => <div key={employee.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{employee.name}</p><p className="text-slate-600">{employee.role} · {employee.status}</p></div>)}</div>
-        </article></WidgetBoundary>}
-        {activity.length > 0 && <WidgetBoundary name="Recent activity"><article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-ink">{t("Recent activity")}</h2>
-          <p className="mt-2 text-sm text-slate-600">{t("Latest workspace actions from real saved events.")}</p>
-          <div className="mt-4 space-y-2">{activity.slice(0, 5).map((item) => <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm"><p className="font-bold">{t(activityLabel(item.action))}</p><p className="text-slate-600">{new Date(item.created_at).toLocaleString()}</p></div>)}</div>
-        </article></WidgetBoundary>}
-        </section>
-      </details></WidgetBoundary>}
     </div>
   );
 }
@@ -3285,6 +3522,167 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
     ["Reply received", current.replied_at, "A reply was captured in the workspace."],
     ["Stage changed", current.stage_changed_at, t("Current stage is {stage}.").replace("{stage}", t(current.crm_stage))],
   ];
+  const opportunityScore = Math.max(0, Math.min(100, Math.round(
+    Number(
+      displayCurrent.ai_revenue_engine_report?.overall_opportunity_score?.score
+      ?? displayCurrent.ai_crm?.priority?.score
+      ?? displayCurrent.ai_lead_prioritization?.score
+      ?? displayCurrent.overall_score
+      ?? salesBrief.score
+      ?? 0
+    )
+  )));
+  const opportunityReason = String(
+    displayCurrent.ai_revenue_engine_report?.overall_opportunity_score?.reasoning
+    || displayCurrent.ai_crm?.priority?.reasoning
+    || displayCurrent.reasoning
+    || salesBrief.decisionReason
+    || t("Not enough evidence yet.")
+  );
+  const buyingIntentScore = Math.max(0, Math.min(100, Math.round(
+    Number(
+      displayCurrent.ai_revenue_engine_report?.buying_intent?.score
+      ?? displayCurrent.ai_crm?.buying_intent?.score
+      ?? displayCurrent.buying_signal_score
+      ?? 0
+    )
+  )));
+  const buyingIntentUrgency = String(
+    displayCurrent.ai_revenue_engine_report?.buying_intent?.urgency
+    || displayCurrent.ai_crm?.buying_intent?.urgency
+    || displayCurrent.buying_signal_urgency
+    || t("Unknown")
+  );
+  const buyingIntentReason = String(
+    displayCurrent.ai_revenue_engine_report?.buying_intent?.reasoning
+    || displayCurrent.ai_crm?.buying_intent?.reasoning
+    || displayCurrent.buying_signal_explanation
+    || salesBrief.whyFit
+    || t("No buying-intent reasoning available yet.")
+  );
+  const revenueDecisionMaker = displayCurrent.ai_revenue_engine_report?.decision_maker || null;
+  const intelligenceDecisionMaker = displayCurrent.decision_maker_intelligence?.profiles?.[0] || null;
+  const decisionMaker = {
+    name: revenueDecisionMaker?.name || intelligenceDecisionMaker?.name || deepSelected?.name || primaryContact?.name || t("Decision maker not confirmed"),
+    title: revenueDecisionMaker?.title || intelligenceDecisionMaker?.title || deepSelected?.title || primaryContact?.title || t("Role unavailable"),
+    confidence: Number(
+      intelligenceDecisionMaker?.confidence_score
+      ?? deepSearch?.confidence_score
+      ?? primaryContact?.confidence
+      ?? displayCurrent.ai_revenue_engine_report?.confidence
+      ?? displayCurrent.confidence_score
+      ?? 0
+    ),
+    why: String(
+      displayCurrent.ai_revenue_engine_report?.best_contact_reason
+      || intelligenceDecisionMaker?.why_best_decision_maker
+      || deepSelected?.reason
+      || t("Selected from saved contact and enrichment signals.")
+    ),
+    linkedin: intelligenceDecisionMaker?.contact_id ? primaryContact?.linkedin : primaryContact?.linkedin,
+    email: revenueDecisionMaker?.is_verified_contact ? (displayCurrent.email || primaryContact?.email || deepSearch?.verified_email) : (deepSearch?.verified_email || displayCurrent.email || primaryContact?.email)
+  };
+  const recommendedOutreach = String(
+    displayCurrent.ai_revenue_engine_report?.recommended_outreach_strategy?.strongest_value_proposition
+    || displayCurrent.ai_outreach_strategy?.strongest_value_proposition
+    || displayCurrent.ai_outreach_strategy?.first_sentence
+    || displayCurrent.sales_angle
+    || displayCurrent.outreach_strategy
+    || salesBrief.opener
+    || t("No recommended outreach angle yet.")
+  );
+  const bestTiming = String(
+    displayCurrent.ai_revenue_engine_report?.recommended_outreach_strategy?.best_timing
+    || displayCurrent.ai_outreach_strategy?.best_timing
+    || displayCurrent.recommended_outreach_timing
+    || t("Timing not available yet")
+  );
+  const successProbability = (() => {
+    const numeric = Number(
+      displayCurrent.ai_outreach_strategy?.estimated_reply_probability
+      ?? displayCurrent.ai_outreach_strategy?.probability_of_reply
+      ?? displayCurrent.ai_revenue_engine_report?.confidence
+      ?? parseInt(String(displayCurrent.expected_reply_rate || "").replace(/[^\d]/g, ""), 10)
+    );
+    return Number.isFinite(numeric) && numeric > 0 ? `${Math.max(0, Math.min(100, Math.round(numeric)))}%` : salesBrief.replyProbability;
+  })();
+  const executiveSummary = String(
+    displayCurrent.ai_revenue_engine_report?.executive_summary
+    || displayCurrent.ai_summary
+    || displayCurrent.opportunity_analysis
+    || displayCurrent.partnership_fit
+    || salesBrief.whatTheyDo
+  );
+  const readyEmailSubject = currentDraft?.subject || displayCurrent.ai_revenue_engine_report?.recommended_first_email?.subject || salesBrief.firstMessageSubject;
+  const readyEmailPreview = cleanGeneratedText(currentDraft?.preview || currentDraft?.body || displayCurrent.ai_revenue_engine_report?.recommended_first_email?.first_sentence || salesBrief.firstMessage);
+  const competitorNames = uniqueStrings([
+    ...safeArray(displayCurrent.ai_revenue_engine_report?.competitor_position?.competitors).map(String),
+    ...safeArray(displayCurrent.ai_ceo_dashboard?.competitors?.companies).map(String),
+    ...safeArray(displayCurrent.ai_competitor_intelligence?.competitors).map(String)
+  ]).slice(0, 5);
+  const competitorAdvantages = uniqueStrings([
+    displayCurrent.ai_revenue_engine_report?.competitor_position?.opportunity_to_sell || "",
+    displayCurrent.ai_ceo_dashboard?.competitors?.opportunity_to_sell || "",
+    displayCurrent.ai_competitor_intelligence?.opportunity_to_sell || "",
+    displayCurrent.ai_revenue_engine_report?.competitor_position?.positioning || ""
+  ]).filter(Boolean).slice(0, 3);
+  const competitorWeaknesses = uniqueStrings([
+    ...safeArray(displayCurrent.ai_competitor_intelligence?.weaknesses).map(String),
+    ...safeArray(displayCurrent.top_negative_signals).map(String),
+    ...safeArray(displayCurrent.ai_revenue_engine_report?.top_risks).map(String)
+  ]).slice(0, 4);
+  const companyTimelineGroups = [
+    { label: t("Hiring"), items: safeArray(displayCurrent.ai_live_buying_signals?.snapshot?.new_hiring).map(String) },
+    { label: t("Funding"), items: safeArray(displayCurrent.ai_live_buying_signals?.snapshot?.new_funding).map(String) },
+    { label: t("Technology"), items: uniqueStrings([...safeArray(displayCurrent.ai_live_buying_signals?.snapshot?.technology_changes).map(String), ...safeArray(displayCurrent.ai_company_timeline?.technology_changes).map((item) => String((item as { title?: string; details?: string }).title || (item as { details?: string }).details || ""))]).filter(Boolean) },
+    { label: t("Website"), items: uniqueStrings([...safeArray(displayCurrent.ai_live_buying_signals?.snapshot?.website_changes).map(String), ...safeArray(displayCurrent.ai_company_timeline?.website_changes).map((item) => String((item as { title?: string; details?: string }).title || (item as { details?: string }).details || ""))]).filter(Boolean) },
+    { label: t("Expansion"), items: uniqueStrings([...safeArray(displayCurrent.ai_live_buying_signals?.snapshot?.market_expansion).map(String), ...safeArray(displayCurrent.ai_company_timeline?.new_locations).map((item) => String((item as { title?: string; details?: string }).title || (item as { details?: string }).details || ""))]).filter(Boolean) }
+  ];
+  const aiRisksDetailed = uniqueStrings([
+    ...safeArray(displayCurrent.ai_revenue_engine_report?.top_risks).map(String),
+    ...safeArray(displayCurrent.ai_crm?.risk?.top_reasons).map(String),
+    ...salesBrief.topRisks,
+    ...safeArray(displayCurrent.risks).map(String)
+  ]).slice(0, 6);
+  const formatEvidence = (item?: { source_field?: string; value?: string; confidence?: number } | null) => {
+    if (!item) return "";
+    const field = item.source_field ? t(String(item.source_field).replaceAll("_", " ")) : t("Source");
+    const value = item.value ? String(item.value) : t("Value not available");
+    const confidence = item.confidence ? ` · ${Math.round(item.confidence)}%` : "";
+    return `${field}: ${value}${confidence}`;
+  };
+  const evidenceSections = [
+    {
+      title: t("Executive Summary"),
+      items: uniqueStrings([
+        ...safeArray(displayCurrent.ai_revenue_engine_report?.evidence).map((item) => formatEvidence(item)),
+        ...safeArray(displayCurrent.buying_signal_evidence).map((item) => formatEvidence(item as { source_field?: string; value?: string; confidence?: number })),
+        ...salesBrief.qualitySources.map((item) => t(item))
+      ]).filter(Boolean).slice(0, 5)
+    },
+    {
+      title: t("Decision Maker"),
+      items: uniqueStrings([
+        ...safeArray(intelligenceDecisionMaker?.evidence_used).map((item) => formatEvidence(item)),
+        deepSelected?.email ? `${t("verified email")}: ${deepSelected.email}` : "",
+        decisionMaker.why
+      ]).filter(Boolean).slice(0, 5)
+    },
+    {
+      title: t("Recommended Outreach"),
+      items: uniqueStrings([
+        ...safeArray(displayCurrent.ai_outreach_strategy?.strongest_value_proposition_evidence).map((item) => formatEvidence(item)),
+        ...safeArray(displayCurrent.ai_outreach_strategy?.first_sentence_evidence).map((item) => formatEvidence(item)),
+        ...safeArray(displayCurrent.ai_outreach_strategy?.best_timing_evidence).map((item) => formatEvidence(item)),
+        ...safeArray(displayCurrent.ai_outreach_strategy?.cta_evidence).map((item) => formatEvidence(item))
+      ]).filter(Boolean).slice(0, 6)
+    }
+  ];
+  const verdict = opportunityScore >= 70 && buyingIntentScore >= 50
+    ? t("Yes, contact this company now")
+    : opportunityScore >= 50
+      ? t("Probably, after one quick review")
+      : t("Not yet, collect more evidence first");
 
   function applyCompanyUpdate(updatedCompany: CrmCompany) {
     setCurrent(updatedCompany);
@@ -3514,238 +3912,191 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
   }
 
   return <article id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden rounded-3xl border bg-slate-50 shadow-sm ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
-    <div className="border-b border-slate-200 bg-white p-5 sm:p-6">
-      <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-        <div className="flex min-w-0 gap-4">
-          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-ink text-xl font-black text-white shadow-sm">
-            {current.name.slice(0, 2).toUpperCase()}
-          </div>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className={`rounded-full border px-3 py-1 text-xs font-bold ${stageTone(current.crm_stage)}`}>{t(current.crm_stage)}</span>
-              <span className="rounded-full border border-slate-200 bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{t("AI Health")} {healthScore}%</span>
+    <div className="border-b border-slate-200 bg-white p-5 sm:p-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
+      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f7fbff] to-[#edf6ff] p-5 shadow-sm sm:p-6">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-[#b7e3ff] opacity-40 blur-3xl" />
+        <div className="relative flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+          <div className="flex min-w-0 gap-4">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-xl font-black text-white shadow-sm">
+              {current.name.slice(0, 2).toUpperCase()}
             </div>
-            <h2 className="mt-3 text-2xl font-black tracking-tight text-ink sm:text-3xl">{current.name}</h2>
-            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-600">
-              <span className="inline-flex items-center gap-1.5"><Building2 size={16} />{fieldValue(current.industry, t("Not available"))}</span>
-              <span className="inline-flex items-center gap-1.5"><MapPin size={16} />{[current.city, current.country].filter(Boolean).join(", ") || t("Not available")}</span>
-              <span className="inline-flex items-center gap-1.5"><Globe2 size={16} />{current.website || current.domain ? <a className="break-all font-semibold text-brand hover:underline" href={current.website || `https://${current.domain}`} target="_blank" rel="noreferrer">{current.website || current.domain}</a> : t("Not available")}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div className="mt-5 rounded-3xl border border-teal-200 bg-gradient-to-br from-white via-white to-teal-50 p-5 shadow-sm">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0">
-            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI Sales Brief")}</p>
-            <h3 className="mt-2 text-2xl font-black tracking-tight text-ink">{t("Should we work this lead now?")}</h3>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{t("Open this brief and understand the company, the angle, the message and the next best action in 30 seconds.")}</p>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row lg:flex-col lg:items-end">
-            <span className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-2 text-sm font-black ${salesBrief.score >= 70 ? "border-teal-200 bg-teal-50 text-brand" : salesBrief.score >= 50 ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-100 text-slate-700"}`}>
-              <Target size={16} />
-              {t(salesBrief.fit)} · {salesBrief.score}/100
-            </span>
-            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-700">
-              <BarChart3 size={16} />
-              {t("Reply probability")}: {salesBrief.replyProbability}
-            </span>
-          </div>
-        </div>
-
-        <div className="mt-5 rounded-2xl border border-teal-200 bg-white p-4 shadow-sm">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
-              <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI decision")}</p>
-              <h4 className="mt-2 text-xl font-black text-ink">{t(salesBrief.decision)}</h4>
-              <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.decisionReason)}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-full border px-3 py-1 text-xs font-bold ${stageTone(current.crm_stage)}`}>{t(current.crm_stage)}</span>
+                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-700">{t("AI confidence")} {Math.max(displayCurrent.ai_revenue_engine_report?.confidence || 0, decisionMaker.confidence || 0, healthScore)}%</span>
+              </div>
+              <h2 className="mt-3 text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">{current.name}</h2>
+              <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-600">
+                <span className="inline-flex items-center gap-1.5"><Building2 size={16} />{fieldValue(current.industry, t("Not available"))}</span>
+                <span className="inline-flex items-center gap-1.5"><MapPin size={16} />{[current.city, current.country].filter(Boolean).join(", ") || t("Not available")}</span>
+                <span className="inline-flex items-center gap-1.5"><Globe2 size={16} />{current.website || current.domain ? <a className="break-all font-semibold text-brand hover:underline" href={current.website || `https://${current.domain}`} target="_blank" rel="noreferrer">{current.website || current.domain}</a> : t("Not available")}</span>
+              </div>
             </div>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row xl:flex-col xl:items-end">
             {primaryAction.action ? (
               <button
                 type="button"
                 onClick={runPrimaryAction}
                 disabled={(primaryAction.action === "prepare-company" && (actionBusy === "prepare-company" || !current.lead_id)) || (primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
-                className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {(primaryAction.action === "prepare-company" && actionBusy === "prepare-company") || (primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
                 {t(primaryAction.label)}
               </button>
             ) : (
-              <a href={primaryAction.target} className="inline-flex min-h-11 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white sm:w-auto">
+              <a href={primaryAction.target} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">
                 <PrimaryActionIcon size={17} />
                 {t(primaryAction.label)}
                 <ArrowRight size={16} />
               </a>
             )}
-          </div>
-          <div className="mt-4 grid gap-3 lg:grid-cols-3">
-            <div className="rounded-xl bg-teal-50 p-3">
-              <p className="text-xs font-black uppercase text-brand">{t("Best evidence")}</p>
-              <ul className="mt-2 space-y-2 text-sm font-semibold leading-5 text-ink">
-                {salesBrief.strongestSignals.length ? salesBrief.strongestSignals.map((item) => <li key={item} className="flex gap-2"><CheckCircle2 className="mt-0.5 shrink-0 text-brand" size={16} />{t(item)}</li>) : <li>{t("No strong signal yet. Run company research first.")}</li>}
-              </ul>
-            </div>
-            <div className="rounded-xl bg-amber-50 p-3">
-              <p className="text-xs font-black uppercase text-amber-800">{t("Main risks")}</p>
-              <ul className="mt-2 space-y-2 text-sm font-semibold leading-5 text-amber-950">
-                {salesBrief.topRisks.length ? salesBrief.topRisks.map((item) => <li key={item} className="flex gap-2"><AlertTriangle className="mt-0.5 shrink-0" size={16} />{t(item)}</li>) : <li>{t("No major risk for the current stage.")}</li>}
-              </ul>
-            </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="text-xs font-black uppercase text-slate-500">{t("Three-step plan")}</p>
-              <ol className="mt-2 space-y-2 text-sm font-semibold leading-5 text-ink">
-                {salesBrief.actionPlan.map((item, index) => <li key={`${item}-${index}`} className="flex gap-2"><span className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-white text-xs font-black text-brand">{index + 1}</span>{t(item)}</li>)}
-              </ol>
-            </div>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Mail size={16} />{t("Review outreach")}</a>
           </div>
         </div>
 
-        <div className="mt-5 grid gap-3 lg:grid-cols-2">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-bold uppercase text-slate-500">{t("What they do")}</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.whatTheyDo)}</p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-bold uppercase text-slate-500">{t("Why they could become a customer")}</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.whyFit)}</p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-bold uppercase text-slate-500">{t("Likely need")}</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.likelyNeed)}</p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-bold uppercase text-slate-500">{t("Why our product helps")}</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.whyUs)}</p>
-          </div>
-        </div>
-
-        <div className="mt-3 grid gap-3 lg:grid-cols-[0.85fr_1.15fr]">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-bold uppercase text-slate-500">{t("How to start the conversation")}</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{t(salesBrief.opener)}</p>
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
-              <p className="text-xs font-bold uppercase text-amber-800">{t("What needs attention")}</p>
-              <p className="mt-1 text-sm font-semibold leading-6 text-amber-950">{t(salesBrief.blocker)}</p>
-            </div>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <p className="text-xs font-bold uppercase text-slate-500">{t("First personalized message")}</p>
-                <h4 className="mt-2 text-base font-black text-ink">{t(salesBrief.firstMessageSubject)}</h4>
+        <div className="mt-5 grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("1. Executive Summary")}</p>
+            <h3 className="mt-2 text-2xl font-black text-slate-900">{verdict}</h3>
+            <p className="mt-3 text-sm leading-7 text-slate-700">{executiveSummary}</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-bold uppercase text-slate-500">{t("Why")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-900">{opportunityReason}</p>
               </div>
-              {!current.generated_emails.length && (
-                <button
-                  type="button"
-                  onClick={prepareCompanyOpportunity}
-                  disabled={actionBusy === "prepare-company" || !current.lead_id}
-                  className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />}
-                  {t("Generate email")}
-                </button>
-              )}
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-bold uppercase text-slate-500">{t("Who")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-900">{decisionMaker.name}</p>
+                <p className="text-sm text-slate-600">{decisionMaker.title}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-bold uppercase text-slate-500">{t("When")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-900">{bestTiming}</p>
+                <p className="text-sm text-slate-600">{t("Probability of success")}: {successProbability}</p>
+              </div>
             </div>
-            <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-700">{t(salesBrief.firstMessage)}</p>
-          </div>
-        </div>
+          </article>
 
-        <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4">
-          <p className="text-xs font-bold uppercase text-slate-500">{t("Why AI expects this reply probability")}</p>
-          <p className="mt-2 text-sm leading-6 text-slate-700">{t(salesBrief.replyReason)}</p>
-        </div>
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-bold uppercase text-slate-500">{t("Data used for this brief")}</p>
-            {salesBrief.qualitySources.length ? (
-              <ul className="mt-2 space-y-2 text-sm leading-6 text-slate-700">
-                {salesBrief.qualitySources.slice(0, 4).map((item) => <li key={item} className="flex gap-2"><CheckCircle2 className="mt-1 shrink-0 text-brand" size={15} />{t(item)}</li>)}
-              </ul>
-            ) : (
-              <p className="mt-2 text-sm leading-6 text-slate-700">{t("Only the saved CRM profile is available so far.")}</p>
-            )}
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-bold uppercase text-slate-500">{t("What would improve it")}</p>
-            <ul className="mt-2 space-y-2 text-sm leading-6 text-slate-700">
-              {(salesBrief.qualityGaps.length ? salesBrief.qualityGaps : salesBrief.providerImprovements.length ? salesBrief.providerImprovements : ["No critical improvement needed right now."]).slice(0, 4).map((item) => <li key={item} className="flex gap-2"><AlertTriangle className="mt-1 shrink-0 text-amber-700" size={15} />{t(item)}</li>)}
-            </ul>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div className="border-b border-slate-200 bg-white px-5 pb-5 sm:px-6">
-      <section className="rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0">
-            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI Company Intelligence")}</p>
-            <h3 className="mt-2 text-xl font-black tracking-tight text-ink">{t("Everything useful for deciding whether to work this account.")}</h3>
-            <p className="mt-2 text-sm leading-6 text-slate-600">{t("OutreachAI merges public profile, website research, contact enrichment and CRM data, removes duplicates and scores field confidence.")}</p>
-          </div>
-          <div className="rounded-2xl border border-teal-200 bg-white p-4 text-left shadow-sm lg:min-w-48">
-            <p className="text-xs font-black uppercase text-slate-500">{t("Lead Score")}</p>
-            <p className="mt-1 text-3xl font-black text-brand">{intelligenceScore}/100</p>
-            <p className="mt-1 text-xs font-semibold text-slate-500">{t("Confidence")}: {intelligence?.lead_score?.confidence ?? displayCurrent.confidence_score ?? healthScore}%</p>
-          </div>
-        </div>
-
-        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          <IntelligenceValue
-            label="Official website"
-            confidence={intelligenceFields.official_website?.confidence}
-            value={intelligenceFields.official_website?.value ? <a className="break-all text-brand hover:underline" href={String(intelligenceFields.official_website.value)} target="_blank" rel="noreferrer">{String(intelligenceFields.official_website.value)}</a> : t("Not available")}
-          />
-          <IntelligenceValue label="Business description" confidence={intelligenceFields.business_description?.confidence} value={String(intelligenceFields.business_description?.value || displayCurrent.ai_summary || t("Not available"))} />
-          <IntelligenceValue label="Industry" confidence={intelligenceFields.industry?.confidence} value={String(intelligenceFields.industry?.value || displayCurrent.industry || t("Not available"))} />
-          <IntelligenceValue label="Employees" confidence={intelligenceFields.employee_count?.confidence} value={String(intelligenceFields.employee_count?.value || t("Not available"))} />
-          <IntelligenceValue label="CEO / Founder" confidence={intelligenceFields.ceo_founder?.confidence} value={String(intelligenceCeo?.name || intelligenceCeo?.title || t("Not available"))} />
-          <IntelligenceValue label="Company LinkedIn" confidence={intelligenceFields.company_linkedin?.confidence} value={intelligenceFields.company_linkedin?.value ? <a className="break-all text-brand hover:underline" href={String(intelligenceFields.company_linkedin.value)} target="_blank" rel="noreferrer">{String(intelligenceFields.company_linkedin.value)}</a> : t("Not available")} />
-        </div>
-
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Useful data found")}</p>
-            <div className="mt-3 grid gap-2">
-              {(intelligenceTechnologies.length ? [`${t("Technologies")}: ${intelligenceTechnologies.slice(0, 8).join(", ")}`] : [])
-                .concat(intelligenceEmails.length ? [`${t("Verified emails")}: ${intelligenceEmails.slice(0, 3).join(", ")}`] : [])
-                .concat(intelligencePhones.length ? [`${t("Phones")}: ${intelligencePhones.slice(0, 3).join(", ")}`] : [])
-                .concat(intelligenceEmployeeLinks.length ? [`${t("Key employee LinkedIn")}: ${intelligenceEmployeeLinks.slice(0, 2).join(", ")}`] : [])
-                .concat(intelligenceSocials.length ? [`${t("Social profiles")}: ${intelligenceSocials.slice(0, 3).join(", ")}`] : [])
-                .slice(0, 5)
-                .map((item) => <p key={item} className="rounded-xl bg-teal-50 p-3 text-sm font-semibold leading-6 text-brand">{item}</p>)}
-              {!intelligenceTechnologies.length && !intelligenceEmails.length && !intelligencePhones.length && !intelligenceEmployeeLinks.length && !intelligenceSocials.length ? (
-                <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">{t("Run enrichment to collect contacts, technologies and social profiles.")}</p>
-              ) : null}
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("2. Opportunity Score")}</p>
+            <p className="mt-2 text-5xl font-black tracking-tight text-slate-900">{opportunityScore}</p>
+            <p className="mt-2 text-sm font-semibold text-slate-700">{t(salesBrief.fit)}</p>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100">
+              <div className={`h-full rounded-full ${opportunityScore >= 70 ? "bg-emerald-500" : opportunityScore >= 50 ? "bg-amber-500" : "bg-slate-400"}`} style={{ width: `${opportunityScore}%` }} />
             </div>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Why contact this company")}</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-ink">{String(intelligenceFields.personalized_reason?.value || salesBrief.whyFit)}</p>
+            <p className="mt-4 text-sm leading-6 text-slate-700">{opportunityReason}</p>
+          </article>
+        </div>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("3. Buying Intent")}</p>
+            <div className="mt-3 flex items-end gap-3">
+              <p className="text-4xl font-black text-slate-900">{buyingIntentScore}</p>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{buyingIntentUrgency}</span>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-slate-700">{buyingIntentReason}</p>
+            <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+              <p className="font-bold text-slate-900">{t("Evidence")}</p>
+              <p className="mt-1">{safeArray(displayCurrent.top_positive_signals).slice(0, 3).join(", ") || safeArray(displayCurrent.buying_signals).slice(0, 3).join(", ") || t("No explicit buying-signal evidence yet.")}</p>
+            </div>
+          </article>
+
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("4. Decision Maker")}</p>
+            <div className="mt-3 flex items-start gap-4">
+              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-lg font-black text-white">
+                {String(decisionMaker.name || "DM").split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <p className="text-lg font-black text-slate-900">{decisionMaker.name}</p>
+                <p className="text-sm text-slate-600">{decisionMaker.title}</p>
+                <p className="mt-2 text-sm font-semibold text-slate-800">{t("Confidence")}: {Math.max(0, Math.min(100, Math.round(decisionMaker.confidence || 0)))}%</p>
+                <p className="mt-2 text-sm leading-6 text-slate-700">{decisionMaker.why}</p>
+                <p className="mt-2 text-sm text-slate-600">{decisionMaker.email || t("Verified email not available")}</p>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("5. Recommended Outreach")}</p>
+            <p className="mt-3 text-lg font-semibold leading-7 text-slate-900">{recommendedOutreach}</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl bg-slate-50 p-3 text-sm">
+                <p className="font-bold text-slate-900">{t("When")}</p>
+                <p className="mt-1 text-slate-700">{bestTiming}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3 text-sm">
+                <p className="font-bold text-slate-900">{t("Probability of success")}</p>
+                <p className="mt-1 text-slate-700">{successProbability}</p>
+              </div>
+            </div>
+          </article>
+
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("6. Ready Email")}</p>
+            <h4 className="mt-2 text-base font-black text-slate-900">{readyEmailSubject || t("No email ready yet")}</h4>
+            <p className="mt-3 line-clamp-5 whitespace-pre-line text-sm leading-6 text-slate-700">{readyEmailPreview || t("Generate or review the email to see the full preview.")}</p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">{t("Review")}</a>
+              <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800">{t("Send")}</a>
+              {!current.generated_emails.length && <button type="button" onClick={prepareCompanyOpportunity} disabled={actionBusy === "prepare-company" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800 disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />}{t("Generate")}</button>}
+            </div>
+          </article>
+        </div>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("7. Company Timeline")}</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+              {companyTimelineGroups.map((group) => <div key={group.label} className="rounded-xl bg-slate-50 p-3 text-sm">
+                <p className="font-bold text-slate-900">{group.label}</p>
+                <p className="mt-1 text-slate-700">{group.items.slice(0, 2).join(", ") || t("No signal detected")}</p>
+              </div>)}
+            </div>
+          </article>
+
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("8. Competitors")}</p>
+            <div className="mt-3 space-y-3 text-sm">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="font-bold text-slate-900">{t("Top competitors")}</p>
+                <p className="mt-1 text-slate-700">{competitorNames.join(", ") || t("No competitor data available")}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="font-bold text-slate-900">{t("Advantages")}</p>
+                <p className="mt-1 text-slate-700">{competitorAdvantages.join(" ") || t("No clear competitive advantage extracted yet.")}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="font-bold text-slate-900">{t("Weaknesses")}</p>
+                <p className="mt-1 text-slate-700">{competitorWeaknesses.join(", ") || t("No competitor weakness data available")}</p>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("9. Risks")}</p>
             <div className="mt-3 space-y-2">
-              {(intelligenceSignals.length ? intelligenceSignals : intelligenceReasons).slice(0, 4).map((signal) => (
-                <p key={signal} className="flex gap-2 rounded-xl bg-teal-50 p-3 text-sm font-semibold leading-6 text-brand"><ShieldCheck className="mt-1 shrink-0" size={15} />{t(signal)}</p>
-              ))}
-              {!intelligenceSignals.length && !intelligenceReasons.length ? <p className="rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">{t("No buying signal yet. Run company research first.")}</p> : null}
+              {aiRisksDetailed.length ? aiRisksDetailed.map((risk) => <div key={risk} className="rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">{t(risk)}</div>) : <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{t("No major risk detected for the current stage.")}</div>}
             </div>
-          </div>
-        </div>
+          </article>
 
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Sources used")}</p>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{(intelligenceSources.length ? intelligenceSources : salesBrief.qualitySources).map((item) => t(item)).join(", ") || t("Only the saved CRM profile is available so far.")}</p>
-          </div>
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-            <p className="text-xs font-black uppercase tracking-wide text-amber-800">{t("What can still be improved")}</p>
-            <p className="mt-2 text-sm font-semibold leading-6 text-amber-950">{(intelligenceMissing.length ? intelligenceMissing : salesBrief.qualityGaps).slice(0, 5).map((item) => t(item)).join(", ") || t("No critical improvement needed right now.")}</p>
-            {intelligenceMissing.length ? (
-              <button type="button" onClick={prepareCompanyOpportunity} disabled={actionBusy === "prepare-company" || !current.lead_id} className="mt-3 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-md bg-brand px-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto">
-                {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-                {t("Collect missing data")}
-              </button>
-            ) : null}
-          </div>
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("10. Evidence")}</p>
+            <div className="mt-3 space-y-3">
+              {evidenceSections.map((section) => <div key={section.title} className="rounded-xl bg-slate-50 p-3 text-sm">
+                <p className="font-bold text-slate-900">{section.title}</p>
+                <div className="mt-2 space-y-1 text-slate-700">
+                  {section.items.length ? section.items.map((item) => <p key={item}>{item}</p>) : <p>{t("No explicit evidence recorded yet.")}</p>}
+                </div>
+              </div>)}
+            </div>
+          </article>
         </div>
       </section>
     </div>
