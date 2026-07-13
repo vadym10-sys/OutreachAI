@@ -1,5 +1,25 @@
 # Project Progress
 
+## 2026-07-13 - Customer Activation Blocker Fix (First Send Success Clarity)
+
+### Activation Audit Scope
+- Continued first-time customer simulation through sender setup and first email send.
+- Verified blocker in send confirmation: success copy referenced "Contacted" while actual CRM stage is "Sent".
+
+### Blocker Fixed
+- Updated post-send success messaging to "CRM stage updated to Sent." in both send status and draft-success state.
+- Added targeted regression coverage for approve -> confirm -> send path and corrected success text.
+
+### Validation Status
+- Lint: passed (`npm run lint` in `apps/web`)
+- Frontend tests: passed (`npm test` in `apps/web`)
+- Relevant Playwright tests: passed (`npx playwright test tests/regression/critical-actions.spec.ts -g "first successful send confirms Sent stage clearly|schedule follow-up shows save-required guidance and persists only after add note|blocked send shows direct sender setup action"` in `apps/web`)
+- Build: passed (`npm run build` in `apps/web`)
+
+### Notes
+- Scope intentionally limited to one activation blocker.
+- No backend, API, database, worker, or migration files changed.
+
 ## 2026-07-13 - Customer Activation Blocker Fix (Follow-up Save Clarity)
 
 ### Activation Audit Scope

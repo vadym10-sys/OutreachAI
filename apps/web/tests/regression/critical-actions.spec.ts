@@ -218,3 +218,44 @@ test("schedule follow-up shows save-required guidance and persists only after ad
   await expect(page.getByText("Note saved to the activity history.")).toBeVisible();
   await guards.assertClean();
 });
+
+test("first successful send confirms Sent stage clearly", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.route("**/api/outreach/sender/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider: "resend",
+        connected: true,
+        status: "connected",
+        sender_name: "QA Sender",
+        sender_email: "qa@example.com",
+        reply_to: "qa@example.com",
+        daily_send_limit: 25,
+        sent_today: 0,
+        remaining_today: 25,
+        spf_status: "connected",
+        dkim_status: "connected",
+        dmarc_status: "connected",
+        next_action: "Ready to send approved emails.",
+        smtp_host: "",
+        smtp_port: 587,
+        smtp_username: "",
+        smtp_configured: false
+      })
+    });
+  });
+
+  await page.goto("/dashboard/leads");
+  await page.getByRole("button", { name: "Approve email" }).first().click();
+  await expect(page.getByText("Email approved. Nothing was sent yet.").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Send approved email" }).first().click();
+  await expect(page.getByText("This will send one email to the saved recipient. Nothing is sent until you confirm.")).toBeVisible();
+  await page.getByRole("button", { name: "Confirm and send" }).click();
+
+  await expect(page.getByText("Approved email was sent. CRM stage updated to Sent.").first()).toBeVisible();
+  await expect(page.getByText("Approved email was sent. CRM stage updated to Contacted.")).toHaveCount(0);
+  await guards.assertClean();
+});

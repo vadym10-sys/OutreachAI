@@ -1775,7 +1775,7 @@ function OpportunityCard({
       setDraftFields(editableDraftFields(sentResult.email));
       setReadyToSend(false);
       setSendConfirmOpen(false);
-      setStatus(t("Approved email was sent. CRM stage updated to Contacted."));
+      setStatus(t("Approved email was sent. CRM stage updated to Sent."));
       if (sentResult.company) {
         const updatedCompany = normalizeCrmCompany(sentResult.company);
         onCompanyUpdated?.(updatedCompany);
@@ -1980,7 +1980,7 @@ function OpportunityCard({
 
       {draft && (readyToSend || draft.delivery_status === "approved" || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">{t("Personalized first email")}</p>
-        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Contacted.") : draft.delivery_status === "approved" ? t("Email approved. Nothing was sent yet.") : t("Review this draft before sending. No email has been sent yet.")}</p>
+        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Sent.") : draft.delivery_status === "approved" ? t("Email approved. Nothing was sent yet.") : t("Review this draft before sending. No email has been sent yet.")}</p>
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           <div className="rounded-lg bg-white p-3 text-sm">
             <span className="font-bold text-slate-700">{t("Recipient")}:</span>{" "}

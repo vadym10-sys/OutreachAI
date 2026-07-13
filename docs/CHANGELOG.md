@@ -3,6 +3,15 @@
 ## 2026-07-13
 
 ### fix(frontend)
+- Fixed a Customer Activation blocker in first-send success confirmation.
+- After a successful send, messaging now correctly states that CRM stage is updated to `Sent`.
+- Removed outdated `Contacted` stage wording from send success surfaces.
+
+### test(frontend)
+- Added regression coverage for successful first-send confirmation text:
+	- `tests/regression/critical-actions.spec.ts`
+
+### fix(frontend)
 - Fixed a Customer Activation blocker in follow-up creation.
 - The "Schedule Follow-up" action now clearly tells the user that the template is ready and must be saved with Add note.
 - Removed misleading wording that implied follow-up persistence before note save.

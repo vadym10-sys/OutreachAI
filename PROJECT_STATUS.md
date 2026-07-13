@@ -47,6 +47,17 @@ This workflow is ready for customer onboarding review and can be released indepe
 	- `npm run build` in `apps/web`: passed
 	- `npx playwright test tests/regression/critical-actions.spec.ts -g "schedule follow-up shows save-required guidance and persists only after add note|blocked send shows direct sender setup action"` in `apps/web`: passed
 
+## Latest Update - Customer Activation Blocker (First Send Success Clarity)
+
+- Activation audit identified the next blocker in first-send confirmation: after a successful send, the UI copy said the stage was updated to "Contacted" while the actual CRM stage is "Sent".
+- Fixed send-success messaging to match the real CRM stage and remove first-time customer ambiguity.
+- Added regression coverage for the complete approve -> confirm -> send path with explicit success text assertion.
+- Validation completed for blocker fix:
+	- `npm run lint` in `apps/web`: passed
+	- `npm test` in `apps/web`: passed
+	- `npm run build` in `apps/web`: passed
+	- `npx playwright test tests/regression/critical-actions.spec.ts -g "first successful send confirms Sent stage clearly|schedule follow-up shows save-required guidance and persists only after add note|blocked send shows direct sender setup action"` in `apps/web`: passed
+
 ## 1. Executive Summary
 
 OutreachAI has strong frontend momentum, a broad backend feature surface, and credible deployment scaffolding. The product is in an advanced pre-production state with major customer workflows implemented, while backend stabilization and release discipline are the main blockers to fully predictable production operations.
