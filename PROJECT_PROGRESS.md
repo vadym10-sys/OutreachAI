@@ -29,10 +29,15 @@ Mode: Continuous production QA + targeted bug fixing
 - Hardened restart response serialization path to prevent final-stage 500s
 - Added regression test for `_crm_company_out` failure during restart response build
 - Ran targeted and full backend tests successfully
+- Re-verified production restart action from authenticated company card; request still fails with HTTP 500
+- Captured failing production request id for triage: `c892f49e-d7b8-4820-8c0a-2c10a6ec252c`
+- Added top-level restart endpoint fail-safe for unexpected exceptions to return `partial_success` instead of propagating 500
+- Added regression test for unexpected restart exception path
+- Re-ran backend test suite: `151 passed`
 
 ## Open QA Items
 
-- Verify deployed production behavior for enrichment restart after push
+- Verify deployed production behavior for enrichment restart after latest push
 - Continue journey steps from company workspace:
   - contact discovery
   - AI analysis/sales copilot
@@ -44,4 +49,5 @@ Mode: Continuous production QA + targeted bug fixing
 
 ## Blocking Issues
 
-- None currently; proceeding with deployment verification and continued journey testing.
+- High: `Run all missing steps` still returns HTTP 500 in production after latest resilience patch.
+- Action needed: production log-level root cause isolation for request id `c892f49e-d7b8-4820-8c0a-2c10a6ec252c`.

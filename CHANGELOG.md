@@ -14,15 +14,24 @@
 - API: Added fail-safe handling for company response serialization failures in restart flow.
   - Previous behavior: failures in `_crm_company_out` could still surface as 500.
   - New behavior: endpoint now returns `partial_success` with warning even when company payload serialization fails.
+- API: Added final top-level fallback for unexpected restart errors.
+  - Previous behavior: unhandled exceptions outside localized guards could still return 500.
+  - New behavior: endpoint now returns `partial_success` with warning and logs tagged as `workspace_app.enrichment_restart_unhandled`.
 
 ### Tests
 
 - Added: `test_workspace_app_company_enrichment_restart_handles_enqueue_failure`
 - Added: `test_workspace_app_company_enrichment_restart_handles_sync_failure`
 - Added: `test_workspace_app_company_enrichment_restart_handles_company_out_failure`
+- Added: `test_workspace_app_company_enrichment_restart_handles_unexpected_failure`
 - Verified: `test_workspace_app_company_enrichment_restart_and_cancel`
-- Full backend regression suite: PASS (148 tests)
+- Full backend regression suite: PASS (151 tests)
 
 ### Customer Impact
 
 - High-severity workflow unblock: customers can continue company workflow even when enrichment queue enqueue fails temporarily.
+
+### Validation Notes
+
+- Production re-check after latest deployment still returns HTTP 500 for `Run all missing steps` in authenticated customer flow.
+- Latest observed failing request id: `c892f49e-d7b8-4820-8c0a-2c10a6ec252c`.

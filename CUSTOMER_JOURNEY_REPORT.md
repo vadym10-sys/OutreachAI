@@ -9,7 +9,7 @@ Account target: romaniukvadym10@gmail.com
 
 Authenticated customer navigation is working across dashboard routes.
 Confirmed production issue: company auto-enrichment restart action returned HTTP 500 for multiple companies.
-Three hardening fixes implemented in API and covered with regression tests; latest deployment verification is in progress.
+Four hardening fixes implemented in API and covered with regression tests; latest deployment verification is in progress.
 
 ## Journey Coverage (Current)
 
@@ -44,11 +44,14 @@ Customer impact:
 - Users cannot reliably restart missing-step completion.
 
 Root cause:
-- Unhandled exception path in enrichment enqueue flow bubbled from restart endpoint as 500.
+- Previously identified unhandled paths in restart setup/enqueue/serialization were guarded.
+- Production still has at least one remaining unhandled exception path returning 500; latest patch adds a top-level unexpected-exception fallback.
 
 Fix:
 - `restart_company_auto_enrichment` now catches enqueue exceptions and returns `partial_success` with warning instead of 500.
 - Saved company data remains available and workflow state is preserved.
+- Added setup and response-serialization fallback handling in the same endpoint.
+- Added top-level fallback for any unexpected restart exception and tagged observability endpoint `workspace_app.enrichment_restart_unhandled`.
 
 ## Validation
 
@@ -57,12 +60,13 @@ Fix:
 	- `test_workspace_app_company_enrichment_restart_handles_enqueue_failure`
 	- `test_workspace_app_company_enrichment_restart_handles_sync_failure`
 	- `test_workspace_app_company_enrichment_restart_handles_company_out_failure`
-- Full backend suite: PASS (148 passed)
+	- `test_workspace_app_company_enrichment_restart_handles_unexpected_failure`
+- Full backend suite: PASS (151 passed)
 
 ## Status
 
 IN PROGRESS
 
 Reason:
-- High-severity bug was fixed and tested locally.
-- Production deployment verification of the exact restart action is the next step.
+- High-severity bug was fixed and tested locally across enqueue/setup/serialization failure paths.
+- Production still returns 500 for the same restart request (`x-request-id: c892f49e-d7b8-4820-8c0a-2c10a6ec252c`), so the blocker remains active and requires production log-level root cause confirmation.
