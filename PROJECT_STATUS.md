@@ -36,6 +36,17 @@ This workflow is ready for customer onboarding review and can be released indepe
 	- `npm run build` in `apps/web`: passed
 	- `npx playwright test tests/settings/settings.spec.ts tests/regression/critical-actions.spec.ts -g "sender setup validates required fields and blocks false success|blocked send shows direct sender setup action"` in `apps/web`: passed
 
+## Latest Update - Customer Activation Blocker (Follow-up Save Clarity)
+
+- Activation audit identified the next blocker in follow-up creation: clicking "Schedule Follow-up" showed a success-style message that implied the plan was already saved, even though a manual note save was still required.
+- Fixed by changing the follow-up notice to explicit save-required guidance.
+- Added regression coverage to verify that the follow-up template appears, the user is told to click Add note, and persistence confirmation appears only after note save.
+- Validation completed for blocker fix:
+	- `npm run lint` in `apps/web`: passed
+	- `npm test` in `apps/web`: passed
+	- `npm run build` in `apps/web`: passed
+	- `npx playwright test tests/regression/critical-actions.spec.ts -g "schedule follow-up shows save-required guidance and persists only after add note|blocked send shows direct sender setup action"` in `apps/web`: passed
+
 ## 1. Executive Summary
 
 OutreachAI has strong frontend momentum, a broad backend feature surface, and credible deployment scaffolding. The product is in an advanced pre-production state with major customer workflows implemented, while backend stabilization and release discipline are the main blockers to fully predictable production operations.

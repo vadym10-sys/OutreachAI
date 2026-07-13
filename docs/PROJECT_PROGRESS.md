@@ -1,5 +1,25 @@
 # Project Progress
 
+## 2026-07-13 - Customer Activation Blocker Fix (Follow-up Save Clarity)
+
+### Activation Audit Scope
+- Continued first-time customer simulation through first-send, follow-up, and pipeline steps.
+- Verified blocker in follow-up step: messaging implied follow-up was saved before note persistence.
+
+### Blocker Fixed
+- Updated follow-up notice to clearly state that the template is prepared and must be saved via Add note.
+- Removed misleading saved-state implication from the schedule-follow-up action.
+
+### Validation Status
+- Lint: passed (`npm run lint` in `apps/web`)
+- Frontend tests: passed (`npm test` in `apps/web`)
+- Relevant Playwright tests: passed (`npx playwright test tests/regression/critical-actions.spec.ts -g "schedule follow-up shows save-required guidance and persists only after add note|blocked send shows direct sender setup action"` in `apps/web`)
+- Build: passed (`npm run build` in `apps/web`)
+
+### Notes
+- Scope intentionally limited to one activation blocker.
+- No backend, API, database, worker, or migration files changed.
+
 ## 2026-07-13 - Customer Activation Blocker Fix (Sender Setup False Success)
 
 ### Activation Audit Scope

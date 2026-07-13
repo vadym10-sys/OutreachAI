@@ -4169,7 +4169,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     ].filter(Boolean).join("\n");
     setNoteBody(template);
     setActionError("");
-    setActionNotice(t("Follow-up plan added to notes. Confirm the owner and due date, then update the CRM stage when the outcome changes."));
+    setActionNotice(t("Follow-up template is ready. Review it, then click Add note to save it to activity history."));
     window.setTimeout(() => {
       noteTextareaRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       noteTextareaRef.current?.focus();

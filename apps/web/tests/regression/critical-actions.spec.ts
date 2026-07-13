@@ -203,3 +203,18 @@ test("blocked send shows direct sender setup action", async ({ page }, testInfo)
   await expect(setupSender).toHaveAttribute("href", "/dashboard/settings#email-sending");
   await guards.assertClean();
 });
+
+test("schedule follow-up shows save-required guidance and persists only after add note", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.goto("/dashboard/companies");
+  await page.getByRole("link", { name: /Open company/ }).first().click();
+  await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Schedule Follow-up" }).click();
+  await expect(page.getByText("Follow-up template is ready. Review it, then click Add note to save it to activity history.")).toBeVisible();
+  await expect(page.getByLabel("Add note")).toContainText("Follow-up plan for Hill Country Build Co");
+
+  await page.getByRole("button", { name: /Add note/ }).click();
+  await expect(page.getByText("Note saved to the activity history.")).toBeVisible();
+  await guards.assertClean();
+});

@@ -3,6 +3,15 @@
 ## 2026-07-13
 
 ### fix(frontend)
+- Fixed a Customer Activation blocker in follow-up creation.
+- The "Schedule Follow-up" action now clearly tells the user that the template is ready and must be saved with Add note.
+- Removed misleading wording that implied follow-up persistence before note save.
+
+### test(frontend)
+- Added regression coverage for follow-up save-required behavior:
+	- `tests/regression/critical-actions.spec.ts`
+
+### fix(frontend)
 - Fixed a Customer Activation blocker in sender setup.
 - Sender setup no longer shows a success confirmation when the sender remains disconnected.
 - Added client-side sender setup validation for required sender fields and email format before save.
