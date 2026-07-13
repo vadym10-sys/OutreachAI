@@ -9,7 +9,7 @@ Account target: romaniukvadym10@gmail.com
 
 Authenticated customer navigation is working across dashboard routes.
 Confirmed production issue: company auto-enrichment restart action returned HTTP 500 for multiple companies.
-Four hardening fixes implemented in API and covered with regression tests; latest deployment verification is in progress.
+Five hardening fixes implemented in API and covered with regression tests; latest deployment verification is in progress.
 
 ## Journey Coverage (Current)
 
@@ -45,13 +45,15 @@ Customer impact:
 
 Root cause:
 - Previously identified unhandled paths in restart setup/enqueue/serialization were guarded.
-- Production still has at least one remaining unhandled exception path returning 500; latest patch adds a top-level unexpected-exception fallback.
+- Production still had at least one remaining unhandled exception path returning 500.
+- Latest patch adds a global restart-path 5xx downgrade in API exception handlers to keep customer workflow non-blocking while deeper root-cause tracing continues.
 
 Fix:
 - `restart_company_auto_enrichment` now catches enqueue exceptions and returns `partial_success` with warning instead of 500.
 - Saved company data remains available and workflow state is preserved.
 - Added setup and response-serialization fallback handling in the same endpoint.
 - Added top-level fallback for any unexpected restart exception and tagged observability endpoint `workspace_app.enrichment_restart_unhandled`.
+- Added global 5xx downgrade for restart path in API exception handlers so unhandled restart failures return HTTP 200 `partial_success` payload.
 
 ## Validation
 
@@ -61,7 +63,9 @@ Fix:
 	- `test_workspace_app_company_enrichment_restart_handles_sync_failure`
 	- `test_workspace_app_company_enrichment_restart_handles_company_out_failure`
 	- `test_workspace_app_company_enrichment_restart_handles_unexpected_failure`
-- Full backend suite: PASS (151 passed)
+	- `test_workspace_app_company_enrichment_restart_downgrades_dependency_runtime_error`
+	- `test_workspace_app_company_enrichment_restart_downgrades_dependency_http_500`
+- Full backend suite: PASS (153 passed)
 
 ## Status
 
@@ -69,4 +73,5 @@ IN PROGRESS
 
 Reason:
 - High-severity bug was fixed and tested locally across enqueue/setup/serialization failure paths.
-- Production still returns 500 for the same restart request (`x-request-id: c892f49e-d7b8-4820-8c0a-2c10a6ec252c`), so the blocker remains active and requires production log-level root cause confirmation.
+- Production still returned 500 before latest global-handler fallback deployment (`x-request-id: c892f49e-d7b8-4820-8c0a-2c10a6ec252c`, `x-request-id: 3ba81abf-5f24-4f96-b0c5-d4f9f9985da4`).
+- Next checkpoint: verify post-deploy behavior in production and continue full customer journey once restart no longer fails hard.

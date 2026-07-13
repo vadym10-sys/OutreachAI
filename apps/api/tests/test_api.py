@@ -1669,6 +1669,46 @@ def test_workspace_app_company_enrichment_restart_handles_unexpected_failure(mon
     assert "temporarily unavailable" in payload["message"].lower()
 
 
+def test_workspace_app_company_enrichment_restart_downgrades_dependency_runtime_error() -> None:
+    company_id = "00000000-0000-0000-0000-000000000001"
+    local_client = TestClient(app, raise_server_exceptions=False)
+
+    def broken_workspace_user_context(authorization=None, x_test_user_email=None):
+        del authorization, x_test_user_email
+        raise RuntimeError("dependency failed")
+
+    app.dependency_overrides[security.get_current_workspace_user_context] = broken_workspace_user_context
+    try:
+        response = local_client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=AUTH)
+    finally:
+        app.dependency_overrides.pop(security.get_current_workspace_user_context, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "partial_success"
+    assert payload["warnings"]
+
+
+def test_workspace_app_company_enrichment_restart_downgrades_dependency_http_500() -> None:
+    company_id = "00000000-0000-0000-0000-000000000002"
+    local_client = TestClient(app, raise_server_exceptions=False)
+
+    def broken_workspace_user_context(authorization=None, x_test_user_email=None):
+        del authorization, x_test_user_email
+        raise HTTPException(status_code=500, detail="dependency internal failure")
+
+    app.dependency_overrides[security.get_current_workspace_user_context] = broken_workspace_user_context
+    try:
+        response = local_client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=AUTH)
+    finally:
+        app.dependency_overrides.pop(security.get_current_workspace_user_context, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "partial_success"
+    assert payload["warnings"]
+
+
 def test_workspace_app_monitoring_returns_only_changes_and_regenerates_report(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-monitoring@example.com"}
     company_response = client.post(

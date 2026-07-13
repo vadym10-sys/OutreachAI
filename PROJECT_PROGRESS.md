@@ -34,6 +34,9 @@ Mode: Continuous production QA + targeted bug fixing
 - Added top-level restart endpoint fail-safe for unexpected exceptions to return `partial_success` instead of propagating 500
 - Added regression test for unexpected restart exception path
 - Re-ran backend test suite: `151 passed`
+- Added global exception-handler downgrade for restart-path 5xx responses to return `partial_success` payload instead of HTTP 500
+- Added regression tests for dependency/runtime and dependency/http-500 failures on restart path
+- Re-ran backend test suite: `153 passed`
 
 ## Open QA Items
 
@@ -50,4 +53,4 @@ Mode: Continuous production QA + targeted bug fixing
 ## Blocking Issues
 
 - High: `Run all missing steps` still returns HTTP 500 in production after latest resilience patch.
-- Action needed: production log-level root cause isolation for request id `c892f49e-d7b8-4820-8c0a-2c10a6ec252c`.
+- Action needed: verify latest global fallback deployment in production using request path `/api/workspace-app/companies/{id}/enrichment/restart`; previous failing request ids include `c892f49e-d7b8-4820-8c0a-2c10a6ec252c` and `3ba81abf-5f24-4f96-b0c5-d4f9f9985da4`.

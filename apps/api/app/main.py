@@ -73,6 +73,28 @@ def _safe_error_message(status_code: int, detail: object) -> str:
         return raw
     return "Something went wrong while processing your request. Please try again."
 
+
+def _is_enrichment_restart_path(request: Request) -> bool:
+    path = request.url.path or ""
+    return request.method.upper() == "POST" and path.startswith("/api/workspace-app/companies/") and path.endswith("/enrichment/restart")
+
+
+def _enrichment_restart_fallback_response(request: Request) -> JSONResponse:
+    message = "AI enrichment restart is temporarily unavailable. Saved company data remains available."
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "partial_success",
+            "message": message,
+            "company": None,
+            "warnings": [message],
+            "workflow_stages": {},
+            "workflow_state": {},
+            "next_action": "Keep this company open and continue manual steps while enrichment service recovers.",
+        },
+        headers={"X-Request-ID": getattr(request.state, "request_id", "")},
+    )
+
 app = FastAPI(
     title="OutreachAI API",
     description="FastAPI backend for lead discovery, AI personalization, campaigns, CRM, billing, inbox, analytics, and admin operations.",
@@ -185,6 +207,9 @@ async def audit_user_actions(request: Request, call_next) -> Response:
 @app.exception_handler(StarletteHTTPException)
 async def sanitized_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     sentry_sdk.set_context("sanitized_http_error", {"path": request.url.path, "status_code": exc.status_code, "detail": str(exc.detail)[:1000]})
+    if exc.status_code >= 500 and _is_enrichment_restart_path(request):
+        sentry_sdk.capture_message("Enrichment restart downgraded from HTTP 5xx", level="warning")
+        return _enrichment_restart_fallback_response(request)
     if exc.status_code >= 500:
         sentry_sdk.capture_exception(exc)
     return JSONResponse(status_code=exc.status_code, content={"detail": _safe_error_message(exc.status_code, exc.detail)})
@@ -194,6 +219,9 @@ async def sanitized_http_exception_handler(request: Request, exc: StarletteHTTPE
 async def sanitized_unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled request failed path=%s", request.url.path)
     sentry_sdk.capture_exception(exc)
+    if _is_enrichment_restart_path(request):
+        sentry_sdk.capture_message("Enrichment restart unhandled exception downgraded", level="warning")
+        return _enrichment_restart_fallback_response(request)
     return JSONResponse(status_code=500, content={"detail": "Something went wrong while processing your request. Please try again."})
 
 
