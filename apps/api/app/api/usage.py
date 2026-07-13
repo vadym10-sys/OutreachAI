@@ -7122,6 +7122,11 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
     workspace = None
     company = None
     lead = None
+
+    def _safe_workflow_state(company_out: Optional[CrmCompanyOut]) -> dict[str, Any]:
+        state = getattr(company_out, "ai_workflow_engine", {}) if company_out else {}
+        return state if isinstance(state, dict) else {}
+
     try:
         workspace = _current_workspace(db, user.user_id, user.email)
         company = _scoped_company(db, workspace.id, company_id)
@@ -7147,29 +7152,7 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
                 lead_id=lead.id,
                 extra={"request_id": request_id, "company_id": str(company_id)},
             )
-            latest_company = _scoped_company(db, workspace.id, company_id)
-            try:
-                company_out = _crm_company_out(db, workspace, user.user_id, latest_company)
-            except Exception as out_exc:
-                logger.exception("Workspace enrichment restart setup fallback serialization failed")
-                capture_provider_exception(
-                    out_exc,
-                    provider="workspace_app",
-                    endpoint="workspace_app.enrichment_restart_setup_out",
-                    workspace_id=workspace.id,
-                    lead_id=lead.id,
-                    extra={"request_id": request_id, "company_id": str(company_id)},
-                )
-                company_out = None
-            return UsageActionOut(
-                status="partial_success",
-                message="AI enrichment restart is temporarily unavailable. Saved company data remains available.",
-                company=company_out,
-                warnings=["AI enrichment restart is temporarily unavailable. Saved company data remains available."],
-                workflow_stages=company_out.workflow_stages if company_out else {},
-                workflow_state=company_out.ai_workflow_engine if company_out else {},
-                next_action="Keep this company open and continue manual steps while enrichment service recovers.",
-            )
+            warnings.append("AI enrichment restart setup is temporarily unavailable. Continuing with queue restart.")
 
         ran_inline = False
         try:
@@ -7213,7 +7196,7 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
             company=company_out,
             warnings=warnings,
             workflow_stages=company_out.workflow_stages if company_out else {},
-            workflow_state=company_out.ai_workflow_engine if company_out else {},
+            workflow_state=_safe_workflow_state(company_out),
             next_action="Keep this company open or return to CRM while AI enrichment runs.",
         )
     except HTTPException:
@@ -7249,7 +7232,7 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
             company=fallback_company_out,
             warnings=["AI enrichment restart is temporarily unavailable. Saved company data remains available."],
             workflow_stages=fallback_company_out.workflow_stages if fallback_company_out else {},
-            workflow_state=fallback_company_out.ai_workflow_engine if fallback_company_out else {},
+            workflow_state=_safe_workflow_state(fallback_company_out),
             next_action="Keep this company open and continue manual steps while enrichment service recovers.",
         )
 

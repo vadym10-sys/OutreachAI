@@ -1832,6 +1832,83 @@ def test_workspace_app_company_enrichment_restart_handles_unexpected_failure(mon
     assert "temporarily unavailable" in payload["message"].lower()
 
 
+def test_workspace_app_company_enrichment_restart_continues_enqueue_when_setup_and_serialization_fail(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-restart-continue-enqueue@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Enrichment Continue Queue", "website": "https://usage-enrichment-continue-queue.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    enqueue_calls = {"count": 0}
+
+    def fail_sync(*args, **kwargs):
+        raise RuntimeError("sync unavailable")
+
+    def track_enqueue(*args, **kwargs):
+        enqueue_calls["count"] += 1
+        return False
+
+    original_company_out = usage_module._crm_company_out
+
+    def company_out_without_workflow(*args, **kwargs):
+        out = original_company_out(*args, **kwargs)
+        out.__dict__.pop("ai_workflow_engine", None)
+        return out
+
+    monkeypatch.setattr("app.api.usage._sync_lead_to_crm", fail_sync)
+    monkeypatch.setattr("app.api.usage._enqueue_auto_enrichment", track_enqueue)
+    monkeypatch.setattr("app.api.usage._crm_company_out", company_out_without_workflow)
+
+    restarted = client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=headers)
+    assert restarted.status_code == 200
+    payload = restarted.json()
+    assert enqueue_calls["count"] == 1
+    assert payload["status"] == "partial_success"
+    assert payload["warnings"]
+
+
+def test_workspace_app_company_enrichment_restart_creates_queue_job_and_worker_claims() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-restart-queue-claim@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Enrichment Restart Queue Claim", "website": "https://usage-enrichment-restart-queue-claim.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = UUID(company_response.json()["company"]["id"])
+
+    restarted = client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=headers)
+    assert restarted.status_code == 200
+    restart_payload = restarted.json()
+    assert restart_payload["status"] in {"success", "partial_success"}
+
+    db = get_sessionmaker()()
+    try:
+        company = db.get(Company, company_id)
+        assert company is not None
+        assert company.lead_id is not None
+
+        queued_job = db.scalar(
+            select(EnrichmentJob)
+            .where(EnrichmentJob.workspace_id == company.workspace_id, EnrichmentJob.lead_id == company.lead_id)
+            .order_by(EnrichmentJob.created_at.desc())
+        )
+        assert queued_job is not None
+        assert queued_job.status in {"pending", "running", "retrying", "succeeded"}
+
+        claimed = claim_next_enrichment_job(db, worker_id="test-worker:claim", stale_after_seconds=900)
+        if queued_job.status in {"pending", "retrying"}:
+            assert claimed is not None
+            assert claimed.lead_id == company.lead_id
+    finally:
+        db.close()
+
+
 def test_workspace_app_company_enrichment_restart_downgrades_dependency_runtime_error() -> None:
     company_id = "00000000-0000-0000-0000-000000000001"
     local_client = TestClient(app, raise_server_exceptions=False)
