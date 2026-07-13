@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ErrorInfo } from "react";
 import * as Sentry from "@sentry/nextjs";
-import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
+import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Rocket, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
 import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
@@ -811,6 +811,91 @@ function parseReplyRate(value: string) {
   return Math.round(values.reduce((sum, item) => sum + item, 0) / values.length);
 }
 
+type LeadAiFilterKey = "high_opportunity" | "buying_intent" | "ready_to_contact" | "needs_review" | "high_confidence" | "missing_data";
+
+function leadOpportunityScoreForWorkspace(lead: Lead) {
+  const direct = typeof lead.icp_score === "number" && Number.isFinite(lead.icp_score) ? lead.icp_score : null;
+  const replyRate = parseReplyRate(String(lead.expected_reply_rate || ""));
+  const emailReady = safeArray(lead.generated_emails).length ? 8 : 0;
+  const researched = lead.ai_summary ? 10 : 0;
+  const withFallback = direct ?? (replyRate ? Math.round(replyRate * 4.5) : 44);
+  return Math.max(0, Math.min(100, Math.round(withFallback + emailReady + researched)));
+}
+
+function leadBuyingIntentForWorkspace(lead: Lead) {
+  const replyRate = parseReplyRate(String(lead.expected_reply_rate || ""));
+  const opportunity = leadOpportunityScoreForWorkspace(lead);
+  const intentKeywords = [
+    String(lead.outreach_strategy || ""),
+    String(lead.sales_angle || ""),
+    String(lead.ai_summary || ""),
+    String(lead.notes || "")
+  ].join(" ").toLowerCase();
+  const keywordBoost = /(hiring|funding|expansion|urgent|active|priority|growth)/.test(intentKeywords) ? 10 : 0;
+  const score = Math.round((replyRate ?? 38) * 0.55 + opportunity * 0.45 + keywordBoost);
+  return Math.max(0, Math.min(100, score));
+}
+
+function leadConfidenceForWorkspace(lead: Lead) {
+  const opportunity = leadOpportunityScoreForWorkspace(lead);
+  const replyRate = parseReplyRate(String(lead.expected_reply_rate || "")) ?? 35;
+  const verification = lead.email ? 12 : 0;
+  const score = Math.round(opportunity * 0.5 + replyRate * 0.35 + verification);
+  return Math.max(0, Math.min(100, score));
+}
+
+function leadReplyProbabilityForWorkspace(lead: Lead) {
+  const parsed = parseReplyRate(String(lead.expected_reply_rate || ""));
+  if (parsed !== null) return Math.max(1, Math.min(100, parsed));
+  return Math.max(1, Math.min(100, Math.round(leadBuyingIntentForWorkspace(lead) * 0.45 + leadConfidenceForWorkspace(lead) * 0.35)));
+}
+
+function leadTopPainPointForWorkspace(lead: Lead) {
+  return safeArray(lead.pain_points)[0] || safeArray(lead.weaknesses)[0] || String(lead.ai_summary || "").split(".")[0] || "Missing explicit pain point; review before sending.";
+}
+
+function leadTopOpportunityForWorkspace(lead: Lead) {
+  return String(lead.sales_angle || lead.outreach_strategy || lead.suggested_offer || lead.value_proposition || "").trim() || "Opportunity angle is still being prepared from available company data.";
+}
+
+function leadSummaryForWorkspace(lead: Lead) {
+  return String(lead.ai_summary || "").trim() || "AI summary is still loading from saved company signals.";
+}
+
+function leadDecisionMakerForWorkspace(lead: Lead) {
+  const value = [lead.contact, lead.title].filter(Boolean).join(" - ").trim();
+  return value || "Decision maker not verified yet";
+}
+
+function leadRecommendedActionForWorkspace(lead: Lead) {
+  if (!lead.email) return "Review contact data before sending.";
+  if (!safeArray(lead.generated_emails).length) return "Review AI strategy and prepare email.";
+  const latest = safeArray(lead.generated_emails)[0];
+  if (latest?.delivery_status === "approved") return "Contact now with approved email.";
+  if (latest?.delivery_status === "sent") return "Open company and schedule follow-up.";
+  return "Review email and approve next step.";
+}
+
+function leadMissingDataForWorkspace(lead: Lead) {
+  return !lead.website || !lead.ai_summary || !lead.contact || !lead.email;
+}
+
+function leadReadyToContactForWorkspace(lead: Lead) {
+  return Boolean(lead.email && safeArray(lead.generated_emails).length);
+}
+
+function leadMatchesAiFilter(lead: Lead, filter: LeadAiFilterKey) {
+  const opportunity = leadOpportunityScoreForWorkspace(lead);
+  const intent = leadBuyingIntentForWorkspace(lead);
+  const confidence = leadConfidenceForWorkspace(lead);
+  if (filter === "high_opportunity") return opportunity >= 75;
+  if (filter === "buying_intent") return intent >= 60;
+  if (filter === "ready_to_contact") return leadReadyToContactForWorkspace(lead);
+  if (filter === "needs_review") return opportunity < 75 || leadMissingDataForWorkspace(lead);
+  if (filter === "high_confidence") return confidence >= 70;
+  return leadMissingDataForWorkspace(lead);
+}
+
 function opportunityCoverage(lead: Lead, copilot?: SalesCopilot, draft?: Email, followUps?: FollowUpSequence, audit?: WebsiteAudit) {
   const profile = leadProfile(lead);
   const noOpenFollowUps = safeArray(followUps?.no_open);
@@ -1510,6 +1595,17 @@ function OpportunityCard({
   ];
   const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
   const recipientEmail = String(lead.email || "").trim();
+  const opportunityScore = leadOpportunityScoreForWorkspace(lead);
+  const buyingIntent = leadBuyingIntentForWorkspace(lead);
+  const confidence = leadConfidenceForWorkspace(lead);
+  const topPainPoint = leadTopPainPointForWorkspace(lead);
+  const topOpportunity = leadTopOpportunityForWorkspace(lead);
+  const aiSummary = leadSummaryForWorkspace(lead);
+  const decisionMaker = leadDecisionMakerForWorkspace(lead);
+  const recommendedAction = leadRecommendedActionForWorkspace(lead);
+  const contactNowHref = recipientEmail ? `mailto:${recipientEmail}` : (companyId ? `#contacts-${companyId}` : "#manual-company");
+  const reviewEmailHref = companyId ? `#outreach-${companyId}` : "#lead-search-form";
+  const openCompanyHref = companyId ? `/dashboard/companies?company=${companyId}` : "/dashboard/companies";
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
@@ -1739,6 +1835,37 @@ function OpportunityCard({
           );
         })}
       </div>
+
+      <section className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-lg font-black text-ink">{t("AI Lead Card")}</h3>
+          <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-700">{t("Confidence")}: {confidence}%</span>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {[
+            ["Company", lead.company],
+            ["Opportunity Score", String(opportunityScore)],
+            ["Buying Intent", String(buyingIntent)],
+            ["Decision Maker", decisionMaker],
+            ["AI Summary", aiSummary],
+            ["Top Pain Point", topPainPoint],
+            ["Top Opportunity", topOpportunity],
+            ["Confidence", `${confidence}%`],
+            ["Recommended Next Action", recommendedAction]
+          ].map(([label, value]) => (
+            <article key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
+              <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(value))}</p>
+            </article>
+          ))}
+        </div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <a href={contactNowHref} className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Contact Now")}</a>
+          <a href={reviewEmailHref} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Review Email")}</a>
+          <Link href={openCompanyHref} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Open Company")}</Link>
+          <Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Add to Campaign")}</Link>
+        </div>
+      </section>
 
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2215,6 +2342,31 @@ export function LeadFinderPage() {
   const automaticSearchReady = leadSearchStatus === "connected";
   const firstSavedLead = searchResults.find((lead) => lead.crm_company_id || lead.id) || null;
   const nextCompanyHref = firstSavedLead?.crm_company_id ? `/dashboard/companies?company=${firstSavedLead.crm_company_id}` : "/dashboard/companies";
+  const [aiFilters, setAiFilters] = useState<LeadAiFilterKey[]>([]);
+  const baseLeads = hasSearched ? searchResults : leads;
+  const visibleLeads = useMemo(
+    () => aiFilters.length ? baseLeads.filter((lead) => aiFilters.every((filter) => leadMatchesAiFilter(lead, filter))) : baseLeads,
+    [aiFilters, baseLeads]
+  );
+  const rankedLeads = useMemo(
+    () => [...visibleLeads].sort((a, b) => leadOpportunityScoreForWorkspace(b) - leadOpportunityScoreForWorkspace(a)),
+    [visibleLeads]
+  );
+  const todaysBestLead = rankedLeads[0] || null;
+  const summaryMetrics = useMemo(() => {
+    const list = visibleLeads;
+    const hotLeads = list.filter((lead) => leadOpportunityScoreForWorkspace(lead) >= 75).length;
+    const buyingSignals = list.filter((lead) => leadBuyingIntentForWorkspace(lead) >= 60).length;
+    const readyEmails = list.filter((lead) => safeArray(lead.generated_emails).length > 0).length;
+    const meetingsPotential = list.reduce((sum, lead) => sum + leadReplyProbabilityForWorkspace(lead), 0);
+    return {
+      totalLeads: list.length,
+      hotLeads,
+      buyingSignals,
+      readyEmails,
+      meetingsPotential: list.length ? Math.round(meetingsPotential / Math.max(1, list.length)) : 0
+    };
+  }, [visibleLeads]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2574,165 +2726,213 @@ export function LeadFinderPage() {
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search one focused market. OutreachAI saves real companies to CRM and prepares the best next action." />
-      {!automaticSearchReady && <IntegrationStatusPanel api={api} ready={ready} />}
-      {automaticSearchReady && <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div>
-            <p className="text-sm font-black uppercase text-brand">{t("AI Command Bar")}</p>
-            <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{t("Describe the customers you want.")}</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-700">{t("Write one sentence. OutreachAI turns it into filters, searches companies, enriches them, and saves the results to CRM.")}</p>
-          </div>
-          <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">{t("Fastest path")}</span>
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {[
+          ["Total Leads", summaryMetrics.totalLeads],
+          ["Hot Leads", summaryMetrics.hotLeads],
+          ["Buying Signals", summaryMetrics.buyingSignals],
+          ["Ready Emails", summaryMetrics.readyEmails],
+          ["Meetings Potential", `${summaryMetrics.meetingsPotential}%`]
+        ].map(([label, value]) => (
+          <article key={String(label)} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
+            <p className="mt-2 text-2xl font-black tracking-tight text-ink">{value}</p>
+          </article>
+        ))}
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-black text-ink">{t("AI Filters")}</h2>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("Rank by what matters now")}</p>
         </div>
-        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-          <textarea
-            value={leadCommand}
-            onChange={(event) => setLeadCommand(event.target.value)}
-            disabled={!automaticSearchReady || commandBusy || searching}
-            rows={2}
-            placeholder={t("Find 25 construction companies in Berlin with 20-100 employees")}
-            className="min-h-20 w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-sm leading-6 text-ink shadow-sm outline-none focus:border-brand disabled:bg-slate-100 disabled:text-slate-500"
-          />
-          <button
-            type="button"
-            onClick={runLeadCommand}
-            disabled={!leadCommand.trim() || !automaticSearchReady || commandBusy || searching}
-            className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-ink px-5 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {commandBusy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
-            {commandBusy ? t("Running AI search") : t("Run AI search")}
-          </button>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {[
+            ["high_opportunity", "🔥 High Opportunity"],
+            ["buying_intent", "📈 Buying Intent"],
+            ["ready_to_contact", "📬 Ready to Contact"],
+            ["needs_review", "⚠ Needs Review"],
+            ["high_confidence", "🟢 High Confidence"],
+            ["missing_data", "⚪ Missing Data"]
+          ].map(([key, label]) => {
+            const active = aiFilters.includes(key as LeadAiFilterKey);
+            return (
+              <button
+                key={String(key)}
+                type="button"
+                onClick={() => setAiFilters((current) => current.includes(key as LeadAiFilterKey) ? current.filter((item) => item !== key) : [...current, key as LeadAiFilterKey])}
+                className={`inline-flex min-h-10 items-center justify-center rounded-full border px-4 text-sm font-bold transition ${active ? "border-brand bg-teal-50 text-brand" : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"}`}
+              >
+                {t(String(label))}
+              </button>
+            );
+          })}
         </div>
-      </section>}
-      <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
-      {!automaticSearchReady && (
-        <div id="lead-search-setup" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
-          <p className="text-sm font-black uppercase text-amber-800">{t("Automatic search setup")}</p>
-          <h2 className="mt-2 text-lg font-black text-ink">{t("Automatic search is waiting for setup")}</h2>
-          <p className="mt-2 text-sm leading-6 text-amber-900">{t("Automatic company search needs a key. Add one company manually and continue with CRM, research and outreach.")}</p>
-          <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row">
-            <Link href="#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t("Add company manually")}</Link>
-            <Link href="/dashboard/settings#lead-search-key" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-amber-300 bg-white px-4 text-sm font-black text-amber-900 shadow-sm">{t("Add key")}</Link>
-          </div>
-        </div>
-      )}
-      <form id="lead-search-form" ref={leadSearchFormRef} aria-label="Lead search" onSubmit={submit} className="space-y-5">
-        <div className="mb-5 rounded-xl bg-teal-50 p-4">
-          <p className="text-sm font-bold text-brand">{t("Step 1 of 3 · Choose a focused market")}</p>
-          <p className="mt-1 text-sm leading-6 text-slate-700">{t("Use one country, one city and one industry. A narrower search creates better opportunities faster.")}</p>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" required disabled={!automaticSearchReady} placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
-          <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" required disabled={!automaticSearchReady} placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
-          <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" required disabled={!automaticSearchReady} placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
-          <label className="text-sm font-semibold text-slate-700">{t("Company size")}<input name="company_size" disabled={!automaticSearchReady} placeholder="11-50" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
-          <label className="text-sm font-semibold text-slate-700">{t("Number of leads")}<input name="limit" type="number" min="1" max="25" defaultValue="10" disabled={!automaticSearchReady} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
-        </div>
-        <details className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary>
-          <p className="mt-2 text-sm text-slate-600">{t("Use these only when the first search is too broad or too narrow.")}</p>
-          <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            <label className="text-sm font-semibold text-slate-700">{t("Business category")}<input name="category" placeholder="Construction company" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">{t("Keyword")}<input name="keyword" placeholder="renovation, contractor" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">{t("Extra keywords")}<input name="keywords" placeholder="commercial, builders" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">{t("Technology")}<input name="technology" placeholder="WordPress, Shopify" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">{t("Contact role")}<input name="contact_role" placeholder="Owner, Founder, CEO" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-            <label className="text-sm font-semibold text-slate-700">{t("Radius meters")}<input name="radius" type="number" defaultValue="10000" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
-          </div>
-        </details>
-        <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
-          <PrimaryButton type="button" disabled={searching || !automaticSearchReady} onClick={clickLeadSearch}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
-          <p className="text-sm text-slate-600">{t("Expected time: 20-30 seconds. Saved companies will stay after refresh.")}</p>
-        </div>
-        {visibleMessage && (!searchSummary || searching) && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm font-semibold text-slate-700">{visibleMessage}</p>
-          {hasSearched && !searching && lastSearchPayload && searchResults.length === 0 && (
-            <button type="button" onClick={() => {
-              leadFinderDebug("BUTTON_CLICKED", { action: "retry" });
-              runLeadSearch(lastSearchPayload);
-            }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm">
-              <Search size={16} /> {t("Retry search")}
-            </button>
-          )}
-        </div>}
-        {searchSummary && <div className="mt-4 space-y-3" aria-label={t("Lead search summary")}>
-          <p className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-sm font-bold text-brand" aria-live="polite">
-            {searchSummary.found > 0 && searchSummary.saved === 0 && searchSummary.duplicates > 0
-              ? t("Found companies already in CRM").replace("{count}", String(searchSummary.found))
-              : searchSummary.found > 0 && searchSummary.saved > 0 && searchSummary.duplicates > 0
-                ? t("Found companies added and reused").replace("{count}", String(searchSummary.found)).replace("{saved}", String(searchSummary.saved)).replace("{duplicates}", String(searchSummary.duplicates))
-                : searchSummary.found > 0
-                  ? t("Found companies saved to CRM").replace("{count}", String(searchSummary.found))
-                  : t("No results. Try a broader city, industry, radius, or fewer filters.")}
-          </p>
-          {hasSearched && !searching && lastSearchPayload && searchSummary.found === 0 && (
-            <button type="button" onClick={() => {
-              leadFinderDebug("BUTTON_CLICKED", { action: "retry" });
-              runLeadSearch(lastSearchPayload);
-            }} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm sm:w-auto">
-              <Search size={16} /> {t("Retry search")}
-            </button>
-          )}
-          <div className="grid gap-2 sm:grid-cols-3">
-            {[
-              ["Companies found", searchSummary.found],
-              ["Saved to CRM", searchSummary.saved],
-              ["Duplicates skipped", searchSummary.duplicates]
-            ].map(([label, value]) => (
-              <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-sm">
-                <p className="font-bold text-ink">{value}</p>
-                <p className="mt-1 text-slate-600">{t(String(label))}</p>
+      </section>
+
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="space-y-6">
+          {!automaticSearchReady && <IntegrationStatusPanel api={api} ready={ready} />}
+          {automaticSearchReady && <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="text-sm font-black uppercase text-brand">{t("Natural language search")}</p>
+                <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{t("Describe your ideal companies in one sentence.")}</h2>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-700">{t("OutreachAI parses your request with existing backend search, ranks the results, and saves valid companies to CRM.")}</p>
               </div>
-            ))}
-          </div>
-        </div>}
-        {opportunityReadiness && opportunityReadiness.total > 0 && <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label={t("Opportunity readiness")}>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Automatic preparation")}</p>
-              <h3 className="mt-2 text-lg font-black text-ink">
-                {t("OutreachAI prepared what it could from real data.")}
-              </h3>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                {t("Review one company, fill missing contact details if needed, then approve the email before anything is sent.")}
+              <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">{t("AI-first")}</span>
+            </div>
+            <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+              <textarea
+                value={leadCommand}
+                onChange={(event) => setLeadCommand(event.target.value)}
+                disabled={!automaticSearchReady || commandBusy || searching}
+                rows={2}
+                placeholder={t("Find SaaS companies hiring SDRs in Germany.")}
+                className="min-h-20 w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-sm leading-6 text-ink shadow-sm outline-none focus:border-brand disabled:bg-slate-100 disabled:text-slate-500"
+              />
+              <button
+                type="button"
+                onClick={runLeadCommand}
+                disabled={!leadCommand.trim() || !automaticSearchReady || commandBusy || searching}
+                className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-ink px-5 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {commandBusy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+                {commandBusy ? t("Running AI search") : t("Run AI search")}
+              </button>
+            </div>
+          </section>}
+
+          <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
+          {!automaticSearchReady && (
+            <div id="lead-search-setup" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-black uppercase text-amber-800">{t("Automatic search setup")}</p>
+              <h2 className="mt-2 text-lg font-black text-ink">{t("Automatic search is waiting for setup")}</h2>
+              <p className="mt-2 text-sm leading-6 text-amber-900">{t("Automatic company search needs a key. Add one company manually and continue with CRM, research and outreach.")}</p>
+              <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row">
+                <Link href="#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t("Add company manually")}</Link>
+                <Link href="/dashboard/settings#lead-search-key" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-amber-300 bg-white px-4 text-sm font-black text-amber-900 shadow-sm">{t("Add key")}</Link>
+              </div>
+            </div>
+          )}
+          <form id="lead-search-form" ref={leadSearchFormRef} aria-label="Lead search" onSubmit={submit} className="space-y-5">
+            <div className="mb-5 rounded-xl bg-teal-50 p-4">
+              <p className="text-sm font-bold text-brand">{t("Step 1 of 3 · Choose a focused market")}</p>
+              <p className="mt-1 text-sm leading-6 text-slate-700">{t("Use one country, one city and one industry. A narrower search creates better opportunities faster.")}</p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="country" required disabled={!automaticSearchReady} placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("City")}<input name="city" required disabled={!automaticSearchReady} placeholder="Berlin" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="industry" required disabled={!automaticSearchReady} placeholder="Construction" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Company size")}<input name="company_size" disabled={!automaticSearchReady} placeholder="11-50" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Number of leads")}<input name="limit" type="number" min="1" max="25" defaultValue="10" disabled={!automaticSearchReady} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+            </div>
+            <details className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary>
+              <p className="mt-2 text-sm text-slate-600">{t("Use these only when the first search is too broad or too narrow.")}</p>
+              <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <label className="text-sm font-semibold text-slate-700">{t("Business category")}<input name="category" placeholder="Construction company" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+                <label className="text-sm font-semibold text-slate-700">{t("Keyword")}<input name="keyword" placeholder="renovation, contractor" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+                <label className="text-sm font-semibold text-slate-700">{t("Extra keywords")}<input name="keywords" placeholder="commercial, builders" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+                <label className="text-sm font-semibold text-slate-700">{t("Technology")}<input name="technology" placeholder="WordPress, Shopify" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+                <label className="text-sm font-semibold text-slate-700">{t("Contact role")}<input name="contact_role" placeholder="Owner, Founder, CEO" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+                <label className="text-sm font-semibold text-slate-700">{t("Radius meters")}<input name="radius" type="number" defaultValue="10000" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
+              </div>
+            </details>
+            <div className="mt-5 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
+              <PrimaryButton type="button" disabled={searching || !automaticSearchReady} onClick={clickLeadSearch}>{searching ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} {searching ? t("Searching") : t("Find leads")}</PrimaryButton>
+              <p className="text-sm text-slate-600">{t("Expected time: 20-30 seconds. Saved companies will stay after refresh.")}</p>
+            </div>
+            {visibleMessage && (!searchSummary || searching) && <div className="mt-4 flex flex-col gap-3 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm font-semibold text-slate-700">{visibleMessage}</p>
+              {hasSearched && !searching && lastSearchPayload && searchResults.length === 0 && (
+                <button type="button" onClick={() => {
+                  leadFinderDebug("BUTTON_CLICKED", { action: "retry" });
+                  runLeadSearch(lastSearchPayload);
+                }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm">
+                  <Search size={16} /> {t("Retry search")}
+                </button>
+              )}
+            </div>}
+            {searchSummary && <div className="mt-4 space-y-3" aria-label={t("Lead search summary")}>
+              <p className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-sm font-bold text-brand" aria-live="polite">
+                {searchSummary.found > 0 && searchSummary.saved === 0 && searchSummary.duplicates > 0
+                  ? t("Found companies already in CRM").replace("{count}", String(searchSummary.found))
+                  : searchSummary.found > 0 && searchSummary.saved > 0 && searchSummary.duplicates > 0
+                    ? t("Found companies added and reused").replace("{count}", String(searchSummary.found)).replace("{saved}", String(searchSummary.saved)).replace("{duplicates}", String(searchSummary.duplicates))
+                    : searchSummary.found > 0
+                      ? t("Found companies saved to CRM").replace("{count}", String(searchSummary.found))
+                      : t("No results. Try a broader city, industry, radius, or fewer filters.")}
               </p>
-            </div>
-            <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">
-              {opportunityReadiness.ready}/{opportunityReadiness.total} {t("ready for review")}
-            </span>
-          </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            {[
-              ["Website research", opportunityReadiness.researched],
-              ["Verified emails", opportunityReadiness.verifiedEmails],
-              ["Email drafts", opportunityReadiness.drafts]
-            ].map(([label, value]) => (
-              <div key={String(label)} className="rounded-xl bg-slate-50 p-3 text-sm">
-                <p className="font-black text-ink">{value}/{opportunityReadiness.total}</p>
-                <p className="mt-1 text-slate-600">{t(String(label))}</p>
+              {hasSearched && !searching && lastSearchPayload && searchSummary.found === 0 && (
+                <button type="button" onClick={() => {
+                  leadFinderDebug("BUTTON_CLICKED", { action: "retry" });
+                  runLeadSearch(lastSearchPayload);
+                }} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm sm:w-auto">
+                  <Search size={16} /> {t("Retry search")}
+                </button>
+              )}
+              <div className="grid gap-2 sm:grid-cols-3">
+                {[
+                  ["Companies found", searchSummary.found],
+                  ["Saved to CRM", searchSummary.saved],
+                  ["Duplicates skipped", searchSummary.duplicates]
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3 text-sm shadow-sm">
+                    <p className="font-bold text-ink">{value}</p>
+                    <p className="mt-1 text-slate-600">{t(String(label))}</p>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </section>}
-        {hasSearched && !searching && searchResults.length > 0 && <section className="mt-4 rounded-2xl border border-teal-200 bg-teal-50 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Next step")}</p>
-              <h3 className="mt-2 text-lg font-black text-ink">{t("Continue with the first saved company")}</h3>
-              <p className="mt-2 text-sm leading-6 text-slate-700">{t("Open the company workspace to analyze the website, find contacts and prepare the first email for review.")}</p>
-            </div>
-            <Link href={nextCompanyHref} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm">
-              {t("Open company workspace")}
-              <ArrowRight size={16} />
-            </Link>
-          </div>
-        </section>}
-        {searchSteps.length > 0 && <ol className="mt-4 grid gap-2 text-sm sm:grid-cols-3" aria-label="Lead search progress">
-          {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
-        </ol>}
-      </form>
-      </ActionPanel>
-      <details id="manual-company" open={!automaticSearchReady} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            </div>}
+            {opportunityReadiness && opportunityReadiness.total > 0 && <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label={t("Opportunity readiness")}>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Automatic preparation")}</p>
+                  <h3 className="mt-2 text-lg font-black text-ink">
+                    {t("OutreachAI prepared what it could from real data.")}
+                  </h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">
+                    {t("Review one company, fill missing contact details if needed, then approve the email before anything is sent.")}
+                  </p>
+                </div>
+                <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">
+                  {opportunityReadiness.ready}/{opportunityReadiness.total} {t("ready for review")}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                {[
+                  ["Website research", opportunityReadiness.researched],
+                  ["Verified emails", opportunityReadiness.verifiedEmails],
+                  ["Email drafts", opportunityReadiness.drafts]
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-xl bg-slate-50 p-3 text-sm">
+                    <p className="font-black text-ink">{value}/{opportunityReadiness.total}</p>
+                    <p className="mt-1 text-slate-600">{t(String(label))}</p>
+                  </div>
+                ))}
+              </div>
+            </section>}
+            {hasSearched && !searching && searchResults.length > 0 && <section className="mt-4 rounded-2xl border border-teal-200 bg-teal-50 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Next step")}</p>
+                  <h3 className="mt-2 text-lg font-black text-ink">{t("Continue with the first saved company")}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-700">{t("Open the company workspace to analyze the website, find contacts and prepare the first email for review.")}</p>
+                </div>
+                <Link href={nextCompanyHref} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white shadow-sm">
+                  {t("Open company workspace")}
+                  <ArrowRight size={16} />
+                </Link>
+              </div>
+            </section>}
+            {searchSteps.length > 0 && <ol className="mt-4 grid gap-2 text-sm sm:grid-cols-3" aria-label="Lead search progress">
+              {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
+            </ol>}
+          </form>
+          </ActionPanel>
+
+          <details id="manual-company" open={!automaticSearchReady} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <summary className="cursor-pointer list-none">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -2770,10 +2970,46 @@ export function LeadFinderPage() {
         </form>
         </div>
       </details>
-      {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : (hasSearched ? searchResults : leads).length ? <div className="grid gap-5">{(hasSearched ? searchResults : leads).map((lead) => <OpportunityCard key={`${lead.id || lead.place_id || lead.company}:${lead.generated_emails?.[0]?.id || "no-draft"}:${lead.generated_emails?.[0]?.delivery_status || ""}`} lead={lead} api={api} onLeadUpdated={(updated) => {
-        setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
-        setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
-      }} />)}</div> : <EmptyState title={hasSearched ? "No matching companies found" : "No real leads yet"} copy={hasSearched ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}
+          {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : visibleLeads.length ? <div className="grid gap-5">{visibleLeads.map((lead) => <OpportunityCard key={`${lead.id || lead.place_id || lead.company}:${lead.generated_emails?.[0]?.id || "no-draft"}:${lead.generated_emails?.[0]?.delivery_status || ""}`} lead={lead} api={api} onLeadUpdated={(updated) => {
+            setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
+            setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
+          }} />)}</div> : <EmptyState title={hasSearched || aiFilters.length ? "No matching companies found" : "No real leads yet"} copy={hasSearched || aiFilters.length ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}
+        </div>
+
+        <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Today's Best Lead")}</p>
+            {todaysBestLead ? (
+              <>
+                <p className="mt-2 text-lg font-black text-ink">{todaysBestLead.company}</p>
+                <div className="mt-4 space-y-3 text-sm">
+                  <div className="rounded-xl bg-slate-50 p-3">
+                    <p className="text-xs font-black uppercase text-slate-500">{t("Why now")}</p>
+                    <p className="mt-1 font-semibold leading-6 text-slate-800">{leadTopOpportunityForWorkspace(todaysBestLead)}</p>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 p-3">
+                    <p className="text-xs font-black uppercase text-slate-500">{t("Suggested first action")}</p>
+                    <p className="mt-1 font-semibold leading-6 text-slate-800">{leadRecommendedActionForWorkspace(todaysBestLead)}</p>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 p-3">
+                    <p className="text-xs font-black uppercase text-slate-500">{t("Expected reply probability")}</p>
+                    <p className="mt-1 text-xl font-black text-ink">{leadReplyProbabilityForWorkspace(todaysBestLead)}%</p>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 p-3">
+                    <p className="text-xs font-black uppercase text-slate-500">{t("AI recommendation")}</p>
+                    <p className="mt-1 font-semibold leading-6 text-slate-800">{leadSummaryForWorkspace(todaysBestLead)}</p>
+                  </div>
+                </div>
+                <Link href={todaysBestLead.crm_company_id ? `/dashboard/companies?company=${todaysBestLead.crm_company_id}` : "/dashboard/companies"} className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">
+                  {t("Open Company")}
+                </Link>
+              </>
+            ) : (
+              <p className="mt-2 text-sm leading-6 text-slate-600">{t("Run lead search to surface the top-ranked opportunity for today.")}</p>
+            )}
+          </section>
+        </aside>
+      </div>
     </div>
   );
 }
@@ -4022,7 +4258,7 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
 
         <div className="mt-4 grid gap-4 xl:grid-cols-2">
           <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("5. Recommended Outreach")}</p>
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("5. AI Recommendation")}</p>
             <p className="mt-3 text-lg font-semibold leading-7 text-slate-900">{recommendedOutreach}</p>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl bg-slate-50 p-3 text-sm">
@@ -4096,6 +4332,27 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
                 </div>
               </div>)}
             </div>
+          </article>
+        </div>
+
+        <div className="mt-4">
+          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("11. AI Confidence")}</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-bold uppercase text-slate-500">{t("Overall")}</p>
+                <p className="mt-1 text-2xl font-black text-slate-900">{Math.max(displayCurrent.ai_revenue_engine_report?.confidence || 0, decisionMaker.confidence || 0, healthScore)}%</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-bold uppercase text-slate-500">{t("Decision maker")}</p>
+                <p className="mt-1 text-2xl font-black text-slate-900">{Math.max(0, Math.min(100, Math.round(decisionMaker.confidence || 0)))}%</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-bold uppercase text-slate-500">{t("Opportunity")}</p>
+                <p className="mt-1 text-2xl font-black text-slate-900">{opportunityScore}%</p>
+              </div>
+            </div>
+            <p className="mt-4 text-sm leading-6 text-slate-700">{t("Confidence is calculated from available evidence, verified contact data, and opportunity signals. Lower values indicate missing or weak evidence.")}</p>
           </article>
         </div>
       </section>
@@ -4397,18 +4654,13 @@ function CrmCompanyCard({ company, api, highlighted = false }: { company: CrmCom
 
       <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <p className="text-sm font-bold text-ink">{t("Next action")}</p>
-          <p className="mt-1 text-xs leading-5 text-slate-500">{t("One clear action is shown first. Details stay available below.")}</p>
+          <p className="text-sm font-bold text-ink">{t("Company Actions")}</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{t("Choose one action and move this company forward now.")}</p>
           <div className="mt-4 grid gap-2">
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Mail size={17} /> {t(current.generated_emails.length ? "Review and approve email" : "Prepare email")}</a>
-            <details className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <summary className="cursor-pointer text-xs font-black uppercase text-slate-600">{t("More actions")}</summary>
-              <div className="mt-3 grid gap-2">
-                <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><UserRoundSearch size={17} /> {t("Review contacts")}</a>
-                <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Sparkles size={17} /> {t("Review AI research")}</a>
-                <button type="button" onClick={prepareMeeting} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} {t("Prepare meeting")}</button>
-              </div>
-            </details>
+            <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Phone size={17} /> {t("Contact Now")}</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> {t("Review Email")}</a>
+            <button type="button" onClick={prepareMeeting} disabled={actionBusy === "stage" || current.crm_stage === "Meeting Scheduled"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" ? <Loader2 className="animate-spin" size={17} /> : <CalendarDays size={17} />} {t("Schedule Follow-up")}</button>
+            <Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Rocket size={17} /> {t("Add to Campaign")}</Link>
           </div>
         </section>
 
