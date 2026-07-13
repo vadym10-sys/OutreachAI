@@ -233,6 +233,88 @@ def test_deep_contact_search_endpoint_downgrades_crm_apply_failure(monkeypatch) 
     assert "could not be saved" in payload["message"]
     assert payload["company"]["id"] == company_id
 
+
+def test_deep_contact_search_endpoint_handles_deep_contact_search_error(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=USER_A_AUTH,
+        json={"name": "Deep Contact Error Co", "website": "https://deepcontact-error.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["company"]["id"]
+
+    monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(usage_module.DeepContactSearchError("provider unavailable")))
+
+    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
+    assert enriched.status_code == 200, enriched.text
+    payload = enriched.json()
+    assert payload["status"] == "provider_unavailable"
+    assert payload["message"] == "provider unavailable"
+    assert payload["company"]["id"] == company_id
+
+
+def test_deep_contact_search_endpoint_handles_unexpected_exception(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=USER_A_AUTH,
+        json={"name": "Deep Contact Unexpected Co", "website": "https://deepcontact-unexpected.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["company"]["id"]
+
+    monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
+    assert enriched.status_code == 200, enriched.text
+    payload = enriched.json()
+    assert payload["status"] == "provider_unavailable"
+    assert payload["message"] == "Deep contact search is temporarily unavailable. Please retry."
+    assert payload["company"]["id"] == company_id
+
+
+def test_deep_contact_search_endpoint_handles_provider_timeout(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=USER_A_AUTH,
+        json={"name": "Deep Contact Timeout Co", "website": "https://deepcontact-timeout.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["company"]["id"]
+
+    monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(usage_module.DeepContactSearchError("Provider timeout")))
+
+    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
+    assert enriched.status_code == 200, enriched.text
+    payload = enriched.json()
+    assert payload["status"] == "provider_unavailable"
+    assert payload["message"] == "Provider timeout"
+
+
+def test_deep_contact_search_endpoint_handles_provider_unavailable(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    response = client.post(
+        "/api/workspace-app/companies",
+        headers=USER_A_AUTH,
+        json={"name": "Deep Contact Provider Co", "website": "https://deepcontact-provider.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert response.status_code == 200, response.text
+    company_id = response.json()["company"]["id"]
+
+    monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(usage_module.DeepContactSearchError("Apollo is not connected.")))
+
+    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
+    assert enriched.status_code == 200, enriched.text
+    payload = enriched.json()
+    assert payload["status"] == "provider_unavailable"
+    assert payload["message"] == "Apollo is not connected."
+
 def test_website_analysis_passes_requested_language_to_ai(monkeypatch) -> None:
     from app.services import ai as ai_service
 

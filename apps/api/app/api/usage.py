@@ -6641,12 +6641,27 @@ def deep_search_company_contacts(
         )
     except DeepContactSearchError as exc:
         capture_provider_exception(exc, provider="deep_contact_search", endpoint="workspace_app.company.deep_contact_search", workspace_id=workspace.id, lead_id=lead.id if lead else None)
+        _lead_trace(request_id, "deep_contact_search_failed", lead_id=str(lead.id) if lead else "", company=company.name, reason="deep_contact_search_error")
         _set_company_metadata_stage(company, "decision_maker", "error", str(exc))
         _set_company_metadata_stage(company, "verified_email", "error", "No verified email was saved.")
         db.commit()
         return UsageActionOut(
             status="provider_unavailable",
             message=str(exc),
+            company=_crm_company_out(db, workspace, user.user_id, company),
+            missing_fields=["decision_maker", "verified_email"],
+            recommended_actions=["Retry search", "Add contact manually"],
+        )
+    except Exception as exc:
+        capture_provider_exception(exc, provider="deep_contact_search", endpoint="workspace_app.company.deep_contact_search.unhandled", workspace_id=workspace.id, lead_id=lead.id if lead else None)
+        _lead_trace(request_id, "deep_contact_search_failed", lead_id=str(lead.id) if lead else "", company=company.name, reason="unexpected_exception")
+        _set_company_metadata_stage(company, "decision_maker", "error", "Deep contact search is temporarily unavailable.")
+        _set_company_metadata_stage(company, "verified_email", "error", "No verified email was saved.")
+        _set_company_metadata_stage(company, "technographics", "error", "Technology stack is temporarily unavailable.")
+        db.commit()
+        return UsageActionOut(
+            status="provider_unavailable",
+            message="Deep contact search is temporarily unavailable. Please retry.",
             company=_crm_company_out(db, workspace, user.user_id, company),
             missing_fields=["decision_maker", "verified_email"],
             recommended_actions=["Retry search", "Add contact manually"],
