@@ -9,7 +9,7 @@ Account target: romaniukvadym10@gmail.com
 
 Authenticated customer navigation is working across dashboard routes.
 Confirmed production issue: company auto-enrichment restart action returned HTTP 500 for multiple companies.
-Fix implemented in API and covered with regression tests; pending post-deploy verification in production.
+Two hardening fixes implemented in API and covered with regression tests; second deployment verification is in progress.
 
 ## Journey Coverage (Current)
 
@@ -55,6 +55,7 @@ Fix:
 - Targeted tests: PASS
 	- `test_workspace_app_company_enrichment_restart_and_cancel`
 	- `test_workspace_app_company_enrichment_restart_handles_enqueue_failure`
+	- `test_workspace_app_company_enrichment_restart_handles_sync_failure`
 - Full backend suite: PASS (148 passed)
 
 ## Status

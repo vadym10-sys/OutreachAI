@@ -1594,6 +1594,29 @@ def test_workspace_app_company_enrichment_restart_handles_enqueue_failure(monkey
     assert payload["company"]["workflow_stages"]["website_analysis"] == "running"
 
 
+def test_workspace_app_company_enrichment_restart_handles_sync_failure(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-restart-sync-failure@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Enrichment Restart Sync Failure", "website": "https://usage-enrichment-sync-failure.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    def fail_sync(*args, **kwargs):
+        raise RuntimeError("sync unavailable")
+
+    monkeypatch.setattr("app.api.usage._sync_lead_to_crm", fail_sync)
+
+    restarted = client.post(f"/api/workspace-app/companies/{company_id}/enrichment/restart", headers=headers)
+    assert restarted.status_code == 200
+    payload = restarted.json()
+    assert payload["status"] == "partial_success"
+    assert "temporarily unavailable" in payload["message"].lower()
+    assert payload["warnings"]
+
+
 def test_workspace_app_monitoring_returns_only_changes_and_regenerates_report(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-monitoring@example.com"}
     company_response = client.post(

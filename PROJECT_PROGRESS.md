@@ -23,6 +23,9 @@ Mode: Continuous production QA + targeted bug fixing
   - `POST /api/backend/api/workspace-app/companies/{id}/enrichment/restart` returned 500 from company card action `Run all missing steps`
 - Implemented API fix to degrade gracefully (`partial_success`) when enqueue fails instead of returning 500
 - Added regression test for enqueue-failure path
+- Verified first deployment still produced 500 in production for restart action
+- Hardened restart setup path (queue mark + CRM sync stage) to fail-safe with `partial_success`
+- Added regression test for setup/sync failure path
 - Ran targeted and full backend tests successfully
 
 ## Open QA Items

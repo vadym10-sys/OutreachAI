@@ -7081,10 +7081,34 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
     if not lead:
         return UsageActionOut(status="error", message="This company needs a saved lead before AI enrichment.", company=_crm_company_out(db, workspace, user.user_id, company))
     request_id = request.headers.get("x-request-id") or str(uuid4())
-    _mark_auto_enrichment_queued(lead, request_id, _workspace_language(request, workspace))
-    company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
-    db.commit()
     warnings: list[str] = []
+    try:
+        _mark_auto_enrichment_queued(lead, request_id, _workspace_language(request, workspace))
+        company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Workspace enrichment restart setup failed")
+        capture_provider_exception(
+            exc,
+            provider="workspace_app",
+            endpoint="workspace_app.enrichment_restart_setup",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            extra={"request_id": request_id, "company_id": str(company_id)},
+        )
+        latest_company = _scoped_company(db, workspace.id, company_id)
+        company_out = _crm_company_out(db, workspace, user.user_id, latest_company)
+        return UsageActionOut(
+            status="partial_success",
+            message="AI enrichment restart is temporarily unavailable. Saved company data remains available.",
+            company=company_out,
+            warnings=["AI enrichment restart is temporarily unavailable. Saved company data remains available."],
+            workflow_stages=company_out.workflow_stages,
+            workflow_state=company_out.ai_workflow_engine,
+            next_action="Keep this company open and continue manual steps while enrichment service recovers.",
+        )
+
     ran_inline = False
     try:
         ran_inline = _enqueue_auto_enrichment(db, request, user.user_id, workspace, [lead], request_id, force=True)
