@@ -15,10 +15,31 @@ logger = logging.getLogger("outreachai.enrichment_queue")
 
 TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
 ACTIVE_JOB_STATUSES = {"pending", "running", "retrying"}
+MAX_RETRY_BACKOFF_SECONDS = 3600
 
 
 def _worker_id() -> str:
     return f"{socket.gethostname()}:{id(object())}"
+
+
+def _claim_is_current(job: EnrichmentJob, claim_token: str) -> bool:
+    return job.status == "running" and job.locked_by == claim_token
+
+
+def _refresh_claim(db: Session, job: EnrichmentJob, claim_token: str | None) -> bool:
+    if not claim_token:
+        return True
+    db.refresh(job)
+    if _claim_is_current(job, claim_token):
+        return True
+    logger.warning(
+        "Ignoring stale enrichment claim job_id=%s claim_token=%s status=%s locked_by=%s",
+        job.id,
+        claim_token,
+        job.status,
+        job.locked_by,
+    )
+    return False
 
 
 def enqueue_company_enrichment_job(
@@ -113,13 +134,31 @@ def claim_next_enrichment_job(db: Session, *, worker_id: str | None = None, stal
     return job
 
 
-def update_job_progress(db: Session, job: EnrichmentJob, *, stage: str, message: str, percent: int) -> None:
+def heartbeat_job_lock(db: Session, *, job_id: UUID, claim_token: str) -> bool:
+    job = db.get(EnrichmentJob, job_id)
+    if job is None:
+        return False
+    if not _refresh_claim(db, job, claim_token):
+        return False
+    now = datetime.utcnow()
+    job.locked_at = now
+    job.updated_at = now
+    db.commit()
+    return True
+
+
+def update_job_progress(db: Session, job: EnrichmentJob, *, stage: str, message: str, percent: int, claim_token: str | None = None) -> bool:
+    if not _refresh_claim(db, job, claim_token):
+        return False
     job.progress_json = {**(job.progress_json or {}), "stage": stage, "message": message, "percent": max(0, min(100, percent))}
     job.updated_at = datetime.utcnow()
     db.commit()
+    return True
 
 
-def complete_job(db: Session, job: EnrichmentJob, *, partial: bool = False, warnings: list[str] | None = None) -> None:
+def complete_job(db: Session, job: EnrichmentJob, *, partial: bool = False, warnings: list[str] | None = None, claim_token: str | None = None) -> bool:
+    if not _refresh_claim(db, job, claim_token):
+        return False
     now = datetime.utcnow()
     job.status = "succeeded"
     job.progress_json = {
@@ -129,12 +168,14 @@ def complete_job(db: Session, job: EnrichmentJob, *, partial: bool = False, warn
         "percent": 100,
         "partial": partial,
         "warnings": (warnings or [])[:5],
+        "terminal_state": "completed",
     }
     job.locked_by = ""
     job.locked_at = None
     job.completed_at = now
     job.updated_at = now
     db.commit()
+    return True
 
 
 def cancel_jobs_for_lead(db: Session, *, workspace_id: UUID, lead_id: UUID, reason: str = "Cancelled by user.") -> int:
@@ -158,19 +199,24 @@ def cancel_jobs_for_lead(db: Session, *, workspace_id: UUID, lead_id: UUID, reas
     return len(jobs)
 
 
-def mark_cancelled(db: Session, job: EnrichmentJob, *, message: str = "AI enrichment was stopped.") -> None:
+def mark_cancelled(db: Session, job: EnrichmentJob, *, message: str = "AI enrichment was stopped.", claim_token: str | None = None) -> bool:
+    if not _refresh_claim(db, job, claim_token):
+        return False
     now = datetime.utcnow()
     job.status = "cancelled"
     job.cancel_requested = True
     job.locked_by = ""
     job.locked_at = None
     job.completed_at = now
-    job.progress_json = {**(job.progress_json or {}), "stage": "cancelled", "message": message}
+    job.progress_json = {**(job.progress_json or {}), "stage": "cancelled", "message": message, "terminal_state": "cancelled"}
     job.updated_at = now
     db.commit()
+    return True
 
 
-def fail_or_retry_job(db: Session, job: EnrichmentJob, exc: Exception, *, retry_delay_seconds: int = 60) -> None:
+def fail_or_retry_job(db: Session, job: EnrichmentJob, exc: Exception, *, retry_delay_seconds: int = 60, claim_token: str | None = None) -> bool:
+    if not _refresh_claim(db, job, claim_token):
+        return False
     now = datetime.utcnow()
     attempts = int(job.attempts or 0)
     max_attempts = max(1, int(job.max_attempts or 1))
@@ -178,8 +224,9 @@ def fail_or_retry_job(db: Session, job: EnrichmentJob, exc: Exception, *, retry_
     job.locked_by = ""
     job.locked_at = None
     if attempts < max_attempts and not job.cancel_requested:
+        retry_delay = min(MAX_RETRY_BACKOFF_SECONDS, retry_delay_seconds * (2 ** max(0, attempts - 1)))
         job.status = "retrying"
-        job.run_after = now + timedelta(seconds=retry_delay_seconds * attempts)
+        job.run_after = now + timedelta(seconds=retry_delay)
         job.progress_json = {
             **(job.progress_json or {}),
             "stage": "retrying",
@@ -187,6 +234,7 @@ def fail_or_retry_job(db: Session, job: EnrichmentJob, exc: Exception, *, retry_
             "percent": int((job.progress_json or {}).get("percent") or 25),
             "attempts": attempts,
             "max_attempts": max_attempts,
+            "retry_delay_seconds": retry_delay,
         }
     else:
         job.status = "failed"
@@ -198,9 +246,12 @@ def fail_or_retry_job(db: Session, job: EnrichmentJob, exc: Exception, *, retry_
             "percent": int((job.progress_json or {}).get("percent") or 25),
             "attempts": attempts,
             "max_attempts": max_attempts,
+            "dead_lettered": True,
+            "terminal_state": "failed",
         }
     job.updated_at = now
     db.commit()
+    return True
 
 
 def queue_status(db: Session, *, workspace_id: UUID | None = None) -> dict[str, Any]:

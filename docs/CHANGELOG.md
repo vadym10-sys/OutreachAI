@@ -1,6 +1,13 @@
 # Changelog
 
 ### fix(api)
+- Hardened enrichment queue claims with unique per-attempt ownership tokens and worker heartbeats so stale workers cannot overwrite reclaimed jobs.
+- Switched queue retries to exponential backoff and mark exhausted jobs as explicit dead-lettered failures.
+
+### test(api)
+- Added regressions for duplicate enqueue idempotency, stale-job reclaim safety, exponential retry timing, and queue terminal-state handling.
+
+### fix(api)
 - Tightened API readiness so production now reports `degraded` when required runtime environment variables or PostgreSQL connectivity are missing.
 - Added explicit startup logs for required environment validation and PostgreSQL connectivity checks.
 

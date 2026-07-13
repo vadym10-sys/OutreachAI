@@ -2,6 +2,16 @@
 
 Date: 2026-07-13
 
+## Latest Update - Queue and Worker Reliability
+
+- Hardened the durable enrichment queue so each claim now uses a unique claim token, active workers refresh the lock with a heartbeat, and stale claimants can no longer overwrite a reclaimed job.
+- Switched retry scheduling from linear delay to exponential backoff and mark max-attempt failures as dead-lettered terminal failures.
+- Added focused regressions for idempotent enqueue, stale-job reclaim, exponential retry backoff, cancellation, and terminal-state completion.
+- Validation completed for this backend launch-hardening fix:
+	- `PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'enrichment_queue_persists_and_cancels_job or enrichment_queue_reuses_active_job_for_duplicate_enqueue or enrichment_queue_reclaims_stale_job_and_blocks_old_claim_completion or enrichment_queue_retry_uses_exponential_backoff_and_dead_letters or workspace_app_company_creation_queues_enrichment_job'` in `apps/api`: passed
+
+This closes the queue/worker launch blocker by ensuring queued enrichment jobs do not silently duplicate, disappear, or remain stuck indefinitely while a worker is actively processing them.
+
 ## Latest Update - API Startup and Readiness Behavior
 
 - Tightened the API readiness path so production now reports `degraded` whenever PostgreSQL connectivity or required runtime environment variables are unavailable or invalid.
@@ -124,6 +134,7 @@ OutreachAI has strong frontend momentum, a broad backend feature surface, and cr
 - Enrichment worker pipeline with claim, retry, and failure handling
 - Embedded background scheduler threads for enrichment, nightly prioritization, and company monitoring
 - Dedicated worker deploy profile now sets `OUTREACHAI_PROCESS_ROLE=worker` explicitly
+- Queue claims now use per-attempt ownership tokens with heartbeat refresh to prevent stale duplicate processing
 
 ### AI
 - OpenAI-backed enrichment and personalization paths
@@ -183,6 +194,7 @@ OutreachAI has strong frontend momentum, a broad backend feature surface, and cr
 - Health, liveness, and readiness endpoints
 - Startup environment validation and connectivity checks
 - Readiness now fails closed in production when required env vars or PostgreSQL connectivity are unavailable
+- Queue retries now back off exponentially and exhausted jobs terminate as explicit failed/dead-lettered jobs
 - CI pipeline covering lint, typecheck, test, build, and e2e
 - PostgreSQL schema and migration assets
 

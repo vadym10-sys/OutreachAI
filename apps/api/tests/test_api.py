@@ -1,5 +1,5 @@
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import base64
 import hashlib
 import hmac
@@ -1604,6 +1604,184 @@ def test_workspace_app_enrichment_queue_persists_and_cancels_job() -> None:
         assert stored.status == "cancelled"
         assert stored.cancel_requested is True
         assert stored.progress_json["stage"] == "cancelled"
+    finally:
+        db.close()
+
+
+def test_enrichment_queue_reuses_active_job_for_duplicate_enqueue() -> None:
+    from app.services.enrichment_queue import enqueue_company_enrichment_job
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-idempotency@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Queue Idempotency", "website": "https://usage-queue-idempotency.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        lead = db.scalar(select(Lead).where(Lead.company == "Usage Queue Idempotency"))
+        assert lead is not None
+        workspace = db.get(Workspace, lead.workspace_id)
+        assert workspace is not None
+
+        first = enqueue_company_enrichment_job(
+            db,
+            user_id=lead.user_id,
+            workspace_id=workspace.id,
+            lead=lead,
+            request_id="queue-idempotency-1",
+            language="English",
+            max_attempts=3,
+        )
+        db.commit()
+        assert first is not None
+
+        second = enqueue_company_enrichment_job(
+            db,
+            user_id=lead.user_id,
+            workspace_id=workspace.id,
+            lead=lead,
+            request_id="queue-idempotency-2",
+            language="English",
+            max_attempts=3,
+        )
+        db.commit()
+        assert second is not None
+        assert second.id == first.id
+
+        jobs = db.scalars(select(EnrichmentJob).where(EnrichmentJob.lead_id == lead.id)).all()
+        assert len(jobs) == 1
+        assert jobs[0].status == "pending"
+    finally:
+        db.close()
+
+
+def test_enrichment_queue_reclaims_stale_job_and_blocks_old_claim_completion() -> None:
+    from app.services.enrichment_queue import claim_next_enrichment_job, complete_job, enqueue_company_enrichment_job, heartbeat_job_lock
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-reclaim@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Queue Reclaim", "website": "https://usage-queue-reclaim.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        lead = db.scalar(select(Lead).where(Lead.company == "Usage Queue Reclaim"))
+        assert lead is not None
+        workspace = db.get(Workspace, lead.workspace_id)
+        assert workspace is not None
+
+        queued = enqueue_company_enrichment_job(
+            db,
+            user_id=lead.user_id,
+            workspace_id=workspace.id,
+            lead=lead,
+            request_id="queue-reclaim",
+            language="English",
+            max_attempts=3,
+        )
+        db.commit()
+        assert queued is not None
+
+        first_claim_token = "worker-a:claim-1"
+        first_claim = claim_next_enrichment_job(db, worker_id=first_claim_token, stale_after_seconds=900)
+        assert first_claim is not None
+        assert first_claim.status == "running"
+
+        first_claim.locked_at = datetime.utcnow() - timedelta(seconds=901)
+        db.commit()
+
+        second_claim_token = "worker-b:claim-2"
+        reclaimed = claim_next_enrichment_job(db, worker_id=second_claim_token, stale_after_seconds=900)
+        assert reclaimed is not None
+        assert reclaimed.id == first_claim.id
+        assert reclaimed.locked_by == second_claim_token
+
+        assert complete_job(db, first_claim, claim_token=first_claim_token) is False
+        db.refresh(reclaimed)
+        assert reclaimed.status == "running"
+        assert reclaimed.locked_by == second_claim_token
+
+        assert heartbeat_job_lock(db, job_id=reclaimed.id, claim_token=second_claim_token) is True
+        assert complete_job(db, reclaimed, claim_token=second_claim_token) is True
+        db.refresh(reclaimed)
+        assert reclaimed.status == "succeeded"
+        assert reclaimed.progress_json["terminal_state"] == "completed"
+    finally:
+        db.close()
+
+
+def test_enrichment_queue_retry_uses_exponential_backoff_and_dead_letters() -> None:
+    from app.services.enrichment_queue import claim_next_enrichment_job, enqueue_company_enrichment_job, fail_or_retry_job
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-retry@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Usage Queue Retry", "website": "https://usage-queue-retry.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert company_response.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        lead = db.scalar(select(Lead).where(Lead.company == "Usage Queue Retry"))
+        assert lead is not None
+        workspace = db.get(Workspace, lead.workspace_id)
+        assert workspace is not None
+
+        queued = enqueue_company_enrichment_job(
+            db,
+            user_id=lead.user_id,
+            workspace_id=workspace.id,
+            lead=lead,
+            request_id="queue-retry",
+            language="English",
+            max_attempts=3,
+        )
+        db.commit()
+        assert queued is not None
+
+        first_claim_token = "worker-retry:claim-1"
+        first = claim_next_enrichment_job(db, worker_id=first_claim_token, stale_after_seconds=900)
+        assert first is not None
+        assert fail_or_retry_job(db, first, RuntimeError("temporary failure"), retry_delay_seconds=60, claim_token=first_claim_token) is True
+        db.refresh(first)
+        first_delay = (first.run_after - first.updated_at).total_seconds()
+        assert first.status == "retrying"
+        assert 55 <= first_delay <= 65
+
+        first.run_after = datetime.utcnow() - timedelta(seconds=1)
+        db.commit()
+
+        second_claim_token = "worker-retry:claim-2"
+        second = claim_next_enrichment_job(db, worker_id=second_claim_token, stale_after_seconds=900)
+        assert second is not None
+        assert second.attempts == 2
+        assert fail_or_retry_job(db, second, RuntimeError("temporary failure again"), retry_delay_seconds=60, claim_token=second_claim_token) is True
+        db.refresh(second)
+        second_delay = (second.run_after - second.updated_at).total_seconds()
+        assert second.status == "retrying"
+        assert 115 <= second_delay <= 125
+        assert second.progress_json["retry_delay_seconds"] == 120
+
+        second.run_after = datetime.utcnow() - timedelta(seconds=1)
+        db.commit()
+
+        third_claim_token = "worker-retry:claim-3"
+        third = claim_next_enrichment_job(db, worker_id=third_claim_token, stale_after_seconds=900)
+        assert third is not None
+        assert third.attempts == 3
+        assert fail_or_retry_job(db, third, RuntimeError("poison job"), retry_delay_seconds=60, claim_token=third_claim_token) is True
+        db.refresh(third)
+        assert third.status == "failed"
+        assert third.completed_at is not None
+        assert third.progress_json["dead_lettered"] is True
+        assert third.progress_json["terminal_state"] == "failed"
     finally:
         db.close()
 

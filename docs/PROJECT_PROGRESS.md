@@ -1,5 +1,20 @@
 # Project Progress
 
+## 2026-07-13 - Queue and Worker Reliability
+
+### Scope Completed
+- Added per-claim ownership tokens for enrichment jobs so stale workers can no longer complete or retry a job after it has been reclaimed.
+- Added a worker heartbeat that refreshes the active lock while the job is running, reducing false stale reclaims during long-running enrichment.
+- Switched retry scheduling to exponential backoff and mark max-attempt failures as dead-lettered terminal failures.
+- Added focused regressions for duplicate enqueue idempotency, stale reclaim behavior, exponential retry timing, and terminal-state cancellation/completion.
+
+### Validation Status
+- Backend queue reliability regression slice: passed (`PYTHONPATH=apps/api python3 -m pytest -q apps/api/tests/test_api.py -k 'enrichment_queue_persists_and_cancels_job or enrichment_queue_reuses_active_job_for_duplicate_enqueue or enrichment_queue_reclaims_stale_job_and_blocks_old_claim_completion or enrichment_queue_retry_uses_exponential_backoff_and_dead_letters or workspace_app_company_creation_queues_enrichment_job'` in `apps/api`)
+
+### Notes
+- Active jobs now maintain their claim while the worker is alive instead of appearing stale after a long provider call.
+- Reclaimed jobs can still be recovered after a worker crash or restart, but the old claimant can no longer overwrite the terminal state.
+
 ## 2026-07-13 - API Startup and Readiness Behavior
 
 ### Scope Completed

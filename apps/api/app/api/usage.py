@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import hashlib
 import logging
 import re
 from datetime import datetime, timedelta
@@ -34,6 +36,7 @@ from app.api.routes import (
     _outreach_sender_runtime_config,
     _run_provider_with_deadline,
     _save_provider_leads,
+    _settings_for_workspace,
     _sync_lead_to_crm,
     _workspace_out,
     _enforce_usage,
@@ -42,7 +45,7 @@ from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
-from app.models.entities import AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Workspace
+from app.models.entities import AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Workspace
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
@@ -50,6 +53,12 @@ from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, en
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
 from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
 from app.services.deep_contact_search import DeepContactSearchError, normalize_domain, run_deep_contact_search
+from app.services.continuous_learning import (
+    DEFAULT_OPPORTUNITY_WEIGHTS,
+    DEFAULT_PRIORITIZATION_WEIGHTS,
+    continuous_learning_snapshot,
+    continuous_learning_weights,
+)
 from app.services.website import normalize_website_url
 
 logger = logging.getLogger("outreachai.workspace_app")
@@ -188,9 +197,27 @@ class UsageActionOut(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     completed_steps: list[str] = Field(default_factory=list)
     workflow_stages: dict[str, str] = Field(default_factory=dict)
+    workflow_state: dict[str, Any] = Field(default_factory=dict)
     missing_fields: list[str] = Field(default_factory=list)
     recommended_actions: list[str] = Field(default_factory=list)
     next_action: str = ""
+
+
+class UsageMonitoringChangeOut(BaseModel):
+    company_id: UUID
+    lead_id: Optional[UUID] = None
+    company_name: str = ""
+    detected_at: str = ""
+    changes: list[dict[str, Any]] = Field(default_factory=list)
+    report_regenerated: bool = False
+
+
+class UsageMonitoringOut(BaseModel):
+    status: UsageStatus
+    message: str
+    monitored_companies: int = 0
+    changed_companies: int = 0
+    changes: list[UsageMonitoringChangeOut] = Field(default_factory=list)
 
 
 class UsageIntegrationStatus(BaseModel):
@@ -348,6 +375,7 @@ def _parse_lead_command(command: str, workspace) -> tuple[LeadFinderRequest | No
 
 def _minimal_crm_company_out(company: Company) -> CrmCompanyOut:
     now = company.updated_at or company.created_at or datetime.utcnow()
+    metadata = company.metadata_json or {}
     return CrmCompanyOut(
         id=company.id,
         lead_id=company.lead_id,
@@ -368,6 +396,12 @@ def _minimal_crm_company_out(company: Company) -> CrmCompanyOut:
         outreach_strategy=company.outreach_strategy or "",
         sales_angle=company.sales_angle or "",
         expected_reply_rate=company.expected_reply_rate or "",
+        buying_signal_score=int(metadata["buying_signal_score"]) if str(metadata.get("buying_signal_score") or "").isdigit() else None,
+        buying_signal_urgency=str(metadata.get("buying_signal_urgency") or ""),
+        buying_signal_explanation=str(metadata.get("buying_signal_explanation") or ""),
+        buying_signal_evidence=[item for item in metadata.get("buying_signal_evidence", []) if isinstance(item, dict)] if isinstance(metadata.get("buying_signal_evidence"), list) else [],
+        buying_signal_confidence=int(metadata["buying_signal_confidence"]) if str(metadata.get("buying_signal_confidence") or "").isdigit() else None,
+        recommended_outreach_timing=str(metadata.get("recommended_outreach_timing") or ""),
         email_status=company.email_status or "Not prepared",
         crm_stage=company.crm_stage or "New Lead",
         created_at=company.created_at or now,
@@ -375,7 +409,8 @@ def _minimal_crm_company_out(company: Company) -> CrmCompanyOut:
         found_at=company.created_at or now,
         saved_to_crm_at=company.created_at or now,
         last_activity_at=now,
-        company_intelligence=(company.metadata_json or {}).get("company_intelligence") if isinstance((company.metadata_json or {}).get("company_intelligence"), dict) else {},
+        decision_maker_intelligence=metadata.get("decision_maker_intelligence") if isinstance(metadata.get("decision_maker_intelligence"), dict) else {},
+        company_intelligence=metadata.get("company_intelligence") if isinstance(metadata.get("company_intelligence"), dict) else {},
     )
 
 
@@ -1227,6 +1262,3221 @@ def _safe_score(value: Any, default: int = 0) -> int:
         return default
 
 
+def _report_field(value: Any, *, sources: list[str], confidence: int) -> dict[str, Any]:
+    present = _metadata_value_present(value)
+    return {
+        "value": value if present else None,
+        "source": _dedupe_text_values(sources)[0] if present and sources else "",
+        "confidence": max(0, min(100, int(confidence if present else 0))),
+        "sources": _dedupe_text_values(sources) if present else [],
+    }
+
+
+def _metadata_texts(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    return []
+
+
+def _intent_evidence(signal: str, source_field: str, value: str, confidence: int) -> dict[str, Any]:
+    return {
+        "signal": signal,
+        "source_field": source_field,
+        "value": value,
+        "confidence": max(0, min(100, int(confidence))),
+    }
+
+
+def _decision_evidence(source_field: str, value: str, confidence: int) -> dict[str, Any]:
+    return {
+        "source_field": source_field,
+        "value": value,
+        "confidence": max(0, min(100, int(confidence))),
+    }
+
+
+def _title_contains(title: str, keywords: list[str]) -> bool:
+    lowered = (title or "").strip().lower()
+    if not lowered:
+        return False
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _authority_level(title: str) -> str:
+    if _title_contains(title, ["ceo", "founder", "owner", "president"]):
+        return "executive"
+    if _title_contains(title, ["chief", "vp", "vice president", "head", "director"]):
+        return "senior"
+    if _title_contains(title, ["manager", "lead"]):
+        return "manager"
+    return "unknown"
+
+
+def _contact_decision_maker_intelligence(
+    contact: Contact,
+    *,
+    company: Company,
+    lead: Lead | None,
+    deep_contact: dict[str, Any],
+    company_intelligence: dict[str, Any],
+) -> dict[str, Any]:
+    contact_metadata = contact.metadata_json if isinstance(contact.metadata_json, dict) else {}
+    title = str(contact.title or "").strip()
+    is_selected = bool(contact_metadata.get("selected_decision_maker"))
+    authority_level = _authority_level(title)
+    evidence: list[dict[str, Any]] = []
+
+    if title:
+        evidence.append(_decision_evidence("contact.title", title, 88))
+    if contact.email_status == "Verified" and contact.email:
+        evidence.append(_decision_evidence("contact.email_status", "Verified business email", 92))
+    if contact.linkedin:
+        evidence.append(_decision_evidence("contact.linkedin", contact.linkedin, 76))
+    reason = str(contact_metadata.get("reason") or "").strip()
+    if reason:
+        evidence.append(_decision_evidence("deep_contact_search.selected_decision_maker.reason", reason, 82))
+    profile = deep_contact.get("company_profile") if isinstance(deep_contact.get("company_profile"), dict) else {}
+    if profile.get("industry"):
+        evidence.append(_decision_evidence("deep_contact_search.company_profile.industry", str(profile.get("industry")), 70))
+
+    why_best = (
+        "Top-ranked decision maker with verified contact path."
+        if is_selected and contact.email_status == "Verified"
+        else "Role alignment suggests strong decision influence."
+    )
+    if reason:
+        why_best = f"{why_best} {reason}"
+
+    responsibilities: list[str] = []
+    goals: list[str] = []
+    kpis: list[str] = []
+    pain_points: list[str] = []
+    communication_style = "Professional and concise"
+    outreach_angle = "Lead with measurable business outcomes"
+
+    if _title_contains(title, ["ceo", "founder", "owner", "president"]):
+        responsibilities.extend(["Company strategy", "Budget allocation", "Revenue growth decisions"])
+        goals.extend(["Sustainable revenue growth", "Market expansion", "Operational efficiency"])
+        kpis.extend(["Revenue growth rate", "Gross margin", "Pipeline velocity"])
+        pain_points.extend(["Limited high-quality pipeline", "Unpredictable outbound performance"])
+        communication_style = "Executive-level, outcome-first"
+        outreach_angle = "Show revenue impact and execution speed"
+    elif _title_contains(title, ["sales", "vp sales", "cro", "head of sales", "sales director"]):
+        responsibilities.extend(["Pipeline generation", "Quota attainment", "Team performance"])
+        goals.extend(["Increase qualified pipeline", "Improve win rate", "Reduce sales cycle"])
+        kpis.extend(["SQL volume", "Win rate", "Sales cycle length", "Quota attainment"])
+        pain_points.extend(["Low intent lead quality", "Rep productivity constraints"])
+        communication_style = "Direct and metric-driven"
+        outreach_angle = "Improve pipeline quality and conversion efficiency"
+    elif _title_contains(title, ["marketing", "cmo", "head of marketing", "marketing director"]):
+        responsibilities.extend(["Demand generation", "Campaign performance", "Funnel efficiency"])
+        goals.extend(["Increase qualified demand", "Improve CAC efficiency", "Raise campaign ROI"])
+        kpis.extend(["MQL-to-SQL conversion", "CAC", "Pipeline contribution"])
+        pain_points.extend(["Lead quality inconsistency", "Attribution pressure"])
+        communication_style = "Insight-led and data-backed"
+        outreach_angle = "Boost qualified demand without increasing acquisition waste"
+    elif _title_contains(title, ["coo", "operations", "ops"]):
+        responsibilities.extend(["Operational process quality", "Cross-team execution", "Resource efficiency"])
+        goals.extend(["Improve workflow reliability", "Scale processes efficiently"])
+        kpis.extend(["Process cycle time", "Cost per outcome", "Team throughput"])
+        pain_points.extend(["Manual pipeline operations", "Inconsistent execution"])
+        communication_style = "Structured and practical"
+        outreach_angle = "Reduce operational friction in go-to-market workflows"
+    else:
+        responsibilities.extend(["Department planning", "Vendor evaluation"])
+        goals.extend(["Reliable team outcomes", "Better decision speed"])
+        kpis.extend(["Target attainment", "Execution consistency"])
+        pain_points.extend(["Limited time for vendor evaluation"])
+
+    responsibilities = _dedupe_text_values(responsibilities)
+    goals = _dedupe_text_values(goals)
+    kpis = _dedupe_text_values(kpis)
+    pain_points = _dedupe_text_values(pain_points)
+
+    company_name = company.name or (lead.company if lead else "this company") or "this company"
+    first_sentence = (
+        f"Noticed your role as {title or 'a key decision maker'} at {company_name} and wanted to share a quick idea to improve qualified pipeline outcomes."
+    )
+
+    base_confidence = 52
+    base_confidence += 18 if title else 0
+    base_confidence += 15 if contact.email_status == "Verified" else 0
+    base_confidence += 8 if is_selected else 0
+    base_confidence += 7 if contact.linkedin else 0
+    base_confidence += 6 if reason else 0
+    confidence = _safe_score(base_confidence)
+
+    return {
+        "contact_id": str(contact.id),
+        "name": contact.name,
+        "title": title,
+        "is_verified_contact": bool(contact.email and contact.email_status == "Verified"),
+        "why_best_decision_maker": why_best,
+        "estimated_responsibilities": responsibilities,
+        "probable_business_goals": goals,
+        "likely_kpis": kpis,
+        "possible_pain_points": pain_points,
+        "communication_style": communication_style,
+        "preferred_outreach_angle": outreach_angle,
+        "recommended_first_sentence": first_sentence,
+        "estimated_authority_level": authority_level,
+        "confidence_score": confidence,
+        "evidence_used": evidence,
+    }
+
+
+def _build_decision_maker_intelligence(
+    *,
+    lead: Lead,
+    company: Company | None,
+    contacts: list[Contact],
+    metadata: dict[str, Any],
+    company_intelligence: dict[str, Any],
+) -> dict[str, Any]:
+    deep_contact = metadata.get("deep_contact_search") if isinstance(metadata.get("deep_contact_search"), dict) else {}
+    verified_contacts = [
+        contact
+        for contact in contacts
+        if bool(contact.email) and str(contact.email_status or "").lower() == "verified"
+    ]
+
+    profiles = [
+        _contact_decision_maker_intelligence(
+            contact,
+            company=company if company is not None else Company(name=lead.company or ""),
+            lead=lead,
+            deep_contact=deep_contact,
+            company_intelligence=company_intelligence,
+        )
+        for contact in verified_contacts
+    ]
+
+    profiles.sort(key=lambda item: int(item.get("confidence_score") or 0), reverse=True)
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "profiles": profiles,
+        "top_contact_id": str(profiles[0]["contact_id"]) if profiles else None,
+    }
+
+
+def _numeric_from_size(value: Any) -> int | None:
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    numbers = [int(item) for item in re.findall(r"\d+", text)]
+    if not numbers:
+        return None
+    if len(numbers) == 1:
+        return numbers[0]
+    return int(sum(numbers[:2]) / 2)
+
+
+def _opportunity_ranking(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    workspace,
+    company: Company | None,
+    contacts: list[Contact],
+    company_intelligence: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+    opportunity_weights: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    factor_scores: dict[str, int] = {}
+    factor_reasons: dict[str, list[str]] = {}
+
+    buying_intent = company_intelligence.get("buying_intent") if isinstance(company_intelligence.get("buying_intent"), dict) else {}
+    buying_score = _safe_score(buying_intent.get("buying_signal_score"), 0)
+    factor_scores["Buying Intent"] = buying_score
+    factor_reasons["Buying Intent"] = _dedupe_text_values([
+        str(buying_intent.get("explanation") or ""),
+        *(str(item.get("value") or "") for item in buying_intent.get("evidence", []) if isinstance(item, dict)),
+    ])
+
+    ci_fields = company_intelligence.get("fields") if isinstance(company_intelligence.get("fields"), dict) else {}
+    ci_present = sum(1 for value in ci_fields.values() if isinstance(value, dict) and _metadata_value_present(value.get("value")))
+    ci_total = max(1, len(ci_fields))
+    ci_score = _safe_score(round(ci_present * 100 / ci_total), 0)
+    factor_scores["Company Intelligence"] = ci_score
+    factor_reasons["Company Intelligence"] = [f"{ci_present}/{ci_total} intelligence fields populated from enrichment."]
+
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+    dm_score = _safe_score(top_profile.get("confidence_score"), 0)
+    factor_scores["Decision Maker Quality"] = dm_score
+    factor_reasons["Decision Maker Quality"] = _dedupe_text_values([
+        str(top_profile.get("why_best_decision_maker") or ""),
+        *(str(item.get("value") or "") for item in top_profile.get("evidence_used", []) if isinstance(item, dict)),
+    ])
+
+    technologies = metadata.get("technologies") if isinstance(metadata.get("technologies"), list) else []
+    technologies = _dedupe_text_values(technologies)
+    tech_score = _safe_score(70 if technologies else 25)
+    if technologies:
+        workspace_context = f"{getattr(workspace, 'company', '')} {getattr(workspace, 'target_customer', '')}".lower()
+        if workspace_context and any(term.lower() in workspace_context for term in technologies):
+            tech_score = _safe_score(85)
+    factor_scores["Technology Match"] = tech_score
+    factor_reasons["Technology Match"] = technologies[:4] if technologies else ["No technology enrichment data captured."]
+
+    size_value = metadata.get("estimated_company_size") or metadata.get("employee_count") or metadata.get("employees")
+    size_numeric = _numeric_from_size(size_value)
+    if size_numeric is None:
+        size_score = 35
+    elif 20 <= size_numeric <= 500:
+        size_score = 82
+    elif 10 <= size_numeric <= 1000:
+        size_score = 72
+    else:
+        size_score = 58
+    factor_scores["Company Size"] = _safe_score(size_score)
+    factor_reasons["Company Size"] = [str(size_value)] if _metadata_value_present(size_value) else ["Company size not enriched yet."]
+
+    hiring_values = _dedupe_text_values([
+        *(_metadata_texts(metadata.get("hiring_signals"))),
+        *(_metadata_texts(metadata.get("jobs_signal"))),
+    ])
+    factor_scores["Hiring Signals"] = _safe_score(80 if hiring_values else 30)
+    factor_reasons["Hiring Signals"] = hiring_values[:3] if hiring_values else ["No hiring evidence captured."]
+
+    growth_values = _dedupe_text_values([
+        *(_metadata_texts(metadata.get("funding_signal"))),
+        *(_metadata_texts(metadata.get("growth_signal"))),
+        *(_metadata_texts(metadata.get("customer_growth_signals"))),
+        *(_metadata_texts(metadata.get("expansion_signals"))),
+    ])
+    factor_scores["Growth Signals"] = _safe_score(82 if growth_values else 28)
+    factor_reasons["Growth Signals"] = growth_values[:3] if growth_values else ["No growth evidence captured."]
+
+    company_country = str((company.country if company else "") or lead.country or "").strip().lower()
+    target_country = str(getattr(workspace, "target_country", "") or "").strip().lower()
+    geo_score = 65
+    if company_country and target_country:
+        geo_score = 85 if company_country == target_country else 55
+    elif company_country:
+        geo_score = 70
+    factor_scores["Geography"] = _safe_score(geo_score)
+    factor_reasons["Geography"] = [str((company.country if company else "") or lead.country or "Unknown geography")]
+
+    website_quality = 20
+    if lead.website or (company and company.website):
+        website_quality += 30
+    if metadata.get("ai_summary"):
+        website_quality += 25
+    if isinstance(metadata.get("google_rating"), (int, float)):
+        website_quality += min(25, int(float(metadata.get("google_rating")) * 5))
+    factor_scores["Website Quality"] = _safe_score(website_quality)
+    factor_reasons["Website Quality"] = _dedupe_text_values([
+        str(lead.website or (company.website if company else "") or ""),
+        str(metadata.get("ai_summary") or ""),
+        f"Google rating: {metadata.get('google_rating')}" if isinstance(metadata.get("google_rating"), (int, float)) else "",
+    ]) or ["Limited website evidence."]
+
+    verified_contacts = [
+        contact
+        for contact in contacts
+        if bool(contact.email) and str(contact.email_status or "").lower() == "verified"
+    ]
+    verified_score = 25 if not verified_contacts else _safe_score(min(100, 60 + len(verified_contacts) * 15))
+    factor_scores["Verified Contacts"] = verified_score
+    factor_reasons["Verified Contacts"] = [
+        *(f"{contact.name} ({contact.title})" for contact in verified_contacts[:3]),
+    ] or ["No verified decision-maker email found."]
+
+    raw_weights = opportunity_weights if isinstance(opportunity_weights, dict) else DEFAULT_OPPORTUNITY_WEIGHTS
+    total_weight = sum(max(0.0, float(raw_weights.get(name) or 0.0)) for name in DEFAULT_OPPORTUNITY_WEIGHTS.keys())
+    if total_weight <= 0:
+        weights = DEFAULT_OPPORTUNITY_WEIGHTS.copy()
+    else:
+        weights = {
+            name: max(0.0, float(raw_weights.get(name) or 0.0)) / total_weight
+            for name in DEFAULT_OPPORTUNITY_WEIGHTS.keys()
+        }
+    weighted_score = sum(factor_scores[name] * weight for name, weight in weights.items())
+    overall_score = _safe_score(round(weighted_score), 0)
+
+    sorted_factors = sorted(factor_scores.items(), key=lambda item: item[1], reverse=True)
+    positives = [f"{name}: {score}" for name, score in sorted_factors[:4] if score >= 60]
+    negatives = [f"{name}: {score}" for name, score in sorted(factor_scores.items(), key=lambda item: item[1])[:4] if score <= 50]
+
+    if overall_score >= 80:
+        next_action = "Approve and send outreach to the verified decision maker now."
+    elif overall_score >= 60:
+        next_action = "Finalize personalization and send the first email this week."
+    elif verified_contacts:
+        next_action = "Run additional enrichment to improve intent coverage before sending."
+    else:
+        next_action = "Find a verified decision-maker contact before outreach."
+
+    confidence_inputs = [
+        factor_scores["Company Intelligence"],
+        factor_scores["Decision Maker Quality"],
+        factor_scores["Verified Contacts"],
+        factor_scores["Website Quality"],
+    ]
+    confidence = _safe_score(round(sum(confidence_inputs) / len(confidence_inputs)), 0)
+
+    reasoning = "; ".join(
+        f"{name}: {', '.join(factor_reasons.get(name, [])[:2])}"
+        for name, _ in sorted_factors[:4]
+    )
+    return {
+        "overall_score": overall_score,
+        "reasoning": reasoning,
+        "top_positive_signals": positives,
+        "top_negative_signals": negatives,
+        "recommended_next_action": next_action,
+        "confidence": confidence,
+        "factors": {name: factor_scores[name] for name in weights.keys()},
+        "weights_used": weights,
+    }
+
+
+def _estimated_reply_probability(*, metadata: dict[str, Any], opportunity_ranking: dict[str, Any], buying_intent: dict[str, Any]) -> int:
+    expected_reply_rate = str(metadata.get("expected_reply_rate") or "").strip()
+    match = re.search(r"(\d{1,3})(?:\s*[-to]+\s*(\d{1,3}))?", expected_reply_rate)
+    if match:
+        low = int(match.group(1))
+        high = int(match.group(2)) if match.group(2) else low
+        if 0 <= low <= 100 and 0 <= high <= 100:
+            return _safe_score(round((low + high) / 2), 25)
+    overall = _safe_score(opportunity_ranking.get("overall_score"), 0)
+    buying = _safe_score(buying_intent.get("buying_signal_score"), 0)
+    return _safe_score(round(overall * 0.45 + buying * 0.35 + 15), 25)
+
+
+def _dedupe_evidence_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        source_field = str(item.get("source_field") or "").strip()
+        value = str(item.get("value") or "").strip()
+        if not source_field or not value:
+            continue
+        key = (source_field.lower(), value.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(
+            {
+                "source_field": source_field,
+                "value": value,
+                "confidence": _safe_score(item.get("confidence"), 65),
+            }
+        )
+    return deduped
+
+
+def _build_ai_outreach_strategy(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    contacts: list[Contact],
+    buying_intent: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+) -> dict[str, Any]:
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+    top_profile_name = str(top_profile.get("name") or "").strip()
+    top_profile_title = str(top_profile.get("title") or "").strip()
+    urgency = str(buying_intent.get("urgency") or "watch").strip().lower()
+    buying_explanation = str(buying_intent.get("explanation") or "").strip()
+
+    buying_evidence = [
+        {
+            "source_field": str(item.get("source_field") or ""),
+            "value": str(item.get("value") or ""),
+            "confidence": _safe_score(item.get("confidence"), 70),
+        }
+        for item in buying_intent.get("evidence", [])
+        if isinstance(item, dict)
+    ]
+    profile_evidence = [
+        {
+            "source_field": str(item.get("source_field") or ""),
+            "value": str(item.get("value") or ""),
+            "confidence": _safe_score(item.get("confidence"), 70),
+        }
+        for item in top_profile.get("evidence_used", [])
+        if isinstance(item, dict)
+    ]
+
+    base_company_evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("lead.website", str(lead.website), 85) if lead.website else {},
+            _decision_evidence("metadata.ai_summary", str(metadata.get("ai_summary")), 78) if metadata.get("ai_summary") else {},
+            _decision_evidence("metadata.expected_reply_rate", str(metadata.get("expected_reply_rate")), 70) if metadata.get("expected_reply_rate") else {},
+            _decision_evidence("metadata.suggested_offer", str(metadata.get("suggested_offer")), 78) if metadata.get("suggested_offer") else {},
+            _decision_evidence("metadata.recommended_cta", str(metadata.get("recommended_cta")), 80) if metadata.get("recommended_cta") else {},
+        ]
+        + buying_evidence
+        + profile_evidence
+    )
+
+    why_contact_now_signals = _dedupe_text_values([
+        buying_explanation,
+        *(str(item) for item in opportunity_ranking.get("top_positive_signals", []) if item),
+    ])
+    why_contact_now = why_contact_now_signals[0] if why_contact_now_signals else "Insufficient intent evidence to justify immediate outreach."
+    why_contact_now_evidence = _dedupe_evidence_items([
+        *buying_evidence,
+        *base_company_evidence,
+    ])[:4]
+
+    best_timing = str(buying_intent.get("recommended_outreach_timing") or "").strip()
+    if not best_timing and urgency == "high":
+        best_timing = "Reach out within 24-48 hours."
+    elif not best_timing and urgency == "medium":
+        best_timing = "Reach out this week."
+    elif not best_timing and urgency == "low":
+        best_timing = "Reach out in 1-2 weeks after minor personalization updates."
+    elif not best_timing:
+        best_timing = "Run one more enrichment pass before first outreach."
+    best_timing_evidence = _dedupe_evidence_items([
+        _decision_evidence("buying_intent.urgency", urgency, 78),
+        _decision_evidence("buying_intent.recommended_outreach_timing", best_timing, 80),
+        *buying_evidence,
+    ])[:4]
+
+    verified_contacts = [
+        contact
+        for contact in contacts
+        if bool(contact.email) and str(contact.email_status or "").lower() == "verified"
+    ]
+    has_linkedin = bool(top_profile.get("evidence_used")) or any(bool(contact.linkedin) for contact in contacts)
+    if verified_contacts:
+        best_channel = "Email"
+    elif has_linkedin:
+        best_channel = "LinkedIn"
+    elif lead.phone or metadata.get("phone"):
+        best_channel = "Phone"
+    else:
+        best_channel = "Email"
+    channel_evidence = _dedupe_evidence_items(
+        [
+            *[
+                _decision_evidence("contact.email_status", f"{contact.name}: {contact.email_status}", 90)
+                for contact in verified_contacts[:2]
+            ],
+            *[
+                _decision_evidence("contact.linkedin", contact.linkedin or "", 76)
+                for contact in contacts[:2]
+                if contact.linkedin
+            ],
+            _decision_evidence("lead.phone", str(lead.phone), 70) if lead.phone else {},
+            *base_company_evidence,
+        ]
+    )[:4]
+
+    confidence = _safe_score(opportunity_ranking.get("confidence"), 0)
+    if confidence >= 80:
+        best_email_length = "90-130 words"
+    elif confidence >= 60:
+        best_email_length = "120-170 words"
+    else:
+        best_email_length = "70-110 words"
+    email_length_evidence = _dedupe_evidence_items([
+        _decision_evidence("opportunity_ranking.confidence", str(confidence), 80),
+        _decision_evidence("metadata.expected_reply_rate", str(metadata.get("expected_reply_rate")), 70) if metadata.get("expected_reply_rate") else {},
+        *buying_evidence,
+    ])[:4]
+
+    strongest_value_proposition = str(
+        metadata.get("suggested_offer")
+        or metadata.get("best_outreach_angle")
+        or metadata.get("value_proposition")
+        or metadata.get("outreach_strategy")
+        or ""
+    ).strip()
+    if not strongest_value_proposition:
+        strongest_value_proposition = "Insufficient offer evidence in current enrichment data."
+    strongest_value_proposition_evidence = _dedupe_evidence_items([
+        _decision_evidence("metadata.suggested_offer", str(metadata.get("suggested_offer")), 82) if metadata.get("suggested_offer") else {},
+        _decision_evidence("metadata.best_outreach_angle", str(metadata.get("best_outreach_angle")), 78) if metadata.get("best_outreach_angle") else {},
+        _decision_evidence("metadata.value_proposition", str(metadata.get("value_proposition")), 76) if metadata.get("value_proposition") else {},
+        _decision_evidence("metadata.outreach_strategy", str(metadata.get("outreach_strategy")), 74) if metadata.get("outreach_strategy") else {},
+    ])[:4]
+
+    strongest_pain_point = ""
+    pain_points = [str(item) for item in metadata.get("pain_points", []) if str(item).strip()] if isinstance(metadata.get("pain_points"), list) else []
+    risks = [str(item) for item in metadata.get("risks", []) if str(item).strip()] if isinstance(metadata.get("risks"), list) else []
+    if pain_points:
+        strongest_pain_point = pain_points[0]
+    elif risks:
+        strongest_pain_point = risks[0]
+    if not strongest_pain_point:
+        strongest_pain_point = "Insufficient pain-point evidence in current enrichment data."
+    strongest_pain_point_evidence = _dedupe_evidence_items([
+        _decision_evidence("metadata.pain_points", pain_points[0], 78) if pain_points else {},
+        _decision_evidence("metadata.risks", risks[0], 72) if risks else {},
+        *buying_evidence,
+    ])[:4]
+
+    best_subject_line = ""
+    if strongest_pain_point and strongest_pain_point != "Insufficient pain-point evidence in current enrichment data.":
+        best_subject_line = f"Idea to improve {strongest_pain_point[:60]}"
+    elif strongest_value_proposition and strongest_value_proposition != "Insufficient offer evidence in current enrichment data.":
+        best_subject_line = f"Quick idea for {lead.company or 'your team'}"
+    else:
+        best_subject_line = f"Quick question for {lead.company or 'your team'}"
+    best_subject_line_evidence = _dedupe_evidence_items([
+        *strongest_pain_point_evidence,
+        *strongest_value_proposition_evidence,
+        _decision_evidence("lead.company", lead.company or "", 90),
+    ])[:4]
+
+    first_sentence = str(top_profile.get("recommended_first_sentence") or "").strip()
+    if not first_sentence:
+        if top_profile_title:
+            first_sentence = f"Noticed your role as {top_profile_title} at {lead.company or 'your company'} and wanted to share a relevant idea based on your current priorities."
+        else:
+            first_sentence = f"I reviewed {lead.company or 'your company'} and found one practical growth idea based on your recent signals."
+    first_sentence_evidence = _dedupe_evidence_items([
+        *profile_evidence,
+        _decision_evidence("decision_maker_intelligence.recommended_first_sentence", str(top_profile.get("recommended_first_sentence")), 82)
+        if top_profile.get("recommended_first_sentence")
+        else {},
+        _decision_evidence("lead.company", lead.company or "", 90),
+    ])[:4]
+
+    follow_up_schedule = [
+        "Day 0: Send the personalized first message.",
+        "Day 3: Follow up with one concrete proof point tied to their likely KPI.",
+        "Day 7: Send a short final follow-up with a low-friction CTA.",
+    ]
+
+    risk_items = metadata.get("risks") if isinstance(metadata.get("risks"), list) else []
+    weakness_items = metadata.get("weaknesses") if isinstance(metadata.get("weaknesses"), list) else []
+    objections = _dedupe_text_values(
+        [
+            *(str(item) for item in risk_items if item),
+            *(str(item) for item in weakness_items if item),
+        ]
+    )[:4]
+    if not objections:
+        objections = ["Insufficient objection evidence in current enrichment data."]
+    objections_evidence = _dedupe_evidence_items([
+        *[
+            _decision_evidence("metadata.risks", item, 74)
+            for item in risk_items[:3]
+            if isinstance(item, str) and item.strip()
+        ],
+        *[
+            _decision_evidence("metadata.weaknesses", item, 70)
+            for item in weakness_items[:3]
+            if isinstance(item, str) and item.strip()
+        ],
+        *base_company_evidence,
+    ])[:4]
+
+    cta = str(metadata.get("recommended_cta") or "").strip() or "Open to a 15-minute fit check next week?"
+    cta_evidence = _dedupe_evidence_items([
+        _decision_evidence("metadata.recommended_cta", str(metadata.get("recommended_cta")), 82) if metadata.get("recommended_cta") else {},
+        _decision_evidence("metadata.suggested_offer", str(metadata.get("suggested_offer")), 76) if metadata.get("suggested_offer") else {},
+        *base_company_evidence,
+    ])[:4]
+
+    follow_up_schedule = [
+        "Day 0: Send the personalized first message.",
+        "Day 3: Follow up with one concrete proof point tied to their likely KPI.",
+        "Day 7: Send a short final follow-up with a low-friction CTA.",
+    ]
+    follow_up_schedule_evidence = _dedupe_evidence_items([
+        _decision_evidence("buying_intent.urgency", urgency, 76),
+        _decision_evidence("opportunity_ranking.confidence", str(confidence), 76),
+        *buying_evidence,
+        *base_company_evidence,
+    ])[:4]
+
+    probability_of_reply = _estimated_reply_probability(
+        metadata=metadata,
+        opportunity_ranking=opportunity_ranking,
+        buying_intent=buying_intent,
+    )
+    estimated_reply_probability_evidence = _dedupe_evidence_items([
+        _decision_evidence("metadata.expected_reply_rate", str(metadata.get("expected_reply_rate")), 74) if metadata.get("expected_reply_rate") else {},
+        _decision_evidence("opportunity_ranking.overall_score", str(opportunity_ranking.get("overall_score")), 72) if opportunity_ranking.get("overall_score") is not None else {},
+        _decision_evidence("buying_intent.buying_signal_score", str(buying_intent.get("buying_signal_score")), 78) if buying_intent.get("buying_signal_score") is not None else {},
+        *base_company_evidence,
+    ])[:4]
+
+    decision_maker_strategies: list[dict[str, Any]] = []
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        profile_name = str(profile.get("name") or "").strip()
+        profile_title = str(profile.get("title") or "").strip()
+        profile_first_sentence = str(profile.get("recommended_first_sentence") or "").strip() or first_sentence
+        profile_evidence_full = _dedupe_evidence_items(
+            [
+                {
+                    "source_field": str(item.get("source_field") or ""),
+                    "value": str(item.get("value") or ""),
+                    "confidence": _safe_score(item.get("confidence"), 70),
+                }
+                for item in profile.get("evidence_used", [])
+                if isinstance(item, dict)
+            ]
+            + best_subject_line_evidence
+            + strongest_value_proposition_evidence
+            + strongest_pain_point_evidence
+        )[:6]
+        decision_maker_strategies.append(
+            {
+                "contact_id": str(profile.get("contact_id") or ""),
+                "name": profile_name,
+                "title": profile_title,
+                "best_subject_line": best_subject_line,
+                "first_sentence": profile_first_sentence,
+                "strongest_value_proposition": strongest_value_proposition,
+                "strongest_pain_point": strongest_pain_point,
+                "expected_objections": objections,
+                "cta": cta,
+                "estimated_reply_probability": probability_of_reply,
+                "evidence": profile_evidence_full,
+            }
+        )
+
+    return {
+        "why_contact_now": why_contact_now,
+        "why_contact_now_evidence": why_contact_now_evidence,
+        "best_timing": best_timing,
+        "best_timing_evidence": best_timing_evidence,
+        "best_communication_channel": best_channel,
+        "best_communication_channel_evidence": channel_evidence,
+        "best_channel": best_channel,
+        "best_email_length": best_email_length,
+        "best_email_length_evidence": email_length_evidence,
+        "best_subject_line": best_subject_line,
+        "best_subject_line_evidence": best_subject_line_evidence,
+        "first_sentence": first_sentence,
+        "first_sentence_evidence": first_sentence_evidence,
+        "strongest_value_proposition": strongest_value_proposition,
+        "strongest_value_proposition_evidence": strongest_value_proposition_evidence,
+        "strongest_pain_point": strongest_pain_point,
+        "strongest_pain_point_evidence": strongest_pain_point_evidence,
+        "expected_objections": objections,
+        "expected_objections_evidence": objections_evidence,
+        "objections": objections,
+        "cta": cta,
+        "cta_evidence": cta_evidence,
+        "follow_up_schedule": follow_up_schedule,
+        "follow_up_schedule_evidence": follow_up_schedule_evidence,
+        "estimated_reply_probability": probability_of_reply,
+        "estimated_reply_probability_evidence": estimated_reply_probability_evidence,
+        "probability_of_reply": probability_of_reply,
+        "target_contact": {
+            "name": top_profile_name,
+            "title": top_profile_title,
+        },
+        "decision_maker_strategies": decision_maker_strategies,
+    }
+
+
+def _build_ai_competitor_intelligence(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    company_intelligence: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+) -> dict[str, Any]:
+    report = company_intelligence.get("report") if isinstance(company_intelligence.get("report"), dict) else {}
+    competitors = _dedupe_text_values(
+        [
+            *(metadata.get("competitors") if isinstance(metadata.get("competitors"), list) else []),
+            *(report.get("competitors", {}).get("value", []) if isinstance(report.get("competitors"), dict) and isinstance(report.get("competitors", {}).get("value"), list) else []),
+        ]
+    )
+    technologies = _dedupe_text_values(
+        [
+            *(metadata.get("technologies") if isinstance(metadata.get("technologies"), list) else []),
+            *(report.get("technology_stack", {}).get("value", []) if isinstance(report.get("technology_stack"), dict) and isinstance(report.get("technology_stack", {}).get("value"), list) else []),
+        ]
+    )
+
+    positioning = str(metadata.get("value_proposition") or metadata.get("sales_angle") or metadata.get("partnership_fit") or "").strip()
+    if not positioning:
+        positioning = f"{lead.company or 'The company'} appears positioned around practical outcomes for its target buyers."
+
+    strengths = _dedupe_text_values(
+        [
+            *(metadata.get("services") if isinstance(metadata.get("services"), list) else []),
+            *(metadata.get("buying_signals") if isinstance(metadata.get("buying_signals"), list) else []),
+            *(item for item in opportunity_ranking.get("top_positive_signals", []) if isinstance(item, str)),
+        ]
+    )[:5]
+    if not strengths:
+        strengths = ["Clear target market focus", "Existing digital presence"]
+
+    weaknesses = _dedupe_text_values(
+        [
+            *(metadata.get("weaknesses") if isinstance(metadata.get("weaknesses"), list) else []),
+            *(metadata.get("risks") if isinstance(metadata.get("risks"), list) else []),
+            *(item for item in opportunity_ranking.get("top_negative_signals", []) if isinstance(item, str)),
+        ]
+    )[:5]
+    if not weaknesses:
+        weaknesses = ["Limited verified contact coverage", "Potential execution gaps in outbound consistency"]
+
+    market_gaps = _dedupe_text_values(
+        [
+            *(metadata.get("pain_points") if isinstance(metadata.get("pain_points"), list) else []),
+            *(metadata.get("market_gaps") if isinstance(metadata.get("market_gaps"), list) else []),
+            "Personalized outbound process may be underdeveloped",
+        ]
+    )[:5]
+
+    opportunity_to_sell = str(metadata.get("suggested_offer") or metadata.get("best_outreach_angle") or metadata.get("outreach_strategy") or "").strip()
+    if not opportunity_to_sell:
+        opportunity_to_sell = "Lead with a measurable pipeline-improvement offer tied to one clear KPI."
+
+    return {
+        "competitors": competitors,
+        "technologies": technologies,
+        "positioning": positioning,
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+        "market_gaps": market_gaps,
+        "opportunity_to_sell": opportunity_to_sell,
+    }
+
+
+def _build_ai_sales_timeline(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+) -> dict[str, Any]:
+    decision_maker_strategies = ai_outreach_strategy.get("decision_maker_strategies") if isinstance(ai_outreach_strategy.get("decision_maker_strategies"), list) else []
+    top_dm_strategy = decision_maker_strategies[0] if decision_maker_strategies and isinstance(decision_maker_strategies[0], dict) else {}
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+
+    subject_line = str(
+        top_dm_strategy.get("best_subject_line")
+        or ai_outreach_strategy.get("best_subject_line")
+        or f"Quick question for {lead.company or 'your team'}"
+    ).strip()
+    first_sentence = str(
+        top_dm_strategy.get("first_sentence")
+        or ai_outreach_strategy.get("first_sentence")
+        or f"I found one relevant idea for {lead.company or 'your team'} based on your current public signals."
+    ).strip()
+    value_proposition = str(
+        top_dm_strategy.get("strongest_value_proposition")
+        or ai_outreach_strategy.get("strongest_value_proposition")
+        or metadata.get("suggested_offer")
+        or "Share one measurable value proposition tied to pipeline outcomes."
+    ).strip()
+    pain_point = str(
+        top_dm_strategy.get("strongest_pain_point")
+        or ai_outreach_strategy.get("strongest_pain_point")
+        or (metadata.get("pain_points", [""])[0] if isinstance(metadata.get("pain_points"), list) and metadata.get("pain_points") else "")
+        or "Potential outbound efficiency gaps"
+    ).strip()
+    cta = str(top_dm_strategy.get("cta") or ai_outreach_strategy.get("cta") or metadata.get("recommended_cta") or "Open to a 15-minute fit check next week?").strip()
+    best_channel = str(ai_outreach_strategy.get("best_communication_channel") or ai_outreach_strategy.get("best_channel") or "Email").strip()
+    base_probability = _safe_score(ai_outreach_strategy.get("estimated_reply_probability") or ai_outreach_strategy.get("probability_of_reply"), 30)
+
+    evidence = _dedupe_evidence_items(
+        [
+            *(
+                ai_outreach_strategy.get("why_contact_now_evidence")
+                if isinstance(ai_outreach_strategy.get("why_contact_now_evidence"), list)
+                else []
+            ),
+            *(
+                ai_outreach_strategy.get("best_subject_line_evidence")
+                if isinstance(ai_outreach_strategy.get("best_subject_line_evidence"), list)
+                else []
+            ),
+            *(
+                ai_outreach_strategy.get("first_sentence_evidence")
+                if isinstance(ai_outreach_strategy.get("first_sentence_evidence"), list)
+                else []
+            ),
+            *(
+                ai_outreach_strategy.get("cta_evidence")
+                if isinstance(ai_outreach_strategy.get("cta_evidence"), list)
+                else []
+            ),
+            *(
+                top_dm_strategy.get("evidence")
+                if isinstance(top_dm_strategy.get("evidence"), list)
+                else []
+            ),
+            _decision_evidence("lead.company", lead.company or "", 90),
+            _decision_evidence("decision_maker.title", str(top_profile.get("title") or ""), 78) if top_profile else {},
+        ]
+    )[:8]
+
+    schedule = [
+        ("Today", 0, "Send first personalized outreach"),
+        ("+2 days", 2, "Follow up with a single proof point"),
+        ("+5 days", 5, "Send value-based follow-up with a new angle"),
+        ("+8 days", 8, "Try alternate channel touch"),
+        ("+14 days", 14, "Send final close-the-loop message"),
+    ]
+
+    steps: list[dict[str, Any]] = []
+    for label, day_offset, action in schedule:
+        success_probability = _safe_score(round(base_probability - day_offset * 1.4), 8)
+        email = {
+            "subject": subject_line,
+            "body": f"{first_sentence} {value_proposition} {cta}",
+        }
+        linkedin = {
+            "message": f"{first_sentence} {value_proposition}",
+            "recommended": best_channel == "LinkedIn" or day_offset >= 8,
+        }
+        phone = {
+            "script": f"Mention pain point: {pain_point}. Share value: {value_proposition}. Ask: {cta}",
+            "recommended": best_channel == "Phone" or day_offset in {8, 14},
+        }
+        reminder = f"Day {day_offset}: {action.lower()} and log response status in CRM."
+        steps.append(
+            {
+                "step": label,
+                "day_offset": day_offset,
+                "action": action,
+                "email": email,
+                "linkedin": linkedin,
+                "phone": phone,
+                "reminder": reminder,
+                "success_probability": success_probability,
+                "evidence": evidence[:5],
+            }
+        )
+
+    by_key = {step["step"]: step for step in steps}
+    return {
+        "today": by_key.get("Today", {}),
+        "plus_2_days": by_key.get("+2 days", {}),
+        "plus_5_days": by_key.get("+5 days", {}),
+        "plus_8_days": by_key.get("+8 days", {}),
+        "plus_14_days": by_key.get("+14 days", {}),
+        "steps": steps,
+    }
+
+
+def _build_ai_risk_analyzer(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    company_intelligence: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+) -> dict[str, Any]:
+    now = datetime.utcnow()
+    missing_fields = company_intelligence.get("missing_fields") if isinstance(company_intelligence.get("missing_fields"), list) else []
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+
+    risk_items = metadata.get("risks") if isinstance(metadata.get("risks"), list) else []
+    personalization_bullets = metadata.get("personalization_bullets") if isinstance(metadata.get("personalization_bullets"), list) else []
+    ai_summary = str(metadata.get("ai_summary") or "").strip()
+    weak_personalization_score = 20
+    if not personalization_bullets:
+        weak_personalization_score += 30
+    if not ai_summary:
+        weak_personalization_score += 25
+    if str(ai_outreach_strategy.get("strongest_value_proposition") or "").startswith("Insufficient"):
+        weak_personalization_score += 20
+    weak_personalization_score = _safe_score(weak_personalization_score, 20)
+
+    missing_data_score = _safe_score(15 + len(missing_fields) * 12 + (10 if not ai_summary else 0), 20)
+    missing_decision_maker_score = _safe_score(88 if not profiles else (28 if profiles else 88), 35)
+
+    model_confidence = _safe_score(
+        opportunity_ranking.get("confidence")
+        if opportunity_ranking.get("confidence") is not None
+        else metadata.get("confidence_score"),
+        50,
+    )
+    low_confidence_score = _safe_score(100 - model_confidence, 40)
+
+    raw_last_enriched = str(metadata.get("last_enriched_at") or company_intelligence.get("generated_at") or "").strip()
+    enrichment_age_days = 999
+    if raw_last_enriched:
+        try:
+            last_enriched_at = datetime.fromisoformat(raw_last_enriched.replace("Z", "+00:00")).replace(tzinfo=None)
+            enrichment_age_days = max(0, int((now - last_enriched_at).total_seconds() // 86400))
+        except ValueError:
+            enrichment_age_days = 999
+    stale_enrichment_score = _safe_score(
+        18 if enrichment_age_days <= 3 else 42 if enrichment_age_days <= 10 else 70 if enrichment_age_days <= 20 else 90,
+        70,
+    )
+
+    probability_company_will_ignore_outreach = _safe_score(
+        round(
+            missing_data_score * 0.20
+            + weak_personalization_score * 0.24
+            + missing_decision_maker_score * 0.18
+            + low_confidence_score * 0.18
+            + stale_enrichment_score * 0.20
+        ),
+        45,
+    )
+    risk_score = probability_company_will_ignore_outreach
+
+    evidence_pool = _dedupe_evidence_items(
+        [
+            _decision_evidence("company_intelligence.missing_fields", ", ".join(str(item) for item in missing_fields), 76) if missing_fields else {},
+            _decision_evidence("metadata.personalization_bullets", ", ".join(str(item) for item in personalization_bullets[:3]), 74) if personalization_bullets else {},
+            _decision_evidence("metadata.ai_summary", ai_summary, 76) if ai_summary else {},
+            _decision_evidence("decision_maker_intelligence.profiles", str(len(profiles)), 86),
+            _decision_evidence("metadata.confidence_score", str(metadata.get("confidence_score")), 78) if metadata.get("confidence_score") is not None else {},
+            _decision_evidence("opportunity_ranking.confidence", str(opportunity_ranking.get("confidence")), 80) if opportunity_ranking.get("confidence") is not None else {},
+            _decision_evidence("metadata.last_enriched_at", raw_last_enriched, 84) if raw_last_enriched else {},
+            _decision_evidence("metadata.risks", ", ".join(str(item) for item in risk_items[:3]), 70) if risk_items else {},
+        ]
+        + (
+            ai_outreach_strategy.get("why_contact_now_evidence")
+            if isinstance(ai_outreach_strategy.get("why_contact_now_evidence"), list)
+            else []
+        )
+    )
+
+    factors = {
+        "missing_data": {
+            "risk": missing_data_score,
+            "evidence": evidence_pool[:3],
+        },
+        "weak_personalization": {
+            "risk": weak_personalization_score,
+            "evidence": evidence_pool[1:5],
+        },
+        "missing_decision_maker": {
+            "risk": missing_decision_maker_score,
+            "evidence": evidence_pool[2:6],
+        },
+        "low_confidence": {
+            "risk": low_confidence_score,
+            "evidence": evidence_pool[3:7],
+        },
+        "stale_enrichment": {
+            "risk": stale_enrichment_score,
+            "age_days": enrichment_age_days,
+            "evidence": evidence_pool[4:8],
+        },
+    }
+
+    reasons: list[str] = []
+    if missing_data_score >= 55:
+        reasons.append("Missing enrichment fields reduce outreach relevance and deliverability confidence.")
+    if weak_personalization_score >= 55:
+        reasons.append("Personalization depth is weak for a high-probability first response.")
+    if missing_decision_maker_score >= 55:
+        reasons.append("No strong decision-maker profile is available for targeted outreach.")
+    if low_confidence_score >= 55:
+        reasons.append("Overall enrichment confidence is too low for reliable messaging.")
+    if stale_enrichment_score >= 55:
+        reasons.append("Enrichment may be stale and should be refreshed before outreach.")
+    if not reasons:
+        reasons.append("Current enrichment signals suggest manageable outreach risk.")
+
+    recommended_improvements: list[str] = []
+    if missing_data_score >= 55:
+        recommended_improvements.append("Run company enrichment again to fill missing firmographic and buying-signal fields.")
+    if weak_personalization_score >= 55:
+        recommended_improvements.append("Add 2-3 evidence-backed personalization bullets before sending.")
+    if missing_decision_maker_score >= 55:
+        recommended_improvements.append("Find and verify at least one decision-maker contact.")
+    if low_confidence_score >= 55:
+        recommended_improvements.append("Improve confidence by validating company summary, pain points, and offer fit from new sources.")
+    if stale_enrichment_score >= 55:
+        recommended_improvements.append("Refresh enrichment data and regenerate outreach strategy.")
+    if not recommended_improvements:
+        recommended_improvements.append("Proceed with outreach and monitor response data for optimization.")
+
+    confidence = _safe_score(
+        round(
+            (100 - missing_data_score) * 0.20
+            + (100 - weak_personalization_score) * 0.20
+            + (100 - missing_decision_maker_score) * 0.20
+            + (100 - stale_enrichment_score) * 0.20
+            + model_confidence * 0.20
+        ),
+        55,
+    )
+
+    return {
+        "probability_company_will_ignore_outreach": probability_company_will_ignore_outreach,
+        "missing_data": missing_data_score,
+        "weak_personalization": weak_personalization_score,
+        "missing_decision_maker": missing_decision_maker_score,
+        "low_confidence": low_confidence_score,
+        "stale_enrichment": stale_enrichment_score,
+        "risk_score": risk_score,
+        "reasons": reasons,
+        "recommended_improvements": recommended_improvements,
+        "confidence": confidence,
+        "factors": factors,
+    }
+
+
+def _build_ai_sales_coach(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    company_intelligence: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+) -> dict[str, Any]:
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+    report = company_intelligence.get("report") if isinstance(company_intelligence.get("report"), dict) else {}
+
+    why_this_company = str(
+        metadata.get("ai_summary")
+        or report.get("company_summary", {}).get("value")
+        or metadata.get("opportunity_analysis")
+        or "Insufficient company-fit evidence in current enrichment data."
+    ).strip()
+
+    why_now = str(
+        ai_outreach_strategy.get("why_contact_now")
+        or metadata.get("buying_signal_explanation")
+        or "Insufficient timing evidence in current enrichment data."
+    ).strip()
+
+    decision_maker_name = str(top_profile.get("name") or "").strip()
+    decision_maker_title = str(top_profile.get("title") or "").strip()
+    why_this_decision_maker = str(
+        top_profile.get("why_best_decision_maker")
+        or (
+            f"{decision_maker_name} ({decision_maker_title}) is the strongest reachable decision-maker from current enrichment signals."
+            if decision_maker_name or decision_maker_title
+            else "No verified decision-maker profile found yet."
+        )
+    ).strip()
+
+    what_could_fail = _dedupe_text_values(
+        [
+            *(str(item) for item in ai_risk_analyzer.get("reasons", []) if str(item).strip()),
+            *(str(item) for item in metadata.get("risks", []) if isinstance(metadata.get("risks"), list) and str(item).strip()),
+        ]
+    )[:5]
+    if not what_could_fail:
+        what_could_fail = ["Insufficient failure-risk evidence in current enrichment data."]
+
+    how_to_increase_reply_rate = _dedupe_text_values(
+        [
+            *(str(item) for item in ai_risk_analyzer.get("recommended_improvements", []) if str(item).strip()),
+            "Lead with one measurable pain point and one quantified value proposition.",
+            "Keep the first message concise and specific to the decision maker role.",
+        ]
+    )[:5]
+
+    alternative_strategy = str(
+        metadata.get("follow_up_strategy")
+        or (
+            "Switch to LinkedIn-first sequencing for one week, then retry email with new proof points."
+            if str(ai_outreach_strategy.get("best_communication_channel") or ai_outreach_strategy.get("best_channel") or "") == "Email"
+            else "Switch to email-first sequencing with a shorter subject line and role-specific opener."
+        )
+    ).strip()
+
+    evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("metadata.ai_summary", str(metadata.get("ai_summary")), 80) if metadata.get("ai_summary") else {},
+            _decision_evidence("metadata.opportunity_analysis", str(metadata.get("opportunity_analysis")), 76) if metadata.get("opportunity_analysis") else {},
+            _decision_evidence("ai_outreach_strategy.why_contact_now", str(ai_outreach_strategy.get("why_contact_now")), 82) if ai_outreach_strategy.get("why_contact_now") else {},
+            _decision_evidence("decision_maker_intelligence.top_profile", f"{decision_maker_name} {decision_maker_title}".strip(), 84)
+            if decision_maker_name or decision_maker_title
+            else {},
+            _decision_evidence("ai_risk_analyzer.risk_score", str(ai_risk_analyzer.get("risk_score")), 78) if ai_risk_analyzer.get("risk_score") is not None else {},
+            _decision_evidence("opportunity_ranking.overall_score", str(opportunity_ranking.get("overall_score")), 78) if opportunity_ranking.get("overall_score") is not None else {},
+        ]
+        + (
+            ai_outreach_strategy.get("why_contact_now_evidence")
+            if isinstance(ai_outreach_strategy.get("why_contact_now_evidence"), list)
+            else []
+        )
+    )[:8]
+
+    confidence = _safe_score(
+        round(
+            _safe_score(opportunity_ranking.get("confidence"), 55) * 0.45
+            + (100 - _safe_score(ai_risk_analyzer.get("risk_score"), 50)) * 0.35
+            + (70 if profiles else 35) * 0.20
+        ),
+        55,
+    )
+
+    return {
+        "why_this_company": why_this_company,
+        "why_now": why_now,
+        "why_this_decision_maker": why_this_decision_maker,
+        "what_could_fail": what_could_fail,
+        "how_to_increase_reply_rate": how_to_increase_reply_rate,
+        "alternative_strategy": alternative_strategy,
+        "target_contact": {
+            "name": decision_maker_name,
+            "title": decision_maker_title,
+        },
+        "evidence": evidence,
+        "confidence": confidence,
+    }
+
+
+def _build_ai_company_predictions(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    company_intelligence: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+    ai_company_timeline: dict[str, Any],
+) -> dict[str, Any]:
+    now = datetime.utcnow().isoformat()
+    report = company_intelligence.get("report") if isinstance(company_intelligence.get("report"), dict) else {}
+    buying_intent = company_intelligence.get("buying_intent") if isinstance(company_intelligence.get("buying_intent"), dict) else {}
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+    timeline_events = ai_company_timeline.get("events") if isinstance(ai_company_timeline.get("events"), list) else []
+
+    size_value = (
+        metadata.get("estimated_company_size")
+        or ((report.get("estimated_company_size") or {}).get("value") if isinstance(report.get("estimated_company_size"), dict) else None)
+        or metadata.get("employee_count")
+        or metadata.get("employees")
+    )
+    size_numeric = _numeric_from_size(size_value)
+    buying_signal_score = _safe_score(buying_intent.get("buying_signal_score"), 0)
+    ranking_score = _safe_score(opportunity_ranking.get("overall_score"), 0)
+    risk_score = _safe_score(ai_risk_analyzer.get("risk_score"), 50)
+    top_contact_confidence = _safe_score(top_profile.get("confidence_score"), 0)
+    has_verified_decision_maker = bool(top_profile.get("is_verified_contact"))
+
+    funding_signals = _event_texts(metadata.get("funding_signal")) + _event_texts(metadata.get("funding_signals"))
+    hiring_signals = _event_texts(metadata.get("hiring_signals")) + _event_texts(metadata.get("jobs_signal"))
+    product_signals = _event_texts(metadata.get("product_launches"))
+    partnership_signals = _event_texts(metadata.get("partnership_signals")) + _event_texts(metadata.get("partnership_updates"))
+
+    estimated_arr_score = 25
+    if size_numeric is not None:
+        if size_numeric >= 500:
+            estimated_arr_score += 48
+        elif size_numeric >= 200:
+            estimated_arr_score += 40
+        elif size_numeric >= 100:
+            estimated_arr_score += 32
+        elif size_numeric >= 50:
+            estimated_arr_score += 26
+        elif size_numeric >= 20:
+            estimated_arr_score += 20
+        else:
+            estimated_arr_score += 12
+    estimated_arr_score += min(15, len(funding_signals) * 5)
+    estimated_arr_score += min(10, len(pricing) * 4) if (pricing := _event_texts(metadata.get("pricing_signals"))) else 0
+    estimated_arr_score += min(8, len(hiring_signals) * 2)
+    estimated_arr_score = _safe_score(estimated_arr_score, 20)
+
+    arr_evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("metadata.estimated_company_size", str(size_value), 78) if size_value else {},
+            *[_decision_evidence("metadata.funding_signal", item, 82) for item in funding_signals[:3]],
+            *[_decision_evidence("metadata.pricing_signals", item, 72) for item in pricing[:3]],
+            *[_decision_evidence("metadata.hiring_signals", item, 72) for item in hiring_signals[:3]],
+        ]
+    )
+    arr_reasoning = (
+        "Estimated ARR potential is inferred from available company size and growth/funding enrichment signals."
+        if arr_evidence
+        else "Estimated ARR confidence is low because enrichment lacks size and funding detail."
+    )
+    arr_confidence = _safe_score(40 + len(arr_evidence) * 12 + (8 if size_numeric is not None else 0), 30)
+
+    maturity_score = 22
+    maturity_score += 18 if lead.website else 0
+    maturity_score += min(18, len(_event_texts(metadata.get("technologies"))) * 4)
+    maturity_score += 12 if metadata.get("ai_summary") else 0
+    maturity_score += 10 if metadata.get("icp") else 0
+    maturity_score += 8 if metadata.get("value_proposition") or metadata.get("suggested_offer") else 0
+    maturity_score += min(12, len(timeline_events) * 2)
+    maturity_score = _safe_score(maturity_score, 25)
+
+    maturity_evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("lead.website", str(lead.website), 85) if lead.website else {},
+            _decision_evidence("metadata.ai_summary", str(metadata.get("ai_summary")), 76) if metadata.get("ai_summary") else {},
+            _decision_evidence("metadata.icp", str(metadata.get("icp")), 72) if metadata.get("icp") else {},
+            *[_decision_evidence("metadata.technologies", item, 74) for item in _event_texts(metadata.get("technologies"))[:4]],
+        ]
+    )
+    maturity_reasoning = (
+        "Company maturity is based on structured enrichment signals such as website presence, defined positioning, and technology footprint."
+        if maturity_evidence
+        else "Company maturity confidence is low because structured enrichment fields are sparse."
+    )
+    maturity_confidence = _safe_score(38 + len(maturity_evidence) * 11, 30)
+
+    growth_score = 18
+    growth_score += round(buying_signal_score * 0.35)
+    growth_score += min(14, len(funding_signals) * 4)
+    growth_score += min(12, len(hiring_signals) * 3)
+    growth_score += min(10, len(product_signals) * 3)
+    growth_score += min(8, len(partnership_signals) * 2)
+    growth_score += min(8, len(timeline_events) * 2)
+    growth_score = _safe_score(growth_score, 20)
+
+    growth_evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("company_intelligence.buying_intent.buying_signal_score", str(buying_signal_score), 80),
+            *[_decision_evidence("metadata.funding_signal", item, 82) for item in funding_signals[:3]],
+            *[_decision_evidence("metadata.hiring_signals", item, 78) for item in hiring_signals[:3]],
+            *[_decision_evidence("metadata.product_launches", item, 76) for item in product_signals[:3]],
+            *[_decision_evidence("metadata.partnership_signals", item, 74) for item in partnership_signals[:3]],
+        ]
+    )
+    growth_reasoning = (
+        "Growth probability is derived from observed buying intent and timeline-aligned expansion signals in enrichment data."
+        if growth_evidence
+        else "Growth probability confidence is low because no strong expansion signals were enriched."
+    )
+    growth_confidence = _safe_score(40 + len(growth_evidence) * 10 + _safe_score(buying_intent.get("confidence"), 0) // 5, 32)
+
+    readiness_score = 16
+    readiness_score += round(ranking_score * 0.42)
+    readiness_score += round((100 - risk_score) * 0.28)
+    readiness_score += 14 if has_verified_decision_maker else 0
+    readiness_score += round(top_contact_confidence * 0.10)
+    readiness_score += 8 if ai_outreach_strategy.get("best_subject_line") and ai_outreach_strategy.get("cta") else 0
+    readiness_score = _safe_score(readiness_score, 20)
+
+    readiness_evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("opportunity_ranking.overall_score", str(ranking_score), 82),
+            _decision_evidence("ai_risk_analyzer.risk_score", str(risk_score), 80),
+            _decision_evidence("decision_maker_intelligence.top_profile.is_verified_contact", str(has_verified_decision_maker), 88),
+            _decision_evidence("decision_maker_intelligence.top_profile.confidence_score", str(top_contact_confidence), 80),
+            _decision_evidence("ai_outreach_strategy.best_subject_line", str(ai_outreach_strategy.get("best_subject_line") or ""), 72)
+            if ai_outreach_strategy.get("best_subject_line")
+            else {},
+            _decision_evidence("ai_outreach_strategy.cta", str(ai_outreach_strategy.get("cta") or ""), 72)
+            if ai_outreach_strategy.get("cta")
+            else {},
+        ]
+    )
+    readiness_reasoning = (
+        "Sales readiness is based on ranking, risk, decision-maker verification, and readiness of generated outreach strategy fields."
+        if readiness_evidence
+        else "Sales readiness confidence is low because ranking, risk, and contact-quality signals are incomplete."
+    )
+    readiness_confidence = _safe_score(42 + len(readiness_evidence) * 10, 34)
+
+    return {
+        "generated_at": now,
+        "estimated_arr": {
+            "score": estimated_arr_score,
+            "reasoning": arr_reasoning,
+            "confidence": arr_confidence,
+            "evidence": arr_evidence,
+        },
+        "company_maturity": {
+            "score": maturity_score,
+            "reasoning": maturity_reasoning,
+            "confidence": maturity_confidence,
+            "evidence": maturity_evidence,
+        },
+        "growth_probability": {
+            "score": growth_score,
+            "reasoning": growth_reasoning,
+            "confidence": growth_confidence,
+            "evidence": growth_evidence,
+        },
+        "sales_readiness": {
+            "score": readiness_score,
+            "reasoning": readiness_reasoning,
+            "confidence": readiness_confidence,
+            "evidence": readiness_evidence,
+        },
+    }
+
+
+def _agent_result(
+    *,
+    name: str,
+    output: dict[str, Any],
+    reasoning: list[str],
+    evidence: list[dict[str, Any]],
+    confidence: int,
+) -> dict[str, Any]:
+    return {
+        "agent": name,
+        "status": "complete" if output else "insufficient_data",
+        "output": output,
+        "confidence": _safe_score(confidence, 30),
+    }
+
+
+def _build_ai_specialized_agents(
+    *,
+    lead: Lead,
+    company_intelligence: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    ai_competitor_intelligence: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+    ai_sales_coach: dict[str, Any],
+    ai_company_predictions: dict[str, Any],
+) -> dict[str, Any]:
+    report = company_intelligence.get("report") if isinstance(company_intelligence.get("report"), dict) else {}
+    buying_intent = company_intelligence.get("buying_intent") if isinstance(company_intelligence.get("buying_intent"), dict) else {}
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+
+    company_output = {
+        "company_summary": (report.get("company_summary") or {}).get("value") if isinstance(report.get("company_summary"), dict) else "",
+        "icp": (report.get("icp") or {}).get("value") if isinstance(report.get("icp"), dict) else "",
+        "estimated_company_size": (report.get("estimated_company_size") or {}).get("value") if isinstance(report.get("estimated_company_size"), dict) else "",
+        "technology_stack": (report.get("technology_stack") or {}).get("value") if isinstance(report.get("technology_stack"), dict) else [],
+    }
+    company_reasoning = [
+        "Company Analyst output is derived from enriched report fields only.",
+        "No missing fields are inferred; missing values remain empty.",
+    ]
+    company_evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("company_intelligence.report.company_summary", str(company_output.get("company_summary") or ""), 82)
+            if company_output.get("company_summary")
+            else {},
+            _decision_evidence("company_intelligence.report.icp", str(company_output.get("icp") or ""), 78)
+            if company_output.get("icp")
+            else {},
+            _decision_evidence("company_intelligence.report.estimated_company_size", str(company_output.get("estimated_company_size") or ""), 74)
+            if company_output.get("estimated_company_size")
+            else {},
+        ]
+    )
+
+    decision_output = {
+        "top_contact_id": top_profile.get("contact_id"),
+        "name": top_profile.get("name"),
+        "title": top_profile.get("title"),
+        "authority_level": top_profile.get("estimated_authority_level"),
+        "is_verified_contact": bool(top_profile.get("is_verified_contact")),
+        "confidence_score": _safe_score(top_profile.get("confidence_score"), 0),
+    }
+    decision_reasoning = [
+        "Decision Maker Analyst ranks contacts from verified enrichment records.",
+        "If no verified profile exists, output remains sparse instead of fabricated.",
+    ]
+    decision_evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("decision_maker_intelligence.top_profile.name", str(top_profile.get("name") or ""), 84)
+            if top_profile.get("name")
+            else {},
+            _decision_evidence("decision_maker_intelligence.top_profile.title", str(top_profile.get("title") or ""), 80)
+            if top_profile.get("title")
+            else {},
+            _decision_evidence("decision_maker_intelligence.top_profile.is_verified_contact", str(bool(top_profile.get("is_verified_contact"))), 88)
+            if top_profile
+            else {},
+        ]
+    )
+
+    buying_output = {
+        "buying_signal_score": _safe_score(buying_intent.get("buying_signal_score"), 0),
+        "urgency": str(buying_intent.get("urgency") or ""),
+        "recommended_outreach_timing": str(buying_intent.get("recommended_outreach_timing") or ""),
+    }
+    buying_reasoning = [
+        "Buying Signal Analyst uses explicit buying-intent detection output.",
+        "Only detected signals from enrichment are used.",
+    ]
+    buying_evidence = _dedupe_evidence_items(
+        [
+            _decision_evidence("company_intelligence.buying_intent.buying_signal_score", str(buying_output.get("buying_signal_score") or ""), 84),
+            _decision_evidence("company_intelligence.buying_intent.urgency", str(buying_output.get("urgency") or ""), 80)
+            if buying_output.get("urgency")
+            else {},
+            *[
+                {
+                    "source_field": str(item.get("source_field") or ""),
+                    "value": str(item.get("value") or ""),
+                    "confidence": _safe_score(item.get("confidence"), 70),
+                }
+                for item in (buying_intent.get("evidence") or [])
+                if isinstance(item, dict)
+            ],
+        ]
+    )
+
+    competitor_output = {
+        "competitors": ai_competitor_intelligence.get("competitors") if isinstance(ai_competitor_intelligence.get("competitors"), list) else [],
+        "market_gaps": ai_competitor_intelligence.get("market_gaps") if isinstance(ai_competitor_intelligence.get("market_gaps"), list) else [],
+        "opportunity_to_sell": str(ai_competitor_intelligence.get("opportunity_to_sell") or ""),
+    }
+    competitor_reasoning = [
+        "Competitor Analyst summarizes only enriched competitor and gap signals.",
+        "No external competitor assumptions are injected.",
+    ]
+    competitor_evidence = _dedupe_evidence_items(
+        [
+            *[_decision_evidence("ai_competitor_intelligence.competitors", str(item), 74) for item in competitor_output.get("competitors", [])[:4]],
+            *[_decision_evidence("ai_competitor_intelligence.market_gaps", str(item), 72) for item in competitor_output.get("market_gaps", [])[:4]],
+            _decision_evidence("ai_competitor_intelligence.opportunity_to_sell", competitor_output.get("opportunity_to_sell", ""), 76)
+            if competitor_output.get("opportunity_to_sell")
+            else {},
+        ]
+    )
+
+    email_output = {
+        "subject": str(ai_outreach_strategy.get("best_subject_line") or ""),
+        "first_sentence": str(ai_outreach_strategy.get("first_sentence") or ""),
+        "cta": str(ai_outreach_strategy.get("cta") or ""),
+        "best_channel": str(ai_outreach_strategy.get("best_communication_channel") or ai_outreach_strategy.get("best_channel") or ""),
+    }
+    email_reasoning = [
+        "Email Writer uses existing outreach-strategy fields generated from enrichment evidence.",
+        "When message fields are missing, they remain blank instead of synthesized.",
+    ]
+    email_evidence = _dedupe_evidence_items(
+        [
+            *[
+                {
+                    "source_field": str(item.get("source_field") or ""),
+                    "value": str(item.get("value") or ""),
+                    "confidence": _safe_score(item.get("confidence"), 70),
+                }
+                for item in (ai_outreach_strategy.get("best_subject_line_evidence") or [])
+                if isinstance(item, dict)
+            ],
+            *[
+                {
+                    "source_field": str(item.get("source_field") or ""),
+                    "value": str(item.get("value") or ""),
+                    "confidence": _safe_score(item.get("confidence"), 70),
+                }
+                for item in (ai_outreach_strategy.get("first_sentence_evidence") or [])
+                if isinstance(item, dict)
+            ],
+            *[
+                {
+                    "source_field": str(item.get("source_field") or ""),
+                    "value": str(item.get("value") or ""),
+                    "confidence": _safe_score(item.get("confidence"), 70),
+                }
+                for item in (ai_outreach_strategy.get("cta_evidence") or [])
+                if isinstance(item, dict)
+            ],
+        ]
+    )
+
+    coach_output = {
+        "why_now": str(ai_sales_coach.get("why_now") or ""),
+        "what_could_fail": ai_sales_coach.get("what_could_fail") if isinstance(ai_sales_coach.get("what_could_fail"), list) else [],
+        "how_to_increase_reply_rate": ai_sales_coach.get("how_to_increase_reply_rate") if isinstance(ai_sales_coach.get("how_to_increase_reply_rate"), list) else [],
+        "risk_score": _safe_score(ai_risk_analyzer.get("risk_score"), 0),
+    }
+    coach_reasoning = [
+        "Sales Coach combines risk analyzer and coach outputs produced from enrichment traces.",
+        "Recommendations are constrained to collected risk and outreach context.",
+    ]
+    coach_evidence = _dedupe_evidence_items(
+        [
+            *[
+                {
+                    "source_field": str(item.get("source_field") or ""),
+                    "value": str(item.get("value") or ""),
+                    "confidence": _safe_score(item.get("confidence"), 70),
+                }
+                for item in (ai_sales_coach.get("evidence") or [])
+                if isinstance(item, dict)
+            ],
+            _decision_evidence("ai_risk_analyzer.risk_score", str(coach_output.get("risk_score") or ""), 80)
+            if coach_output.get("risk_score") is not None
+            else {},
+        ]
+    )
+
+    agents = {
+        "company_analyst": _agent_result(
+            name="Company Analyst",
+            output=company_output,
+            reasoning=company_reasoning,
+            evidence=company_evidence,
+            confidence=68 + min(20, len(company_evidence) * 4),
+        ),
+        "decision_maker_analyst": _agent_result(
+            name="Decision Maker Analyst",
+            output=decision_output,
+            reasoning=decision_reasoning,
+            evidence=decision_evidence,
+            confidence=60 + min(28, len(decision_evidence) * 6),
+        ),
+        "buying_signal_analyst": _agent_result(
+            name="Buying Signal Analyst",
+            output=buying_output,
+            reasoning=buying_reasoning,
+            evidence=buying_evidence,
+            confidence=62 + min(24, len(buying_evidence) * 4),
+        ),
+        "competitor_analyst": _agent_result(
+            name="Competitor Analyst",
+            output=competitor_output,
+            reasoning=competitor_reasoning,
+            evidence=competitor_evidence,
+            confidence=60 + min(24, len(competitor_evidence) * 4),
+        ),
+        "email_writer": _agent_result(
+            name="Email Writer",
+            output=email_output,
+            reasoning=email_reasoning,
+            evidence=email_evidence,
+            confidence=58 + min(28, len(email_evidence) * 5),
+        ),
+        "sales_coach": _agent_result(
+            name="Sales Coach",
+            output=coach_output,
+            reasoning=coach_reasoning,
+            evidence=coach_evidence,
+            confidence=60 + min(28, len(coach_evidence) * 5),
+        ),
+    }
+
+    intermediate_reasoning = {
+        "company_analyst": {
+            "reasoning": company_reasoning,
+            "evidence": company_evidence,
+        },
+        "decision_maker_analyst": {
+            "reasoning": decision_reasoning,
+            "evidence": decision_evidence,
+        },
+        "buying_signal_analyst": {
+            "reasoning": buying_reasoning,
+            "evidence": buying_evidence,
+        },
+        "competitor_analyst": {
+            "reasoning": competitor_reasoning,
+            "evidence": competitor_evidence,
+        },
+        "email_writer": {
+            "reasoning": email_reasoning,
+            "evidence": email_evidence,
+        },
+        "sales_coach": {
+            "reasoning": coach_reasoning,
+            "evidence": coach_evidence,
+        },
+    }
+
+    orchestrator_evidence = _dedupe_evidence_items(
+        [
+            *company_evidence[:2],
+            *decision_evidence[:2],
+            *buying_evidence[:2],
+            *competitor_evidence[:2],
+            *email_evidence[:2],
+            *coach_evidence[:2],
+        ]
+    )
+    orchestrator_output = {
+        "company": company_output,
+        "decision_maker": decision_output,
+        "buying_signals": buying_output,
+        "competitor_view": competitor_output,
+        "email_plan": email_output,
+        "coaching": coach_output,
+        "predictions": {
+            "estimated_arr": ai_company_predictions.get("estimated_arr") if isinstance(ai_company_predictions.get("estimated_arr"), dict) else {},
+            "company_maturity": ai_company_predictions.get("company_maturity") if isinstance(ai_company_predictions.get("company_maturity"), dict) else {},
+            "growth_probability": ai_company_predictions.get("growth_probability") if isinstance(ai_company_predictions.get("growth_probability"), dict) else {},
+            "sales_readiness": ai_company_predictions.get("sales_readiness") if isinstance(ai_company_predictions.get("sales_readiness"), dict) else {},
+        },
+        "final_recommendation": {
+            "next_action": str(ai_sales_coach.get("alternative_strategy") or ai_outreach_strategy.get("cta") or "Insufficient evidence for next action."),
+            "target_company": str(lead.company or ""),
+        },
+    }
+    orchestrator_reasoning = [
+        "Final Orchestrator merges structured outputs from Company, Decision Maker, Buying Signal, Competitor, Email Writer, and Sales Coach agents.",
+        "Merged payload keeps original evidence-backed outputs without creating new facts.",
+    ]
+    orchestrator = {
+        "agent": "Final Orchestrator",
+        "status": "complete",
+        "output": orchestrator_output,
+        "confidence": _safe_score(
+            round(sum(_safe_score(agent.get("confidence"), 0) for agent in agents.values()) / max(1, len(agents))),
+            40,
+        ),
+    }
+
+    intermediate_reasoning["final_orchestrator"] = {
+        "reasoning": orchestrator_reasoning,
+        "evidence": orchestrator_evidence,
+    }
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "agents": agents,
+        "intermediate_reasoning": intermediate_reasoning,
+        "final_orchestrator": orchestrator,
+    }
+
+
+def _build_ai_executive_dashboard(
+    *,
+    ai_specialized_agents: dict[str, Any],
+    ai_agent_intermediate_reasoning: dict[str, Any],
+    ai_final_orchestrator: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+    buying_intent: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    ai_competitor_intelligence: dict[str, Any],
+) -> dict[str, Any]:
+    orchestrator_output = ai_final_orchestrator.get("output") if isinstance(ai_final_orchestrator.get("output"), dict) else {}
+    decision_maker = (orchestrator_output.get("decision_maker") if isinstance(orchestrator_output.get("decision_maker"), dict) else {})
+    email_plan = (orchestrator_output.get("email_plan") if isinstance(orchestrator_output.get("email_plan"), dict) else {})
+    competitor_view = (orchestrator_output.get("competitor_view") if isinstance(orchestrator_output.get("competitor_view"), dict) else {})
+    final_recommendation = (
+        orchestrator_output.get("final_recommendation")
+        if isinstance(orchestrator_output.get("final_recommendation"), dict)
+        else {}
+    )
+
+    top_risks = ai_risk_analyzer.get("reasons") if isinstance(ai_risk_analyzer.get("reasons"), list) else []
+    top_opportunities = _dedupe_text_values(
+        [
+            str(competitor_view.get("opportunity_to_sell") or "").strip(),
+            *(str(item) for item in (opportunity_ranking.get("top_positive_signals") or []) if str(item or "").strip()),
+        ]
+    )[:5]
+
+    recommended_follow_up = ""
+    schedule = ai_outreach_strategy.get("follow_up_schedule") if isinstance(ai_outreach_strategy.get("follow_up_schedule"), list) else []
+    if schedule:
+        recommended_follow_up = str(schedule[0] or "").strip()
+
+    intermediate_evidence = []
+    for section in ai_agent_intermediate_reasoning.values():
+        if isinstance(section, dict) and isinstance(section.get("evidence"), list):
+            intermediate_evidence.extend(section.get("evidence") or [])
+
+    evidence = _dedupe_evidence_items(
+        [
+            {
+                "source_field": str(item.get("source_field") or ""),
+                "value": str(item.get("value") or ""),
+                "confidence": _safe_score(item.get("confidence"), 70),
+            }
+            for item in intermediate_evidence
+            if isinstance(item, dict) and str(item.get("source_field") or "").strip() and str(item.get("value") or "").strip()
+        ]
+    )[:12]
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "source": "cached_orchestrator",
+        "overall_opportunity_score": {
+            "score": _safe_score(opportunity_ranking.get("overall_score"), 0),
+            "reasoning": str(opportunity_ranking.get("reasoning") or ""),
+        },
+        "buying_intent": {
+            "score": _safe_score(buying_intent.get("buying_signal_score"), 0),
+            "urgency": str(buying_intent.get("urgency") or ""),
+            "reasoning": str(buying_intent.get("explanation") or ""),
+        },
+        "decision_maker": {
+            "contact_id": decision_maker.get("top_contact_id"),
+            "name": decision_maker.get("name"),
+            "title": decision_maker.get("title"),
+            "authority_level": decision_maker.get("authority_level"),
+            "is_verified_contact": bool(decision_maker.get("is_verified_contact")),
+        },
+        "top_risks": [str(item) for item in top_risks if str(item or "").strip()][:5],
+        "top_opportunities": top_opportunities,
+        "recommended_next_action": str(
+            final_recommendation.get("next_action")
+            or opportunity_ranking.get("recommended_next_action")
+            or ""
+        ),
+        "recommended_email": {
+            "subject": str(email_plan.get("subject") or ""),
+            "first_sentence": str(email_plan.get("first_sentence") or ""),
+            "cta": str(email_plan.get("cta") or ""),
+            "channel": str(email_plan.get("best_channel") or ""),
+        },
+        "recommended_follow_up": recommended_follow_up,
+        "competitor_summary": {
+            "competitors": competitor_view.get("competitors") if isinstance(competitor_view.get("competitors"), list) else [],
+            "market_gaps": competitor_view.get("market_gaps") if isinstance(competitor_view.get("market_gaps"), list) else [],
+            "opportunity_to_sell": str(competitor_view.get("opportunity_to_sell") or ""),
+        },
+        "evidence": evidence,
+        "confidence": _safe_score(ai_final_orchestrator.get("confidence"), 0),
+    }
+
+
+def _stable_fingerprint(payload: dict[str, Any]) -> str:
+    normalized = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _build_ai_revenue_engine_report(
+    *,
+    previous_report: dict[str, Any] | None,
+    company_intelligence: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+    buying_intent: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+    ai_competitor_intelligence: dict[str, Any],
+    ai_sales_coach: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+) -> dict[str, Any]:
+    report_seed = {
+        "company_intelligence": company_intelligence,
+        "opportunity_ranking": opportunity_ranking,
+        "buying_intent": buying_intent,
+        "decision_maker_intelligence": decision_maker_intelligence,
+        "ai_competitor_intelligence": ai_competitor_intelligence,
+        "ai_sales_coach": ai_sales_coach,
+        "ai_outreach_strategy": ai_outreach_strategy,
+        "ai_risk_analyzer": ai_risk_analyzer,
+    }
+    fingerprint = _stable_fingerprint(report_seed)
+    previous = previous_report if isinstance(previous_report, dict) else {}
+    if str(previous.get("source_fingerprint") or "") == fingerprint:
+        return previous
+
+    report = company_intelligence.get("report") if isinstance(company_intelligence.get("report"), dict) else {}
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+
+    top_pain_points = [str(item) for item in report.get("possible_pain_points", {}).get("value", []) if str(item or "").strip()] if isinstance(report.get("possible_pain_points"), dict) and isinstance(report.get("possible_pain_points", {}).get("value"), list) else []
+    if not top_pain_points:
+        top_pain_points = [str(item) for item in ai_outreach_strategy.get("expected_objections", []) if str(item or "").strip()] if isinstance(ai_outreach_strategy.get("expected_objections"), list) else []
+
+    top_opportunities = [str(item) for item in opportunity_ranking.get("top_positive_signals", []) if str(item or "").strip()] if isinstance(opportunity_ranking.get("top_positive_signals"), list) else []
+    opportunity_to_sell = str(ai_competitor_intelligence.get("opportunity_to_sell") or "").strip()
+    if opportunity_to_sell:
+        top_opportunities = [opportunity_to_sell, *top_opportunities]
+
+    top_risks = [str(item) for item in ai_risk_analyzer.get("reasons", []) if str(item or "").strip()] if isinstance(ai_risk_analyzer.get("reasons"), list) else []
+    if not top_risks:
+        top_risks = [str(item) for item in opportunity_ranking.get("top_negative_signals", []) if str(item or "").strip()] if isinstance(opportunity_ranking.get("top_negative_signals"), list) else []
+
+    buying_score = _safe_score(buying_intent.get("buying_signal_score"), 0)
+    opportunity_score = _safe_score(opportunity_ranking.get("overall_score"), 0)
+    confidence = _safe_score(
+        round(
+            _safe_score(opportunity_ranking.get("confidence"), 0) * 0.40
+            + _safe_score(buying_intent.get("confidence"), 0) * 0.25
+            + _safe_score(top_profile.get("confidence_score"), 0) * 0.20
+            + _safe_score(ai_sales_coach.get("confidence"), 0) * 0.15
+        ),
+        0,
+    )
+
+    products = report.get("products", {}).get("value", []) if isinstance(report.get("products"), dict) else []
+    technologies = report.get("technology_stack", {}).get("value", []) if isinstance(report.get("technology_stack"), dict) else []
+    technology_summary = {
+        "products": [str(item) for item in products if str(item or "").strip()] if isinstance(products, list) else [],
+        "technology_stack": [str(item) for item in technologies if str(item or "").strip()] if isinstance(technologies, list) else [],
+    }
+
+    recommended_email = {
+        "subject": str(ai_outreach_strategy.get("best_subject_line") or ""),
+        "first_sentence": str(ai_outreach_strategy.get("first_sentence") or ""),
+        "cta": str(ai_outreach_strategy.get("cta") or ""),
+    }
+
+    evidence = _dedupe_evidence_items(
+        [
+            *(
+                [
+                    {
+                        "source_field": str(item.get("source_field") or ""),
+                        "value": str(item.get("value") or ""),
+                        "confidence": _safe_score(item.get("confidence"), 70),
+                    }
+                    for item in buying_intent.get("evidence", [])
+                    if isinstance(item, dict)
+                ]
+                if isinstance(buying_intent.get("evidence"), list)
+                else []
+            ),
+            *(
+                [
+                    {
+                        "source_field": str(item.get("source_field") or ""),
+                        "value": str(item.get("value") or ""),
+                        "confidence": _safe_score(item.get("confidence"), 70),
+                    }
+                    for item in top_profile.get("evidence_used", [])
+                    if isinstance(item, dict)
+                ]
+                if isinstance(top_profile.get("evidence_used"), list)
+                else []
+            ),
+            *(
+                [
+                    {
+                        "source_field": str(item.get("source_field") or ""),
+                        "value": str(item.get("value") or ""),
+                        "confidence": _safe_score(item.get("confidence"), 70),
+                    }
+                    for item in ai_sales_coach.get("evidence", [])
+                    if isinstance(item, dict)
+                ]
+                if isinstance(ai_sales_coach.get("evidence"), list)
+                else []
+            ),
+            *(
+                ai_outreach_strategy.get("why_contact_now_evidence")
+                if isinstance(ai_outreach_strategy.get("why_contact_now_evidence"), list)
+                else []
+            ),
+            {
+                "source_field": "opportunity_ranking.reasoning",
+                "value": str(opportunity_ranking.get("reasoning") or ""),
+                "confidence": _safe_score(opportunity_ranking.get("confidence"), 65),
+            },
+        ]
+    )[:16]
+
+    executive_summary = " ".join(
+        [
+            str(company_intelligence.get("summary") or "").strip(),
+            str(buying_intent.get("explanation") or "").strip(),
+            str(ai_sales_coach.get("why_this_company") or "").strip(),
+        ]
+    ).strip()
+    if not executive_summary:
+        executive_summary = str(opportunity_ranking.get("reasoning") or "").strip()
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "source": "cached_enrichment_modules",
+        "source_fingerprint": fingerprint,
+        "executive_summary": executive_summary,
+        "overall_opportunity_score": {
+            "score": opportunity_score,
+            "reasoning": str(opportunity_ranking.get("reasoning") or ""),
+        },
+        "buying_intent": {
+            "score": buying_score,
+            "urgency": str(buying_intent.get("urgency") or ""),
+            "reasoning": str(buying_intent.get("explanation") or ""),
+        },
+        "decision_maker": {
+            "contact_id": top_profile.get("contact_id"),
+            "name": top_profile.get("name"),
+            "title": top_profile.get("title"),
+            "authority_level": top_profile.get("estimated_authority_level"),
+            "is_verified_contact": bool(top_profile.get("is_verified_contact")),
+        },
+        "best_contact_reason": str(top_profile.get("why_best_decision_maker") or ""),
+        "top_pain_points": top_pain_points[:5],
+        "top_opportunities": top_opportunities[:5],
+        "top_risks": top_risks[:5],
+        "competitor_position": {
+            "positioning": str(ai_competitor_intelligence.get("positioning") or ""),
+            "competitors": [str(item) for item in ai_competitor_intelligence.get("competitors", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("competitors"), list) else [],
+            "market_gaps": [str(item) for item in ai_competitor_intelligence.get("market_gaps", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("market_gaps"), list) else [],
+            "opportunity_to_sell": opportunity_to_sell,
+        },
+        "technology_summary": technology_summary,
+        "recommended_outreach_strategy": {
+            "why_contact_now": str(ai_outreach_strategy.get("why_contact_now") or ""),
+            "best_timing": str(ai_outreach_strategy.get("best_timing") or ""),
+            "best_channel": str(ai_outreach_strategy.get("best_communication_channel") or ai_outreach_strategy.get("best_channel") or ""),
+            "strongest_value_proposition": str(ai_outreach_strategy.get("strongest_value_proposition") or ""),
+        },
+        "recommended_first_email": recommended_email,
+        "recommended_follow_up_strategy": {
+            "schedule": [str(item) for item in ai_outreach_strategy.get("follow_up_schedule", []) if str(item or "").strip()] if isinstance(ai_outreach_strategy.get("follow_up_schedule"), list) else [],
+            "strategy": str(ai_sales_coach.get("alternative_strategy") or ""),
+        },
+        "recommended_cta": str(ai_outreach_strategy.get("cta") or ""),
+        "confidence": confidence,
+        "evidence": evidence,
+    }
+
+
+def _build_ai_crm_summary(
+    *,
+    lead: Lead,
+    company: Company | None,
+    metadata: dict[str, Any],
+    buying_intent: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+    ai_lead_prioritization: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+    ai_revenue_engine_report: dict[str, Any],
+) -> dict[str, Any]:
+    priority_tier = str(ai_lead_prioritization.get("tier") or "Needs More Data")
+    priority_score = _safe_score(ai_lead_prioritization.get("score"), 0)
+    risk_score = _safe_score(ai_risk_analyzer.get("risk_score"), 50)
+    ranking_confidence = _safe_score(opportunity_ranking.get("confidence"), 0)
+    health_score = _safe_score(round((100 - risk_score) * 0.55 + ranking_confidence * 0.45), 0)
+
+    if health_score >= 75:
+        health_status = "Healthy"
+    elif health_score >= 50:
+        health_status = "Watch"
+    else:
+        health_status = "At Risk"
+
+    replied = bool(metadata.get("replied_at"))
+    opened = bool(metadata.get("opened_at"))
+    sent = bool(metadata.get("email_sent_at"))
+    crm_stage = str((company.crm_stage if company else "") or metadata.get("crm_stage") or "")
+    if crm_stage in {"Won", "Lost"}:
+        relationship_status = crm_stage
+    elif replied or crm_stage in {"Replied", "Meeting Scheduled"}:
+        relationship_status = "Engaged"
+    elif opened:
+        relationship_status = "Warm"
+    elif sent:
+        relationship_status = "Outreach Sent"
+    elif str(metadata.get("email_generated_at") or ""):
+        relationship_status = "Draft Ready"
+    else:
+        relationship_status = "New"
+
+    top_opportunities = ai_revenue_engine_report.get("top_opportunities") if isinstance(ai_revenue_engine_report.get("top_opportunities"), list) else []
+    upcoming_opportunity = str(top_opportunities[0] or "").strip() if top_opportunities else ""
+    if not upcoming_opportunity:
+        upcoming_opportunity = str(opportunity_ranking.get("recommended_next_action") or "").strip()
+
+    next_action = str(
+        opportunity_ranking.get("recommended_next_action")
+        or ai_lead_prioritization.get("reasoning")
+        or ai_revenue_engine_report.get("recommended_cta")
+        or "Review company card and proceed with the safest next step."
+    ).strip()
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "auto_updated": True,
+        "priority": {
+            "tier": priority_tier,
+            "score": priority_score,
+            "reasoning": str(ai_lead_prioritization.get("reasoning") or ""),
+        },
+        "health": {
+            "status": health_status,
+            "score": health_score,
+            "reasoning": str(ai_risk_analyzer.get("reasons", [""])[0] if isinstance(ai_risk_analyzer.get("reasons"), list) and ai_risk_analyzer.get("reasons") else ""),
+        },
+        "buying_intent": {
+            "score": _safe_score(buying_intent.get("buying_signal_score"), 0),
+            "urgency": str(buying_intent.get("urgency") or ""),
+            "reasoning": str(buying_intent.get("explanation") or ""),
+        },
+        "risk": {
+            "score": risk_score,
+            "level": "High" if risk_score >= 70 else "Medium" if risk_score >= 45 else "Low",
+            "top_reasons": [str(item) for item in ai_risk_analyzer.get("reasons", []) if str(item or "").strip()][:3] if isinstance(ai_risk_analyzer.get("reasons"), list) else [],
+        },
+        "relationship_status": relationship_status,
+        "next_action": next_action,
+        "last_ai_review": datetime.utcnow().isoformat(),
+        "upcoming_opportunity": upcoming_opportunity,
+    }
+
+
+def _build_ai_ceo_dashboard(
+    *,
+    lead: Lead,
+    company: Company | None,
+    ai_crm: dict[str, Any],
+    ai_live_buying_signals: dict[str, Any],
+    ai_competitor_intelligence: dict[str, Any],
+    ai_revenue_engine_report: dict[str, Any],
+    ai_executive_dashboard: dict[str, Any],
+    ai_company_predictions: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+) -> dict[str, Any]:
+    today = datetime.utcnow().date().isoformat()
+    top_opportunities = ai_revenue_engine_report.get("top_opportunities") if isinstance(ai_revenue_engine_report.get("top_opportunities"), list) else []
+    if not top_opportunities:
+        top_opportunities = opportunity_ranking.get("top_positive_signals") if isinstance(opportunity_ranking.get("top_positive_signals"), list) else []
+    todays_best_opportunities = [str(item) for item in top_opportunities if str(item or "").strip()][:5]
+
+    latest_changes = ai_live_buying_signals.get("latest_changes") if isinstance(ai_live_buying_signals.get("latest_changes"), list) else []
+    new_buying_signals = [
+        {
+            "change_type": str(item.get("change_type") or ""),
+            "added": [str(v) for v in item.get("added", []) if str(v or "").strip()] if isinstance(item.get("added"), list) else [],
+            "detected_at": str(item.get("detected_at") or ""),
+        }
+        for item in latest_changes
+        if isinstance(item, dict)
+    ]
+
+    risk_score = _safe_score(ai_risk_analyzer.get("risk_score"), 0)
+    companies_at_risk = []
+    if risk_score >= 55:
+        companies_at_risk.append(
+            {
+                "company": str((company.name if company else None) or lead.company or ""),
+                "risk_score": risk_score,
+                "risk_level": "High" if risk_score >= 70 else "Medium",
+                "top_reasons": [str(item) for item in ai_risk_analyzer.get("reasons", []) if str(item or "").strip()][:3] if isinstance(ai_risk_analyzer.get("reasons"), list) else [],
+            }
+        )
+
+    competitors = {
+        "companies": [str(item) for item in ai_competitor_intelligence.get("competitors", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("competitors"), list) else [],
+        "market_gaps": [str(item) for item in ai_competitor_intelligence.get("market_gaps", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("market_gaps"), list) else [],
+        "positioning": str(ai_competitor_intelligence.get("positioning") or ""),
+        "opportunity_to_sell": str(ai_competitor_intelligence.get("opportunity_to_sell") or ""),
+    }
+
+    sales_pipeline = {
+        "crm_stage": str((company.crm_stage if company else "") or ai_crm.get("relationship_status") or "New Lead"),
+        "relationship_status": str(ai_crm.get("relationship_status") or "New"),
+        "next_action": str(ai_crm.get("next_action") or ""),
+    }
+
+    arr_prediction = ai_company_predictions.get("estimated_arr") if isinstance(ai_company_predictions.get("estimated_arr"), dict) else {}
+    expected_revenue = {
+        "estimated_arr_score": _safe_score(arr_prediction.get("score"), 0),
+        "estimated_arr_reasoning": str(arr_prediction.get("reasoning") or ""),
+        "opportunity_score": _safe_score((ai_revenue_engine_report.get("overall_opportunity_score") or {}).get("score") if isinstance(ai_revenue_engine_report.get("overall_opportunity_score"), dict) else 0, 0),
+    }
+
+    ai_recommendations = _dedupe_text_values(
+        [
+            str(ai_crm.get("next_action") or "").strip(),
+            str(ai_executive_dashboard.get("recommended_next_action") or "").strip(),
+            str(ai_revenue_engine_report.get("recommended_cta") or "").strip(),
+            str((ai_revenue_engine_report.get("recommended_outreach_strategy") or {}).get("why_contact_now") or "").strip()
+            if isinstance(ai_revenue_engine_report.get("recommended_outreach_strategy"), dict)
+            else "",
+        ]
+    )
+    top_priorities = ai_recommendations[:3]
+    while len(top_priorities) < 3:
+        top_priorities.append("Continue monitoring buying signals and prioritize the safest high-confidence action.")
+
+    daily_summary = (
+        f"{today}: {len(todays_best_opportunities)} top opportunities, "
+        f"{len(new_buying_signals)} new buying signal changes, "
+        f"{len(companies_at_risk)} companies at risk. "
+        f"Primary priority: {top_priorities[0]}"
+    )
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "auto_updated": True,
+        "todays_best_opportunities": todays_best_opportunities,
+        "new_buying_signals": new_buying_signals,
+        "companies_at_risk": companies_at_risk,
+        "competitors": competitors,
+        "sales_pipeline": sales_pipeline,
+        "expected_revenue": expected_revenue,
+        "ai_recommendations": ai_recommendations,
+        "top_priorities": top_priorities,
+        "daily_summary": daily_summary,
+    }
+
+
+def _sales_os_agent_result(
+    *,
+    name: str,
+    output: dict[str, Any],
+    reasoning: list[str],
+    evidence: list[dict[str, Any]],
+    confidence: int,
+) -> dict[str, Any]:
+    return {
+        "agent": name,
+        "status": "complete" if output else "insufficient_data",
+        "output": output,
+        "reasoning": [str(item) for item in reasoning if str(item or "").strip()],
+        "evidence": _dedupe_evidence_items(evidence),
+        "confidence": _safe_score(confidence, 30),
+        "no_fabrication": True,
+    }
+
+
+def _build_ai_sales_os(
+    *,
+    lead: Lead,
+    company: Company | None,
+    company_intelligence: dict[str, Any],
+    decision_maker_intelligence: dict[str, Any],
+    ai_competitor_intelligence: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    ai_sales_timeline: dict[str, Any],
+    ai_live_buying_signals: dict[str, Any],
+    ai_crm: dict[str, Any],
+    ai_company_predictions: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+    ai_revenue_engine_report: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+    ai_ceo_dashboard: dict[str, Any],
+) -> dict[str, Any]:
+    report = company_intelligence.get("report") if isinstance(company_intelligence.get("report"), dict) else {}
+    buying_intent = company_intelligence.get("buying_intent") if isinstance(company_intelligence.get("buying_intent"), dict) else {}
+    profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+    latest_changes = ai_live_buying_signals.get("latest_changes") if isinstance(ai_live_buying_signals.get("latest_changes"), list) else []
+    sales_steps = ai_sales_timeline.get("steps") if isinstance(ai_sales_timeline.get("steps"), list) else []
+
+    research_output = {
+        "company_name": str((company.name if company else None) or lead.company or ""),
+        "company_summary": str((report.get("company_summary") or {}).get("value") or "") if isinstance(report.get("company_summary"), dict) else "",
+        "sources": [str(item) for item in company_intelligence.get("sources", []) if str(item or "").strip()] if isinstance(company_intelligence.get("sources"), list) else [],
+        "missing_fields": [str(item) for item in company_intelligence.get("missing_fields", []) if str(item or "").strip()] if isinstance(company_intelligence.get("missing_fields"), list) else [],
+    }
+    company_output = {
+        "products": [str(item) for item in (report.get("products") or {}).get("value", []) if str(item or "").strip()] if isinstance(report.get("products"), dict) and isinstance((report.get("products") or {}).get("value"), list) else [],
+        "icp": str((report.get("icp") or {}).get("value") or "") if isinstance(report.get("icp"), dict) else "",
+        "estimated_company_size": (report.get("estimated_company_size") or {}).get("value") if isinstance(report.get("estimated_company_size"), dict) else None,
+        "technology_stack": [str(item) for item in (report.get("technology_stack") or {}).get("value", []) if str(item or "").strip()] if isinstance(report.get("technology_stack"), dict) and isinstance((report.get("technology_stack") or {}).get("value"), list) else [],
+    }
+    buying_output = {
+        "buying_signal_score": _safe_score(buying_intent.get("buying_signal_score"), 0),
+        "urgency": str(buying_intent.get("urgency") or ""),
+        "new_signals": [
+            {
+                "change_type": str(item.get("change_type") or ""),
+                "added": [str(v) for v in item.get("added", []) if str(v or "").strip()] if isinstance(item.get("added"), list) else [],
+                "detected_at": str(item.get("detected_at") or ""),
+            }
+            for item in latest_changes
+            if isinstance(item, dict)
+        ],
+    }
+    decision_maker_output = {
+        "top_contact_id": top_profile.get("contact_id"),
+        "name": top_profile.get("name"),
+        "title": top_profile.get("title"),
+        "authority_level": top_profile.get("estimated_authority_level"),
+        "is_verified_contact": bool(top_profile.get("is_verified_contact")),
+    }
+    competitor_output = {
+        "competitors": [str(item) for item in ai_competitor_intelligence.get("competitors", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("competitors"), list) else [],
+        "market_gaps": [str(item) for item in ai_competitor_intelligence.get("market_gaps", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("market_gaps"), list) else [],
+        "opportunity_to_sell": str(ai_competitor_intelligence.get("opportunity_to_sell") or ""),
+    }
+    email_output = {
+        "subject": str(ai_outreach_strategy.get("best_subject_line") or ""),
+        "first_sentence": str(ai_outreach_strategy.get("first_sentence") or ""),
+        "cta": str(ai_outreach_strategy.get("cta") or ""),
+        "channel": str(ai_outreach_strategy.get("best_communication_channel") or ai_outreach_strategy.get("best_channel") or ""),
+    }
+    follow_up_output = {
+        "strategy": [str(item) for item in (ai_revenue_engine_report.get("recommended_follow_up_strategy") or {}).get("schedule", []) if str(item or "").strip()] if isinstance(ai_revenue_engine_report.get("recommended_follow_up_strategy"), dict) and isinstance((ai_revenue_engine_report.get("recommended_follow_up_strategy") or {}).get("schedule"), list) else [],
+        "timeline_steps": [
+            {
+                "step": str(item.get("step") or ""),
+                "action": str(item.get("action") or ""),
+                "success_probability": _safe_score(item.get("success_probability"), 0),
+            }
+            for item in sales_steps
+            if isinstance(item, dict)
+        ][:5],
+    }
+    crm_output = {
+        "priority": ai_crm.get("priority") if isinstance(ai_crm.get("priority"), dict) else {},
+        "relationship_status": str(ai_crm.get("relationship_status") or ""),
+        "next_action": str(ai_crm.get("next_action") or ""),
+        "last_ai_review": str(ai_crm.get("last_ai_review") or ""),
+    }
+    analytics_output = {
+        "opportunity_score": _safe_score(opportunity_ranking.get("overall_score"), 0),
+        "confidence": _safe_score(opportunity_ranking.get("confidence"), 0),
+        "risk_score": _safe_score(ai_risk_analyzer.get("risk_score"), 0),
+        "predictions": {
+            "estimated_arr": ai_company_predictions.get("estimated_arr") if isinstance(ai_company_predictions.get("estimated_arr"), dict) else {},
+            "growth_probability": ai_company_predictions.get("growth_probability") if isinstance(ai_company_predictions.get("growth_probability"), dict) else {},
+            "sales_readiness": ai_company_predictions.get("sales_readiness") if isinstance(ai_company_predictions.get("sales_readiness"), dict) else {},
+        },
+    }
+    ceo_output = {
+        "daily_summary": str(ai_ceo_dashboard.get("daily_summary") or ""),
+        "top_priorities": [str(item) for item in ai_ceo_dashboard.get("top_priorities", []) if str(item or "").strip()] if isinstance(ai_ceo_dashboard.get("top_priorities"), list) else [],
+        "expected_revenue": ai_ceo_dashboard.get("expected_revenue") if isinstance(ai_ceo_dashboard.get("expected_revenue"), dict) else {},
+    }
+
+    agents = {
+        "research_agent": _sales_os_agent_result(
+            name="Research Agent",
+            output=research_output,
+            reasoning=[
+                "Research Agent only uses enriched company intelligence fields and source traces.",
+                "Missing fields remain explicit instead of inferred.",
+            ],
+            evidence=[
+                {"source_field": "company_intelligence.summary", "value": str(company_intelligence.get("summary") or ""), "confidence": 75},
+            ],
+            confidence=75,
+        ),
+        "company_agent": _sales_os_agent_result(
+            name="Company Agent",
+            output=company_output,
+            reasoning=["Company Agent extracts structured company profile information from enriched report fields."],
+            evidence=[
+                {"source_field": "company_intelligence.report.icp", "value": str(company_output.get("icp") or ""), "confidence": 74},
+            ],
+            confidence=74,
+        ),
+        "buying_agent": _sales_os_agent_result(
+            name="Buying Agent",
+            output=buying_output,
+            reasoning=["Buying Agent combines buying-intent score and detected live signal changes."],
+            evidence=[
+                {"source_field": "company_intelligence.buying_intent.buying_signal_score", "value": str(buying_output.get("buying_signal_score") or ""), "confidence": 82},
+            ],
+            confidence=82,
+        ),
+        "decision_maker_agent": _sales_os_agent_result(
+            name="Decision Maker Agent",
+            output=decision_maker_output,
+            reasoning=["Decision Maker Agent ranks known contacts from decision-maker intelligence only."],
+            evidence=[
+                {"source_field": "decision_maker_intelligence.top_contact_id", "value": str(decision_maker_output.get("top_contact_id") or ""), "confidence": 80},
+            ],
+            confidence=80,
+        ),
+        "competitor_agent": _sales_os_agent_result(
+            name="Competitor Agent",
+            output=competitor_output,
+            reasoning=["Competitor Agent summarizes competitor and market-gap enrichment artifacts."],
+            evidence=[
+                {"source_field": "ai_competitor_intelligence.opportunity_to_sell", "value": str(competitor_output.get("opportunity_to_sell") or ""), "confidence": 72},
+            ],
+            confidence=72,
+        ),
+        "email_agent": _sales_os_agent_result(
+            name="Email Agent",
+            output=email_output,
+            reasoning=["Email Agent uses generated outreach strategy fields only."],
+            evidence=[
+                {"source_field": "ai_outreach_strategy.best_subject_line", "value": str(email_output.get("subject") or ""), "confidence": 76},
+            ],
+            confidence=76,
+        ),
+        "follow_up_agent": _sales_os_agent_result(
+            name="Follow-up Agent",
+            output=follow_up_output,
+            reasoning=["Follow-up Agent uses existing follow-up schedules and sales timeline steps."],
+            evidence=[
+                {"source_field": "ai_sales_timeline.steps", "value": str(len(follow_up_output.get("timeline_steps") or [])), "confidence": 70},
+            ],
+            confidence=70,
+        ),
+        "crm_agent": _sales_os_agent_result(
+            name="CRM Agent",
+            output=crm_output,
+            reasoning=["CRM Agent reflects AI CRM summary fields that are already synchronized to company metadata."],
+            evidence=[
+                {"source_field": "ai_crm.next_action", "value": str(crm_output.get("next_action") or ""), "confidence": 78},
+            ],
+            confidence=78,
+        ),
+        "analytics_agent": _sales_os_agent_result(
+            name="Analytics Agent",
+            output=analytics_output,
+            reasoning=["Analytics Agent merges ranking, risk, and predictive signals for quantitative planning."],
+            evidence=[
+                {"source_field": "opportunity_ranking.overall_score", "value": str(analytics_output.get("opportunity_score") or ""), "confidence": 80},
+            ],
+            confidence=80,
+        ),
+        "ceo_agent": _sales_os_agent_result(
+            name="CEO Agent",
+            output=ceo_output,
+            reasoning=["CEO Agent surfaces daily priorities and summary directly from the AI CEO dashboard."],
+            evidence=[
+                {"source_field": "ai_ceo_dashboard.daily_summary", "value": str(ceo_output.get("daily_summary") or ""), "confidence": 74},
+            ],
+            confidence=74,
+        ),
+    }
+
+    execution_order = [
+        "research_agent",
+        "company_agent",
+        "buying_agent",
+        "decision_maker_agent",
+        "competitor_agent",
+        "email_agent",
+        "follow_up_agent",
+        "crm_agent",
+        "analytics_agent",
+        "ceo_agent",
+    ]
+    intermediate_reasoning = {
+        key: {
+            "reasoning": value.get("reasoning") if isinstance(value.get("reasoning"), list) else [],
+            "evidence": value.get("evidence") if isinstance(value.get("evidence"), list) else [],
+        }
+        for key, value in agents.items()
+        if isinstance(value, dict)
+    }
+
+    merged_output = {
+        "company": company_output,
+        "buying": buying_output,
+        "decision_maker": decision_maker_output,
+        "competitors": competitor_output,
+        "email": email_output,
+        "follow_up": follow_up_output,
+        "crm": crm_output,
+        "analytics": analytics_output,
+        "ceo": ceo_output,
+        "next_action": str(ai_crm.get("next_action") or ai_ceo_dashboard.get("daily_summary") or ""),
+    }
+
+    orchestrator = {
+        "agent": "The Orchestrator",
+        "status": "complete",
+        "autonomous": True,
+        "execution_order": execution_order,
+        "coordination_summary": "The Orchestrator coordinated all agents, merged structured outputs, and preserved intermediate reasoning.",
+        "output": merged_output,
+        "confidence": _safe_score(round(sum(_safe_score((agents.get(name) or {}).get("confidence"), 0) for name in execution_order) / max(1, len(execution_order))), 45),
+    }
+
+    intermediate_reasoning["orchestrator"] = {
+        "reasoning": [
+            "The Orchestrator sequences all agents and only merges evidence-backed outputs.",
+            "No facts are fabricated; missing values are left empty.",
+        ],
+        "evidence": _dedupe_evidence_items(
+            [
+                {"source_field": "ai_crm.next_action", "value": str(ai_crm.get("next_action") or ""), "confidence": 78},
+                {"source_field": "ai_ceo_dashboard.daily_summary", "value": str(ai_ceo_dashboard.get("daily_summary") or ""), "confidence": 74},
+            ]
+        ),
+    }
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "autonomous": True,
+        "safety": {
+            "never_fabricate_facts": True,
+            "policy": "Agents may only use enriched, persisted, or computed signals; unknown values remain empty.",
+        },
+        "agents": agents,
+        "intermediate_reasoning": intermediate_reasoning,
+        "orchestrator": orchestrator,
+    }
+
+
+def _event_texts(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    return []
+
+
+def _live_buying_signal_snapshot(*, lead: Lead | None, metadata: dict[str, Any], company_intelligence: dict[str, Any]) -> dict[str, list[str]]:
+    report = company_intelligence.get("report") if isinstance(company_intelligence.get("report"), dict) else {}
+
+    def _report_value(key: str) -> list[str]:
+        item = report.get(key)
+        if not isinstance(item, dict):
+            return []
+        return _event_texts(item.get("value"))
+
+    leadership_from_report: list[str] = []
+    recommended_dm = report.get("recommended_decision_maker")
+    if isinstance(recommended_dm, dict):
+        leadership_from_report = _event_texts(recommended_dm.get("value"))
+
+    categories: dict[str, list[str]] = {
+        "new_hiring": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("hiring_signals")),
+                *_event_texts(metadata.get("jobs_signal")),
+                *_event_texts(metadata.get("sales_hiring_signals")),
+            ]
+        ),
+        "technology_changes": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("technology_changes")),
+                *_event_texts(metadata.get("tech_changes")),
+                *_report_value("technology_stack"),
+            ]
+        ),
+        "website_changes": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("website_changes")),
+                *_event_texts(metadata.get("website_change_signal")),
+            ]
+        ),
+        "pricing_changes": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("pricing_changes")),
+                *_event_texts(metadata.get("pricing_signals")),
+            ]
+        ),
+        "new_products": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("product_launches")),
+                *_event_texts(metadata.get("launch_signals")),
+                *_report_value("products"),
+            ]
+        ),
+        "new_competitors": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("competitors")),
+                *_report_value("competitors"),
+            ]
+        ),
+        "leadership_changes": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("leadership_changes")),
+                *_event_texts(metadata.get("management_changes")),
+                *_event_texts(metadata.get("recommended_decision_maker")),
+                *leadership_from_report,
+            ]
+        ),
+        "market_expansion": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("market_expansion")),
+                *_event_texts(metadata.get("expansion_signals")),
+                *_event_texts(metadata.get("new_locations")),
+            ]
+        ),
+        "new_funding": _dedupe_text_values(
+            [
+                *_event_texts(metadata.get("funding_signal")),
+                *_event_texts(metadata.get("funding_signals")),
+            ]
+        ),
+    }
+
+    return {
+        key: value
+        for key, value in categories.items()
+        if isinstance(value, list)
+    }
+
+
+def _build_ai_live_buying_signals(
+    *,
+    previous_live_buying_signals: dict[str, Any],
+    current_snapshot: dict[str, list[str]],
+) -> dict[str, Any]:
+    generated_at = datetime.utcnow().isoformat()
+    previous_snapshot = (
+        previous_live_buying_signals.get("snapshot")
+        if isinstance(previous_live_buying_signals.get("snapshot"), dict)
+        else {}
+    )
+    previous_timeline = (
+        previous_live_buying_signals.get("change_timeline")
+        if isinstance(previous_live_buying_signals.get("change_timeline"), list)
+        else []
+    )
+
+    latest_changes: list[dict[str, Any]] = []
+    timeline_additions: list[dict[str, Any]] = []
+
+    categories = [
+        "new_hiring",
+        "technology_changes",
+        "website_changes",
+        "pricing_changes",
+        "new_products",
+        "new_competitors",
+        "leadership_changes",
+        "market_expansion",
+        "new_funding",
+    ]
+    for category in categories:
+        current_values = [str(item).strip() for item in (current_snapshot.get(category) or []) if str(item or "").strip()]
+        previous_values = [str(item).strip() for item in (previous_snapshot.get(category) or []) if str(item or "").strip()]
+        previous_set = {item.lower() for item in previous_values}
+        added_values = [item for item in current_values if item.lower() not in previous_set]
+        if not added_values:
+            continue
+        change = {
+            "change_type": category,
+            "added": added_values,
+            "previous": previous_values,
+            "current": current_values,
+            "detected_at": generated_at,
+        }
+        latest_changes.append(change)
+        timeline_additions.append(
+            {
+                "change_type": category,
+                "added": added_values,
+                "detected_at": generated_at,
+            }
+        )
+
+    combined_timeline = [
+        item
+        for item in [*previous_timeline, *timeline_additions]
+        if isinstance(item, dict) and str(item.get("change_type") or "").strip()
+    ][-200:]
+
+    return {
+        "generated_at": generated_at,
+        "latest_changes": latest_changes,
+        "change_timeline": combined_timeline,
+        "snapshot": current_snapshot,
+    }
+
+
+def _parse_event_datetime(text: str, fallback: datetime) -> datetime:
+    value = str(text or "").strip()
+    if not value:
+        return fallback
+    match = re.search(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", value)
+    if match:
+        year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        try:
+            return datetime(year, month, day)
+        except ValueError:
+            return fallback
+    month_year = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(20\d{2})\b", value, flags=re.I)
+    if month_year:
+        month_map = {
+            "jan": 1,
+            "feb": 2,
+            "mar": 3,
+            "apr": 4,
+            "may": 5,
+            "jun": 6,
+            "jul": 7,
+            "aug": 8,
+            "sep": 9,
+            "oct": 10,
+            "nov": 11,
+            "dec": 12,
+        }
+        month = month_map.get(month_year.group(1).lower()[:3], fallback.month)
+        year = int(month_year.group(2))
+        return datetime(year, month, 1)
+    year_only = re.search(r"\b(20\d{2})\b", value)
+    if year_only:
+        return datetime(int(year_only.group(1)), 1, 1)
+    return fallback
+
+
+def _timeline_events_for_field(
+    *,
+    event_type: str,
+    source_field: str,
+    values: list[str],
+    fallback: datetime,
+    provider: str,
+    enrichment_step: str,
+    model_version: str,
+    prompt_version: str,
+    base_confidence: int,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for index, value in enumerate(values):
+        event_dt = _parse_event_datetime(value, fallback + timedelta(seconds=index))
+        events.append(
+            {
+                "event_type": event_type,
+                "event_date": event_dt.date().isoformat(),
+                "timestamp": event_dt.isoformat(),
+                "title": value[:120],
+                "details": value,
+                "source": source_field,
+                "evidence_snippet": value,
+                "confidence": _safe_score(base_confidence, 70),
+                "provider": provider,
+                "enrichment_step": enrichment_step,
+                "model_version": model_version,
+                "prompt_version": prompt_version,
+            }
+        )
+    return events
+
+
+def _build_ai_company_timeline(
+    *,
+    lead: Lead,
+    metadata: dict[str, Any],
+    company_intelligence: dict[str, Any],
+) -> dict[str, Any]:
+    now = datetime.utcnow()
+    provider = "outreachai-enrichment"
+    enrichment_step = "company_timeline"
+    model_version = "rules-v1"
+    prompt_version = "company-timeline-v1"
+
+    report = company_intelligence.get("report") if isinstance(company_intelligence.get("report"), dict) else {}
+    fields = company_intelligence.get("fields") if isinstance(company_intelligence.get("fields"), dict) else {}
+
+    funding_values = _event_texts(metadata.get("funding_signal")) + _event_texts(metadata.get("funding_signals"))
+    hiring_values = _event_texts(metadata.get("hiring_signals")) + _event_texts(metadata.get("jobs_signal"))
+    technology_values = _event_texts(metadata.get("technology_changes"))
+    if not technology_values:
+        technology_values = _event_texts((report.get("technology_stack") or {}).get("value")) if isinstance(report.get("technology_stack"), dict) else _event_texts(metadata.get("technologies"))
+    website_values = _event_texts(metadata.get("website_changes"))
+    if not website_values and lead.website:
+        website_values = [f"Website present: {lead.website}"]
+    leadership_values = _event_texts(metadata.get("leadership_changes"))
+    if not leadership_values:
+        leadership_values = _event_texts(metadata.get("recommended_decision_maker"))
+    if not leadership_values and isinstance(fields.get("ceo_founder"), dict):
+        ceo = fields.get("ceo_founder", {}).get("value")
+        if isinstance(ceo, dict) and (ceo.get("name") or ceo.get("title")):
+            leadership_values = [f"Leadership signal: {ceo.get('name') or ''} {ceo.get('title') or ''}".strip()]
+    location_values = _event_texts(metadata.get("new_locations")) + _event_texts(metadata.get("market_expansion"))
+    if not location_values and (lead.city or lead.country):
+        location_values = [f"Operating location: {', '.join(part for part in [lead.city, lead.country] if part)}"]
+    product_values = _event_texts(metadata.get("product_launches"))
+    if not product_values:
+        product_values = _event_texts((report.get("products") or {}).get("value")) if isinstance(report.get("products"), dict) else _event_texts(metadata.get("products"))
+    partnership_values = _event_texts(metadata.get("partnership_signals")) + _event_texts(metadata.get("partnership_updates"))
+    if not partnership_values and metadata.get("partnership_fit"):
+        partnership_values = [str(metadata.get("partnership_fit"))]
+
+    events: list[dict[str, Any]] = []
+    events.extend(_timeline_events_for_field(event_type="funding_events", source_field="metadata.funding_signal", values=funding_values, fallback=now - timedelta(days=90), provider=provider, enrichment_step=enrichment_step, model_version=model_version, prompt_version=prompt_version, base_confidence=85))
+    events.extend(_timeline_events_for_field(event_type="hiring_events", source_field="metadata.hiring_signals", values=hiring_values, fallback=now - timedelta(days=60), provider=provider, enrichment_step=enrichment_step, model_version=model_version, prompt_version=prompt_version, base_confidence=82))
+    events.extend(_timeline_events_for_field(event_type="technology_changes", source_field="metadata.technology_changes", values=technology_values, fallback=now - timedelta(days=50), provider=provider, enrichment_step=enrichment_step, model_version=model_version, prompt_version=prompt_version, base_confidence=78))
+    events.extend(_timeline_events_for_field(event_type="website_changes", source_field="metadata.website_changes", values=website_values, fallback=now - timedelta(days=40), provider=provider, enrichment_step=enrichment_step, model_version=model_version, prompt_version=prompt_version, base_confidence=75))
+    events.extend(_timeline_events_for_field(event_type="leadership_changes", source_field="metadata.leadership_changes", values=leadership_values, fallback=now - timedelta(days=30), provider=provider, enrichment_step=enrichment_step, model_version=model_version, prompt_version=prompt_version, base_confidence=74))
+    events.extend(_timeline_events_for_field(event_type="new_locations", source_field="metadata.new_locations", values=location_values, fallback=now - timedelta(days=20), provider=provider, enrichment_step=enrichment_step, model_version=model_version, prompt_version=prompt_version, base_confidence=72))
+    events.extend(_timeline_events_for_field(event_type="product_launches", source_field="metadata.product_launches", values=product_values, fallback=now - timedelta(days=15), provider=provider, enrichment_step=enrichment_step, model_version=model_version, prompt_version=prompt_version, base_confidence=76))
+    events.extend(_timeline_events_for_field(event_type="partnerships", source_field="metadata.partnership_signals", values=partnership_values, fallback=now - timedelta(days=10), provider=provider, enrichment_step=enrichment_step, model_version=model_version, prompt_version=prompt_version, base_confidence=74))
+
+    events.sort(key=lambda item: str(item.get("timestamp") or ""))
+    by_type = {
+        "funding_events": [item for item in events if item["event_type"] == "funding_events"],
+        "hiring_events": [item for item in events if item["event_type"] == "hiring_events"],
+        "technology_changes": [item for item in events if item["event_type"] == "technology_changes"],
+        "website_changes": [item for item in events if item["event_type"] == "website_changes"],
+        "leadership_changes": [item for item in events if item["event_type"] == "leadership_changes"],
+        "new_locations": [item for item in events if item["event_type"] == "new_locations"],
+        "product_launches": [item for item in events if item["event_type"] == "product_launches"],
+        "partnerships": [item for item in events if item["event_type"] == "partnerships"],
+    }
+    return {
+        "generated_at": now.isoformat(),
+        **by_type,
+        "events": events,
+    }
+
+
+def _reasoning_text(value: Any) -> str:
+    if isinstance(value, list):
+        values = [str(item).strip() for item in value if str(item).strip()]
+        return "; ".join(values[:3])
+    return str(value or "").strip()
+
+
+def _append_evidence_entries(
+    *,
+    entries: list[dict[str, Any]],
+    insight_key: str,
+    reasoning: Any,
+    evidence_items: Any,
+    provider: str,
+    timestamp: str,
+    enrichment_step: str,
+    model_version: str,
+    prompt_version: str,
+    default_source: str,
+    default_confidence: int = 70,
+) -> None:
+    reasoning_text = _reasoning_text(reasoning)
+    raw_items = evidence_items if isinstance(evidence_items, list) else []
+    prepared_items: list[dict[str, Any]] = []
+    for item in raw_items:
+        if isinstance(item, dict):
+            prepared_items.append(item)
+            continue
+        text = str(item or "").strip()
+        if text:
+            prepared_items.append(
+                {
+                    "source_field": default_source,
+                    "value": text,
+                    "confidence": default_confidence,
+                }
+            )
+    normalized = _dedupe_evidence_items(prepared_items)
+    if normalized:
+        for item in normalized:
+            source_field = str(item.get("source_field") or default_source).strip() or default_source
+            evidence_snippet = str(item.get("value") or reasoning_text).strip() or reasoning_text
+            if not evidence_snippet:
+                continue
+            entries.append(
+                {
+                    "insight_key": insight_key,
+                    "provider": provider,
+                    "source": source_field,
+                    "raw_source": source_field,
+                    "evidence_snippet": evidence_snippet,
+                    "reasoning": reasoning_text,
+                    "confidence": _safe_score(item.get("confidence"), default_confidence),
+                    "timestamp": timestamp,
+                    "enrichment_step": enrichment_step,
+                    "model_version": model_version,
+                    "prompt_version": prompt_version,
+                }
+            )
+        return
+    if not reasoning_text:
+        return
+    entries.append(
+        {
+            "insight_key": insight_key,
+            "provider": provider,
+            "source": default_source,
+            "raw_source": default_source,
+            "evidence_snippet": reasoning_text,
+            "reasoning": reasoning_text,
+            "confidence": _safe_score(default_confidence, 60),
+            "timestamp": timestamp,
+            "enrichment_step": enrichment_step,
+            "model_version": model_version,
+            "prompt_version": prompt_version,
+        }
+    )
+
+
+def _build_ai_evidence_engine(
+    *,
+    company_intelligence: dict[str, Any],
+    opportunity_ranking: dict[str, Any],
+    ai_outreach_strategy: dict[str, Any],
+    ai_competitor_intelligence: dict[str, Any],
+    ai_company_timeline: dict[str, Any],
+    ai_company_predictions: dict[str, Any],
+    ai_sales_timeline: dict[str, Any],
+    ai_risk_analyzer: dict[str, Any],
+    ai_sales_coach: dict[str, Any],
+    enrichment_step: str,
+) -> dict[str, Any]:
+    provider = "outreachai-enrichment"
+    model_version = "rules-v1"
+    prompt_version = "evidence-engine-v1"
+    timestamp = datetime.utcnow().isoformat()
+    entries: list[dict[str, Any]] = []
+
+    _append_evidence_entries(
+        entries=entries,
+        insight_key="company_intelligence.summary",
+        reasoning=(company_intelligence.get("report") or {}).get("company_summary", {}).get("value") if isinstance((company_intelligence.get("report") or {}).get("company_summary"), dict) else "",
+        evidence_items=(company_intelligence.get("report") or {}).get("company_summary", {}).get("sources") if isinstance((company_intelligence.get("report") or {}).get("company_summary"), dict) else [],
+        provider=provider,
+        timestamp=timestamp,
+        enrichment_step=enrichment_step,
+        model_version=model_version,
+        prompt_version=prompt_version,
+        default_source="company_intelligence.report.company_summary",
+        default_confidence=80,
+    )
+
+    _append_evidence_entries(
+        entries=entries,
+        insight_key="opportunity_ranking.reasoning",
+        reasoning=opportunity_ranking.get("reasoning"),
+        evidence_items=[
+            {
+                "source_field": "opportunity_ranking.top_positive_signals",
+                "value": str(item),
+                "confidence": _safe_score(opportunity_ranking.get("confidence"), 70),
+            }
+            for item in (opportunity_ranking.get("top_positive_signals") or [])
+            if str(item).strip()
+        ],
+        provider=provider,
+        timestamp=timestamp,
+        enrichment_step=enrichment_step,
+        model_version=model_version,
+        prompt_version=prompt_version,
+        default_source="opportunity_ranking.reasoning",
+        default_confidence=_safe_score(opportunity_ranking.get("confidence"), 70),
+    )
+
+    outreach_fields = [
+        "why_contact_now",
+        "best_timing",
+        "best_communication_channel",
+        "best_email_length",
+        "best_subject_line",
+        "first_sentence",
+        "strongest_value_proposition",
+        "strongest_pain_point",
+        "expected_objections",
+        "cta",
+        "follow_up_schedule",
+        "estimated_reply_probability",
+    ]
+    for field in outreach_fields:
+        _append_evidence_entries(
+            entries=entries,
+            insight_key=f"ai_outreach_strategy.{field}",
+            reasoning=ai_outreach_strategy.get(field),
+            evidence_items=ai_outreach_strategy.get(f"{field}_evidence"),
+            provider=provider,
+            timestamp=timestamp,
+            enrichment_step=enrichment_step,
+            model_version=model_version,
+            prompt_version=prompt_version,
+            default_source=f"ai_outreach_strategy.{field}",
+            default_confidence=75,
+        )
+
+    for field in ["positioning", "strengths", "weaknesses", "market_gaps", "opportunity_to_sell"]:
+        _append_evidence_entries(
+            entries=entries,
+            insight_key=f"ai_competitor_intelligence.{field}",
+            reasoning=ai_competitor_intelligence.get(field),
+            evidence_items=[
+                {
+                    "source_field": f"ai_competitor_intelligence.{field}",
+                    "value": str(item),
+                    "confidence": 70,
+                }
+                for item in (ai_competitor_intelligence.get(field) if isinstance(ai_competitor_intelligence.get(field), list) else [ai_competitor_intelligence.get(field)])
+                if str(item or "").strip()
+            ],
+            provider=provider,
+            timestamp=timestamp,
+            enrichment_step=enrichment_step,
+            model_version=model_version,
+            prompt_version=prompt_version,
+            default_source=f"ai_competitor_intelligence.{field}",
+            default_confidence=70,
+        )
+
+    if isinstance(ai_company_timeline.get("events"), list):
+        for item in ai_company_timeline.get("events", []):
+            if not isinstance(item, dict):
+                continue
+            event_type = str(item.get("event_type") or "timeline_event").strip().lower()
+            _append_evidence_entries(
+                entries=entries,
+                insight_key=f"ai_company_timeline.{event_type}",
+                reasoning=item.get("details") or item.get("title"),
+                evidence_items=[
+                    {
+                        "source_field": str(item.get("source") or "ai_company_timeline"),
+                        "value": str(item.get("evidence_snippet") or item.get("details") or item.get("title") or ""),
+                        "confidence": _safe_score(item.get("confidence"), 70),
+                    }
+                ],
+                provider=provider,
+                timestamp=str(item.get("timestamp") or timestamp),
+                enrichment_step=enrichment_step,
+                model_version=model_version,
+                prompt_version=prompt_version,
+                default_source="ai_company_timeline.events",
+                default_confidence=_safe_score(item.get("confidence"), 70),
+            )
+
+    for field in ["estimated_arr", "company_maturity", "growth_probability", "sales_readiness"]:
+        prediction = ai_company_predictions.get(field) if isinstance(ai_company_predictions.get(field), dict) else {}
+        _append_evidence_entries(
+            entries=entries,
+            insight_key=f"ai_company_predictions.{field}",
+            reasoning=prediction.get("reasoning"),
+            evidence_items=prediction.get("evidence"),
+            provider=provider,
+            timestamp=timestamp,
+            enrichment_step=enrichment_step,
+            model_version=model_version,
+            prompt_version=prompt_version,
+            default_source=f"ai_company_predictions.{field}",
+            default_confidence=_safe_score(prediction.get("confidence"), 70),
+        )
+
+    if isinstance(ai_sales_timeline.get("steps"), list):
+        for item in ai_sales_timeline.get("steps", []):
+            if not isinstance(item, dict):
+                continue
+            step_name = str(item.get("step") or "timeline_step").strip().lower().replace(" ", "_")
+            _append_evidence_entries(
+                entries=entries,
+                insight_key=f"ai_sales_timeline.{step_name}.action",
+                reasoning=item.get("action"),
+                evidence_items=item.get("evidence"),
+                provider=provider,
+                timestamp=timestamp,
+                enrichment_step=enrichment_step,
+                model_version=model_version,
+                prompt_version=prompt_version,
+                default_source=f"ai_sales_timeline.{step_name}",
+                default_confidence=_safe_score(item.get("success_probability"), 65),
+            )
+
+    risk_fields = [
+        "probability_company_will_ignore_outreach",
+        "missing_data",
+        "weak_personalization",
+        "missing_decision_maker",
+        "low_confidence",
+        "stale_enrichment",
+        "risk_score",
+        "reasons",
+        "recommended_improvements",
+        "confidence",
+    ]
+    for field in risk_fields:
+        factor_evidence = []
+        if isinstance(ai_risk_analyzer.get("factors"), dict):
+            for factor in ai_risk_analyzer.get("factors", {}).values():
+                if isinstance(factor, dict) and isinstance(factor.get("evidence"), list):
+                    factor_evidence.extend(factor.get("evidence") or [])
+        _append_evidence_entries(
+            entries=entries,
+            insight_key=f"ai_risk_analyzer.{field}",
+            reasoning=ai_risk_analyzer.get(field),
+            evidence_items=factor_evidence,
+            provider=provider,
+            timestamp=timestamp,
+            enrichment_step=enrichment_step,
+            model_version=model_version,
+            prompt_version=prompt_version,
+            default_source=f"ai_risk_analyzer.{field}",
+            default_confidence=_safe_score(ai_risk_analyzer.get("confidence"), 70),
+        )
+
+    coach_fields = [
+        "why_this_company",
+        "why_now",
+        "why_this_decision_maker",
+        "what_could_fail",
+        "how_to_increase_reply_rate",
+        "alternative_strategy",
+    ]
+    for field in coach_fields:
+        _append_evidence_entries(
+            entries=entries,
+            insight_key=f"ai_sales_coach.{field}",
+            reasoning=ai_sales_coach.get(field),
+            evidence_items=ai_sales_coach.get("evidence"),
+            provider=provider,
+            timestamp=timestamp,
+            enrichment_step=enrichment_step,
+            model_version=model_version,
+            prompt_version=prompt_version,
+            default_source=f"ai_sales_coach.{field}",
+            default_confidence=_safe_score(ai_sales_coach.get("confidence"), 70),
+        )
+
+    by_insight: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        key = str(entry.get("insight_key") or "")
+        if not key:
+            continue
+        by_insight.setdefault(key, []).append(
+            {
+                "source": entry.get("source"),
+                "evidence": entry.get("evidence_snippet"),
+                "reasoning": entry.get("reasoning"),
+                "confidence": entry.get("confidence"),
+                "timestamp": entry.get("timestamp"),
+                "provider": entry.get("provider"),
+            }
+        )
+
+    return {
+        "generated_at": timestamp,
+        "provider": provider,
+        "model_version": model_version,
+        "prompt_version": prompt_version,
+        "entries": entries,
+        "by_insight": by_insight,
+    }
+
+
+def _detect_buying_intent(metadata: dict[str, Any]) -> dict[str, Any]:
+    signal_specs = [
+        {
+            "name": "active_hiring",
+            "weight": 12,
+            "keys": ["hiring_signals", "jobs_signal"],
+            "patterns": [r"\bhiring\b", r"\bwe'?re hiring\b", r"\bopen roles?\b", r"\bjob openings?\b"],
+        },
+        {
+            "name": "recent_funding",
+            "weight": 14,
+            "keys": ["funding_signal", "funding_signals"],
+            "patterns": [r"\braised\b", r"\bseries [abcde]\b", r"\bseed\b", r"\bfunding\b", r"\binvestment\b"],
+        },
+        {
+            "name": "technology_changes",
+            "weight": 10,
+            "keys": ["technology_changes", "tech_changes", "technologies"],
+            "patterns": [r"\bmigrat(ed|ion)\b", r"\bnew stack\b", r"\breplatform\b", r"\bintegration\b"],
+        },
+        {
+            "name": "website_changes",
+            "weight": 8,
+            "keys": ["website_changes", "website_change_signal"],
+            "patterns": [r"\bredesign\b", r"\bsite update\b", r"\bnew website\b", r"\bupdated website\b"],
+        },
+        {
+            "name": "product_launches",
+            "weight": 12,
+            "keys": ["product_launches", "launch_signals"],
+            "patterns": [r"\blaunch(ed)?\b", r"\bnew product\b", r"\brelease(d)?\b", r"\bintroduced\b"],
+        },
+        {
+            "name": "expansion_new_markets",
+            "weight": 10,
+            "keys": ["expansion_signals", "market_expansion"],
+            "patterns": [r"\bexpan(d|sion)\b", r"\bnew market\b", r"\bnew region\b", r"\bnew country\b"],
+        },
+        {
+            "name": "open_sales_positions",
+            "weight": 10,
+            "keys": ["sales_hiring_signals", "hiring_signals", "jobs_signal"],
+            "patterns": [r"\baccount executive\b", r"\bsdr\b", r"\bbdr\b", r"\bsales rep\b", r"\bhead of sales\b"],
+        },
+        {
+            "name": "new_partnerships",
+            "weight": 9,
+            "keys": ["partnership_signals", "partnership_updates"],
+            "patterns": [r"\bpartner(ship|ed)?\b", r"\balliance\b", r"\bstrategic partner\b", r"\bco-sell\b"],
+        },
+        {
+            "name": "pricing_changes",
+            "weight": 8,
+            "keys": ["pricing_changes", "pricing_signals"],
+            "patterns": [r"\bpricing\b", r"\bprice increase\b", r"\bnew plan(s)?\b", r"\bpackag(e|ing)\b"],
+        },
+        {
+            "name": "customer_growth_indicators",
+            "weight": 9,
+            "keys": ["customer_growth_signals", "growth_signal"],
+            "patterns": [r"\bcustomer(s)?\b", r"\buser growth\b", r"\badoption\b", r"\bexpanding customer base\b"],
+        },
+        {
+            "name": "blog_news_activity",
+            "weight": 8,
+            "keys": ["blog_news_activity", "news_activity", "blog_activity"],
+            "patterns": [r"\bblog\b", r"\bnews\b", r"\bpress\b", r"\bannouncement\b", r"\bupdate\b"],
+        },
+    ]
+
+    fallback_sources = {
+        key: _metadata_texts(metadata.get(key))
+        for key in [
+            "buying_signals",
+            "hiring_signals",
+            "jobs_signal",
+            "funding_signal",
+            "growth_signal",
+            "blog_news_activity",
+            "pricing_signals",
+            "product_launches",
+            "expansion_signals",
+            "technology_changes",
+            "website_changes",
+            "customer_growth_signals",
+            "partnership_signals",
+            "news_activity",
+            "blog_activity",
+        ]
+    }
+
+    per_signal: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    raw_score = 0
+    confidence_values: list[int] = []
+
+    for spec in signal_specs:
+        signal_name = str(spec["name"])
+        weight = int(spec["weight"])
+        keys = [str(item) for item in spec["keys"]]
+        patterns = [str(item) for item in spec["patterns"]]
+        signal_evidence: list[dict[str, Any]] = []
+
+        for key in keys:
+            for text in _metadata_texts(metadata.get(key)):
+                signal_evidence.append(_intent_evidence(signal_name, key, text, 85))
+
+        if not signal_evidence:
+            for source_field, candidates in fallback_sources.items():
+                for text in candidates:
+                    if any(re.search(pattern, text, flags=re.I) for pattern in patterns):
+                        signal_evidence.append(_intent_evidence(signal_name, source_field, text, 65))
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in signal_evidence:
+            fingerprint = (str(item["source_field"]).lower(), str(item["value"]).strip().lower())
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            deduped.append(item)
+
+        detected = bool(deduped)
+        contribution = weight if detected else 0
+        signal_confidence = _safe_score(round(sum(item["confidence"] for item in deduped) / len(deduped))) if deduped else 0
+        per_signal.append(
+            {
+                "signal": signal_name,
+                "detected": detected,
+                "weight": weight,
+                "score": contribution,
+                "confidence": signal_confidence,
+                "evidence": deduped,
+            }
+        )
+        evidence.extend(deduped)
+        raw_score += contribution
+        if signal_confidence:
+            confidence_values.append(signal_confidence)
+
+    buying_signal_score = _safe_score(round(raw_score * 100 / max(1, sum(int(spec["weight"]) for spec in signal_specs))))
+    if buying_signal_score >= 80:
+        urgency = "high"
+        timing = "Reach out within 24-48 hours"
+    elif buying_signal_score >= 55:
+        urgency = "medium"
+        timing = "Reach out this week"
+    elif buying_signal_score >= 30:
+        urgency = "low"
+        timing = "Nurture and reach out within 2-3 weeks"
+    else:
+        urgency = "watch"
+        timing = "Monitor for new intent signals before outreach"
+
+    top_signals = [item["signal"].replace("_", " ") for item in per_signal if item["detected"]]
+    explanation = (
+        f"Detected {len(top_signals)} evidence-backed buying signals: {', '.join(top_signals[:4])}."
+        if top_signals
+        else "No evidence-backed buying intent signals were detected from current enrichment data."
+    )
+
+    confidence = _safe_score(round(sum(confidence_values) / len(confidence_values))) if confidence_values else 35
+    return {
+        "buying_signal_score": buying_signal_score,
+        "urgency": urgency,
+        "explanation": explanation,
+        "evidence": evidence,
+        "confidence": confidence,
+        "recommended_outreach_timing": timing,
+        "signals": per_signal,
+    }
+
+
 def _company_intelligence_cache_key(lead: Lead, metadata: dict[str, Any], company: Company | None = None) -> str:
     domain = normalize_domain(str((company.domain if company else "") or metadata.get("domain") or lead.website or lead.company or ""))
     if domain:
@@ -1318,17 +4568,7 @@ def _build_company_intelligence(
         or profile.get("estimated_num_employees")
         or profile.get("employee_count")
     )
-    buying_signals = _dedupe_text_values(
-        [
-            *(metadata.get("buying_signals") if isinstance(metadata.get("buying_signals"), list) else []),
-            "Strong public reputation signal" if metadata.get("google_rating") else "",
-            "Website available for personalization" if official_site else "",
-            "Decision maker identified" if selected or contacts else "",
-            "Verified outreach path available" if verified_emails else "",
-            "Technology stack available for personalization" if technologies else "",
-            "Hiring or growth signal needs external source connection" if not metadata.get("jobs_signal") else metadata.get("jobs_signal"),
-        ]
-    )
+    buying_signals = _dedupe_text_values(metadata.get("buying_signals") if isinstance(metadata.get("buying_signals"), list) else [])
     score = 20
     score += 12 if official_site else 0
     score += 10 if metadata.get("ai_summary") or metadata.get("opportunity_analysis") else 0
@@ -1368,6 +4608,92 @@ def _build_company_intelligence(
         ),
         {},
     )
+    report_sources = {
+        "company_summary": ["AI website analysis"] if metadata.get("ai_summary") else ["CRM profile"],
+        "products": ["AI website analysis"] if metadata.get("products") else [],
+        "icp": ["AI website analysis"] if metadata.get("icp") else [],
+        "estimated_company_size": ["Company enrichment"] if employee_count else [],
+        "buying_signals": ["AI website analysis"] if buying_signals else [],
+        "hiring_signals": ["Company enrichment"] if metadata.get("hiring_signals") else [],
+        "technology_stack": ["Technographic enrichment"] if technologies else [],
+        "competitors": ["AI website analysis"] if metadata.get("competitors") else [],
+        "possible_pain_points": ["AI website analysis"] if metadata.get("pain_points") else [],
+        "best_outreach_angle": ["AI sales reasoning"] if metadata.get("best_outreach_angle") or metadata.get("suggested_offer") or metadata.get("sales_angle") else [],
+        "recommended_decision_maker": ["Decision-maker ranking"] if selected or contacts else [],
+        "personalization_bullets": ["AI website analysis"] if metadata.get("personalization_bullets") else [],
+        "ai_confidence_score": ["AI website analysis"] if metadata.get("confidence_score") else [],
+    }
+    report = {
+        "company_summary": _report_field(
+            metadata.get("company_summary") or metadata.get("ai_summary") or metadata.get("summary"),
+            sources=report_sources["company_summary"],
+            confidence=82 if metadata.get("ai_summary") or metadata.get("company_summary") else 60,
+        ),
+        "products": _report_field(
+            metadata.get("products"),
+            sources=report_sources["products"],
+            confidence=74 if metadata.get("products") else 0,
+        ),
+        "icp": _report_field(
+            metadata.get("icp"),
+            sources=report_sources["icp"],
+            confidence=74 if metadata.get("icp") else 0,
+        ),
+        "estimated_company_size": _report_field(
+            metadata.get("estimated_company_size") or employee_count,
+            sources=report_sources["estimated_company_size"],
+            confidence=72 if employee_count or metadata.get("estimated_company_size") else 0,
+        ),
+        "buying_signals": _report_field(
+            buying_signals,
+            sources=report_sources["buying_signals"],
+            confidence=70 if buying_signals else 0,
+        ),
+        "hiring_signals": _report_field(
+            metadata.get("hiring_signals") or metadata.get("jobs_signal") or metadata.get("growth_signal"),
+            sources=report_sources["hiring_signals"],
+            confidence=70 if metadata.get("hiring_signals") or metadata.get("jobs_signal") or metadata.get("growth_signal") else 0,
+        ),
+        "technology_stack": _report_field(
+            technologies,
+            sources=report_sources["technology_stack"],
+            confidence=76 if technologies else 0,
+        ),
+        "competitors": _report_field(
+            metadata.get("competitors"),
+            sources=report_sources["competitors"],
+            confidence=68 if metadata.get("competitors") else 0,
+        ),
+        "possible_pain_points": _report_field(
+            metadata.get("pain_points"),
+            sources=report_sources["possible_pain_points"],
+            confidence=70 if metadata.get("pain_points") else 0,
+        ),
+        "best_outreach_angle": _report_field(
+            metadata.get("best_outreach_angle") or metadata.get("suggested_offer") or metadata.get("sales_angle") or metadata.get("partnership_fit"),
+            sources=report_sources["best_outreach_angle"],
+            confidence=78 if metadata.get("best_outreach_angle") or metadata.get("suggested_offer") or metadata.get("sales_angle") or metadata.get("partnership_fit") else 0,
+        ),
+        "recommended_decision_maker": _report_field(
+            metadata.get("recommended_decision_maker")
+            or (selected.get("name") if isinstance(selected, dict) and selected.get("name") else "")
+            or (selected.get("title") if isinstance(selected, dict) and selected.get("title") else "")
+            or (contacts[0].name if contacts else ""),
+            sources=report_sources["recommended_decision_maker"],
+            confidence=int((selected or {}).get("confidence") or 72) if isinstance(selected, dict) and selected else 72 if contacts else 0,
+        ),
+        "personalization_bullets": _report_field(
+            metadata.get("personalization_bullets"),
+            sources=report_sources["personalization_bullets"],
+            confidence=74 if metadata.get("personalization_bullets") else 0,
+        ),
+        "ai_confidence_score": _report_field(
+            metadata.get("confidence_score") or score,
+            sources=report_sources["ai_confidence_score"],
+            confidence=_safe_score(metadata.get("confidence_score") or score, 0),
+        ),
+    }
+    buying_intent = _detect_buying_intent(metadata)
     fields = {
         "official_website": _intelligence_field(official_site, source="CRM and public profile", confidence=90 if official_site else 0),
         "business_description": _intelligence_field(metadata.get("ai_summary") or profile.get("short_description") or profile.get("description"), source="AI website analysis", confidence=84 if metadata.get("ai_summary") else 62),
@@ -1389,6 +4715,8 @@ def _build_company_intelligence(
         "generated_at": datetime.utcnow().isoformat(),
         "cache_key": _company_intelligence_cache_key(lead, metadata, company),
         "sources": source_types,
+        "buying_intent": buying_intent,
+        "report": report,
         "fields": fields,
         "lead_score": {
             "value": score,
@@ -1400,6 +4728,7 @@ def _build_company_intelligence(
 
 
 def _refresh_company_intelligence(db: Session, user_id: str, workspace, lead: Lead, company: Company | None = None) -> dict[str, Any]:
+    db.flush()
     metadata = _lead_metadata(lead)
     if company is None:
         company = db.scalar(select(Company).where(Company.workspace_id == workspace.id, Company.lead_id == lead.id).order_by(Company.updated_at.desc()).limit(1))
@@ -1408,25 +4737,283 @@ def _refresh_company_intelligence(db: Session, user_id: str, workspace, lead: Le
         contacts = list(db.scalars(select(Contact).where(Contact.workspace_id == workspace.id, Contact.company_id == company.id).order_by(Contact.updated_at.desc()).limit(20)).all())
         metadata = {**metadata, **(company.metadata_json or {})}
     intelligence = _build_company_intelligence(lead=lead, metadata=metadata, workspace=workspace, company=company, contacts=contacts)
+    decision_maker_intelligence = _build_decision_maker_intelligence(
+        lead=lead,
+        company=company,
+        contacts=contacts,
+        metadata=metadata,
+        company_intelligence=intelligence,
+    )
+    settings = _settings_for_workspace(db, user_id, workspace)
+    learning_weights = continuous_learning_weights(settings.ai if isinstance(settings.ai, dict) else {})
+    learning_snapshot = continuous_learning_snapshot(settings.ai if isinstance(settings.ai, dict) else {})
+    opportunity_ranking = _opportunity_ranking(
+        lead=lead,
+        metadata=metadata,
+        workspace=workspace,
+        company=company,
+        contacts=contacts,
+        company_intelligence=intelligence,
+        decision_maker_intelligence=decision_maker_intelligence,
+        opportunity_weights=learning_weights.get("opportunity") if isinstance(learning_weights.get("opportunity"), dict) else None,
+    )
+    buying_intent = intelligence.get("buying_intent") if isinstance(intelligence.get("buying_intent"), dict) else {}
+    ai_outreach_strategy = _build_ai_outreach_strategy(
+        lead=lead,
+        metadata=metadata,
+        contacts=contacts,
+        buying_intent=buying_intent,
+        decision_maker_intelligence=decision_maker_intelligence,
+        opportunity_ranking=opportunity_ranking,
+    )
+    ai_competitor_intelligence = _build_ai_competitor_intelligence(
+        lead=lead,
+        metadata=metadata,
+        company_intelligence=intelligence,
+        opportunity_ranking=opportunity_ranking,
+    )
+    ai_company_timeline = _build_ai_company_timeline(
+        lead=lead,
+        metadata=metadata,
+        company_intelligence=intelligence,
+    )
+    ai_sales_timeline = _build_ai_sales_timeline(
+        lead=lead,
+        metadata=metadata,
+        ai_outreach_strategy=ai_outreach_strategy,
+        decision_maker_intelligence=decision_maker_intelligence,
+    )
+    ai_risk_analyzer = _build_ai_risk_analyzer(
+        lead=lead,
+        metadata=metadata,
+        company_intelligence=intelligence,
+        decision_maker_intelligence=decision_maker_intelligence,
+        ai_outreach_strategy=ai_outreach_strategy,
+        opportunity_ranking=opportunity_ranking,
+    )
+    ai_company_predictions = _build_ai_company_predictions(
+        lead=lead,
+        metadata=metadata,
+        company_intelligence=intelligence,
+        decision_maker_intelligence=decision_maker_intelligence,
+        opportunity_ranking=opportunity_ranking,
+        ai_outreach_strategy=ai_outreach_strategy,
+        ai_risk_analyzer=ai_risk_analyzer,
+        ai_company_timeline=ai_company_timeline,
+    )
+    ai_sales_coach = _build_ai_sales_coach(
+        lead=lead,
+        metadata=metadata,
+        company_intelligence=intelligence,
+        decision_maker_intelligence=decision_maker_intelligence,
+        ai_outreach_strategy=ai_outreach_strategy,
+        ai_risk_analyzer=ai_risk_analyzer,
+        opportunity_ranking=opportunity_ranking,
+    )
+    specialized_agents = _build_ai_specialized_agents(
+        lead=lead,
+        company_intelligence=intelligence,
+        decision_maker_intelligence=decision_maker_intelligence,
+        ai_outreach_strategy=ai_outreach_strategy,
+        ai_competitor_intelligence=ai_competitor_intelligence,
+        ai_risk_analyzer=ai_risk_analyzer,
+        ai_sales_coach=ai_sales_coach,
+        ai_company_predictions=ai_company_predictions,
+    )
+    ai_specialized_agents = specialized_agents.get("agents") if isinstance(specialized_agents.get("agents"), dict) else {}
+    ai_agent_intermediate_reasoning = specialized_agents.get("intermediate_reasoning") if isinstance(specialized_agents.get("intermediate_reasoning"), dict) else {}
+    ai_final_orchestrator = specialized_agents.get("final_orchestrator") if isinstance(specialized_agents.get("final_orchestrator"), dict) else {}
+    ai_executive_dashboard = _build_ai_executive_dashboard(
+        ai_specialized_agents=ai_specialized_agents,
+        ai_agent_intermediate_reasoning=ai_agent_intermediate_reasoning,
+        ai_final_orchestrator=ai_final_orchestrator,
+        opportunity_ranking=opportunity_ranking,
+        buying_intent=buying_intent,
+        ai_risk_analyzer=ai_risk_analyzer,
+        ai_outreach_strategy=ai_outreach_strategy,
+        ai_competitor_intelligence=ai_competitor_intelligence,
+    )
+    previous_live_buying_signals = (
+        metadata.get("ai_live_buying_signals")
+        if isinstance(metadata.get("ai_live_buying_signals"), dict)
+        else {}
+    )
+    ai_live_buying_signals = _build_ai_live_buying_signals(
+        previous_live_buying_signals=previous_live_buying_signals,
+        current_snapshot=_live_buying_signal_snapshot(
+            lead=lead,
+            metadata=metadata,
+            company_intelligence=intelligence,
+        ),
+    )
+    ai_lead_prioritization = _lead_prioritization_from_metadata(
+        company=company,
+        metadata=metadata,
+        prioritization_weights=learning_weights.get("prioritization") if isinstance(learning_weights.get("prioritization"), dict) else None,
+    )
+    ai_revenue_engine_report = _build_ai_revenue_engine_report(
+        previous_report=metadata.get("ai_revenue_engine_report") if isinstance(metadata.get("ai_revenue_engine_report"), dict) else {},
+        company_intelligence=intelligence,
+        opportunity_ranking=opportunity_ranking,
+        buying_intent=buying_intent,
+        decision_maker_intelligence=decision_maker_intelligence,
+        ai_competitor_intelligence=ai_competitor_intelligence,
+        ai_sales_coach=ai_sales_coach,
+        ai_outreach_strategy=ai_outreach_strategy,
+        ai_risk_analyzer=ai_risk_analyzer,
+    )
+    ai_crm = _build_ai_crm_summary(
+        lead=lead,
+        company=company,
+        metadata=metadata,
+        buying_intent=buying_intent,
+        ai_risk_analyzer=ai_risk_analyzer,
+        ai_lead_prioritization=ai_lead_prioritization,
+        opportunity_ranking=opportunity_ranking,
+        ai_revenue_engine_report=ai_revenue_engine_report,
+    )
+    ai_ceo_dashboard = _build_ai_ceo_dashboard(
+        lead=lead,
+        company=company,
+        ai_crm=ai_crm,
+        ai_live_buying_signals=ai_live_buying_signals,
+        ai_competitor_intelligence=ai_competitor_intelligence,
+        ai_revenue_engine_report=ai_revenue_engine_report,
+        ai_executive_dashboard=ai_executive_dashboard,
+        ai_company_predictions=ai_company_predictions,
+        opportunity_ranking=opportunity_ranking,
+        ai_risk_analyzer=ai_risk_analyzer,
+    )
+    ai_sales_os = _build_ai_sales_os(
+        lead=lead,
+        company=company,
+        company_intelligence=intelligence,
+        decision_maker_intelligence=decision_maker_intelligence,
+        ai_competitor_intelligence=ai_competitor_intelligence,
+        ai_outreach_strategy=ai_outreach_strategy,
+        ai_sales_timeline=ai_sales_timeline,
+        ai_live_buying_signals=ai_live_buying_signals,
+        ai_crm=ai_crm,
+        ai_company_predictions=ai_company_predictions,
+        ai_risk_analyzer=ai_risk_analyzer,
+        ai_revenue_engine_report=ai_revenue_engine_report,
+        opportunity_ranking=opportunity_ranking,
+        ai_ceo_dashboard=ai_ceo_dashboard,
+    )
+    ai_evidence_engine = _build_ai_evidence_engine(
+        company_intelligence=intelligence,
+        opportunity_ranking=opportunity_ranking,
+        ai_outreach_strategy=ai_outreach_strategy,
+        ai_competitor_intelligence=ai_competitor_intelligence,
+        ai_company_timeline=ai_company_timeline,
+        ai_company_predictions=ai_company_predictions,
+        ai_sales_timeline=ai_sales_timeline,
+        ai_risk_analyzer=ai_risk_analyzer,
+        ai_sales_coach=ai_sales_coach,
+        enrichment_step="company_intelligence_refresh",
+    )
     lead.notes = _merge_lead_metadata(
         lead,
         {
             "company_intelligence": intelligence,
+            "decision_maker_intelligence": decision_maker_intelligence,
+            "opportunity_ranking": opportunity_ranking,
+            "overall_score": opportunity_ranking["overall_score"],
+            "reasoning": opportunity_ranking["reasoning"],
+            "top_positive_signals": opportunity_ranking["top_positive_signals"],
+            "top_negative_signals": opportunity_ranking["top_negative_signals"],
+            "recommended_next_action": opportunity_ranking["recommended_next_action"],
+            "confidence": opportunity_ranking["confidence"],
             "company_intelligence_cached_at": intelligence["generated_at"],
             "company_intelligence_cache_key": intelligence["cache_key"],
             "priority_score": intelligence["lead_score"]["value"],
             "confidence_score": intelligence["lead_score"]["confidence"],
+            "buying_signal_score": _safe_score(buying_intent.get("buying_signal_score"), 0),
+            "buying_signal_urgency": str(buying_intent.get("urgency") or ""),
+            "buying_signal_explanation": str(buying_intent.get("explanation") or ""),
+            "buying_signal_evidence": buying_intent.get("evidence") if isinstance(buying_intent.get("evidence"), list) else [],
+            "buying_signal_confidence": _safe_score(buying_intent.get("confidence"), 0),
+            "recommended_outreach_timing": str(buying_intent.get("recommended_outreach_timing") or ""),
+            "ai_outreach_strategy": ai_outreach_strategy,
+            "ai_competitor_intelligence": ai_competitor_intelligence,
+            "ai_company_timeline": ai_company_timeline,
+            "ai_company_predictions": ai_company_predictions,
+            "ai_sales_timeline": ai_sales_timeline,
+            "ai_risk_analyzer": ai_risk_analyzer,
+            "ai_sales_coach": ai_sales_coach,
+            "ai_specialized_agents": ai_specialized_agents,
+            "ai_agent_intermediate_reasoning": ai_agent_intermediate_reasoning,
+            "ai_final_orchestrator": ai_final_orchestrator,
+            "ai_executive_dashboard": ai_executive_dashboard,
+            "ai_live_buying_signals": ai_live_buying_signals,
+            "ai_lead_prioritization": ai_lead_prioritization,
+            "lead_priority_tier": ai_lead_prioritization["tier"],
+            "ai_revenue_engine_report": ai_revenue_engine_report,
+            "ai_crm": ai_crm,
+            "ai_ceo_dashboard": ai_ceo_dashboard,
+            "ai_sales_os": ai_sales_os,
+            "continuous_learning": learning_snapshot,
+            "ai_evidence_engine": ai_evidence_engine,
         },
     )
     if company is not None:
         company.metadata_json = {
             **(company.metadata_json or {}),
             "company_intelligence": intelligence,
+            "decision_maker_intelligence": decision_maker_intelligence,
+            "opportunity_ranking": opportunity_ranking,
+            "overall_score": opportunity_ranking["overall_score"],
+            "reasoning": opportunity_ranking["reasoning"],
+            "top_positive_signals": opportunity_ranking["top_positive_signals"],
+            "top_negative_signals": opportunity_ranking["top_negative_signals"],
+            "recommended_next_action": opportunity_ranking["recommended_next_action"],
+            "confidence": opportunity_ranking["confidence"],
             "company_intelligence_cached_at": intelligence["generated_at"],
             "company_intelligence_cache_key": intelligence["cache_key"],
             "priority_score": intelligence["lead_score"]["value"],
             "confidence_score": intelligence["lead_score"]["confidence"],
+            "buying_signal_score": _safe_score(buying_intent.get("buying_signal_score"), 0),
+            "buying_signal_urgency": str(buying_intent.get("urgency") or ""),
+            "buying_signal_explanation": str(buying_intent.get("explanation") or ""),
+            "buying_signal_evidence": buying_intent.get("evidence") if isinstance(buying_intent.get("evidence"), list) else [],
+            "buying_signal_confidence": _safe_score(buying_intent.get("confidence"), 0),
+            "recommended_outreach_timing": str(buying_intent.get("recommended_outreach_timing") or ""),
+            "ai_outreach_strategy": ai_outreach_strategy,
+            "ai_competitor_intelligence": ai_competitor_intelligence,
+            "ai_company_timeline": ai_company_timeline,
+            "ai_company_predictions": ai_company_predictions,
+            "ai_sales_timeline": ai_sales_timeline,
+            "ai_risk_analyzer": ai_risk_analyzer,
+            "ai_sales_coach": ai_sales_coach,
+            "ai_specialized_agents": ai_specialized_agents,
+            "ai_agent_intermediate_reasoning": ai_agent_intermediate_reasoning,
+            "ai_final_orchestrator": ai_final_orchestrator,
+            "ai_executive_dashboard": ai_executive_dashboard,
+            "ai_live_buying_signals": ai_live_buying_signals,
+            "ai_lead_prioritization": ai_lead_prioritization,
+            "lead_priority_tier": ai_lead_prioritization["tier"],
+            "ai_revenue_engine_report": ai_revenue_engine_report,
+            "ai_crm": ai_crm,
+            "ai_ceo_dashboard": ai_ceo_dashboard,
+            "ai_sales_os": ai_sales_os,
+            "ai_evidence_engine": ai_evidence_engine,
         }
+        profiles = decision_maker_intelligence.get("profiles") if isinstance(decision_maker_intelligence.get("profiles"), list) else []
+        profile_by_contact = {
+            str(item.get("contact_id")): item
+            for item in profiles
+            if isinstance(item, dict) and item.get("contact_id")
+        }
+        for contact in contacts:
+            profile = profile_by_contact.get(str(contact.id))
+            if not profile:
+                continue
+            contact.metadata_json = {
+                **(contact.metadata_json or {}),
+                "decision_maker_intelligence": profile,
+                "decision_maker_intelligence_generated_at": decision_maker_intelligence.get("generated_at"),
+            }
+            contact.updated_at = datetime.utcnow()
         company.updated_at = datetime.utcnow()
     return intelligence
 
@@ -1551,6 +5138,172 @@ def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallb
     updates["company_intelligence"] = _build_company_intelligence(lead=lead, metadata={**combined_metadata, "intelligence_quality": updates["intelligence_quality"]}, workspace=workspace)
     updates["company_intelligence_cached_at"] = updates["company_intelligence"]["generated_at"]
     updates["company_intelligence_cache_key"] = updates["company_intelligence"]["cache_key"]
+    buying_intent = updates["company_intelligence"].get("buying_intent") if isinstance(updates["company_intelligence"].get("buying_intent"), dict) else {}
+    updates["buying_signal_score"] = _safe_score(buying_intent.get("buying_signal_score"), 0)
+    updates["buying_signal_urgency"] = str(buying_intent.get("urgency") or "")
+    updates["buying_signal_explanation"] = str(buying_intent.get("explanation") or "")
+    updates["buying_signal_evidence"] = buying_intent.get("evidence") if isinstance(buying_intent.get("evidence"), list) else []
+    updates["buying_signal_confidence"] = _safe_score(buying_intent.get("confidence"), 0)
+    updates["recommended_outreach_timing"] = str(buying_intent.get("recommended_outreach_timing") or "")
+    updates["ai_outreach_strategy"] = _build_ai_outreach_strategy(
+        lead=lead,
+        metadata={**combined_metadata, **updates},
+        contacts=[],
+        buying_intent=buying_intent,
+        decision_maker_intelligence={},
+        opportunity_ranking={},
+    )
+    updates["ai_competitor_intelligence"] = _build_ai_competitor_intelligence(
+        lead=lead,
+        metadata={**combined_metadata, **updates},
+        company_intelligence=updates["company_intelligence"],
+        opportunity_ranking={},
+    )
+    updates["ai_company_timeline"] = _build_ai_company_timeline(
+        lead=lead,
+        metadata={**combined_metadata, **updates},
+        company_intelligence=updates["company_intelligence"],
+    )
+    updates["ai_sales_timeline"] = _build_ai_sales_timeline(
+        lead=lead,
+        metadata={**combined_metadata, **updates},
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        decision_maker_intelligence={},
+    )
+    updates["ai_risk_analyzer"] = _build_ai_risk_analyzer(
+        lead=lead,
+        metadata={**combined_metadata, **updates},
+        company_intelligence=updates["company_intelligence"],
+        decision_maker_intelligence={},
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        opportunity_ranking={},
+    )
+    updates["ai_company_predictions"] = _build_ai_company_predictions(
+        lead=lead,
+        metadata={**combined_metadata, **updates},
+        company_intelligence=updates["company_intelligence"],
+        decision_maker_intelligence={},
+        opportunity_ranking={},
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+        ai_company_timeline=updates["ai_company_timeline"],
+    )
+    updates["ai_sales_coach"] = _build_ai_sales_coach(
+        lead=lead,
+        metadata={**combined_metadata, **updates},
+        company_intelligence=updates["company_intelligence"],
+        decision_maker_intelligence={},
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+        opportunity_ranking={},
+    )
+    specialized_agents = _build_ai_specialized_agents(
+        lead=lead,
+        company_intelligence=updates["company_intelligence"],
+        decision_maker_intelligence={},
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        ai_competitor_intelligence=updates["ai_competitor_intelligence"],
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+        ai_sales_coach=updates["ai_sales_coach"],
+        ai_company_predictions=updates["ai_company_predictions"],
+    )
+    updates["ai_specialized_agents"] = specialized_agents.get("agents") if isinstance(specialized_agents.get("agents"), dict) else {}
+    updates["ai_agent_intermediate_reasoning"] = (
+        specialized_agents.get("intermediate_reasoning")
+        if isinstance(specialized_agents.get("intermediate_reasoning"), dict)
+        else {}
+    )
+    updates["ai_final_orchestrator"] = (
+        specialized_agents.get("final_orchestrator")
+        if isinstance(specialized_agents.get("final_orchestrator"), dict)
+        else {}
+    )
+    updates["ai_executive_dashboard"] = _build_ai_executive_dashboard(
+        ai_specialized_agents=updates["ai_specialized_agents"],
+        ai_agent_intermediate_reasoning=updates["ai_agent_intermediate_reasoning"],
+        ai_final_orchestrator=updates["ai_final_orchestrator"],
+        opportunity_ranking={},
+        buying_intent=buying_intent,
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        ai_competitor_intelligence=updates["ai_competitor_intelligence"],
+    )
+    previous_live_buying_signals = (
+        metadata.get("ai_live_buying_signals")
+        if isinstance(metadata.get("ai_live_buying_signals"), dict)
+        else {}
+    )
+    updates["ai_live_buying_signals"] = _build_ai_live_buying_signals(
+        previous_live_buying_signals=previous_live_buying_signals,
+        current_snapshot=_live_buying_signal_snapshot(
+            lead=lead,
+            metadata={**combined_metadata, **updates},
+            company_intelligence=updates["company_intelligence"],
+        ),
+    )
+    updates["ai_lead_prioritization"] = _lead_prioritization_from_metadata(company=None, metadata={**combined_metadata, **updates})
+    updates["lead_priority_tier"] = updates["ai_lead_prioritization"]["tier"]
+    updates["ai_revenue_engine_report"] = _build_ai_revenue_engine_report(
+        previous_report=metadata.get("ai_revenue_engine_report") if isinstance(metadata.get("ai_revenue_engine_report"), dict) else {},
+        company_intelligence=updates["company_intelligence"],
+        opportunity_ranking={},
+        buying_intent=buying_intent,
+        decision_maker_intelligence={},
+        ai_competitor_intelligence=updates["ai_competitor_intelligence"],
+        ai_sales_coach=updates["ai_sales_coach"],
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+    )
+    updates["ai_crm"] = _build_ai_crm_summary(
+        lead=lead,
+        company=None,
+        metadata={**combined_metadata, **updates},
+        buying_intent=buying_intent,
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+        ai_lead_prioritization=updates["ai_lead_prioritization"],
+        opportunity_ranking={},
+        ai_revenue_engine_report=updates["ai_revenue_engine_report"],
+    )
+    updates["ai_ceo_dashboard"] = _build_ai_ceo_dashboard(
+        lead=lead,
+        company=None,
+        ai_crm=updates["ai_crm"],
+        ai_live_buying_signals=updates["ai_live_buying_signals"],
+        ai_competitor_intelligence=updates["ai_competitor_intelligence"],
+        ai_revenue_engine_report=updates["ai_revenue_engine_report"],
+        ai_executive_dashboard=updates["ai_executive_dashboard"],
+        ai_company_predictions=updates["ai_company_predictions"],
+        opportunity_ranking={},
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+    )
+    updates["ai_sales_os"] = _build_ai_sales_os(
+        lead=lead,
+        company=None,
+        company_intelligence=updates["company_intelligence"],
+        decision_maker_intelligence={},
+        ai_competitor_intelligence=updates["ai_competitor_intelligence"],
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        ai_sales_timeline=updates["ai_sales_timeline"],
+        ai_live_buying_signals=updates["ai_live_buying_signals"],
+        ai_crm=updates["ai_crm"],
+        ai_company_predictions=updates["ai_company_predictions"],
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+        ai_revenue_engine_report=updates["ai_revenue_engine_report"],
+        opportunity_ranking={},
+        ai_ceo_dashboard=updates["ai_ceo_dashboard"],
+    )
+    updates["ai_evidence_engine"] = _build_ai_evidence_engine(
+        company_intelligence=updates["company_intelligence"],
+        opportunity_ranking={},
+        ai_outreach_strategy=updates["ai_outreach_strategy"],
+        ai_competitor_intelligence=updates["ai_competitor_intelligence"],
+        ai_company_timeline=updates["ai_company_timeline"],
+        ai_company_predictions=updates["ai_company_predictions"],
+        ai_sales_timeline=updates["ai_sales_timeline"],
+        ai_risk_analyzer=updates["ai_risk_analyzer"],
+        ai_sales_coach=updates["ai_sales_coach"],
+        enrichment_step="b2b_fallback_enrichment",
+    )
     lead.notes = _merge_lead_metadata(lead, updates)
 
 
@@ -1746,18 +5499,20 @@ def _lead_recently_enriched(lead: Lead) -> bool:
     return datetime.utcnow() - last_enriched < timedelta(hours=cache_hours)
 
 
-def process_enrichment_job(job_id: UUID) -> None:
+def process_enrichment_job(job_id: UUID, claim_token: str | None = None) -> bool:
     db = get_sessionmaker()()
     try:
         job = db.get(EnrichmentJob, job_id)
         if job is None:
-            return
+            return False
+        if claim_token and (job.status != "running" or job.locked_by != claim_token):
+            logger.warning("Ignoring enrichment execution for stale claim job_id=%s claim_token=%s status=%s locked_by=%s", job_id, claim_token, job.status, job.locked_by)
+            return False
         workspace = db.get(Workspace, job.workspace_id)
         lead = db.scalar(select(Lead).where(Lead.id == job.lead_id, Lead.workspace_id == job.workspace_id))
         request_id = job.request_id or str(job.id)
         if workspace is None or lead is None:
-            mark_cancelled(db, job, message="Workspace or lead no longer exists.")
-            return
+            return mark_cancelled(db, job, message="Workspace or lead no longer exists.", claim_token=claim_token)
         request = _background_request(job.language or "English")
         language = job.language or workspace.language or "English"
         if job.cancel_requested or _lead_enrichment_cancelled(lead):
@@ -1770,8 +5525,7 @@ def process_enrichment_job(job_id: UUID) -> None:
                 {"website_analysis": "waiting", "decision_maker": "waiting", "verified_email": "waiting", "ai_email": "waiting"},
             )
             _sync_lead_to_crm(db, job.user_id, workspace, lead)
-            mark_cancelled(db, job)
-            return
+            return mark_cancelled(db, job, claim_token=claim_token)
 
         lead.notes = _merge_lead_metadata(
             lead,
@@ -1785,7 +5539,8 @@ def process_enrichment_job(job_id: UUID) -> None:
             ),
         )
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
-        update_job_progress(db, job, stage="website_analysis", message=_localized_fallback_text(language, "progress_ai_analyzing"), percent=25)
+        if not update_job_progress(db, job, stage="website_analysis", message=_localized_fallback_text(language, "progress_ai_analyzing"), percent=25, claim_token=claim_token):
+            return False
         _lead_trace(request_id, "durable_auto_enrichment_started", lead_id=str(lead.id), job_id=str(job.id), company=lead.company, attempt=job.attempts)
 
         if _apply_cached_company_intelligence(db, job.user_id, workspace, lead, request_id):
@@ -1802,19 +5557,18 @@ def process_enrichment_job(job_id: UUID) -> None:
             )
             _finalize_enrichment_workflow(db, workspace, lead)
             _sync_lead_to_crm(db, job.user_id, workspace, lead)
-            complete_job(db, job, partial=False, warnings=[])
+            completed = complete_job(db, job, partial=False, warnings=[], claim_token=claim_token)
             _lead_trace(request_id, "durable_auto_enrichment_cache_hit", lead_id=str(lead.id), job_id=str(job.id))
-            return
+            return completed
 
         warnings = _complete_turnkey_b2b_research(db, request, job.user_id, workspace, [lead], request_id)
+        db.refresh(job)
         if job.cancel_requested:
-            mark_cancelled(db, job)
-            return
+            return mark_cancelled(db, job, claim_token=claim_token)
 
         lead = db.scalar(select(Lead).where(Lead.id == job.lead_id, Lead.workspace_id == job.workspace_id))
         if lead is None:
-            mark_cancelled(db, job, message="Lead no longer exists.")
-            return
+            return mark_cancelled(db, job, message="Lead no longer exists.", claim_token=claim_token)
         status = "partial_success" if warnings else "completed"
         lead.notes = _merge_lead_metadata(
             lead,
@@ -1830,8 +5584,9 @@ def process_enrichment_job(job_id: UUID) -> None:
         )
         _finalize_enrichment_workflow(db, workspace, lead)
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
-        complete_job(db, job, partial=bool(warnings), warnings=warnings)
+        completed = complete_job(db, job, partial=bool(warnings), warnings=warnings, claim_token=claim_token)
         _lead_trace(request_id, "durable_auto_enrichment_finished", lead_id=str(lead.id), job_id=str(job.id), status=status, warnings=len(warnings))
+        return completed
     finally:
         db.close()
 
@@ -1855,6 +5610,250 @@ def mark_enrichment_job_failed(job_id: UUID, exc: Exception, *, final: bool = Fa
         _set_workflow_stages(lead, {"website_analysis": "error", "decision_maker": "error", "verified_email": "error", "ai_email": "error"})
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
         db.commit()
+    finally:
+        db.close()
+
+
+def _coerce_dt(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _lead_prioritization_from_metadata(
+    *,
+    company: Company | None,
+    metadata: dict[str, Any],
+    prioritization_weights: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    now = datetime.utcnow()
+    decision_intel = metadata.get("decision_maker_intelligence") if isinstance(metadata.get("decision_maker_intelligence"), dict) else {}
+    profiles = decision_intel.get("profiles") if isinstance(decision_intel.get("profiles"), list) else []
+    top_profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+
+    buying_intent_score = _safe_score(metadata.get("buying_signal_score"), 0)
+    opportunity_score = _safe_score(metadata.get("overall_score"), 0)
+    decision_maker_quality = _safe_score(top_profile.get("confidence_score"), 0)
+
+    website_activity_signals = _dedupe_text_values(
+        [
+            *_event_texts(metadata.get("website_changes")),
+            *_event_texts(metadata.get("blog_news_activity")),
+            *_event_texts(metadata.get("news_activity")),
+            *_event_texts(metadata.get("blog_activity")),
+        ]
+    )
+    website_activity_score = _safe_score(25 + min(70, len(website_activity_signals) * 20), 20)
+
+    last_enriched = _coerce_dt(metadata.get("last_enriched_at") or metadata.get("company_intelligence_cached_at"))
+    if not last_enriched and company is not None:
+        last_enriched = company.updated_at
+    age_days = max(0, int((now - last_enriched).total_seconds() // 86400)) if last_enriched else 999
+    freshness = _safe_score(95 if age_days <= 1 else 82 if age_days <= 3 else 68 if age_days <= 7 else 50 if age_days <= 14 else 30)
+
+    ai_confidence = _safe_score(metadata.get("confidence_score"), 0)
+
+    raw_weights = prioritization_weights if isinstance(prioritization_weights, dict) else DEFAULT_PRIORITIZATION_WEIGHTS
+    total_weight = sum(max(0.0, float(raw_weights.get(name) or 0.0)) for name in DEFAULT_PRIORITIZATION_WEIGHTS.keys())
+    if total_weight <= 0:
+        weights = DEFAULT_PRIORITIZATION_WEIGHTS.copy()
+    else:
+        weights = {
+            name: max(0.0, float(raw_weights.get(name) or 0.0)) / total_weight
+            for name in DEFAULT_PRIORITIZATION_WEIGHTS.keys()
+        }
+
+    weighted_score = round(
+        buying_intent_score * weights["buying_intent"]
+        + opportunity_score * weights["opportunity_score"]
+        + decision_maker_quality * weights["decision_maker_quality"]
+        + website_activity_score * weights["website_activity"]
+        + freshness * weights["freshness"]
+        + ai_confidence * weights["ai_confidence"]
+    )
+    score = _safe_score(weighted_score, 0)
+
+    missing_data_flags = [
+        buying_intent_score == 0,
+        opportunity_score == 0,
+        decision_maker_quality == 0,
+        ai_confidence == 0,
+    ]
+    missing_ratio = sum(1 for flag in missing_data_flags if flag) / max(1, len(missing_data_flags))
+    if missing_ratio >= 0.5:
+        tier = "Needs More Data"
+    elif score >= 75:
+        tier = "Hot"
+    elif score >= 55:
+        tier = "Warm"
+    else:
+        tier = "Cold"
+
+    reasoning_parts = _dedupe_text_values(
+        [
+            f"Buying Intent {buying_intent_score}",
+            f"Opportunity Score {opportunity_score}",
+            f"Decision Maker Quality {decision_maker_quality}",
+            f"Website Activity {website_activity_score}",
+            f"Freshness {freshness}",
+            f"AI Confidence {ai_confidence}",
+        ]
+    )
+    confidence = _safe_score(round((100 - missing_ratio * 40 + ai_confidence) / 2), 35)
+    return {
+        "generated_at": now.isoformat(),
+        "tier": tier,
+        "score": score,
+        "reasoning": "; ".join(reasoning_parts),
+        "confidence": confidence,
+        "factors": {
+            "buying_intent": buying_intent_score,
+            "opportunity_score": opportunity_score,
+            "decision_maker_quality": decision_maker_quality,
+            "website_activity": website_activity_score,
+            "freshness": freshness,
+            "ai_confidence": ai_confidence,
+        },
+        "weights_used": weights,
+    }
+
+
+def run_continuous_company_monitoring_once(*, workspace_id: UUID | None = None) -> list[dict[str, Any]]:
+    db = get_sessionmaker()()
+    changed: list[dict[str, Any]] = []
+    try:
+        stmt = select(Company).order_by(Company.updated_at.desc()).limit(2000)
+        if workspace_id is not None:
+            stmt = select(Company).where(Company.workspace_id == workspace_id).order_by(Company.updated_at.desc()).limit(2000)
+        companies = list(db.scalars(stmt).all())
+        for company in companies:
+            metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+            previous_live = metadata.get("ai_live_buying_signals") if isinstance(metadata.get("ai_live_buying_signals"), dict) else {}
+            intelligence = metadata.get("company_intelligence") if isinstance(metadata.get("company_intelligence"), dict) else {}
+            lead = db.get(Lead, company.lead_id) if company.lead_id else None
+
+            current_snapshot = _live_buying_signal_snapshot(
+                lead=lead,
+                metadata=metadata,
+                company_intelligence=intelligence,
+            )
+            monitoring = _build_ai_live_buying_signals(
+                previous_live_buying_signals=previous_live,
+                current_snapshot=current_snapshot,
+            )
+            latest_changes = [item for item in monitoring.get("latest_changes", []) if isinstance(item, dict)]
+            if not latest_changes:
+                continue
+
+            report_regenerated = False
+            workspace = db.get(Workspace, company.workspace_id) if company.workspace_id else None
+            if lead is not None and workspace is not None:
+                _refresh_company_intelligence(
+                    db,
+                    user_id=str(company.user_id or lead.user_id or ""),
+                    workspace=workspace,
+                    lead=lead,
+                    company=company,
+                )
+                report_regenerated = True
+            else:
+                company.metadata_json = {
+                    **metadata,
+                    "ai_live_buying_signals": monitoring,
+                }
+                company.updated_at = datetime.utcnow()
+
+            changed.append(
+                {
+                    "company_id": company.id,
+                    "lead_id": company.lead_id,
+                    "company_name": str(company.name or ""),
+                    "detected_at": str(monitoring.get("generated_at") or datetime.utcnow().isoformat()),
+                    "changes": latest_changes,
+                    "report_regenerated": report_regenerated,
+                }
+            )
+        db.commit()
+        return changed
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@router.post("/monitoring/run", response_model=UsageMonitoringOut)
+def run_company_monitoring(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageMonitoringOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    monitored_count = int(db.scalar(select(func.count(Company.id)).where(Company.workspace_id == workspace.id)) or 0)
+    changes = run_continuous_company_monitoring_once(workspace_id=workspace.id)
+    return UsageMonitoringOut(
+        status="success",
+        message=(
+            "Monitoring completed. Returning only newly detected company changes."
+            if changes
+            else "Monitoring completed. No new company changes detected."
+        ),
+        monitored_companies=monitored_count,
+        changed_companies=len(changes),
+        changes=[UsageMonitoringChangeOut.model_validate(item) for item in changes],
+    )
+
+
+def run_nightly_lead_prioritization_once() -> int:
+    db = get_sessionmaker()()
+    updated = 0
+    try:
+        companies = list(db.scalars(select(Company).order_by(Company.updated_at.desc()).limit(2000)).all())
+        weights_by_workspace: dict[str, dict[str, float]] = {}
+        for company in companies:
+            metadata = company.metadata_json or {}
+            workspace_key = str(company.workspace_id or "")
+            prioritization_weights: dict[str, float] | None = None
+            if workspace_key:
+                if workspace_key not in weights_by_workspace:
+                    settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == company.workspace_id))
+                    if settings is not None:
+                        learning = continuous_learning_weights(settings.ai if isinstance(settings.ai, dict) else {})
+                        weights_by_workspace[workspace_key] = learning.get("prioritization") if isinstance(learning.get("prioritization"), dict) else DEFAULT_PRIORITIZATION_WEIGHTS.copy()
+                    else:
+                        weights_by_workspace[workspace_key] = DEFAULT_PRIORITIZATION_WEIGHTS.copy()
+                prioritization_weights = weights_by_workspace.get(workspace_key)
+
+            prioritization = _lead_prioritization_from_metadata(
+                company=company,
+                metadata=metadata,
+                prioritization_weights=prioritization_weights,
+            )
+            company.metadata_json = {
+                **metadata,
+                "ai_lead_prioritization": prioritization,
+                "lead_priority_tier": prioritization["tier"],
+                "priority_score": prioritization["score"],
+                "next_recommended_action": metadata.get("next_recommended_action") or metadata.get("recommended_next_action") or "",
+            }
+            company.updated_at = datetime.utcnow()
+            if company.lead_id:
+                lead = db.get(Lead, company.lead_id)
+                if lead is not None:
+                    lead.notes = _merge_lead_metadata(
+                        lead,
+                        {
+                            "ai_lead_prioritization": prioritization,
+                            "lead_priority_tier": prioritization["tier"],
+                            "priority_score": prioritization["score"],
+                        },
+                    )
+            updated += 1
+        db.commit()
+        return updated
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -2356,6 +6355,18 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
         capture_provider_exception(exc, provider="postgresql", endpoint="workspace_app.company_sync")
     if payload.address:
         company.address = payload.address
+
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    _mark_auto_enrichment_queued(lead, request_id, _workspace_language(request, workspace))
+    enqueue_company_enrichment_job(
+        db,
+        user_id=user.user_id,
+        workspace_id=workspace.id,
+        lead=lead,
+        request_id=request_id,
+        language=_workspace_language(request, workspace),
+        max_attempts=max(1, min(5, int(get_settings().enrichment_max_retries or 2) + 1)),
+    )
     db.commit()
     db.refresh(company)
     return UsageCompanyCreateOut(
@@ -2665,6 +6676,7 @@ def deep_search_company_contacts(
         warnings=[error.get("message", "") for error in result.errors if error.get("message")][:4],
         completed_steps=[stage for stage, state in result.stages.items() if state == "completed"],
         workflow_stages=company_out.workflow_stages,
+        workflow_state=company_out.ai_workflow_engine,
         missing_fields=[] if result.verified_email else ["verified_email"],
         recommended_actions=["Generate email for review"] if result.verified_email else ["Add email manually", "Retry search"],
         next_action="Generate email for review" if result.verified_email else "Add a verified email or choose another contact",
@@ -3032,6 +7044,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
 
     _lead_trace(request_id, "complete_opportunity_database_save_started", lead_id=str(lead.id), company=lead.company)
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    _refresh_company_intelligence(db, user.user_id, workspace, lead, company)
     db.commit()
     db.refresh(company)
     if email:
@@ -3053,6 +7066,7 @@ def complete_company_opportunity(company_id: UUID, request: Request, user: Works
         warnings=warnings,
         completed_steps=completed_steps,
         workflow_stages=company_out.workflow_stages,
+        workflow_state=company_out.ai_workflow_engine,
         **guidance,
     )
 
@@ -3080,6 +7094,7 @@ def restart_company_auto_enrichment(company_id: UUID, request: Request, user: Wo
         message="AI enrichment restarted. The company card will update as research, contacts and email draft are completed.",
         company=company_out,
         workflow_stages=company_out.workflow_stages,
+        workflow_state=company_out.ai_workflow_engine,
         next_action="Keep this company open or return to CRM while AI enrichment runs.",
     )
 
@@ -3123,6 +7138,7 @@ def cancel_company_auto_enrichment(company_id: UUID, request: Request, user: Wor
         message="AI enrichment stopped. Saved company data stayed in CRM.",
         company=company_out,
         workflow_stages=company_out.workflow_stages,
+        workflow_state=company_out.ai_workflow_engine,
         next_action="Restart enrichment when you want OutreachAI to continue filling missing sales data.",
     )
 
