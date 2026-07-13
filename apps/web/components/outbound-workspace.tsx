@@ -5587,6 +5587,44 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
 
   async function saveSender(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const senderName = form.sender_name.trim();
+    const senderEmail = form.sender_email.trim();
+    const replyToEmail = form.reply_to.trim();
+    const smtpHost = form.smtp_host.trim();
+    const smtpUsername = form.smtp_username.trim();
+    const smtpPassword = form.smtp_password;
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!senderName || !senderEmail) {
+      setError(t("Enter sender name and sender email before saving."));
+      setSaved("");
+      return;
+    }
+
+    if (!emailPattern.test(senderEmail)) {
+      setError(t("Enter a valid sender email before saving."));
+      setSaved("");
+      return;
+    }
+
+    if (replyToEmail && !emailPattern.test(replyToEmail)) {
+      setError(t("Enter a valid reply-to email or leave it blank."));
+      setSaved("");
+      return;
+    }
+
+    if (form.provider === "smtp") {
+      if (!smtpHost || !smtpUsername) {
+        setError(t("Enter SMTP host and username before saving."));
+        setSaved("");
+        return;
+      }
+      if (!status?.smtp_configured && !smtpPassword.trim()) {
+        setError(t("Enter an SMTP password before saving."));
+        setSaved("");
+        return;
+      }
+    }
     setSaving(true);
     setError("");
     setSaved("");
@@ -5595,15 +5633,15 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
         method: "PUT",
         body: JSON.stringify({
           provider: form.provider,
-          sender_name: form.sender_name,
-          sender_email: form.sender_email || null,
-          reply_to: form.reply_to || null,
+          sender_name: senderName,
+          sender_email: senderEmail || null,
+          reply_to: replyToEmail || null,
           daily_send_limit: Number(form.daily_send_limit) || 25,
           enabled: form.enabled,
-          smtp_host: form.smtp_host,
+          smtp_host: smtpHost,
           smtp_port: Number(form.smtp_port) || 587,
-          smtp_username: form.smtp_username,
-          smtp_password: form.smtp_password,
+          smtp_username: smtpUsername,
+          smtp_password: smtpPassword,
           smtp_use_tls: form.smtp_use_tls,
         }),
       });
@@ -5620,7 +5658,13 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
         smtp_username: next.smtp_username || current.smtp_username,
         smtp_password: "",
       }));
-      setSaved(t("Sending setup saved"));
+      if (next.connected) {
+        setSaved(t("Sending setup saved"));
+        setError("");
+      } else {
+        setSaved("");
+        setError(t(next.next_action || next.reason || "Sender is not connected yet. Complete the required sending setup, then try sending again."));
+      }
     } catch (err) {
       reportWidgetFailure(err, "outreach-sender-save", { endpoint: "/api/outreach/sender" });
       setError(userMessage(err, "Sending setup could not be saved.", t));

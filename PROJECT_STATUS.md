@@ -24,6 +24,18 @@ This workflow is ready for customer onboarding review and can be released indepe
 	- `npm run lint` in `apps/web`: passed
 	- `npx playwright test tests/regression/critical-actions.spec.ts -g "blocked send shows direct sender setup action"` in `apps/web`: passed
 
+## Latest Update - Customer Activation Blocker (Sender Setup False Success)
+
+- Activation audit identified the next blocker in sender connection: the UI could show a success state after saving even when sender status remained disconnected.
+- Fixed by adding sender-form validation before save and preventing success confirmation unless the sender is actually connected.
+- Added clear actionable messaging when save succeeds but sender is still not connected.
+- Added regression coverage for required sender fields and non-connected save behavior.
+- Validation completed for blocker fix:
+	- `npm run lint` in `apps/web`: passed
+	- `npm test` in `apps/web`: passed
+	- `npm run build` in `apps/web`: passed
+	- `npx playwright test tests/settings/settings.spec.ts tests/regression/critical-actions.spec.ts -g "sender setup validates required fields and blocks false success|blocked send shows direct sender setup action"` in `apps/web`: passed
+
 ## 1. Executive Summary
 
 OutreachAI has strong frontend momentum, a broad backend feature surface, and credible deployment scaffolding. The product is in an advanced pre-production state with major customer workflows implemented, while backend stabilization and release discipline are the main blockers to fully predictable production operations.

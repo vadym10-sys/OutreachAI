@@ -3,6 +3,16 @@
 ## 2026-07-13
 
 ### fix(frontend)
+- Fixed a Customer Activation blocker in sender setup.
+- Sender setup no longer shows a success confirmation when the sender remains disconnected.
+- Added client-side sender setup validation for required sender fields and email format before save.
+- Added clearer actionable messaging when sender status is still not connected after save.
+
+### test(frontend)
+- Added settings regression coverage for sender setup validation and disconnected-save behavior:
+	- `tests/settings/settings.spec.ts`
+
+### fix(frontend)
 - Fixed a Customer Activation blocker in the first-send flow.
 - When an approved email cannot be sent because sender setup is missing, the opportunity card now shows direct actions to open sender setup.
 - Added direct routing from blocked-send state to `/dashboard/settings#email-sending`.

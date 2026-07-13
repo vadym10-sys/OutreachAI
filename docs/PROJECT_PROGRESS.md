@@ -1,5 +1,26 @@
 # Project Progress
 
+## 2026-07-13 - Customer Activation Blocker Fix (Sender Setup False Success)
+
+### Activation Audit Scope
+- Continued activation audit after first-send recovery fix.
+- Verified next blocker in step 5 (sender connection): setup could show success even when sender remained disconnected.
+
+### Blocker Fixed
+- Added sender setup form validation for required sender identity fields before save.
+- Prevented false success confirmation when backend status remains disconnected.
+- Added actionable next-step error text when sender is still not connected after save.
+
+### Validation Status
+- Lint: passed (`npm run lint` in `apps/web`)
+- Frontend tests: passed (`npm test` in `apps/web`)
+- Relevant Playwright tests: passed (`npx playwright test tests/settings/settings.spec.ts tests/regression/critical-actions.spec.ts -g "sender setup validates required fields and blocks false success|blocked send shows direct sender setup action"` in `apps/web`)
+- Build: passed (`npm run build` in `apps/web`)
+
+### Notes
+- Scope intentionally limited to one activation blocker.
+- No backend, API, database, worker, or migration files changed.
+
 ## 2026-07-13 - Customer Activation Blocker Fix (Frontend Only)
 
 ### Activation Audit Scope

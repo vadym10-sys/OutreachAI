@@ -17,3 +17,73 @@ test("settings keeps one primary next action and advanced controls collapsed", a
   await expect(page.locator("details[open]").getByText(advancedCopy).first()).toBeVisible();
   await guards.assertClean();
 });
+
+test("sender setup validates required fields and blocks false success", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+
+  await page.route("**/api/outreach/sender/status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider: "resend",
+        connected: false,
+        status: "needs_setup",
+        sender_name: "",
+        sender_email: null,
+        reply_to: null,
+        daily_send_limit: 25,
+        sent_today: 0,
+        remaining_today: 25,
+        spf_status: "not_checked",
+        dkim_status: "not_checked",
+        dmarc_status: "not_checked",
+        next_action: "Add sender details to continue.",
+        smtp_host: "",
+        smtp_port: 587,
+        smtp_username: "",
+        smtp_configured: false
+      })
+    });
+  });
+
+  await page.route("**/api/outreach/sender", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider: "resend",
+        connected: false,
+        status: "needs_setup",
+        sender_name: "QA Sender",
+        sender_email: "qa@example.com",
+        reply_to: "qa@example.com",
+        daily_send_limit: 25,
+        sent_today: 0,
+        remaining_today: 25,
+        spf_status: "not_checked",
+        dkim_status: "not_checked",
+        dmarc_status: "not_checked",
+        next_action: "Verify sender domain before sending.",
+        smtp_host: "",
+        smtp_port: 587,
+        smtp_username: "",
+        smtp_configured: false
+      })
+    });
+  });
+
+  await page.goto("/dashboard/settings");
+  await expect(page.getByRole("heading", { name: "Send from your workspace" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Save sending setup" }).click();
+  await expect(page.getByText("Enter sender name and sender email before saving.")).toBeVisible();
+
+  await page.getByLabel("Sender name").fill("QA Sender");
+  await page.getByLabel("Sender email").fill("qa@example.com");
+  await page.getByRole("button", { name: "Save sending setup" }).click();
+
+  await expect(page.locator("form").getByText("Verify sender domain before sending.")).toBeVisible();
+  await expect(page.getByText("Sending setup saved")).toHaveCount(0);
+  await guards.assertClean();
+});
