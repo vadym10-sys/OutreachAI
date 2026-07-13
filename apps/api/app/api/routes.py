@@ -1613,10 +1613,31 @@ def _lead_context(db: Session, workspace: Workspace, user_id: str, lead_id: UUID
     return lead, analysis, campaign, messages
 
 
+_SUPPORTED_AI_RESPONSE_LANGUAGES = {
+    "English",
+    "American English",
+    "Russian",
+    "Spanish",
+    "French",
+    "Italian",
+    "Polish",
+    "Ukrainian",
+}
+
+
+def _normalize_ai_response_language(language: str | None) -> str:
+    candidate = (language or "").strip()
+    if not candidate:
+        return "English"
+    if candidate not in _SUPPORTED_AI_RESPONSE_LANGUAGES:
+        return "English"
+    return candidate
+
+
 def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Campaign | None, messages: list[EmailMessage], language: str | None = None) -> dict:
     intelligence = _lead_metadata(lead)
     return {
-        "response_language": language or "English",
+        "response_language": _normalize_ai_response_language(language),
         "lead": {
             "company": lead.company,
             "website": lead.website,

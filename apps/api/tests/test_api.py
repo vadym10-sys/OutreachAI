@@ -4189,6 +4189,23 @@ def test_lead_ai_payload_carries_workspace_language() -> None:
     assert payload["lead"]["company"] == "Language Fit Co"
 
 
+@pytest.mark.parametrize(
+    ("workspace_language", "expected"),
+    [
+        ("Russian", "Russian"),
+        ("Klingon", "English"),
+        (None, "English"),
+        ("", "English"),
+    ],
+)
+def test_lead_ai_payload_normalizes_language_fallback(workspace_language, expected) -> None:
+    lead = Lead(company="Language Fallback Co", website="https://example.com", industry="SaaS", country="Poland", city="Warsaw")
+
+    payload = _lead_ai_payload(lead, None, None, [], workspace_language)
+
+    assert payload["response_language"] == expected
+
+
 def test_sales_copilot_invalid_ai_response_returns_safe_defaults(monkeypatch) -> None:
     def invalid_response(system, payload):
         raise ProviderResponseValidationError("invalid json")
