@@ -1,5 +1,34 @@
 # Project Progress
 
+## 2026-07-13 - New Customer Onboarding and Workspace Setup (Frontend Only)
+
+### Scope Completed
+- Delivered a dedicated onboarding setup experience for first-run customers on `/onboarding`.
+- Kept scope frontend-only and reused existing workspace API contracts.
+- Added route protection coverage so onboarding follows authenticated customer access rules.
+
+### Workflow Completed
+- Open onboarding
+- Load private workspace data
+- Fill workspace setup fields
+- Save workspace profile
+- Continue to dashboard or lead finder
+
+### Customer Experience Improvements
+- Replaced the legacy onboarding rendering path with a focused component tailored to workspace setup.
+- Added explicit private-workspace framing, setup completion progress, and next-step guidance.
+- Improved loading and error-retry handling inside onboarding so setup recovery is clear for customers.
+
+### Validation Status
+- Lint: passed (`npm run lint` in `apps/web`)
+- Frontend tests: passed (`npm test` in `apps/web`)
+- Route/e2e validation: passed (`npx playwright test tests/dashboard/routes.spec.ts` in `apps/web`)
+- Build: passed (`npm run build` in `apps/web`)
+
+### Notes
+- No backend, API, database, worker, or migration changes were required.
+- Existing unrelated backend changes in the repository remain untouched.
+
 ## 2026-07-13 - Autonomous AI Sales Workspace Epic (Frontend Only)
 
 ### Scope Completed

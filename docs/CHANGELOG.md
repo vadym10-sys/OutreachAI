@@ -3,6 +3,20 @@
 ## 2026-07-13
 
 ### feat(frontend)
+- Delivered a dedicated New Customer Onboarding and Workspace Setup page component for `/onboarding`.
+- Replaced the legacy onboarding render path with a focused workspace setup flow.
+- Added setup progress signaling, clear private-workspace guidance, and explicit retry behavior for load/save failures.
+
+### security(frontend)
+- Added `/onboarding` to protected-route middleware enforcement to keep setup behind authenticated access controls.
+
+### validation
+- `npm run lint` passed.
+- `npm test` passed.
+- `npx playwright test tests/dashboard/routes.spec.ts` passed.
+- `npm run build` passed.
+
+### feat(frontend)
 - Completed the Autonomous AI Sales Workspace epic in the embedded Leads workflow.
 - Aligned the visible workflow rail to the single-screen sequence: Open Lead, AI Summary, Decision Maker, Buying Intent, Opportunity Score, Competitor Snapshot, Email Draft, Review, Send, Schedule Follow-up, Next Lead.
 - Added a compact autonomous decision strip so users can identify the next action quickly from AI context.

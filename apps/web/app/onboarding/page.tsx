@@ -1,5 +1,5 @@
-import { OnboardingFlow } from '@/components/product-workspace';
+import { OnboardingWorkspaceSetup } from '@/components/onboarding-workspace-setup';
 
 export default function OnboardingPage() {
-  return <OnboardingFlow />;
+  return <OnboardingWorkspaceSetup />;
 }

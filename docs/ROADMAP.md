@@ -1,7 +1,7 @@
 # Roadmap
 
 ## Immediate Next Milestone
-- Review the Autonomous AI Sales Workspace on real customer scenarios after completed frontend validation.
+- Complete product-owner acceptance review of New Customer Onboarding and Workspace Setup after passing frontend validation.
 
 ## Product Direction
 - Stop redesigning isolated pages.
@@ -10,6 +10,9 @@
 - Use the existing design system only where it supports customer-value workflow improvements.
 
 ## Completed This Iteration
+- New customer onboarding and workspace setup workflow completed on `/onboarding` with dedicated setup UX.
+- Onboarding route is now covered by protected-route middleware rules.
+- Setup flow now provides clear progress, error recovery, and direct continuation to first operational routes.
 - Autonomous AI Sales Workspace completed inside the embedded Leads workspace.
 - Workflow rail now mirrors the full one-screen sequence from Open Lead through Next Lead.
 - Decision-critical AI context (summary, decision maker, intent, score, competitor snapshot, email draft) is visible before deeper interaction.
