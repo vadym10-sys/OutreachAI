@@ -4393,6 +4393,40 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     }
   }
 
+  async function generateEmailDraftForReview() {
+    if (!current.lead_id) {
+      setActionError(t("Reconnect this company to a lead before generating outreach."));
+      return;
+    }
+    setActionBusy("generate-email-draft");
+    setActionError("");
+    setActionNotice(t("Generating email draft for review..."));
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/email-draft`, { method: "POST", timeoutMs: 20000 }),
+        21000,
+        "Email draft generation timed out. Try again."
+      );
+      if (result.company) {
+        applyCompanyUpdate(normalizeCrmCompany(result.company));
+      }
+      setActionNotice(t(result.message || "Email draft created for review. Nothing was sent."));
+      trackEvent("company_email_draft_generated", {
+        company_id: current.id,
+        company: current.name,
+      });
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, t("Email draft could not be generated. Try again.")));
+      setActionNotice("");
+      trackEvent("company_email_draft_generation_failed", {
+        company_id: current.id,
+        company: current.name,
+      });
+    } finally {
+      setActionBusy("");
+    }
+  }
+
   async function runDeepContactSearch(force = false) {
     if (!current.lead_id) {
       setActionError(t("Reconnect this company to a lead before finding contacts."));
@@ -4618,7 +4652,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             <div className="mt-4 flex flex-wrap gap-2">
               <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">{t("Review")}</a>
               <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800">{t("Send")}</a>
-              {!current.generated_emails.length && <button type="button" onClick={prepareCompanyOpportunity} disabled={actionBusy === "prepare-company" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800 disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />}{t("Generate")}</button>}
+              {!current.generated_emails.length && <button type="button" onClick={generateEmailDraftForReview} disabled={actionBusy === "generate-email-draft" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800 disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "generate-email-draft" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />}{t("Generate")}</button>}
             </div>
           </article>
         </div>
@@ -4941,11 +4975,11 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               <p className="mt-2 text-sm leading-6 text-slate-700">{t("AI can generate a draft for review even if no verified email is available yet. Nothing will be sent until you add/verify a recipient and approve.")}</p>
               <button
                 type="button"
-                onClick={prepareCompanyOpportunity}
-                disabled={actionBusy === "prepare-company" || !current.lead_id}
+                onClick={generateEmailDraftForReview}
+                disabled={actionBusy === "generate-email-draft" || !current.lead_id}
                 className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
               >
-                {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Mail size={17} />}
+                {actionBusy === "generate-email-draft" ? <Loader2 className="animate-spin" size={17} /> : <Mail size={17} />}
                 {t("Generate email for review")}
               </button>
             </div>
