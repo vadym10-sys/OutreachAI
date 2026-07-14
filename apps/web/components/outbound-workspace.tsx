@@ -1559,6 +1559,7 @@ function OpportunityCard({
   const [aiMissingFields, setAiMissingFields] = useState<string[]>([]);
   const [salesAnalysis, setSalesAnalysis] = useState<WorkspaceAiSalesAnalysis | null>(null);
   const [salesAnalysisLoading, setSalesAnalysisLoading] = useState(false);
+  const [salesAnalysisError, setSalesAnalysisError] = useState("");
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
@@ -1629,6 +1630,7 @@ function OpportunityCard({
       return;
     }
     setSalesAnalysisLoading(true);
+    setSalesAnalysisError("");
     setError("");
     setStatus(force ? t("Refreshing AI sales analysis...") : t("Generating AI sales analysis..."));
     try {
@@ -1650,11 +1652,20 @@ function OpportunityCard({
       }
       const reason = friendlyErrorMessage(err, "AI sales analysis could not be generated.");
       setError(t(reason));
+      setSalesAnalysisError(t(reason));
       setStatus("");
     } finally {
       setSalesAnalysisLoading(false);
     }
   }
+
+  const salesAnalysisUiState = salesAnalysisLoading
+    ? t("Generating")
+    : salesAnalysis
+      ? t("Completed")
+      : salesAnalysisError
+        ? t("Failed")
+        : t("Not generated");
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
@@ -1982,18 +1993,20 @@ function OpportunityCard({
               {salesAnalysisLoading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Generate")}
             </SecondaryButton>
             <SecondaryButton type="button" onClick={() => runSalesAnalysis(true)} disabled={salesAnalysisLoading}>
-              {salesAnalysisLoading ? <Loader2 className="animate-spin" size={17} /> : <Clock3 size={17} />} {t("Refresh")}
+              {salesAnalysisLoading ? <Loader2 className="animate-spin" size={17} /> : <Clock3 size={17} />} {t("Regenerate analysis")}
             </SecondaryButton>
           </div>
         </div>
+        <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">{t("Status")}: {salesAnalysisUiState}</p>
+        {salesAnalysisError ? <p className="mt-2 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{salesAnalysisError}</p> : null}
         {salesAnalysis ? (
           <>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {[
-                ["Opportunity", String(salesAnalysis.opportunity_score ?? 0)],
+                ["AI Lead Score", String(salesAnalysis.ai_lead_score ?? salesAnalysis.opportunity_score ?? 0)],
                 ["Buying intent", String(salesAnalysis.buying_intent_score ?? 0)],
-                ["Confidence", String(salesAnalysis.confidence_score ?? 0)],
-                ["Decision maker", `${salesAnalysis.decision_maker?.name || "Unknown"}${salesAnalysis.decision_maker?.title ? ` · ${salesAnalysis.decision_maker?.title}` : ""}`]
+                ["Reply probability", `${String(salesAnalysis.estimated_reply_probability ?? salesAnalysis.buying_intent_score ?? 0)}%`],
+                ["Decision maker", `${salesAnalysis.decision_maker?.name || "Unknown"}${salesAnalysis.recommended_decision_maker_role ? ` · ${salesAnalysis.recommended_decision_maker_role}` : (salesAnalysis.decision_maker?.title ? ` · ${salesAnalysis.decision_maker?.title}` : "")}`]
               ].map(([label, value]) => (
                 <article key={String(label)} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
@@ -2003,22 +2016,50 @@ function OpportunityCard({
             </div>
             <div className="mt-4 grid gap-3 lg:grid-cols-2">
               <div className="rounded-xl bg-slate-50 p-3">
-                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Summary")}</p>
-                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.summary || unavailable))}</p>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Company summary")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.company_summary || salesAnalysis.summary || unavailable))}</p>
               </div>
               <div className="rounded-xl bg-slate-50 p-3">
-                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Next action")}</p>
-                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.next_action || unavailable))}</p>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("What the company sells")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.what_company_sells || unavailable))}</p>
               </div>
               <div className="rounded-xl bg-slate-50 p-3">
-                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Outreach angle")}</p>
-                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.outreach_angle || unavailable))}</p>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Target customers")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.target_customers || unavailable))}</p>
               </div>
               <div className="rounded-xl bg-slate-50 p-3">
-                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Risk to check")}</p>
-                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.risk_to_check || unavailable))}</p>
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Best outreach angle")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.best_outreach_angle || salesAnalysis.outreach_angle || unavailable))}</p>
               </div>
             </div>
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Score explanation")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.score_explanation || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Personalized opening line")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.personalized_opening_line || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Suggested CTA")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.suggested_cta || salesAnalysis.best_cta || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Recommended next action")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.recommended_next_action || salesAnalysis.next_action || unavailable))}</p>
+              </div>
+            </div>
+            {Array.isArray(salesAnalysis.strongest_sales_arguments) && salesAnalysis.strongest_sales_arguments.length ? (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("3 strongest sales arguments")}</p>
+                <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                  {salesAnalysis.strongest_sales_arguments.slice(0, 3).map((item, index) => (
+                    <li key={`argument-${index}`} className="rounded-lg bg-slate-50 px-3 py-2">{t(String(item || ""))}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {Array.isArray(salesAnalysis.evidence) && salesAnalysis.evidence.length ? (
               <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Evidence")}</p>
