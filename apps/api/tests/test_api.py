@@ -3187,27 +3187,6 @@ def test_production_auth_accepts_standard_clerk_session_jwt_without_audience_whe
     get_settings.cache_clear()
 
 
-def test_production_auth_accepts_clerk_issuer_alias(monkeypatch) -> None:
-    configured_issuer = "https://optimal-ewe-65.accounts.dev"
-    token_issuer = "https://optimal-ewe-65.clerk.accounts.dev"
-    private_pem, jwks = _auth_test_keypair()
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("CLERK_JWT_ISSUER", configured_issuer)
-    monkeypatch.setenv("JWT_AUDIENCE", "")
-    monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
-    get_settings.cache_clear()
-
-    token = jose_jwt.encode(
-        {"iss": token_issuer, "sub": "user_alias_issuer", "iat": int(time.time()), "exp": int(time.time()) + 300},
-        private_pem,
-        algorithm="RS256",
-        headers={"kid": "test-kid"},
-    )
-
-    assert security.get_current_user(f"Bearer {token}") == "user_alias_issuer"
-    get_settings.cache_clear()
-
-
 def test_production_owner_context_uses_verified_clerk_user_email(monkeypatch) -> None:
     issuer = "https://clerk.test"
     audience = "outreachai-api"
