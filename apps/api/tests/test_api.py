@@ -17,9 +17,8 @@ from fastapi import HTTPException
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.exc import OperationalError
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
 if db_path.exists():
@@ -49,7 +48,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -3310,7 +3309,6 @@ def test_ai_sales_analysis_isolation_between_workspaces() -> None:
 
 def test_ai_sales_analysis_endpoints_do_not_500_when_snapshot_table_unavailable(monkeypatch) -> None:
     import app.api.usage as usage_module
-    import sqlalchemy.orm.session as orm_session
 
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-db-fallback@example.com"}
     created = client.post(
@@ -3344,15 +3342,10 @@ def test_ai_sales_analysis_endpoints_do_not_500_when_snapshot_table_unavailable(
         company.metadata_json = {**(company.metadata_json or {}), "ai_sales_workspace": cached, "ai_sales_workspace_updated_at": cached["generated_at"]}
         db.commit()
 
-    original_scalar = orm_session.Session.scalar
+    with get_sessionmaker()() as db:
+        db.execute(text("DROP TABLE IF EXISTS ai_sales_workspace_analyses"))
+        db.commit()
 
-    def flaky_scalar(self, statement, *args, **kwargs):
-        sql_text = str(statement)
-        if "ai_sales_workspace_analyses" in sql_text:
-            raise OperationalError("select", {}, Exception("relation ai_sales_workspace_analyses does not exist"))
-        return original_scalar(self, statement, *args, **kwargs)
-
-    monkeypatch.setattr(orm_session.Session, "scalar", flaky_scalar)
     monkeypatch.setattr(
         usage_module,
         "build_ai_sales_workspace_analysis",
@@ -3383,6 +3376,9 @@ def test_ai_sales_analysis_endpoints_do_not_500_when_snapshot_table_unavailable(
     assert generated.status_code == 200
     assert generated.json()["status"] in {"success", "partial_success"}
     assert generated.json()["analysis"]["summary"] == "Generated despite snapshot table outage"
+
+    with get_sessionmaker()() as db:
+        AISalesWorkspaceAnalysis.__table__.create(bind=db.get_bind(), checkfirst=True)
 
 
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:

@@ -6289,6 +6289,7 @@ def _save_ai_sales_analysis_snapshot(
         )
     except SQLAlchemyError as exc:
         logger.warning("AI sales snapshot storage unavailable; skipping table persistence", exc_info=exc)
+        db.rollback()
         capture_provider_exception(exc, provider="database", endpoint="workspace_app.ai_sales_analysis.snapshot_write")
         return None
     if snapshot is None:
@@ -6325,6 +6326,7 @@ def _latest_ai_sales_snapshot(db: Session, workspace_id: UUID, company_id: UUID)
         )
     except SQLAlchemyError as exc:
         logger.warning("AI sales snapshot table query failed; using metadata cache", exc_info=exc)
+        db.rollback()
         capture_provider_exception(exc, provider="database", endpoint="workspace_app.ai_sales_analysis.snapshot_read")
         return None
 
