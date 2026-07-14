@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
 from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import OperationalError
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
 if db_path.exists():
@@ -3305,6 +3306,83 @@ def test_ai_sales_analysis_isolation_between_workspaces() -> None:
 
     denied = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=USER_B_AUTH)
     assert denied.status_code == 404
+
+
+def test_ai_sales_analysis_endpoints_do_not_500_when_snapshot_table_unavailable(monkeypatch) -> None:
+    import app.api.usage as usage_module
+    import sqlalchemy.orm.session as orm_session
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-db-fallback@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis DB Fallback Co", "website": "https://analysis-db-fallback.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    cached = {
+        "generated_at": "2026-01-03T10:00:00",
+        "provider": "openai",
+        "model": "gpt-cache",
+        "summary": "Metadata fallback summary",
+        "opportunity_score": 66,
+        "buying_intent_score": 64,
+        "confidence_score": 68,
+        "decision_maker": {"name": "", "title": "", "email": ""},
+        "outreach_angle": "Use metadata fallback",
+        "next_action": "Proceed with cached guidance",
+        "risk_to_check": "Verify decision maker",
+        "reasoning": [],
+        "missing_data": ["decision_maker"],
+        "evidence": [],
+        "version": 1,
+    }
+    with get_sessionmaker()() as db:
+        company = db.scalar(select(Company).where(Company.id == UUID(company_id)))
+        assert company is not None
+        company.metadata_json = {**(company.metadata_json or {}), "ai_sales_workspace": cached, "ai_sales_workspace_updated_at": cached["generated_at"]}
+        db.commit()
+
+    original_scalar = orm_session.Session.scalar
+
+    def flaky_scalar(self, statement, *args, **kwargs):
+        sql_text = str(statement)
+        if "ai_sales_workspace_analyses" in sql_text:
+            raise OperationalError("select", {}, Exception("relation ai_sales_workspace_analyses does not exist"))
+        return original_scalar(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(orm_session.Session, "scalar", flaky_scalar)
+    monkeypatch.setattr(
+        usage_module,
+        "build_ai_sales_workspace_analysis",
+        lambda **_: {
+            "generated_at": datetime.utcnow().isoformat(),
+            "provider": "openai",
+            "model": "gpt-test",
+            "summary": "Generated despite snapshot table outage",
+            "opportunity_score": 72,
+            "buying_intent_score": 70,
+            "confidence_score": 74,
+            "decision_maker": {"name": "", "title": "", "email": ""},
+            "outreach_angle": "Continue outreach safely",
+            "next_action": "Review and send",
+            "risk_to_check": "Verify decision maker context",
+            "reasoning": ["fallback works"],
+            "missing_data": ["decision_maker"],
+            "evidence": [],
+            "version": 1,
+        },
+    )
+
+    fetched = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers)
+    assert fetched.status_code == 200
+    assert fetched.json()["analysis"]["summary"] == "Metadata fallback summary"
+
+    generated = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert generated.status_code == 200
+    assert generated.json()["status"] in {"success", "partial_success"}
+    assert generated.json()["analysis"]["summary"] == "Generated despite snapshot table outage"
 
 
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:

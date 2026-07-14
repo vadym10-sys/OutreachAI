@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -6279,12 +6280,17 @@ def _save_ai_sales_analysis_snapshot(
     user_id: str,
     company: Company,
     analysis_payload: dict[str, Any],
-) -> AISalesWorkspaceAnalysis:
-    snapshot = db.scalar(
-        select(AISalesWorkspaceAnalysis)
-        .where(AISalesWorkspaceAnalysis.workspace_id == workspace_id, AISalesWorkspaceAnalysis.company_id == company.id)
-        .limit(1)
-    )
+) -> Optional[AISalesWorkspaceAnalysis]:
+    try:
+        snapshot = db.scalar(
+            select(AISalesWorkspaceAnalysis)
+            .where(AISalesWorkspaceAnalysis.workspace_id == workspace_id, AISalesWorkspaceAnalysis.company_id == company.id)
+            .limit(1)
+        )
+    except SQLAlchemyError as exc:
+        logger.warning("AI sales snapshot storage unavailable; skipping table persistence", exc_info=exc)
+        capture_provider_exception(exc, provider="database", endpoint="workspace_app.ai_sales_analysis.snapshot_write")
+        return None
     if snapshot is None:
         snapshot = AISalesWorkspaceAnalysis(
             workspace_id=workspace_id,
@@ -6307,6 +6313,20 @@ def _save_ai_sales_analysis_snapshot(
 def _cached_ai_sales_analysis_from_company(company: Company) -> dict[str, Any]:
     metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
     return read_cached_analysis(metadata)
+
+
+def _latest_ai_sales_snapshot(db: Session, workspace_id: UUID, company_id: UUID) -> Optional[AISalesWorkspaceAnalysis]:
+    try:
+        return db.scalar(
+            select(AISalesWorkspaceAnalysis)
+            .where(AISalesWorkspaceAnalysis.workspace_id == workspace_id, AISalesWorkspaceAnalysis.company_id == company_id)
+            .order_by(AISalesWorkspaceAnalysis.updated_at.desc())
+            .limit(1)
+        )
+    except SQLAlchemyError as exc:
+        logger.warning("AI sales snapshot table query failed; using metadata cache", exc_info=exc)
+        capture_provider_exception(exc, provider="database", endpoint="workspace_app.ai_sales_analysis.snapshot_read")
+        return None
 
 
 def _domain_from_website(website: str | None) -> str:
@@ -6742,12 +6762,7 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, db: Sess
     company = _scoped_company(db, workspace.id, company_id)
 
     cached = _cached_ai_sales_analysis_from_company(company)
-    snapshot = db.scalar(
-        select(AISalesWorkspaceAnalysis)
-        .where(AISalesWorkspaceAnalysis.workspace_id == workspace.id, AISalesWorkspaceAnalysis.company_id == company.id)
-        .order_by(AISalesWorkspaceAnalysis.updated_at.desc())
-        .limit(1)
-    )
+    snapshot = _latest_ai_sales_snapshot(db, workspace.id, company.id)
     analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json else cached
     generated_at = str(analysis.get("generated_at") or "") or None
     if not analysis:
