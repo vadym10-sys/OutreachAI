@@ -25,10 +25,14 @@ function timeoutForPath(parts: string[]) {
   if (
     endpoint === "/api/leads/find" ||
     endpoint === "/api/workspace-app/leads/search" ||
+    endpoint === "/api/workspace-app/leads/command" ||
+    endpoint.includes("/deep-contact-search") ||
+    endpoint.includes("/email-draft") ||
+    endpoint.includes("/ai-sales-analysis") ||
     endpoint.includes("/analyze") ||
     endpoint.includes("/draft-email")
   ) {
-    return longRunningTimeoutMs;
+    return opportunityTimeoutMs;
   }
   return defaultProxyTimeoutMs;
 }
