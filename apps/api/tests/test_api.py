@@ -1063,6 +1063,54 @@ def test_workspace_member_invites_are_disabled_for_private_accounts(monkeypatch)
         assert member is None
 
 
+def test_current_user_context_with_email_claim_skips_clerk_lookup(monkeypatch) -> None:
+    def fake_verify(_: str) -> dict:
+        return {"sub": "user_email_claim", "email": "claim@example.com"}
+
+    def unexpected_lookup(_: str) -> str:
+        raise AssertionError("Clerk lookup should not run when email claim exists")
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", unexpected_lookup)
+
+    user = security.get_current_user_context(authorization="Bearer token")
+    assert user.user_id == "user_email_claim"
+    assert user.email == "claim@example.com"
+
+
+def test_current_user_context_without_email_claim_uses_clerk_lookup(monkeypatch) -> None:
+    def fake_verify(_: str) -> dict:
+        return {"sub": "user_lookup_success"}
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: "lookup@example.com")
+
+    user = security.get_current_user_context(authorization="Bearer token")
+    assert user.user_id == "user_lookup_success"
+    assert user.email == "lookup@example.com"
+
+
+def test_current_user_context_lookup_failure_returns_401(monkeypatch) -> None:
+    def fake_verify(_: str) -> dict:
+        return {"sub": "user_lookup_fail"}
+
+    def failed_lookup(_: str) -> str:
+        raise ValueError("lookup failed")
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", failed_lookup)
+
+    with pytest.raises(HTTPException) as exc:
+        security.get_current_user_context(authorization="Bearer token")
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Unable to verify owner email"
+
+
+def test_workspace_me_rejects_unauthorized_user() -> None:
+    response = client.get("/api/workspace/me")
+    assert response.status_code == 401
+
+
 def test_workspace_app_bootstrap_creates_private_workspace() -> None:
     response = client.get("/api/workspace-app/bootstrap", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "usage-owner@example.com"})
     assert response.status_code == 200
