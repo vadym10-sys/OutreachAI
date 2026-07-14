@@ -53,7 +53,7 @@ from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, 
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
-from app.services.ai import ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
+from app.services.ai import ProviderRequestError, ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
 from app.services.backups import backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
 from app.services.emailer import EmailProviderRequestError  # noqa: E402
@@ -3111,6 +3111,200 @@ def test_workspace_app_blocks_placeholder_recipient_before_send(monkeypatch) -> 
     assert sent.json()["status"] == "error"
     assert sent.json()["message"] == "Use a real recipient email before sending."
     assert sent.json()["email"]["delivery_status"] == "approved"
+
+
+def test_ai_sales_analysis_generate_success(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-success@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Success Co", "website": "https://analysis-success.example", "industry": "SaaS", "country": "Germany", "city": "Berlin"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    client.post(
+        f"/api/workspace-app/companies/{company_id}/contacts/manual",
+        headers=headers,
+        json={"name": "Alex Founder", "title": "Founder", "email": "alex@analysis-success.example"},
+    )
+
+    monkeypatch.setattr(
+        usage_module,
+        "build_ai_sales_workspace_analysis",
+        lambda **_: {
+            "generated_at": datetime.utcnow().isoformat(),
+            "provider": "openai",
+            "model": "gpt-test",
+            "summary": "Strong fit for outbound automation.",
+            "opportunity_score": 82,
+            "buying_intent_score": 78,
+            "confidence_score": 80,
+            "decision_maker": {"name": "Alex Founder", "title": "Founder", "email": "alex@analysis-success.example"},
+            "outreach_angle": "Lead with faster pipeline outcomes.",
+            "next_action": "Send first email.",
+            "risk_to_check": "Confirm timing.",
+            "reasoning": ["Recent growth signals"],
+            "missing_data": [],
+            "evidence": [{"source_field": "company.website", "value": "analysis-success.example", "confidence": 95}],
+            "version": 1,
+        },
+    )
+
+    generated = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert generated.status_code == 200
+    payload = generated.json()
+    assert payload["status"] == "success"
+    assert payload["analysis"]["opportunity_score"] == 82
+
+
+def test_ai_sales_analysis_partial_when_missing_data(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-partial@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Partial Co", "website": "https://analysis-partial.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    monkeypatch.setattr(
+        usage_module,
+        "build_ai_sales_workspace_analysis",
+        lambda **_: {
+            "generated_at": datetime.utcnow().isoformat(),
+            "provider": "openai",
+            "model": "gpt-test",
+            "summary": "Potential fit, missing contact email.",
+            "opportunity_score": 61,
+            "buying_intent_score": 58,
+            "confidence_score": 57,
+            "decision_maker": {"name": "", "title": "", "email": ""},
+            "outreach_angle": "Website-driven pain point opener.",
+            "next_action": "Find verified decision maker email.",
+            "risk_to_check": "No verified recipient email.",
+            "reasoning": ["Core profile exists"],
+            "missing_data": ["decision_maker_email"],
+            "evidence": [{"source_field": "company.industry", "value": "SaaS", "confidence": 88}],
+            "version": 1,
+        },
+    )
+
+    generated = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert generated.status_code == 200
+    payload = generated.json()
+    assert payload["status"] == "partial_success"
+    assert payload["analysis"]["missing_data"] == ["decision_maker_email"]
+
+
+def test_ai_sales_analysis_provider_failure_returns_cached(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-failure@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Failure Co", "website": "https://analysis-failure.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    seed = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "provider": "openai",
+        "model": "gpt-cache",
+        "summary": "Cached summary",
+        "opportunity_score": 70,
+        "buying_intent_score": 69,
+        "confidence_score": 71,
+        "decision_maker": {"name": "", "title": "", "email": ""},
+        "outreach_angle": "Use case led intro",
+        "next_action": "Refresh contact data",
+        "risk_to_check": "Missing contact",
+        "reasoning": [],
+        "missing_data": ["decision_maker"],
+        "evidence": [],
+        "version": 1,
+    }
+    with get_sessionmaker()() as db:
+        company = db.scalar(select(Company).where(Company.id == UUID(company_id)))
+        assert company is not None
+        company.metadata_json = {**(company.metadata_json or {}), "ai_sales_workspace": seed, "ai_sales_workspace_updated_at": seed["generated_at"]}
+        db.commit()
+
+    monkeypatch.setattr(usage_module, "build_ai_sales_workspace_analysis", lambda **_: (_ for _ in ()).throw(ProviderRequestError("provider down")))
+    failed = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert failed.status_code == 200
+    payload = failed.json()
+    assert payload["status"] == "provider_unavailable"
+    assert payload["cached"] is True
+    assert payload["analysis"]["summary"] == "Cached summary"
+
+
+def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-cache@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Cache Co", "website": "https://analysis-cache.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    initial = {
+        "generated_at": "2026-01-01T00:00:00",
+        "provider": "openai",
+        "model": "gpt-cache",
+        "summary": "Initial cached",
+        "opportunity_score": 63,
+        "buying_intent_score": 60,
+        "confidence_score": 64,
+        "decision_maker": {"name": "", "title": "", "email": ""},
+        "outreach_angle": "Angle one",
+        "next_action": "Step one",
+        "risk_to_check": "Risk one",
+        "reasoning": [],
+        "missing_data": ["decision_maker"],
+        "evidence": [],
+        "version": 1,
+    }
+    with get_sessionmaker()() as db:
+        company = db.scalar(select(Company).where(Company.id == UUID(company_id)))
+        assert company is not None
+        company.metadata_json = {**(company.metadata_json or {}), "ai_sales_workspace": initial, "ai_sales_workspace_updated_at": initial["generated_at"]}
+        db.commit()
+
+    loaded = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers)
+    assert loaded.status_code == 200
+    assert loaded.json()["analysis"]["summary"] == "Initial cached"
+
+    monkeypatch.setattr(
+        usage_module,
+        "build_ai_sales_workspace_analysis",
+        lambda **_: {**initial, "generated_at": "2026-01-02T00:00:00", "summary": "Refreshed analysis", "missing_data": []},
+    )
+    refreshed = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert refreshed.status_code == 200
+    assert refreshed.json()["analysis"]["summary"] == "Refreshed analysis"
+
+
+def test_ai_sales_analysis_isolation_between_workspaces() -> None:
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=USER_A_AUTH,
+        json={"name": "Tenant A Analysis Co", "website": "https://tenant-a-analysis.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    denied = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=USER_B_AUTH)
+    assert denied.status_code == 404
 
 
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:

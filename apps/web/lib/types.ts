@@ -833,6 +833,30 @@ export type CrmCompany = {
       confidence?: number;
     };
   } | null;
+  ai_sales_workspace?: {
+    generated_at?: string;
+    provider?: string;
+    model?: string;
+    summary?: string;
+    opportunity_score?: number;
+    buying_intent_score?: number;
+    confidence_score?: number;
+    decision_maker?: {
+      name?: string;
+      title?: string;
+      email?: string;
+    };
+    outreach_angle?: string;
+    best_subject_line?: string;
+    best_cta?: string;
+    risk_to_check?: string;
+    next_action?: string;
+    reasoning?: string[];
+    missing_data?: string[];
+    evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    version?: number;
+  } | null;
+  ai_sales_workspace_updated_at?: string | null;
   ai_live_buying_signals?: {
     generated_at?: string;
     latest_changes?: Array<{

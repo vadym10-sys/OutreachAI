@@ -187,6 +187,12 @@ class LeadOut(BaseModel):
     risks: list[str] = Field(default_factory=list)
     opportunity_analysis: str = ""
     partnership_fit: str = ""
+    buying_signal_score: Optional[int] = None
+    buying_signal_urgency: str = ""
+    buying_signal_explanation: str = ""
+    buying_signal_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    buying_signal_confidence: Optional[int] = None
+    recommended_outreach_timing: str = ""
     priority_score: Optional[int] = None
     confidence_score: Optional[int] = None
     next_recommended_action: str = ""
@@ -226,6 +232,7 @@ class CrmContactOut(BaseModel):
     confidence: str = ""
     source: str = "manual"
     email_status: str = "Unknown"
+    decision_maker_intelligence: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
     class Config:
@@ -292,6 +299,18 @@ class CrmCompanyOut(BaseModel):
     risks: list[str] = Field(default_factory=list)
     opportunity_analysis: str = ""
     partnership_fit: str = ""
+    buying_signal_score: Optional[int] = None
+    buying_signal_urgency: str = ""
+    buying_signal_explanation: str = ""
+    buying_signal_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    buying_signal_confidence: Optional[int] = None
+    recommended_outreach_timing: str = ""
+    overall_score: Optional[int] = None
+    reasoning: str = ""
+    top_positive_signals: list[str] = Field(default_factory=list)
+    top_negative_signals: list[str] = Field(default_factory=list)
+    recommended_next_action: str = ""
+    confidence: Optional[int] = None
     priority_score: Optional[int] = None
     confidence_score: Optional[int] = None
     next_recommended_action: str = ""
@@ -322,7 +341,32 @@ class CrmCompanyOut(BaseModel):
     decision_maker_roles_searched: list[str] = Field(default_factory=list)
     workflow_stages: dict[str, str] = Field(default_factory=dict)
     workflow_stage_messages: dict[str, str] = Field(default_factory=dict)
+    ai_workflow_engine: dict[str, Any] = Field(default_factory=dict)
     deep_contact_search: dict[str, Any] = Field(default_factory=dict)
+    decision_maker_intelligence: dict[str, Any] = Field(default_factory=dict)
+    opportunity_ranking: dict[str, Any] = Field(default_factory=dict)
+    ai_outreach_strategy: dict[str, Any] = Field(default_factory=dict)
+    ai_competitor_intelligence: dict[str, Any] = Field(default_factory=dict)
+    ai_company_timeline: dict[str, Any] = Field(default_factory=dict)
+    ai_company_predictions: dict[str, Any] = Field(default_factory=dict)
+    ai_sales_timeline: dict[str, Any] = Field(default_factory=dict)
+    ai_risk_analyzer: dict[str, Any] = Field(default_factory=dict)
+    ai_sales_coach: dict[str, Any] = Field(default_factory=dict)
+    ai_specialized_agents: dict[str, Any] = Field(default_factory=dict)
+    ai_agent_intermediate_reasoning: dict[str, Any] = Field(default_factory=dict)
+    ai_final_orchestrator: dict[str, Any] = Field(default_factory=dict)
+    ai_executive_dashboard: dict[str, Any] = Field(default_factory=dict)
+    ai_revenue_engine_report: dict[str, Any] = Field(default_factory=dict)
+    ai_crm: dict[str, Any] = Field(default_factory=dict)
+    ai_ceo_dashboard: dict[str, Any] = Field(default_factory=dict)
+    ai_sales_os: dict[str, Any] = Field(default_factory=dict)
+    ai_sales_workspace: dict[str, Any] = Field(default_factory=dict)
+    ai_sales_workspace_updated_at: Optional[datetime] = None
+    ai_live_buying_signals: dict[str, Any] = Field(default_factory=dict)
+    ai_lead_prioritization: dict[str, Any] = Field(default_factory=dict)
+    ai_sales_inbox_latest: dict[str, Any] = Field(default_factory=dict)
+    ai_sales_inbox_history: list[dict[str, Any]] = Field(default_factory=list)
+    ai_evidence_engine: dict[str, Any] = Field(default_factory=dict)
     intelligence_quality: dict[str, Any] = Field(default_factory=dict)
     company_intelligence: dict[str, Any] = Field(default_factory=dict)
     technologies: list[str] = Field(default_factory=list)

@@ -404,6 +404,26 @@ class AICEOBriefing(Base):
     workspace: Mapped[Workspace] = relationship()
 
 
+class AISalesWorkspaceAnalysis(Base):
+    __tablename__ = "ai_sales_workspace_analyses"
+    __table_args__ = (UniqueConstraint("workspace_id", "company_id", name="uq_ai_sales_workspace_company"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    provider: Mapped[str] = mapped_column(String(80), default="openai")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    status: Mapped[str] = mapped_column(String(32), default="ready")
+    analysis_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    evidence_json: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+    company: Mapped[Company] = relationship()
+
+
 class WebsiteAnalysis(Base):
     __tablename__ = "website_analyses"
 

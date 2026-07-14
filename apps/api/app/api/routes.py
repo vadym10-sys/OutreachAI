@@ -1282,6 +1282,7 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     ai_crm = company_metadata.get("ai_crm") if isinstance(company_metadata.get("ai_crm"), dict) else {}
     ai_ceo_dashboard = company_metadata.get("ai_ceo_dashboard") if isinstance(company_metadata.get("ai_ceo_dashboard"), dict) else {}
     ai_sales_os = company_metadata.get("ai_sales_os") if isinstance(company_metadata.get("ai_sales_os"), dict) else {}
+    ai_sales_workspace = company_metadata.get("ai_sales_workspace") if isinstance(company_metadata.get("ai_sales_workspace"), dict) else {}
     ai_live_buying_signals = company_metadata.get("ai_live_buying_signals") if isinstance(company_metadata.get("ai_live_buying_signals"), dict) else {}
     ai_lead_prioritization = company_metadata.get("ai_lead_prioritization") if isinstance(company_metadata.get("ai_lead_prioritization"), dict) else {}
     ai_sales_inbox_latest = company_metadata.get("ai_sales_inbox_latest") if isinstance(company_metadata.get("ai_sales_inbox_latest"), dict) else {}
@@ -1561,6 +1562,8 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         ai_crm=ai_crm,
         ai_ceo_dashboard=ai_ceo_dashboard,
         ai_sales_os=ai_sales_os,
+        ai_sales_workspace=ai_sales_workspace,
+        ai_sales_workspace_updated_at=_datetime_or_none(company_metadata.get("ai_sales_workspace_updated_at")),
         ai_live_buying_signals=ai_live_buying_signals,
         ai_lead_prioritization=ai_lead_prioritization,
         ai_sales_inbox_latest=ai_sales_inbox_latest,

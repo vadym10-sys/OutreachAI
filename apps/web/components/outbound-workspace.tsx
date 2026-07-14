@@ -109,6 +109,17 @@ type WorkspaceDeepContactJobStatusResponse = {
   company?: CrmCompany | null;
 };
 
+type WorkspaceAiSalesAnalysis = NonNullable<CrmCompany["ai_sales_workspace"]>;
+
+type WorkspaceAiSalesAnalysisResponse = {
+  status: "success" | "partial_success" | "empty" | "provider_unavailable" | "timeout" | "error";
+  message: string;
+  company_id: string;
+  analysis: WorkspaceAiSalesAnalysis | Record<string, never>;
+  generated_at?: string | null;
+  cached: boolean;
+};
+
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
 
 type WorkspaceIntegrationStatus = {
@@ -459,6 +470,8 @@ function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
     decision_maker_roles_searched: safeArray(value.decision_maker_roles_searched).map(String),
     workflow_stages: value.workflow_stages || {},
     workflow_stage_messages: value.workflow_stage_messages || {},
+    ai_sales_workspace: value.ai_sales_workspace || null,
+    ai_sales_workspace_updated_at: value.ai_sales_workspace_updated_at || null,
     deep_contact_search: value.deep_contact_search || null,
     intelligence_quality: value.intelligence_quality || null,
     company_intelligence: value.company_intelligence || null,
@@ -1544,6 +1557,8 @@ function OpportunityCard({
   const [aiNextAction, setAiNextAction] = useState("");
   const [aiRecommendedActions, setAiRecommendedActions] = useState<string[]>([]);
   const [aiMissingFields, setAiMissingFields] = useState<string[]>([]);
+  const [salesAnalysis, setSalesAnalysis] = useState<WorkspaceAiSalesAnalysis | null>(null);
+  const [salesAnalysisLoading, setSalesAnalysisLoading] = useState(false);
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
@@ -1577,6 +1592,69 @@ function OpportunityCard({
   const contactNowHref = recipientEmail ? `mailto:${recipientEmail}` : (companyId ? `#contacts-${companyId}` : "#manual-company");
   const reviewEmailHref = companyId ? `#outreach-${companyId}` : "#lead-search-form";
   const openCompanyHref = companyId ? `/dashboard/companies?company=${companyId}` : "/dashboard/companies";
+
+  useEffect(() => {
+    if (!companyId) return;
+    let cancelled = false;
+    async function loadCachedAnalysis() {
+      setSalesAnalysisLoading(true);
+      try {
+        const result = await withTimeout(
+          api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis`),
+          12000,
+          "AI sales analysis is temporarily unavailable."
+        );
+        if (cancelled) return;
+        const next = result.analysis && Object.keys(result.analysis).length ? (result.analysis as WorkspaceAiSalesAnalysis) : null;
+        setSalesAnalysis(next);
+      } catch (err) {
+        if (cancelled) return;
+        if (isSessionExpiredError(err)) {
+          redirectToSignIn();
+          return;
+        }
+      } finally {
+        if (!cancelled) setSalesAnalysisLoading(false);
+      }
+    }
+    void loadCachedAnalysis();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, companyId]);
+
+  async function runSalesAnalysis(force = false) {
+    if (!companyId) {
+      setError(t("Save this company to CRM before running AI sales analysis."));
+      return;
+    }
+    setSalesAnalysisLoading(true);
+    setError("");
+    setStatus(force ? t("Refreshing AI sales analysis...") : t("Generating AI sales analysis..."));
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis`, {
+          method: "POST",
+          body: JSON.stringify({ force })
+        }),
+        20000,
+        "AI sales analysis could not be generated."
+      );
+      const next = result.analysis && Object.keys(result.analysis).length ? (result.analysis as WorkspaceAiSalesAnalysis) : null;
+      setSalesAnalysis(next);
+      setStatus(t(result.message || "AI sales analysis generated."));
+    } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = friendlyErrorMessage(err, "AI sales analysis could not be generated.");
+      setError(t(reason));
+      setStatus("");
+    } finally {
+      setSalesAnalysisLoading(false);
+    }
+  }
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
@@ -1891,6 +1969,72 @@ function OpportunityCard({
           )}
           <Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Add to Campaign")}</Link>
         </div>
+      </section>
+
+      <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("AI Sales Workspace")}</p>
+            <h3 className="mt-1 text-lg font-black text-ink">{t("Evidence-backed sales analysis")}</h3>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <SecondaryButton type="button" onClick={() => runSalesAnalysis(false)} disabled={salesAnalysisLoading}>
+              {salesAnalysisLoading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t("Generate")}
+            </SecondaryButton>
+            <SecondaryButton type="button" onClick={() => runSalesAnalysis(true)} disabled={salesAnalysisLoading}>
+              {salesAnalysisLoading ? <Loader2 className="animate-spin" size={17} /> : <Clock3 size={17} />} {t("Refresh")}
+            </SecondaryButton>
+          </div>
+        </div>
+        {salesAnalysis ? (
+          <>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                ["Opportunity", String(salesAnalysis.opportunity_score ?? 0)],
+                ["Buying intent", String(salesAnalysis.buying_intent_score ?? 0)],
+                ["Confidence", String(salesAnalysis.confidence_score ?? 0)],
+                ["Decision maker", `${salesAnalysis.decision_maker?.name || "Unknown"}${salesAnalysis.decision_maker?.title ? ` · ${salesAnalysis.decision_maker?.title}` : ""}`]
+              ].map(([label, value]) => (
+                <article key={String(label)} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
+                  <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(value))}</p>
+                </article>
+              ))}
+            </div>
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Summary")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.summary || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Next action")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.next_action || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Outreach angle")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.outreach_angle || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Risk to check")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.risk_to_check || unavailable))}</p>
+              </div>
+            </div>
+            {Array.isArray(salesAnalysis.evidence) && salesAnalysis.evidence.length ? (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Evidence")}</p>
+                <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                  {salesAnalysis.evidence.slice(0, 5).map((item, index) => (
+                    <li key={`${item.source_field || "e"}-${index}`} className="rounded-lg bg-slate-50 px-3 py-2">
+                      <span className="font-bold text-ink">{t(String(item.source_field || "source"))}:</span> {t(String(item.value || ""))}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t("No analysis yet. Generate AI Sales Analysis to create an evidence-backed outreach plan.")}</p>
+        )}
       </section>
 
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">

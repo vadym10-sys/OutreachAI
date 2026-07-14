@@ -45,9 +45,10 @@ from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
-from app.models.entities import AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Workspace
+from app.models.entities import AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
+from app.services.ai_sales_workspace import build_ai_sales_workspace_analysis, read_cached_analysis
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, enqueue_company_enrichment_job, enqueue_deep_contact_search_job, mark_cancelled, update_job_progress
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
@@ -211,6 +212,19 @@ class UsageJobStatusOut(BaseModel):
     status: str
     progress: dict[str, Any] = Field(default_factory=dict)
     company: Optional[CrmCompanyOut] = None
+
+
+class UsageAISalesAnalysisIn(BaseModel):
+    force: bool = False
+
+
+class UsageAISalesAnalysisOut(BaseModel):
+    status: UsageStatus
+    message: str
+    company_id: UUID
+    analysis: dict[str, Any] = Field(default_factory=dict)
+    generated_at: Optional[str] = None
+    cached: bool = False
 
 
 class UsageMonitoringChangeOut(BaseModel):
@@ -6247,6 +6261,54 @@ def _scoped_company(db: Session, workspace_id: UUID, company_id: UUID) -> Compan
     return company
 
 
+def _latest_website_analysis_for_lead(db: Session, workspace_id: UUID, lead_id: UUID | None) -> Optional[WebsiteAnalysis]:
+    if not lead_id:
+        return None
+    return db.scalar(
+        select(WebsiteAnalysis)
+        .where(WebsiteAnalysis.workspace_id == workspace_id, WebsiteAnalysis.lead_id == lead_id)
+        .order_by(WebsiteAnalysis.created_at.desc())
+        .limit(1)
+    )
+
+
+def _save_ai_sales_analysis_snapshot(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    user_id: str,
+    company: Company,
+    analysis_payload: dict[str, Any],
+) -> AISalesWorkspaceAnalysis:
+    snapshot = db.scalar(
+        select(AISalesWorkspaceAnalysis)
+        .where(AISalesWorkspaceAnalysis.workspace_id == workspace_id, AISalesWorkspaceAnalysis.company_id == company.id)
+        .limit(1)
+    )
+    if snapshot is None:
+        snapshot = AISalesWorkspaceAnalysis(
+            workspace_id=workspace_id,
+            company_id=company.id,
+            lead_id=company.lead_id,
+            user_id=user_id,
+        )
+        db.add(snapshot)
+    snapshot.user_id = user_id
+    snapshot.lead_id = company.lead_id
+    snapshot.provider = str(analysis_payload.get("provider") or "openai")
+    snapshot.model = str(analysis_payload.get("model") or get_settings().openai_model)
+    snapshot.status = "ready"
+    snapshot.analysis_json = analysis_payload
+    snapshot.evidence_json = [item for item in analysis_payload.get("evidence", []) if isinstance(item, dict)]
+    snapshot.updated_at = datetime.utcnow()
+    return snapshot
+
+
+def _cached_ai_sales_analysis_from_company(company: Company) -> dict[str, Any]:
+    metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+    return read_cached_analysis(metadata)
+
+
 def _domain_from_website(website: str | None) -> str:
     if not website:
         return ""
@@ -6672,6 +6734,135 @@ def get_company(company_id: UUID, user: WorkspaceUserContext, db: Session = Depe
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
     return _crm_company_out(db, workspace, user.user_id, company)
+
+
+@router.get("/companies/{company_id}/ai-sales-analysis", response_model=UsageAISalesAnalysisOut)
+def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageAISalesAnalysisOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+
+    cached = _cached_ai_sales_analysis_from_company(company)
+    snapshot = db.scalar(
+        select(AISalesWorkspaceAnalysis)
+        .where(AISalesWorkspaceAnalysis.workspace_id == workspace.id, AISalesWorkspaceAnalysis.company_id == company.id)
+        .order_by(AISalesWorkspaceAnalysis.updated_at.desc())
+        .limit(1)
+    )
+    analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json else cached
+    generated_at = str(analysis.get("generated_at") or "") or None
+    if not analysis:
+        return UsageAISalesAnalysisOut(
+            status="empty",
+            message="No AI sales analysis generated yet.",
+            company_id=company.id,
+            analysis={},
+            generated_at=None,
+            cached=False,
+        )
+    return UsageAISalesAnalysisOut(
+        status="success",
+        message="AI sales analysis loaded.",
+        company_id=company.id,
+        analysis=analysis,
+        generated_at=generated_at,
+        cached=True,
+    )
+
+
+@router.post("/companies/{company_id}/ai-sales-analysis", response_model=UsageAISalesAnalysisOut)
+def generate_ai_sales_analysis(
+    company_id: UUID,
+    payload: UsageAISalesAnalysisIn,
+    request: Request,
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+) -> UsageAISalesAnalysisOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+
+    if not payload.force:
+        cached = _cached_ai_sales_analysis_from_company(company)
+        if cached:
+            return UsageAISalesAnalysisOut(
+                status="success",
+                message="Using cached AI sales analysis.",
+                company_id=company.id,
+                analysis=cached,
+                generated_at=str(cached.get("generated_at") or "") or None,
+                cached=True,
+            )
+
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+    contacts = list(
+        db.scalars(
+            select(Contact)
+            .where(Contact.workspace_id == workspace.id, Contact.company_id == company.id)
+            .order_by(Contact.updated_at.desc())
+            .limit(20)
+        ).all()
+    )
+    website_analysis = _latest_website_analysis_for_lead(db, workspace.id, company.lead_id)
+    language = _workspace_language(request, workspace)
+
+    try:
+        analysis = build_ai_sales_workspace_analysis(
+            company=company,
+            lead=lead,
+            contacts=contacts,
+            website_analysis=website_analysis,
+            language=language,
+        )
+    except (ProviderConfigurationError, ProviderRequestError) as exc:
+        capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis", workspace_id=workspace.id, lead_id=company.lead_id)
+        cached = _cached_ai_sales_analysis_from_company(company)
+        return UsageAISalesAnalysisOut(
+            status="provider_unavailable",
+            message=_safe_provider_warning(exc),
+            company_id=company.id,
+            analysis=cached,
+            generated_at=str(cached.get("generated_at") or "") or None,
+            cached=bool(cached),
+        )
+
+    _save_ai_sales_analysis_snapshot(
+        db,
+        workspace_id=workspace.id,
+        user_id=user.user_id,
+        company=company,
+        analysis_payload=analysis,
+    )
+    metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+    company.metadata_json = {
+        **metadata,
+        "ai_sales_workspace": analysis,
+        "ai_sales_workspace_updated_at": analysis.get("generated_at") or datetime.utcnow().isoformat(),
+    }
+    company.updated_at = datetime.utcnow()
+    if lead:
+        _add_lead_activity(
+            db,
+            request,
+            user.user_id,
+            workspace,
+            "ai.sales_workspace.generated",
+            lead,
+            {
+                "company_id": str(company.id),
+                "version": analysis.get("version", 1),
+                "missing_data": analysis.get("missing_data", []),
+            },
+        )
+    db.commit()
+
+    missing_data = analysis.get("missing_data", []) if isinstance(analysis.get("missing_data"), list) else []
+    return UsageAISalesAnalysisOut(
+        status="partial_success" if missing_data else "success",
+        message="AI sales analysis generated with missing data warnings." if missing_data else "AI sales analysis generated.",
+        company_id=company.id,
+        analysis=analysis,
+        generated_at=str(analysis.get("generated_at") or "") or None,
+        cached=False,
+    )
 
 
 @router.post("/companies/{company_id}/analyze", response_model=UsageActionOut)
