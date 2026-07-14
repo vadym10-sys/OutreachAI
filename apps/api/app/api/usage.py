@@ -6629,6 +6629,14 @@ def deep_search_company_contacts(
             )
             return None
 
+    def _safe_workflow_stages(company_out: Optional[CrmCompanyOut]) -> dict[str, Any]:
+        stages = getattr(company_out, "workflow_stages", {}) if company_out else {}
+        return stages if isinstance(stages, dict) else {}
+
+    def _safe_workflow_state(company_out: Optional[CrmCompanyOut]) -> dict[str, Any]:
+        state = getattr(company_out, "ai_workflow_engine", {}) if company_out else {}
+        return state if isinstance(state, dict) else {}
+
     domain = normalize_domain(company.domain or company.website or (lead.website if lead else "") or "")
     if not domain:
         return UsageActionOut(
@@ -6720,8 +6728,8 @@ def deep_search_company_contacts(
         company=company_out,
         warnings=[error.get("message", "") for error in result.errors if error.get("message")][:4],
         completed_steps=[stage for stage, state in result.stages.items() if state == "completed"],
-        workflow_stages=company_out.workflow_stages,
-        workflow_state=company_out.ai_workflow_engine,
+        workflow_stages=_safe_workflow_stages(company_out),
+        workflow_state=_safe_workflow_state(company_out),
         missing_fields=[] if result.verified_email else ["verified_email"],
         recommended_actions=["Generate email for review"] if result.verified_email else ["Add email manually", "Retry search"],
         next_action="Generate email for review" if result.verified_email else "Add a verified email or choose another contact",
