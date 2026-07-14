@@ -43,6 +43,17 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function resolveWorkspaceToken(getAuthToken: () => Promise<string | null>, attempts = 3) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const token = await getAuthToken();
+    if (token) return token;
+    if (attempt < attempts - 1) {
+      await delay(250 * (attempt + 1));
+    }
+  }
+  return null;
+}
+
 function redirectToSignIn() {
   if (typeof window === "undefined" || isClerkE2EBypass) return;
   const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
@@ -215,9 +226,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const loadWorkspace = useCallback(async () => {
     if (!ready) return null;
     try {
-      const token = await getAuthToken();
+      const token = await resolveWorkspaceToken(getAuthToken);
       if (!token) {
-        redirectToSignIn();
+        setWorkspaceLoadFailed(true);
         return null;
       }
       const loadedWorkspace = await clientApi<Workspace>("/api/workspace/me", token);
@@ -334,9 +345,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     }
     setWorkspaceSaving(true);
     try {
-      const token = await getAuthToken();
+      const token = await resolveWorkspaceToken(getAuthToken);
       if (!token) {
-        redirectToSignIn();
+        setWorkspaceError(t("Your session has expired. Please sign in again."));
         return;
       }
       const updated = await clientApi<Workspace>("/api/workspace", token, {

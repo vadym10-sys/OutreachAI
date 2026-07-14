@@ -22,6 +22,17 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function resolveWorkspaceToken(getAuthToken: () => Promise<string | null>, attempts = 3) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const token = await getAuthToken();
+    if (token) return token;
+    if (attempt < attempts - 1) {
+      await delay(250 * (attempt + 1));
+    }
+  }
+  return null;
+}
+
 function setupCompleteness(form: WorkspaceSetupForm) {
   return [form.name, form.company, form.industry, form.target_country, form.target_customer].filter((item) => String(item || "").trim()).length;
 }
@@ -86,7 +97,7 @@ export function OnboardingWorkspaceSetup() {
   const loadWorkspace = useCallback(async () => {
     if (!ready) return;
     try {
-      const token = await getAuthToken();
+      const token = await resolveWorkspaceToken(getAuthToken);
       if (!token) {
         setError(t("Your session has expired. Please sign in again."));
         return;
@@ -104,7 +115,7 @@ export function OnboardingWorkspaceSetup() {
   useEffect(() => {
     let active = true;
     const run = async () => {
-      const token = await getAuthToken();
+      const token = await resolveWorkspaceToken(getAuthToken);
       if (!token || !active) {
         if (active) {
           setLoading(false);
@@ -147,7 +158,7 @@ export function OnboardingWorkspaceSetup() {
 
     setSaving(true);
     try {
-      const token = await getAuthToken();
+      const token = await resolveWorkspaceToken(getAuthToken);
       if (!token) {
         setError(t("Your session has expired. Please sign in again."));
         return;
