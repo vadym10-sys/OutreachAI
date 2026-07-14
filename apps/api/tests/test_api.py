@@ -3381,6 +3381,27 @@ def test_ai_sales_analysis_endpoints_do_not_500_when_snapshot_table_unavailable(
         AISalesWorkspaceAnalysis.__table__.create(bind=db.get_bind(), checkfirst=True)
 
 
+def test_ai_sales_analysis_unexpected_generation_error_returns_provider_unavailable(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-unexpected-error@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Unexpected Error Co", "website": "https://analysis-unexpected-error.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    monkeypatch.setattr(usage_module, "build_ai_sales_workspace_analysis", lambda **_: (_ for _ in ()).throw(RuntimeError("unexpected generation failure")))
+
+    response = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "provider_unavailable"
+    assert "temporarily unavailable" in payload["message"].lower()
+
+
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:
     SessionLocal = get_sessionmaker()
     with SessionLocal() as db:

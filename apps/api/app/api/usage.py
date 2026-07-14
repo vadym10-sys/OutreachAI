@@ -6840,6 +6840,17 @@ def generate_ai_sales_analysis(
             generated_at=str(cached.get("generated_at") or "") or None,
             cached=bool(cached),
         )
+    except Exception as exc:
+        capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis.unexpected", workspace_id=workspace.id, lead_id=company.lead_id)
+        cached = _cached_ai_sales_analysis_from_company(company)
+        return UsageAISalesAnalysisOut(
+            status="provider_unavailable",
+            message="AI sales analysis is temporarily unavailable. Please try again.",
+            company_id=company.id,
+            analysis=cached,
+            generated_at=str(cached.get("generated_at") or "") or None,
+            cached=bool(cached),
+        )
 
     _save_ai_sales_analysis_snapshot(
         db,
