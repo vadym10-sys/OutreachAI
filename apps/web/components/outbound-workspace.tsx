@@ -671,18 +671,22 @@ function useTokenApi(): { api: ApiFn; ready: boolean } {
   }
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const { getToken, isLoaded, isSignedIn } = useAuth();
+  const getFreshToken = useCallback(async () => {
+    let token = await getToken({ skipCache: true });
+    for (let attempt = 0; !token && attempt < 20; attempt += 1) {
+      await delay(100);
+      token = await getToken({ skipCache: true });
+    }
+    return token;
+  }, [getToken]);
   // The no-Clerk branch above is required for local/E2E builds where ClerkProvider is intentionally not mounted.
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const api = useCallback(async function api<T>(path: string, init: ClientApiInit = {}) {
     if (!isLoaded || !isSignedIn) throw new Error("Please sign in again before continuing.");
-    let token = await getToken();
-    for (let attempt = 0; !token && attempt < 20; attempt += 1) {
-      await delay(100);
-      token = await getToken();
-    }
+    const token = await getFreshToken();
     if (!token) throw new Error("Please sign in again before continuing.");
     return clientApi<T>(path, token, init);
-  }, [getToken, isLoaded, isSignedIn]);
+  }, [getFreshToken, isLoaded, isSignedIn]);
   return { api, ready: isLoaded && Boolean(isSignedIn) };
 }
 
