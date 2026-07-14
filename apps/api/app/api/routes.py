@@ -5104,7 +5104,7 @@ def get_my_workspace(user: WorkspaceUserContext, db: Session = Depends(get_db)) 
 
 
 @router.put("/workspace", response_model=WorkspaceOut)
-def update_workspace(payload: WorkspaceUpdate, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+def update_workspace(payload: WorkspaceUpdate, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     for key, value in payload.model_dump().items():
         setattr(workspace, key, value)
