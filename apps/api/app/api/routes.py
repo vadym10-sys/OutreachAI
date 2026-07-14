@@ -23,7 +23,7 @@ from app.core.cache import cache_key, get_json, set_json
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
 from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
-from app.core.security import CurrentUser, CurrentUserContext, OwnerUser
+from app.core.security import CurrentUser, CurrentUserContext, OwnerUser, WorkspaceUserContext
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
@@ -175,6 +175,8 @@ from app.services.ai import (
     suggest_reply,
     website_audit,
 )
+from app.services.continuous_learning import apply_continuous_learning_event
+from app.services.workflow_engine import build_company_workflow_engine
 from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
@@ -1077,6 +1079,38 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
 
     if company.ai_summary and not db.scalar(select(Note.id).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id, Note.kind == "ai_summary").limit(1)):
         db.add(Note(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id, kind="ai_summary", body=company.ai_summary))
+
+    contacts_for_workflow = list(
+        db.scalars(
+            select(Contact)
+            .where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id)
+            .order_by(Contact.created_at.desc())
+        ).all()
+    )
+    emails_for_workflow = (
+        list(
+            db.scalars(
+                select(EmailMessage)
+                .where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id)
+                .order_by(EmailMessage.created_at.desc())
+                .limit(20)
+            ).all()
+        )
+        if company.lead_id
+        else []
+    )
+    workflow_stages = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
+    workflow_state = build_company_workflow_engine(
+        company=company,
+        metadata=company.metadata_json if isinstance(company.metadata_json, dict) else {},
+        contacts=contacts_for_workflow,
+        emails=emails_for_workflow,
+        workflow_stages=workflow_stages,
+    )
+    company.metadata_json = {
+        **(company.metadata_json or {}),
+        "ai_workflow_engine": workflow_state,
+    }
     return company
 
 
@@ -1113,6 +1147,7 @@ def _existing_duplicate_lead(db: Session, workspace: Workspace, user_id: str, it
 
 
 def _crm_contact_out(contact: Contact, company_name: str = "") -> CrmContactOut:
+    metadata = contact.metadata_json or {}
     return CrmContactOut(
         id=contact.id,
         company_id=contact.company_id,
@@ -1126,6 +1161,7 @@ def _crm_contact_out(contact: Contact, company_name: str = "") -> CrmContactOut:
         confidence=contact.confidence,
         source=contact.source,
         email_status=contact.email_status,
+        decision_maker_intelligence=metadata.get("decision_maker_intelligence") if isinstance(metadata.get("decision_maker_intelligence"), dict) else {},
         created_at=contact.created_at,
     )
 
@@ -1228,6 +1264,184 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     last_activity_at = max([value for value in [company.updated_at, found_at, saved_to_crm_at, website_analyzed_at, contact_found_at, email_generated_at, email_approved_at, email_sent_at, delivered_at, opened_at, replied_at, latest_activity_at] if value], default=company.updated_at)
     company_metadata = company.metadata_json or {}
     deep_contact_search = company_metadata.get("deep_contact_search") if isinstance(company_metadata.get("deep_contact_search"), dict) else {}
+    decision_maker_intelligence = company_metadata.get("decision_maker_intelligence") if isinstance(company_metadata.get("decision_maker_intelligence"), dict) else {}
+    opportunity_ranking = company_metadata.get("opportunity_ranking") if isinstance(company_metadata.get("opportunity_ranking"), dict) else {}
+    ai_outreach_strategy = company_metadata.get("ai_outreach_strategy") if isinstance(company_metadata.get("ai_outreach_strategy"), dict) else {}
+    ai_competitor_intelligence = company_metadata.get("ai_competitor_intelligence") if isinstance(company_metadata.get("ai_competitor_intelligence"), dict) else {}
+    ai_company_timeline = company_metadata.get("ai_company_timeline") if isinstance(company_metadata.get("ai_company_timeline"), dict) else {}
+    ai_company_predictions = company_metadata.get("ai_company_predictions") if isinstance(company_metadata.get("ai_company_predictions"), dict) else {}
+    ai_sales_timeline = company_metadata.get("ai_sales_timeline") if isinstance(company_metadata.get("ai_sales_timeline"), dict) else {}
+    ai_risk_analyzer = company_metadata.get("ai_risk_analyzer") if isinstance(company_metadata.get("ai_risk_analyzer"), dict) else {}
+    ai_sales_coach = company_metadata.get("ai_sales_coach") if isinstance(company_metadata.get("ai_sales_coach"), dict) else {}
+    ai_specialized_agents = company_metadata.get("ai_specialized_agents") if isinstance(company_metadata.get("ai_specialized_agents"), dict) else {}
+    ai_agent_intermediate_reasoning = company_metadata.get("ai_agent_intermediate_reasoning") if isinstance(company_metadata.get("ai_agent_intermediate_reasoning"), dict) else {}
+    ai_final_orchestrator = company_metadata.get("ai_final_orchestrator") if isinstance(company_metadata.get("ai_final_orchestrator"), dict) else {}
+    ai_evidence_engine = company_metadata.get("ai_evidence_engine") if isinstance(company_metadata.get("ai_evidence_engine"), dict) else {}
+    ai_executive_dashboard = company_metadata.get("ai_executive_dashboard") if isinstance(company_metadata.get("ai_executive_dashboard"), dict) else {}
+    ai_revenue_engine_report = company_metadata.get("ai_revenue_engine_report") if isinstance(company_metadata.get("ai_revenue_engine_report"), dict) else {}
+    ai_crm = company_metadata.get("ai_crm") if isinstance(company_metadata.get("ai_crm"), dict) else {}
+    ai_ceo_dashboard = company_metadata.get("ai_ceo_dashboard") if isinstance(company_metadata.get("ai_ceo_dashboard"), dict) else {}
+    ai_sales_os = company_metadata.get("ai_sales_os") if isinstance(company_metadata.get("ai_sales_os"), dict) else {}
+    ai_live_buying_signals = company_metadata.get("ai_live_buying_signals") if isinstance(company_metadata.get("ai_live_buying_signals"), dict) else {}
+    ai_lead_prioritization = company_metadata.get("ai_lead_prioritization") if isinstance(company_metadata.get("ai_lead_prioritization"), dict) else {}
+    ai_sales_inbox_latest = company_metadata.get("ai_sales_inbox_latest") if isinstance(company_metadata.get("ai_sales_inbox_latest"), dict) else {}
+    ai_sales_inbox_history = [item for item in company_metadata.get("ai_sales_inbox_history", []) if isinstance(item, dict)] if isinstance(company_metadata.get("ai_sales_inbox_history"), list) else []
+    if not ai_executive_dashboard:
+        ai_final_orchestrator = company_metadata.get("ai_final_orchestrator") if isinstance(company_metadata.get("ai_final_orchestrator"), dict) else {}
+        ai_agent_intermediate_reasoning = company_metadata.get("ai_agent_intermediate_reasoning") if isinstance(company_metadata.get("ai_agent_intermediate_reasoning"), dict) else {}
+        opportunity_ranking_cache = company_metadata.get("opportunity_ranking") if isinstance(company_metadata.get("opportunity_ranking"), dict) else {}
+        buying_signal_score = int(company_metadata["buying_signal_score"]) if str(company_metadata.get("buying_signal_score") or "").isdigit() else 0
+        buying_intent_cache = {
+            "buying_signal_score": buying_signal_score,
+            "urgency": str(company_metadata.get("buying_signal_urgency") or ""),
+            "explanation": str(company_metadata.get("buying_signal_explanation") or ""),
+        }
+        risk_cache = company_metadata.get("ai_risk_analyzer") if isinstance(company_metadata.get("ai_risk_analyzer"), dict) else {}
+        outreach_cache = company_metadata.get("ai_outreach_strategy") if isinstance(company_metadata.get("ai_outreach_strategy"), dict) else {}
+        competitor_cache = company_metadata.get("ai_competitor_intelligence") if isinstance(company_metadata.get("ai_competitor_intelligence"), dict) else {}
+
+        orchestrator_output = ai_final_orchestrator.get("output") if isinstance(ai_final_orchestrator.get("output"), dict) else {}
+        decision_maker = orchestrator_output.get("decision_maker") if isinstance(orchestrator_output.get("decision_maker"), dict) else {}
+        email_plan = orchestrator_output.get("email_plan") if isinstance(orchestrator_output.get("email_plan"), dict) else {}
+        competitor_view = orchestrator_output.get("competitor_view") if isinstance(orchestrator_output.get("competitor_view"), dict) else {}
+        final_recommendation = orchestrator_output.get("final_recommendation") if isinstance(orchestrator_output.get("final_recommendation"), dict) else {}
+
+        top_risks = risk_cache.get("reasons") if isinstance(risk_cache.get("reasons"), list) else []
+        top_opportunities = [str(item) for item in opportunity_ranking_cache.get("top_positive_signals", []) if str(item or "").strip()] if isinstance(opportunity_ranking_cache.get("top_positive_signals"), list) else []
+        opportunity_to_sell = str(competitor_view.get("opportunity_to_sell") or competitor_cache.get("opportunity_to_sell") or "").strip()
+        if opportunity_to_sell:
+            top_opportunities = [opportunity_to_sell, *top_opportunities]
+
+        follow_up_schedule = outreach_cache.get("follow_up_schedule") if isinstance(outreach_cache.get("follow_up_schedule"), list) else []
+        recommended_follow_up = str(follow_up_schedule[0] or "").strip() if follow_up_schedule else ""
+
+        evidence: list[dict[str, Any]] = []
+        for section in ai_agent_intermediate_reasoning.values():
+            if not isinstance(section, dict) or not isinstance(section.get("evidence"), list):
+                continue
+            for item in section.get("evidence", []):
+                if not isinstance(item, dict):
+                    continue
+                source_field = str(item.get("source_field") or "").strip()
+                value = str(item.get("value") or "").strip()
+                if not source_field or not value:
+                    continue
+                evidence.append(
+                    {
+                        "source_field": source_field,
+                        "value": value,
+                        "confidence": max(0, min(100, int(item.get("confidence") if str(item.get("confidence") or "").isdigit() else 70))),
+                    }
+                )
+
+        seen: set[tuple[str, str]] = set()
+        deduped_evidence: list[dict[str, Any]] = []
+        for item in evidence:
+            key = (str(item.get("source_field") or "").lower(), str(item.get("value") or "").lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped_evidence.append(item)
+        ai_executive_dashboard = {
+            "generated_at": datetime.utcnow().isoformat(),
+            "source": "cached_orchestrator",
+            "overall_opportunity_score": {
+                "score": int(opportunity_ranking_cache["overall_score"]) if str(opportunity_ranking_cache.get("overall_score") or "").isdigit() else 0,
+                "reasoning": str(opportunity_ranking_cache.get("reasoning") or ""),
+            },
+            "buying_intent": {
+                "score": buying_signal_score,
+                "urgency": str(buying_intent_cache.get("urgency") or ""),
+                "reasoning": str(buying_intent_cache.get("explanation") or ""),
+            },
+            "decision_maker": {
+                "contact_id": decision_maker.get("top_contact_id"),
+                "name": decision_maker.get("name"),
+                "title": decision_maker.get("title"),
+                "authority_level": decision_maker.get("authority_level"),
+                "is_verified_contact": bool(decision_maker.get("is_verified_contact")),
+            },
+            "top_risks": [str(item) for item in top_risks if str(item or "").strip()][:5],
+            "top_opportunities": top_opportunities[:5],
+            "recommended_next_action": str(final_recommendation.get("next_action") or opportunity_ranking_cache.get("recommended_next_action") or ""),
+            "recommended_email": {
+                "subject": str(email_plan.get("subject") or ""),
+                "first_sentence": str(email_plan.get("first_sentence") or ""),
+                "cta": str(email_plan.get("cta") or ""),
+                "channel": str(email_plan.get("best_channel") or ""),
+            },
+            "recommended_follow_up": recommended_follow_up,
+            "competitor_summary": {
+                "competitors": competitor_view.get("competitors") if isinstance(competitor_view.get("competitors"), list) else (competitor_cache.get("competitors") if isinstance(competitor_cache.get("competitors"), list) else []),
+                "market_gaps": competitor_view.get("market_gaps") if isinstance(competitor_view.get("market_gaps"), list) else (competitor_cache.get("market_gaps") if isinstance(competitor_cache.get("market_gaps"), list) else []),
+                "opportunity_to_sell": opportunity_to_sell,
+            },
+            "evidence": deduped_evidence[:12],
+            "confidence": int(ai_final_orchestrator["confidence"]) if str(ai_final_orchestrator.get("confidence") or "").isdigit() else 0,
+        }
+    if not ai_revenue_engine_report:
+        top_profile = {}
+        if isinstance(decision_maker_intelligence.get("profiles"), list) and decision_maker_intelligence.get("profiles"):
+            first_profile = decision_maker_intelligence.get("profiles")[0]
+            top_profile = first_profile if isinstance(first_profile, dict) else {}
+        buying_signal_score = int(company_metadata["buying_signal_score"]) if str(company_metadata.get("buying_signal_score") or "").isdigit() else 0
+        opportunity_score_cache = int(company_metadata["overall_score"]) if str(company_metadata.get("overall_score") or "").isdigit() else 0
+        top_pain_points = [str(item) for item in company_metadata.get("pain_points", []) if str(item or "").strip()] if isinstance(company_metadata.get("pain_points"), list) else []
+        top_opportunities = [str(item) for item in company_metadata.get("top_positive_signals", []) if str(item or "").strip()] if isinstance(company_metadata.get("top_positive_signals"), list) else []
+        top_risks = [str(item) for item in company_metadata.get("top_negative_signals", []) if str(item or "").strip()] if isinstance(company_metadata.get("top_negative_signals"), list) else []
+        ai_revenue_engine_report = {
+            "generated_at": datetime.utcnow().isoformat(),
+            "source": "cached_company_metadata",
+            "executive_summary": str(company_metadata.get("reasoning") or company_metadata.get("ai_summary") or ""),
+            "overall_opportunity_score": {
+                "score": opportunity_score_cache,
+                "reasoning": str(company_metadata.get("reasoning") or ""),
+            },
+            "buying_intent": {
+                "score": buying_signal_score,
+                "urgency": str(company_metadata.get("buying_signal_urgency") or ""),
+                "reasoning": str(company_metadata.get("buying_signal_explanation") or ""),
+            },
+            "decision_maker": {
+                "contact_id": top_profile.get("contact_id"),
+                "name": top_profile.get("name"),
+                "title": top_profile.get("title"),
+                "authority_level": top_profile.get("estimated_authority_level"),
+                "is_verified_contact": bool(top_profile.get("is_verified_contact")),
+            },
+            "best_contact_reason": str(top_profile.get("why_best_decision_maker") or ""),
+            "top_pain_points": top_pain_points[:5],
+            "top_opportunities": top_opportunities[:5],
+            "top_risks": top_risks[:5],
+            "competitor_position": {
+                "positioning": str(ai_competitor_intelligence.get("positioning") or ""),
+                "competitors": [str(item) for item in ai_competitor_intelligence.get("competitors", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("competitors"), list) else [],
+                "market_gaps": [str(item) for item in ai_competitor_intelligence.get("market_gaps", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("market_gaps"), list) else [],
+                "opportunity_to_sell": str(ai_competitor_intelligence.get("opportunity_to_sell") or ""),
+            },
+            "technology_summary": {
+                "products": [str(item) for item in company_metadata.get("company_intelligence", {}).get("report", {}).get("products", {}).get("value", []) if str(item or "").strip()] if isinstance(company_metadata.get("company_intelligence"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report", {}).get("products"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report", {}).get("products", {}).get("value"), list) else [],
+                "technology_stack": [str(item) for item in company_metadata.get("company_intelligence", {}).get("report", {}).get("technology_stack", {}).get("value", []) if str(item or "").strip()] if isinstance(company_metadata.get("company_intelligence"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report", {}).get("technology_stack"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report", {}).get("technology_stack", {}).get("value"), list) else [],
+            },
+            "recommended_outreach_strategy": {
+                "why_contact_now": str(ai_outreach_strategy.get("why_contact_now") or ""),
+                "best_timing": str(ai_outreach_strategy.get("best_timing") or ""),
+                "best_channel": str(ai_outreach_strategy.get("best_communication_channel") or ai_outreach_strategy.get("best_channel") or ""),
+                "strongest_value_proposition": str(ai_outreach_strategy.get("strongest_value_proposition") or ""),
+            },
+            "recommended_first_email": {
+                "subject": str(ai_outreach_strategy.get("best_subject_line") or ""),
+                "first_sentence": str(ai_outreach_strategy.get("first_sentence") or ""),
+                "cta": str(ai_outreach_strategy.get("cta") or ""),
+            },
+            "recommended_follow_up_strategy": {
+                "schedule": [str(item) for item in ai_outreach_strategy.get("follow_up_schedule", []) if str(item or "").strip()] if isinstance(ai_outreach_strategy.get("follow_up_schedule"), list) else [],
+                "strategy": str(ai_sales_coach.get("alternative_strategy") or ""),
+            },
+            "recommended_cta": str(ai_outreach_strategy.get("cta") or ""),
+            "confidence": int(company_metadata["confidence"]) if str(company_metadata.get("confidence") or "").isdigit() else 0,
+            "evidence": [item for item in ai_executive_dashboard.get("evidence", []) if isinstance(item, dict)] if isinstance(ai_executive_dashboard.get("evidence"), list) else [],
+        }
     technologies = deep_contact_search.get("technologies") if isinstance(deep_contact_search.get("technologies"), list) else []
     if not technologies and isinstance(company_metadata.get("technologies"), list):
         technologies = company_metadata.get("technologies") or []
@@ -1247,6 +1461,13 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         contact_found_at=contact_found_at,
         email_generated_at=email_generated_at,
         email_approved_at=email_approved_at,
+    )
+    ai_workflow_engine = build_company_workflow_engine(
+        company=company,
+        metadata=company_metadata,
+        contacts=contacts,
+        emails=emails,
+        workflow_stages=workflow_stages,
     )
     return CrmCompanyOut(
         id=company.id,
@@ -1279,6 +1500,18 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         risks=[str(item) for item in company_metadata.get("risks", [])] if isinstance(company_metadata.get("risks"), list) else [],
         opportunity_analysis=str(company_metadata.get("opportunity_analysis") or ""),
         partnership_fit=str(company_metadata.get("partnership_fit") or ""),
+        buying_signal_score=int(company_metadata["buying_signal_score"]) if str(company_metadata.get("buying_signal_score") or "").isdigit() else None,
+        buying_signal_urgency=str(company_metadata.get("buying_signal_urgency") or ""),
+        buying_signal_explanation=str(company_metadata.get("buying_signal_explanation") or ""),
+        buying_signal_evidence=[item for item in company_metadata.get("buying_signal_evidence", []) if isinstance(item, dict)] if isinstance(company_metadata.get("buying_signal_evidence"), list) else [],
+        buying_signal_confidence=int(company_metadata["buying_signal_confidence"]) if str(company_metadata.get("buying_signal_confidence") or "").isdigit() else None,
+        recommended_outreach_timing=str(company_metadata.get("recommended_outreach_timing") or ""),
+        overall_score=int(company_metadata["overall_score"]) if str(company_metadata.get("overall_score") or "").isdigit() else None,
+        reasoning=str(company_metadata.get("reasoning") or ""),
+        top_positive_signals=[str(item) for item in company_metadata.get("top_positive_signals", [])] if isinstance(company_metadata.get("top_positive_signals"), list) else [],
+        top_negative_signals=[str(item) for item in company_metadata.get("top_negative_signals", [])] if isinstance(company_metadata.get("top_negative_signals"), list) else [],
+        recommended_next_action=str(company_metadata.get("recommended_next_action") or ""),
+        confidence=int(company_metadata["confidence"]) if str(company_metadata.get("confidence") or "").isdigit() else None,
         priority_score=int(company_metadata["priority_score"]) if str(company_metadata.get("priority_score") or "").isdigit() else None,
         confidence_score=int(company_metadata["confidence_score"]) if str(company_metadata.get("confidence_score") or "").isdigit() else None,
         next_recommended_action=str(company_metadata.get("next_recommended_action") or ""),
@@ -1309,7 +1542,30 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         decision_maker_roles_searched=[str(role) for role in roles_searched] if isinstance(roles_searched, list) else [],
         workflow_stages=workflow_stages,
         workflow_stage_messages=workflow_stage_messages,
+        ai_workflow_engine=ai_workflow_engine,
         deep_contact_search=deep_contact_search,
+        decision_maker_intelligence=decision_maker_intelligence,
+        opportunity_ranking=opportunity_ranking,
+        ai_outreach_strategy=ai_outreach_strategy,
+        ai_competitor_intelligence=ai_competitor_intelligence,
+        ai_company_timeline=ai_company_timeline,
+        ai_company_predictions=ai_company_predictions,
+        ai_sales_timeline=ai_sales_timeline,
+        ai_risk_analyzer=ai_risk_analyzer,
+        ai_sales_coach=ai_sales_coach,
+        ai_specialized_agents=ai_specialized_agents,
+        ai_agent_intermediate_reasoning=ai_agent_intermediate_reasoning,
+        ai_final_orchestrator=ai_final_orchestrator,
+        ai_executive_dashboard=ai_executive_dashboard,
+        ai_revenue_engine_report=ai_revenue_engine_report,
+        ai_crm=ai_crm,
+        ai_ceo_dashboard=ai_ceo_dashboard,
+        ai_sales_os=ai_sales_os,
+        ai_live_buying_signals=ai_live_buying_signals,
+        ai_lead_prioritization=ai_lead_prioritization,
+        ai_sales_inbox_latest=ai_sales_inbox_latest,
+        ai_sales_inbox_history=ai_sales_inbox_history,
+        ai_evidence_engine=ai_evidence_engine,
         intelligence_quality=intelligence_quality,
         company_intelligence=company_intelligence,
         technologies=[str(item) for item in technologies if item],
@@ -4100,10 +4356,12 @@ def crm_companies(
     key = cache_key("crm-companies", workspace.id, user_id, search, city, country, industry, stage, email_status, source)
     cached = get_json(key)
     if cached:
-        return [CrmCompanyOut.model_validate(item) for item in cached]
+        validated = [CrmCompanyOut.model_validate(item) for item in cached]
+        return sorted(validated, key=lambda item: int(item.overall_score or 0), reverse=True)
     _ensure_crm_backfilled(db, user_id, workspace)
     companies = [company for company in db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(200)).all() if _is_customer_visible_company(company)][:100]
     output = [_crm_company_out(db, workspace, user_id, company) for company in companies]
+    output.sort(key=lambda item: int(item.overall_score or 0), reverse=True)
     set_json(key, [item.model_dump(mode="json") for item in output], app_settings.cache_crm_ttl_seconds)
     return output
 
@@ -4161,9 +4419,11 @@ def crm_pipeline(user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmPipe
     companies = [company for company in db.scalars(_crm_company_query(workspace, user_id).limit(300)).all() if _is_customer_visible_company(company)][:200]
     deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id)).order_by(Deal.updated_at.desc()).limit(300)).all())
     company_names = {company.id: company.name for company in companies}
+    serialized_companies = [_crm_company_out(db, workspace, user_id, company) for company in companies]
+    serialized_companies.sort(key=lambda item: int(item.overall_score or 0), reverse=True)
     return CrmPipelineOut(
         stages=CRM_STAGES.copy(),
-        companies=[_crm_company_out(db, workspace, user_id, company) for company in companies],
+        companies=serialized_companies,
         deals=[_crm_deal_out(deal, company_names.get(deal.company_id, "")) for deal in deals],
     )
 
@@ -4178,6 +4438,7 @@ def update_crm_company_stage(company_id: UUID, payload: CrmStageUpdate, request:
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     now = datetime.utcnow()
+    previous_stage = str(company.crm_stage or "")
     company.crm_stage = stage
     company.updated_at = now
     lead = db.get(Lead, company.lead_id) if company.lead_id else None
@@ -4205,6 +4466,31 @@ def update_crm_company_stage(company_id: UUID, payload: CrmStageUpdate, request:
     for deal in deals:
         deal.stage = stage
         deal.updated_at = now
+
+    if stage != previous_stage and stage in {"Meeting Scheduled", "Won", "Lost"}:
+        outcome_map = {
+            "Meeting Scheduled": "meeting",
+            "Won": "won",
+            "Lost": "lost",
+        }
+        metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+        ranking = metadata.get("opportunity_ranking") if isinstance(metadata.get("opportunity_ranking"), dict) else {}
+        prioritization = metadata.get("ai_lead_prioritization") if isinstance(metadata.get("ai_lead_prioritization"), dict) else {}
+        opportunity_factors = ranking.get("factors") if isinstance(ranking.get("factors"), dict) else {}
+        prioritization_factors = prioritization.get("factors") if isinstance(prioritization.get("factors"), dict) else {}
+        settings = _settings_for_workspace(db, user_id, workspace)
+        updated_ai, profile = apply_continuous_learning_event(
+            settings.ai if isinstance(settings.ai, dict) else {},
+            outcome=outcome_map[stage],
+            opportunity_factors=opportunity_factors,
+            prioritization_factors=prioritization_factors,
+        )
+        settings.ai = updated_ai
+        db.add(settings)
+        company.metadata_json = {
+            **metadata,
+            "continuous_learning": profile,
+        }
     db.commit()
     db.refresh(company)
     return _crm_company_out(db, workspace, user_id, company)
@@ -4813,7 +5099,7 @@ def get_workspace(user: CurrentUserContext, db: Session = Depends(get_db)) -> Wo
 
 
 @router.get("/workspace/me", response_model=WorkspaceOut)
-def get_my_workspace(user: CurrentUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+def get_my_workspace(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
     return _workspace_out(db, _current_workspace(db, user.user_id, user.email))
 
 
