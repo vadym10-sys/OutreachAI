@@ -1,6 +1,18 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+watchPatterns = [
+	"/apps/api/Dockerfile",
+	"/apps/api/requirements.txt",
+	"/apps/api/railway.worker.toml",
+	"/apps/api/app/jobs/**",
+	"/apps/api/app/api/routes.py",
+	"/apps/api/app/api/usage.py",
+	"/apps/api/app/core/**",
+	"/apps/api/app/models/**",
+	"/apps/api/app/schemas/**",
+	"/apps/api/app/services/**"
+]
 
 [deploy]
 startCommand = "python -m app.jobs.worker"

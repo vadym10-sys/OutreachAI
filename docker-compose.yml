@@ -27,6 +27,16 @@ services:
       db:
         condition: service_healthy
 
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: python -m app.jobs.worker
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+
   web:
     build:
       context: .
@@ -36,6 +46,7 @@ services:
       - "3000:3000"
     depends_on:
       - api
+      - worker
 
 volumes:
   postgres_data:

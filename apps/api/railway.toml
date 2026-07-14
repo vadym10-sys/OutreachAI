@@ -1,6 +1,20 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+watchPatterns = [
+	"/apps/api/Dockerfile",
+	"/apps/api/requirements.txt",
+	"/apps/api/railway.toml",
+	"/apps/api/app/main.py",
+	"/apps/api/app/serve.py",
+	"/apps/api/app/api/webhooks.py",
+	"/apps/api/app/api/routes.py",
+	"/apps/api/app/api/usage.py",
+	"/apps/api/app/core/**",
+	"/apps/api/app/models/**",
+	"/apps/api/app/schemas/**",
+	"/apps/api/app/services/**"
+]
 
 [deploy]
 startCommand = "python -m app.serve"
