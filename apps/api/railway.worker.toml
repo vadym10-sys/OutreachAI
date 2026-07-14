@@ -3,6 +3,5 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "python -m app.serve"
-healthcheckPath = "/api/health"
+startCommand = "python -m app.jobs.worker"
 restartPolicyType = "ON_FAILURE"
