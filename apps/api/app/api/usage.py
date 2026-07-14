@@ -6570,7 +6570,11 @@ def list_companies(
         stmt = stmt.where(Company.email_status == email_status)
     if source:
         stmt = stmt.where(Company.source == source)
-    companies = [company for company in db.scalars(stmt.order_by(Company.updated_at.desc()).limit(200)).all() if _is_customer_visible_company(company)][:100]
+    companies = [
+        company
+        for company in db.scalars(stmt.order_by(Company.updated_at.desc()).limit(200)).all()
+        if company.lead_id is not None or _is_customer_visible_company(company)
+    ][:100]
     return [_crm_company_out(db, workspace, user.user_id, company) for company in companies]
 
 
