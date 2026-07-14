@@ -93,6 +93,20 @@ type WorkspaceAppActionResponse = {
   missing_fields?: string[];
   recommended_actions?: string[];
   next_action?: string;
+  job_id?: string;
+  job_status?: string;
+};
+
+type WorkspaceDeepContactJobStatusResponse = {
+  job_id: string;
+  job_type: string;
+  status: string;
+  progress?: {
+    stage?: string;
+    message?: string;
+    percent?: number;
+  };
+  company?: CrmCompany | null;
 };
 
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
@@ -3832,6 +3846,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
   const [actionCompletedSteps, setActionCompletedSteps] = useState<string[]>([]);
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const contactFormRef = useRef<HTMLFormElement | null>(null);
+  const deepContactPollTimerRef = useRef<number | null>(null);
   const displayCurrent = useMemo(() => localizeLegacyCompanySalesFallbacks(current, locale), [current, locale]);
   const lead = leadFromCrmCompany(displayCurrent);
   const currentDraft = latestCompanyEmail(displayCurrent);
@@ -4121,6 +4136,72 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     setStageValue(updatedCompany.crm_stage);
   }
 
+  function stopDeepContactPolling() {
+    if (deepContactPollTimerRef.current !== null) {
+      window.clearInterval(deepContactPollTimerRef.current);
+      deepContactPollTimerRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      stopDeepContactPolling();
+    };
+  }, []);
+
+  function startDeepContactPolling(jobId: string, force: boolean) {
+    stopDeepContactPolling();
+    const poll = async () => {
+      try {
+        const snapshot = await api<WorkspaceDeepContactJobStatusResponse>(`/api/workspace-app/companies/${current.id}/deep-contact-search/jobs/${jobId}`, {
+          timeoutMs: 15000
+        });
+        if (snapshot.company) {
+          applyCompanyUpdate(normalizeCrmCompany(snapshot.company));
+        }
+        const status = String(snapshot.status || "").toLowerCase();
+        if (status === "pending" || status === "running" || status === "retrying") {
+          setActionNotice(t(snapshot.progress?.message || "Deep contact search is running in the background..."));
+          return;
+        }
+
+        stopDeepContactPolling();
+        if (status === "succeeded") {
+          setActionNotice(t("Deep contact search finished."));
+          setActionError("");
+          trackEvent("deep_contact_search_completed", {
+            company_id: current.id,
+            company: current.name,
+            force,
+            job_id: jobId
+          });
+        } else {
+          const reason = t("Deep contact search could not be completed. Try again or add the contact manually.");
+          setActionError(reason);
+          setActionNotice("");
+          trackEvent("deep_contact_search_failed", {
+            company_id: current.id,
+            company: current.name,
+            reason,
+            job_id: jobId
+          });
+        }
+        setActionBusy("");
+      } catch (err) {
+        stopDeepContactPolling();
+        const reason = friendlyErrorMessage(err, t("Deep contact search status could not be refreshed."));
+        setActionError(reason);
+        setActionNotice("");
+        setActionBusy("");
+      }
+    };
+
+    deepContactPollTimerRef.current = window.setInterval(() => {
+      void poll();
+    }, 3000);
+    void poll();
+  }
+
   async function moveStage(nextStage = stageValue) {
     if (nextStage === current.crm_stage) {
       setActionError("");
@@ -4319,27 +4400,36 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     }
     setActionBusy(force ? "deep-contact-retry" : "deep-contact");
     setActionError("");
-    setActionNotice(t("Running deep contact search..."));
+    setActionNotice(t("Queuing deep contact search..."));
+    let keepBusy = false;
     try {
       const result = await withTimeout(
         api<WorkspaceAppActionResponse>(`/api/workspace-app/companies/${current.id}/deep-contact-search`, {
           method: "POST",
           body: JSON.stringify({ force }),
-          timeoutMs: 45000
+          timeoutMs: 15000
         }),
-        50000,
-        "Deep contact search took too long. Saved data stayed in CRM; try again with a smaller company profile."
+        16000,
+        "Deep contact search could not be queued. Please retry."
       );
       if (result.company) {
         applyCompanyUpdate(normalizeCrmCompany(result.company));
       }
-      setActionNotice(t(result.message || "Deep contact search finished."));
-      trackEvent("deep_contact_search_completed", {
-        company_id: current.id,
-        company: current.name,
-        force
-      });
+      const queuedJobId = String(result.job_id || "").trim();
+      if (queuedJobId) {
+        keepBusy = true;
+        setActionNotice(t(result.message || "Deep contact search queued. Waiting for completion..."));
+        startDeepContactPolling(queuedJobId, force);
+      } else {
+        setActionNotice(t(result.message || "Deep contact search finished."));
+        trackEvent("deep_contact_search_completed", {
+          company_id: current.id,
+          company: current.name,
+          force
+        });
+      }
     } catch (err) {
+      stopDeepContactPolling();
       const reason = friendlyErrorMessage(err, t("Deep contact search could not be completed. Try again or add the contact manually."));
       setActionError(reason);
       setActionNotice("");
@@ -4349,7 +4439,9 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
         reason
       });
     } finally {
-      setActionBusy("");
+      if (!keepBusy) {
+        setActionBusy("");
+      }
     }
   }
 

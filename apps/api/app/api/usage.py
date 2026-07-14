@@ -49,10 +49,10 @@ from app.models.entities import AppSettings, AuditLog, Campaign, Company, Contac
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
-from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, enqueue_company_enrichment_job, mark_cancelled, update_job_progress
+from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, enqueue_company_enrichment_job, enqueue_deep_contact_search_job, mark_cancelled, update_job_progress
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
 from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
-from app.services.deep_contact_search import DeepContactSearchError, normalize_domain, run_deep_contact_search
+from app.services.deep_contact_search import normalize_domain, run_deep_contact_search
 from app.services.continuous_learning import (
     DEFAULT_OPPORTUNITY_WEIGHTS,
     DEFAULT_PRIORITIZATION_WEIGHTS,
@@ -201,6 +201,16 @@ class UsageActionOut(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     recommended_actions: list[str] = Field(default_factory=list)
     next_action: str = ""
+    job_id: str = ""
+    job_status: str = ""
+
+
+class UsageJobStatusOut(BaseModel):
+    job_id: str
+    job_type: str
+    status: str
+    progress: dict[str, Any] = Field(default_factory=dict)
+    company: Optional[CrmCompanyOut] = None
 
 
 class UsageMonitoringChangeOut(BaseModel):
@@ -5591,6 +5601,67 @@ def process_enrichment_job(job_id: UUID, claim_token: str | None = None) -> bool
         db.close()
 
 
+def process_deep_contact_search_job(job_id: UUID, claim_token: str | None = None) -> bool:
+    db = get_sessionmaker()()
+    try:
+        job = db.get(EnrichmentJob, job_id)
+        if job is None or job.job_type != "deep_contact_search":
+            return False
+        if claim_token and (job.status != "running" or job.locked_by != claim_token):
+            logger.warning("Ignoring deep contact execution for stale claim job_id=%s claim_token=%s status=%s locked_by=%s", job_id, claim_token, job.status, job.locked_by)
+            return False
+
+        workspace = db.get(Workspace, job.workspace_id)
+        lead = db.scalar(select(Lead).where(Lead.id == job.lead_id, Lead.workspace_id == job.workspace_id))
+        payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+        try:
+            company_id = UUID(str(payload.get("company_id") or ""))
+        except Exception:
+            company_id = None
+        company = db.scalar(select(Company).where(Company.id == company_id, Company.workspace_id == job.workspace_id)) if company_id else None
+        request_id = job.request_id or str(job.id)
+
+        if workspace is None or lead is None or company is None:
+            return mark_cancelled(db, job, message="Workspace, lead, or company no longer exists.", claim_token=claim_token)
+
+        language = job.language or workspace.language or "English"
+        if not update_job_progress(db, job, stage="decision_maker", message="Searching for decision makers across connected sources.", percent=30, claim_token=claim_token):
+            return False
+
+        result = run_deep_contact_search(
+            domain=str(payload.get("domain") or company.domain or company.website or ""),
+            company_name=company.name,
+            industry=company.industry or lead.industry or "",
+            product_context=workspace.company or workspace.target_customer or "",
+            existing_metadata=company.metadata_json or {},
+            force=bool(payload.get("force")),
+        )
+
+        if not update_job_progress(db, job, stage="verified_email", message="Selecting and verifying the strongest contact email.", percent=70, claim_token=claim_token):
+            return False
+
+        request = _background_request(language)
+        _apply_deep_contact_result(db, request, job.user_id, workspace, company, lead, result)
+        db.commit()
+
+        warnings = [error.get("message", "") for error in result.errors if isinstance(error, dict) and error.get("message")][:5]
+        partial = result.status != "success" or bool(warnings)
+        completed = complete_job(db, job, partial=partial, warnings=warnings, claim_token=claim_token)
+        _lead_trace(
+            request_id,
+            "deep_contact_search_finished",
+            lead_id=str(lead.id),
+            job_id=str(job.id),
+            company=company.name,
+            status=result.status,
+            candidates=len(result.candidates),
+            verified=bool(result.verified_email),
+        )
+        return completed
+    finally:
+        db.close()
+
+
 def mark_enrichment_job_failed(job_id: UUID, exc: Exception, *, final: bool = False) -> None:
     db = get_sessionmaker()()
     try:
@@ -5603,6 +5674,24 @@ def mark_enrichment_job_failed(job_id: UUID, exc: Exception, *, final: bool = Fa
         lead = db.scalar(select(Lead).where(Lead.id == job.lead_id, Lead.workspace_id == job.workspace_id))
         if workspace is None or lead is None:
             return
+
+        if job.job_type == "deep_contact_search":
+            payload = job.payload_json if isinstance(job.payload_json, dict) else {}
+            try:
+                company_id = UUID(str(payload.get("company_id") or ""))
+            except Exception:
+                company_id = None
+            company = db.scalar(select(Company).where(Company.id == company_id, Company.workspace_id == job.workspace_id)) if company_id else None
+            if company is not None:
+                _set_company_metadata_stage(company, "decision_maker", "error", "Deep contact search could not finish. Retry or add a contact manually.")
+                _set_company_metadata_stage(company, "verified_email", "error", "No verified email was saved.")
+                _set_company_metadata_stage(company, "technographics", "error", "Technology stack is temporarily unavailable.")
+            _set_workflow_stage(lead, "decision_maker", "error", "Deep contact search could not finish. Retry or add a contact manually.")
+            _set_workflow_stage(lead, "verified_email", "error", "No verified email was saved.")
+            _sync_lead_to_crm(db, job.user_id, workspace, lead)
+            db.commit()
+            return
+
         lead.notes = _merge_lead_metadata(
             lead,
             _enrichment_metadata_update("error", job.request_id or str(job.id), {"enrichment_message": _localized_fallback_text(workspace.language if workspace else job.language, "enrichment_failed")}),
@@ -6608,7 +6697,7 @@ def analyze_company(company_id: UUID, request: Request, user: WorkspaceUserConte
         return UsageActionOut(status="provider_unavailable", message=_safe_provider_warning(exc), company=_crm_company_out(db, workspace, user.user_id, company))
 
 
-@router.post("/companies/{company_id}/deep-contact-search", response_model=UsageActionOut)
+@router.post("/companies/{company_id}/deep-contact-search", response_model=UsageActionOut, status_code=202)
 def deep_search_company_contacts(
     company_id: UUID,
     payload: UsageDeepContactSearchIn,
@@ -6652,91 +6741,74 @@ def deep_search_company_contacts(
         )
 
     request_id = request.headers.get("x-request-id") or str(uuid4())
-    _lead_trace(request_id, "deep_contact_search_started", lead_id=str(lead.id) if lead else "", company=company.name, domain=domain)
+    _lead_trace(request_id, "deep_contact_search_queued", lead_id=str(lead.id) if lead else "", company=company.name, domain=domain)
     _set_company_metadata_stage(company, "decision_maker", "running", "Searching for decision makers across connected sources.")
     _set_company_metadata_stage(company, "verified_email", "running", "Finding and verifying a usable business email.")
     _set_company_metadata_stage(company, "technographics", "running", "Detecting the website technology stack.")
-    try:
-        result = run_deep_contact_search(
-            domain=domain,
-            company_name=company.name,
-            industry=company.industry or (lead.industry if lead else "") or "",
-            product_context=workspace.company or workspace.target_customer or "",
-            existing_metadata=company.metadata_json or {},
-            force=payload.force,
-        )
-    except DeepContactSearchError as exc:
-        capture_provider_exception(exc, provider="deep_contact_search", endpoint="workspace_app.company.deep_contact_search", workspace_id=workspace.id, lead_id=lead.id if lead else None)
-        _lead_trace(request_id, "deep_contact_search_failed", lead_id=str(lead.id) if lead else "", company=company.name, reason="deep_contact_search_error")
-        _set_company_metadata_stage(company, "decision_maker", "error", str(exc))
-        _set_company_metadata_stage(company, "verified_email", "error", "No verified email was saved.")
-        db.commit()
-        return UsageActionOut(
-            status="provider_unavailable",
-            message=str(exc),
-            company=_safe_company_out(),
-            missing_fields=["decision_maker", "verified_email"],
-            recommended_actions=["Retry search", "Add contact manually"],
-        )
-    except Exception as exc:
-        capture_provider_exception(exc, provider="deep_contact_search", endpoint="workspace_app.company.deep_contact_search.unhandled", workspace_id=workspace.id, lead_id=lead.id if lead else None)
-        _lead_trace(request_id, "deep_contact_search_failed", lead_id=str(lead.id) if lead else "", company=company.name, reason="unexpected_exception")
-        _set_company_metadata_stage(company, "decision_maker", "error", "Deep contact search is temporarily unavailable.")
+    if lead is None:
+        _set_company_metadata_stage(company, "decision_maker", "error", "This company needs a saved lead before deep contact search can run.")
         _set_company_metadata_stage(company, "verified_email", "error", "No verified email was saved.")
         _set_company_metadata_stage(company, "technographics", "error", "Technology stack is temporarily unavailable.")
         db.commit()
-        return UsageActionOut(
-            status="provider_unavailable",
-            message="Deep contact search is temporarily unavailable. Please retry.",
-            company=_safe_company_out(),
-            missing_fields=["decision_maker", "verified_email"],
-            recommended_actions=["Retry search", "Add contact manually"],
-        )
+        raise HTTPException(status_code=400, detail="Save this company to CRM before running deep contact search.")
 
-    try:
-        _apply_deep_contact_result(db, request, user.user_id, workspace, company, lead, result)
-        db.commit()
-        db.refresh(company)
-        company_out = _safe_company_out()
-    except Exception as exc:
-        db.rollback()
-        capture_provider_exception(exc, provider="deep_contact_search", endpoint="workspace_app.company.deep_contact_search.apply", workspace_id=workspace.id, lead_id=lead.id if lead else None)
-        _set_company_metadata_stage(company, "decision_maker", "error", "Decision maker could not be saved.")
-        _set_company_metadata_stage(company, "verified_email", "error", "Verified email could not be saved.")
-        _set_company_metadata_stage(company, "technographics", "error", "Technology stack could not be saved.")
-        db.commit()
-        return UsageActionOut(
-            status="provider_unavailable",
-            message="Deep contact search completed, but CRM updates could not be saved. Please retry.",
-            company=_safe_company_out(),
-            missing_fields=["decision_maker", "verified_email"],
-            recommended_actions=["Retry search", "Add contact manually"],
-        )
-
-    _lead_trace(
-        request_id,
-        "deep_contact_search_finished",
-        lead_id=str(lead.id) if lead else "",
-        company=company.name,
-        status=result.status,
-        candidates=len(result.candidates),
-        verified=bool(result.verified_email),
+    job = enqueue_deep_contact_search_job(
+        db,
+        user_id=user.user_id,
+        workspace_id=workspace.id,
+        lead=lead,
+        company_id=company.id,
+        request_id=request_id,
+        language=_workspace_language(request, workspace),
+        domain=domain,
+        force=payload.force,
     )
+    db.commit()
+
+    if job.status in {"pending", "running", "retrying"} and int(job.attempts or 0) > 0:
+        return UsageActionOut(
+            status="partial_success",
+            message="Deep contact search is already running for this company. Tracking existing job.",
+            company=_safe_company_out(),
+            job_id=str(job.id),
+            job_status=job.status,
+            recommended_actions=["Wait for completion", "Refresh company card"],
+        )
+
+    company_out = _safe_company_out()
     return UsageActionOut(
-        status=result.status if result.status in {"success", "partial_success"} else "partial_success",
-        message=(
-            "Deep contact search completed with a verified decision maker."
-            if result.verified_email
-            else "Deep contact search completed, but no verified email was found. Add one manually or retry later."
-        ),
+        status="success",
+        message="Deep contact search queued. This company card will update automatically when processing finishes.",
         company=company_out,
-        warnings=[error.get("message", "") for error in result.errors if error.get("message")][:4],
-        completed_steps=[stage for stage, state in result.stages.items() if state == "completed"],
         workflow_stages=_safe_workflow_stages(company_out),
         workflow_state=_safe_workflow_state(company_out),
-        missing_fields=[] if result.verified_email else ["verified_email"],
-        recommended_actions=["Generate email for review"] if result.verified_email else ["Add email manually", "Retry search"],
-        next_action="Generate email for review" if result.verified_email else "Add a verified email or choose another contact",
+        recommended_actions=["Wait for completion", "Add contact manually if needed"],
+        next_action="Track job progress and review the updated contact data.",
+        job_id=str(job.id),
+        job_status=job.status,
+    )
+
+
+@router.get("/companies/{company_id}/deep-contact-search/jobs/{job_id}", response_model=UsageJobStatusOut)
+def deep_contact_search_job_status(company_id: UUID, job_id: UUID, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageJobStatusOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+    job = db.scalar(
+        select(EnrichmentJob).where(
+            EnrichmentJob.id == job_id,
+            EnrichmentJob.workspace_id == workspace.id,
+            EnrichmentJob.job_type == "deep_contact_search",
+            EnrichmentJob.lead_id == company.lead_id,
+        )
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Deep contact search job not found.")
+    return UsageJobStatusOut(
+        job_id=str(job.id),
+        job_type=job.job_type,
+        status=job.status,
+        progress=job.progress_json if isinstance(job.progress_json, dict) else {},
+        company=_crm_company_out(db, workspace, user.user_id, company),
     )
 
 

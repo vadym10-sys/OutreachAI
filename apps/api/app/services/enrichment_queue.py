@@ -100,13 +100,73 @@ def enqueue_company_enrichment_job(
     return job
 
 
-def claim_next_enrichment_job(db: Session, *, worker_id: str | None = None, stale_after_seconds: int = 900) -> EnrichmentJob | None:
+def enqueue_deep_contact_search_job(
+    db: Session,
+    *,
+    user_id: str,
+    workspace_id: UUID,
+    lead: Lead,
+    company_id: UUID,
+    request_id: str,
+    language: str,
+    domain: str,
+    force: bool = False,
+    max_attempts: int = 2,
+    priority: int = 1,
+) -> EnrichmentJob:
+    if not force:
+        existing = db.scalar(
+            select(EnrichmentJob)
+            .where(
+                EnrichmentJob.workspace_id == workspace_id,
+                EnrichmentJob.lead_id == lead.id,
+                EnrichmentJob.job_type == "deep_contact_search",
+                EnrichmentJob.status.in_(tuple(ACTIVE_JOB_STATUSES)),
+                EnrichmentJob.cancel_requested.is_(False),
+            )
+            .order_by(EnrichmentJob.created_at.desc())
+        )
+        if existing:
+            return existing
+    else:
+        active_jobs = db.scalars(
+            select(EnrichmentJob).where(
+                EnrichmentJob.workspace_id == workspace_id,
+                EnrichmentJob.lead_id == lead.id,
+                EnrichmentJob.job_type == "deep_contact_search",
+                EnrichmentJob.status.in_(tuple(ACTIVE_JOB_STATUSES)),
+            )
+        ).all()
+        for job in active_jobs:
+            job.cancel_requested = True
+            job.status = "cancelled" if job.status != "running" else job.status
+            job.updated_at = datetime.utcnow()
+
+    job = EnrichmentJob(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        lead_id=lead.id,
+        job_type="deep_contact_search",
+        status="pending",
+        priority=priority,
+        max_attempts=max(1, int(max_attempts or 2)),
+        request_id=request_id,
+        language=language,
+        payload_json={"company_id": str(company_id), "company": lead.company, "domain": domain, "force": bool(force), "source": "workspace_deep_contact_search"},
+        progress_json={"stage": "queued", "message": "Waiting for deep contact search worker.", "percent": 5},
+        run_after=datetime.utcnow(),
+    )
+    db.add(job)
+    return job
+
+
+def claim_next_enrichment_job(db: Session, *, worker_id: str | None = None, stale_after_seconds: int = 900, job_types: tuple[str, ...] = ("company_enrichment", "deep_contact_search")) -> EnrichmentJob | None:
     now = datetime.utcnow()
     stale_before = now - timedelta(seconds=stale_after_seconds)
     stmt = (
         select(EnrichmentJob)
         .where(
-            EnrichmentJob.job_type == "company_enrichment",
+            EnrichmentJob.job_type.in_(job_types),
             EnrichmentJob.cancel_requested.is_(False),
             or_(
                 EnrichmentJob.status.in_(("pending", "retrying")),
@@ -127,7 +187,8 @@ def claim_next_enrichment_job(db: Session, *, worker_id: str | None = None, stal
     job.locked_at = now
     job.started_at = job.started_at or now
     job.attempts = int(job.attempts or 0) + 1
-    job.progress_json = {**(job.progress_json or {}), "stage": "running", "message": "AI enrichment is running.", "percent": max(10, int((job.progress_json or {}).get("percent") or 10))}
+    running_message = "AI enrichment is running." if job.job_type == "company_enrichment" else "Deep contact search is running."
+    job.progress_json = {**(job.progress_json or {}), "stage": "running", "message": running_message, "percent": max(10, int((job.progress_json or {}).get("percent") or 10))}
     job.updated_at = now
     db.commit()
     db.refresh(job)

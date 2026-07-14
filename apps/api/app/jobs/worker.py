@@ -11,7 +11,7 @@ from datetime import datetime
 
 import sentry_sdk
 
-from app.api.usage import mark_enrichment_job_failed, process_enrichment_job, run_continuous_company_monitoring_once, run_nightly_lead_prioritization_once
+from app.api.usage import mark_enrichment_job_failed, process_deep_contact_search_job, process_enrichment_job, run_continuous_company_monitoring_once, run_nightly_lead_prioritization_once
 from app.core.config import get_settings
 from app.core.database import get_sessionmaker
 from app.core.observability import init_sentry
@@ -71,11 +71,14 @@ def run_enrichment_worker_once(worker_id: str | None = None) -> bool:
     )
     heartbeat_thread.start()
     try:
-        completed = process_enrichment_job(job_id, claim_token=claim_token)
-        if completed:
-            logger.info("Enrichment worker completed job_id=%s", job_id)
+        if job.job_type == "deep_contact_search":
+            completed = process_deep_contact_search_job(job_id, claim_token=claim_token)
         else:
-            logger.info("Enrichment worker ignored stale claim job_id=%s claim_token=%s", job_id, claim_token)
+            completed = process_enrichment_job(job_id, claim_token=claim_token)
+        if completed:
+            logger.info("Enrichment worker completed job_id=%s job_type=%s", job_id, job.job_type)
+        else:
+            logger.info("Enrichment worker ignored stale claim job_id=%s claim_token=%s job_type=%s", job_id, claim_token, job.job_type)
         return True
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
