@@ -53,10 +53,10 @@ function useWorkspaceApi() {
     ready: isLoaded && Boolean(isSignedIn),
     getAuthToken: async () => {
       if (!isLoaded || !isSignedIn) return null;
-      let token = await getToken();
+      let token = await getToken({ skipCache: true });
       for (let attempt = 0; !token && attempt < 20; attempt += 1) {
         await delay(100);
-        token = await getToken();
+        token = await getToken({ skipCache: true });
       }
       return token;
     }
