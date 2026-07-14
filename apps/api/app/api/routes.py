@@ -4420,7 +4420,7 @@ def crm_pipeline(user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmPipe
     deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id)).order_by(Deal.updated_at.desc()).limit(300)).all())
     company_names = {company.id: company.name for company in companies}
     serialized_companies = [_crm_company_out(db, workspace, user_id, company) for company in companies]
-    serialized_companies.sort(key=lambda item: int(item.overall_score or 0), reverse=True)
+    serialized_companies.sort(key=lambda item: int(getattr(item, "overall_score", 0) or 0), reverse=True)
     return CrmPipelineOut(
         stages=CRM_STAGES.copy(),
         companies=serialized_companies,
