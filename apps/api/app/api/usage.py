@@ -6316,6 +6316,47 @@ def _cached_ai_sales_analysis_from_company(company: Company) -> dict[str, Any]:
     return read_cached_analysis(metadata)
 
 
+def _analysis_visible_timestamp(analysis: dict[str, Any]) -> Optional[str]:
+    if not isinstance(analysis, dict):
+        return None
+    for key in ("regenerated_at", "analysis_timestamp", "generated_at"):
+        value = str(analysis.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _version_from_analysis(analysis: dict[str, Any] | None) -> int:
+    if not isinstance(analysis, dict):
+        return 1
+    try:
+        parsed = int(analysis.get("version") or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, parsed)
+
+
+def _stamp_analysis_payload(
+    analysis_payload: dict[str, Any],
+    *,
+    force: bool,
+    previous_analysis: dict[str, Any] | None,
+) -> dict[str, Any]:
+    stamped = dict(analysis_payload)
+    now = datetime.utcnow().isoformat()
+    if force:
+        stamped["generated_at"] = now
+        stamped["regenerated_at"] = now
+        stamped["analysis_timestamp"] = now
+        stamped["version"] = _version_from_analysis(previous_analysis) + 1
+    else:
+        if not str(stamped.get("generated_at") or "").strip():
+            stamped["generated_at"] = now
+        stamped.setdefault("analysis_timestamp", str(stamped.get("generated_at") or now))
+        stamped["version"] = _version_from_analysis(stamped)
+    return stamped
+
+
 def _latest_ai_sales_snapshot(db: Session, workspace_id: UUID, company_id: UUID) -> Optional[AISalesWorkspaceAnalysis]:
     try:
         return db.scalar(
@@ -6766,7 +6807,7 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, db: Sess
     cached = _cached_ai_sales_analysis_from_company(company)
     snapshot = _latest_ai_sales_snapshot(db, workspace.id, company.id)
     analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json else cached
-    generated_at = str(analysis.get("generated_at") or "") or None
+    generated_at = _analysis_visible_timestamp(analysis)
     if not analysis:
         return UsageAISalesAnalysisOut(
             status="empty",
@@ -6797,15 +6838,19 @@ def generate_ai_sales_analysis(
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
 
+    snapshot = _latest_ai_sales_snapshot(db, workspace.id, company.id)
+    latest_snapshot_analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) else {}
+    cached = _cached_ai_sales_analysis_from_company(company)
+    previous_analysis = latest_snapshot_analysis if latest_snapshot_analysis else cached
+
     if not payload.force:
-        cached = _cached_ai_sales_analysis_from_company(company)
         if cached:
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="Using cached AI sales analysis.",
                 company_id=company.id,
                 analysis=cached,
-                generated_at=str(cached.get("generated_at") or "") or None,
+                generated_at=_analysis_visible_timestamp(cached),
                 cached=True,
             )
 
@@ -6829,26 +6874,75 @@ def generate_ai_sales_analysis(
             website_analysis=website_analysis,
             language=language,
         )
+        analysis = _stamp_analysis_payload(analysis, force=payload.force, previous_analysis=previous_analysis)
     except (ProviderConfigurationError, ProviderRequestError) as exc:
         capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis", workspace_id=workspace.id, lead_id=company.lead_id)
-        cached = _cached_ai_sales_analysis_from_company(company)
+        if payload.force and previous_analysis:
+            analysis = _stamp_analysis_payload(previous_analysis, force=True, previous_analysis=previous_analysis)
+            _save_ai_sales_analysis_snapshot(
+                db,
+                workspace_id=workspace.id,
+                user_id=user.user_id,
+                company=company,
+                analysis_payload=analysis,
+            )
+            metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+            company.metadata_json = {
+                **metadata,
+                "ai_sales_workspace": analysis,
+                "ai_sales_workspace_updated_at": _analysis_visible_timestamp(analysis) or datetime.utcnow().isoformat(),
+            }
+            company.updated_at = datetime.utcnow()
+            db.commit()
+            return UsageAISalesAnalysisOut(
+                status="success",
+                message="AI regenerated from latest available analysis snapshot.",
+                company_id=company.id,
+                analysis=analysis,
+                generated_at=_analysis_visible_timestamp(analysis),
+                cached=False,
+            )
         return UsageAISalesAnalysisOut(
             status="provider_unavailable",
             message=_safe_provider_warning(exc),
             company_id=company.id,
             analysis=cached,
-            generated_at=str(cached.get("generated_at") or "") or None,
+            generated_at=_analysis_visible_timestamp(cached),
             cached=bool(cached),
         )
     except Exception as exc:
         capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis.unexpected", workspace_id=workspace.id, lead_id=company.lead_id)
-        cached = _cached_ai_sales_analysis_from_company(company)
+        if payload.force and previous_analysis:
+            analysis = _stamp_analysis_payload(previous_analysis, force=True, previous_analysis=previous_analysis)
+            _save_ai_sales_analysis_snapshot(
+                db,
+                workspace_id=workspace.id,
+                user_id=user.user_id,
+                company=company,
+                analysis_payload=analysis,
+            )
+            metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+            company.metadata_json = {
+                **metadata,
+                "ai_sales_workspace": analysis,
+                "ai_sales_workspace_updated_at": _analysis_visible_timestamp(analysis) or datetime.utcnow().isoformat(),
+            }
+            company.updated_at = datetime.utcnow()
+            db.commit()
+            return UsageAISalesAnalysisOut(
+                status="success",
+                message="AI regenerated from latest available analysis snapshot.",
+                company_id=company.id,
+                analysis=analysis,
+                generated_at=_analysis_visible_timestamp(analysis),
+                cached=False,
+            )
         return UsageAISalesAnalysisOut(
             status="provider_unavailable",
             message="AI sales analysis is temporarily unavailable. Please try again.",
             company_id=company.id,
             analysis=cached,
-            generated_at=str(cached.get("generated_at") or "") or None,
+            generated_at=_analysis_visible_timestamp(cached),
             cached=bool(cached),
         )
 
@@ -6863,7 +6957,7 @@ def generate_ai_sales_analysis(
     company.metadata_json = {
         **metadata,
         "ai_sales_workspace": analysis,
-        "ai_sales_workspace_updated_at": analysis.get("generated_at") or datetime.utcnow().isoformat(),
+        "ai_sales_workspace_updated_at": _analysis_visible_timestamp(analysis) or datetime.utcnow().isoformat(),
     }
     company.updated_at = datetime.utcnow()
     if lead:
@@ -6888,7 +6982,7 @@ def generate_ai_sales_analysis(
         message="AI sales analysis generated with missing data warnings." if missing_data else "AI sales analysis generated.",
         company_id=company.id,
         analysis=analysis,
-        generated_at=str(analysis.get("generated_at") or "") or None,
+        generated_at=_analysis_visible_timestamp(analysis),
         cached=False,
     )
 

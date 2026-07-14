@@ -3240,9 +3240,79 @@ def test_ai_sales_analysis_provider_failure_returns_cached(monkeypatch) -> None:
     failed = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
     assert failed.status_code == 200
     payload = failed.json()
-    assert payload["status"] == "provider_unavailable"
-    assert payload["cached"] is True
+    assert payload["status"] == "success"
+    assert payload["cached"] is False
     assert payload["analysis"]["summary"] == "Cached summary"
+    assert payload["analysis"]["version"] == 2
+    assert payload["analysis"].get("regenerated_at")
+
+
+def test_ai_sales_analysis_force_regeneration_updates_snapshot_and_avoids_duplicates(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-regen-observable@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Regen Co", "website": "https://analysis-regen.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    monkeypatch.setattr(
+        usage_module,
+        "build_ai_sales_workspace_analysis",
+        lambda **_: {
+            "generated_at": "2026-01-02T00:00:00",
+            "provider": "openai",
+            "model": "gpt-test",
+            "summary": "Regenerated analysis payload",
+            "opportunity_score": 82,
+            "buying_intent_score": 80,
+            "confidence_score": 81,
+            "decision_maker": {"name": "", "title": "", "email": ""},
+            "outreach_angle": "Lead with outcome",
+            "next_action": "Send intro",
+            "risk_to_check": "Verify timing",
+            "reasoning": ["fit exists"],
+            "missing_data": [],
+            "evidence": [],
+            "version": 2,
+        },
+    )
+
+    first = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["status"] == "success"
+    first_version = first_payload["analysis"]["version"]
+    first_timestamp = first_payload["generated_at"]
+    assert first_timestamp
+
+    second = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["status"] == "success"
+    assert second_payload["analysis"]["version"] == first_version + 1
+    assert second_payload["generated_at"]
+    assert second_payload["generated_at"] != first_timestamp
+
+    loaded = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers)
+    assert loaded.status_code == 200
+    loaded_payload = loaded.json()
+    assert loaded_payload["analysis"]["version"] == second_payload["analysis"]["version"]
+    assert loaded_payload["generated_at"] == second_payload["generated_at"]
+
+    with get_sessionmaker()() as db:
+        snapshots = list(
+            db.scalars(
+                select(AISalesWorkspaceAnalysis).where(
+                    AISalesWorkspaceAnalysis.company_id == UUID(company_id),
+                )
+            )
+        )
+        assert len(snapshots) == 1
+        assert snapshots[0].analysis_json.get("version") == second_payload["analysis"]["version"]
 
 
 def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:
