@@ -330,14 +330,16 @@ def _hunter_domain_search(domain: str) -> list[DeepContactCandidate]:
         if not isinstance(item, dict):
             continue
         title = str(item.get("position") or item.get("title") or "")
-        if _role_score(title) <= 1:
+        email = _clean_email(str(item.get("value") or item.get("email") or ""))
+        name = str(item.get("first_name") or item.get("last_name") or item.get("name") or "").strip()
+        if not (name or title or email):
             continue
         candidates.append(
             DeepContactCandidate(
-                name=str(item.get("first_name") or item.get("last_name") or item.get("name") or "").strip(),
+                name=name,
                 title=title,
                 linkedin=str(item.get("linkedin") or ""),
-                email=_clean_email(str(item.get("value") or item.get("email") or "")),
+                email=email,
                 source="hunter",
                 confidence=_safe_int(item.get("confidence") or item.get("score")),
                 verification_status="found",
