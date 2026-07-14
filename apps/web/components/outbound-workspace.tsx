@@ -1642,6 +1642,10 @@ function OpportunityCard({
         company: lead.company
       });
     } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
       const reason = friendlyErrorMessage(err, "AI enrichment could not be restarted. The company stays saved in CRM.");
       setReadyToSend(false);
       setError(reason);
