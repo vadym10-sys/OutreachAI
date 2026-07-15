@@ -1734,6 +1734,28 @@ function OpportunityCard({
         ? t("Failed")
         : t("Not generated");
 
+  const salesRecommendationPriorityScore = salesAnalysis?.lead_priority_score ?? salesAnalysis?.ai_lead_score ?? salesAnalysis?.opportunity_score ?? 0;
+  const salesRecommendationPriorityTier = salesAnalysis?.lead_priority_tier || (salesRecommendationPriorityScore >= 75 ? "Hot" : salesRecommendationPriorityScore >= 45 ? "Warm" : "Cold");
+  const salesRecommendationPriorityTone = salesRecommendationPriorityTier === "Hot"
+    ? "bg-rose-500/15 text-rose-200 ring-1 ring-inset ring-rose-400/40"
+    : salesRecommendationPriorityTier === "Warm"
+      ? "bg-amber-500/15 text-amber-100 ring-1 ring-inset ring-amber-400/40"
+      : "bg-sky-500/15 text-sky-100 ring-1 ring-inset ring-sky-400/40";
+  const salesRecommendationBuyingIntent = salesAnalysis?.buying_probability ?? salesAnalysis?.buying_intent_score ?? 0;
+  const salesRecommendationReplyProbability = salesAnalysis?.estimated_reply_probability ?? 0;
+  const salesRecommendationConfidence = salesAnalysis?.confidence_score ?? 0;
+  const salesRecommendationIcPFit = salesAnalysis?.icp_fit_score ?? salesAnalysis?.ai_lead_score ?? salesAnalysis?.opportunity_score ?? 0;
+  const salesRecommendationDecisionMaker = salesAnalysis?.decision_maker?.title || salesAnalysis?.recommended_decision_maker_role || unavailable;
+  const salesRecommendationDecisionMakerName = salesAnalysis?.decision_maker?.name || salesAnalysis?.recommended_decision_maker_role || unavailable;
+  const salesRecommendationSignals = (salesAnalysis?.buying_signals || []).slice(0, 4);
+  const salesRecommendationRisks = ((salesAnalysis?.predicted_objections && salesAnalysis.predicted_objections.length ? salesAnalysis.predicted_objections : salesAnalysis?.why_may_not_fit) || []).slice(0, 4);
+  const salesRecommendationFollowUps = (salesAnalysis?.personalized_follow_up_sequence || []).slice(0, 4);
+  const salesRecommendationConfidenceExplanation = salesAnalysis?.score_explanation || (salesAnalysis?.reasoning || [])[0] || salesAnalysis?.summary || unavailable;
+  const salesRecommendationOpeningMessage = salesAnalysis?.recommended_first_message || salesAnalysis?.personalized_opening_line || salesAnalysis?.best_outreach_angle || unavailable;
+  const salesRecommendationNextAction = salesAnalysis?.recommended_next_action || salesAnalysis?.next_action || unavailable;
+  const salesRecommendationBestChannel = salesAnalysis?.best_communication_channel || unavailable;
+  const salesRecommendationBestTiming = salesAnalysis?.best_timing_to_contact || unavailable;
+
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
     try {
@@ -2099,6 +2121,123 @@ function OpportunityCard({
                 ) : null}
               </div>
             ) : null}
+            <div className="mt-4 rounded-[1.5rem] border border-slate-900/10 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-4 text-white shadow-[0_24px_70px_rgba(15,23,42,0.28)]">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">{t("AI Recommendations")}</p>
+                  <h4 className="mt-1 text-xl font-black text-white">{t("What to do next with this company")}</h4>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">{t(String(salesRecommendationConfidenceExplanation))}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${salesRecommendationPriorityTone}`}>{t(salesRecommendationPriorityTier)}</span>
+                  <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-black text-white">{t("Confidence")}: {salesRecommendationConfidence}%</span>
+                  <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-black text-white">{t("ICP fit")}: {salesRecommendationIcPFit}%</span>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {[
+                  { label: "Buying intent", value: `${String(salesRecommendationBuyingIntent)}%`, icon: Target, note: salesAnalysis?.company_stage || unavailable },
+                  { label: "Reply probability", value: `${String(salesRecommendationReplyProbability)}%`, icon: MessageSquare, note: salesRecommendationBestChannel },
+                  { label: "Lead priority", value: salesAnalysis?.lead_priority_tier ? `${String(salesAnalysis.lead_priority_tier)} · ${String(salesAnalysis.lead_priority_score ?? salesRecommendationPriorityScore)}%` : `${String(salesRecommendationPriorityScore)}%`, icon: Rocket, note: salesRecommendationNextAction },
+                  { label: "Recommended buyer", value: salesRecommendationDecisionMaker, icon: UserRound, note: salesRecommendationDecisionMakerName }
+                ].map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <article key={item.label} className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
+                          <p className="mt-2 text-2xl font-black text-white">{t(item.value)}</p>
+                        </div>
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white">
+                          <Icon size={18} />
+                        </span>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-slate-300">{t(String(item.note || unavailable))}</p>
+                    </article>
+                  );
+                })}
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {[
+                  { label: "Best outreach channel", value: salesRecommendationBestChannel, icon: Send },
+                  { label: "Best contact timing", value: salesRecommendationBestTiming, icon: Clock3 },
+                  { label: "Recommended next action", value: salesRecommendationNextAction, icon: CheckCircle2 },
+                  { label: "Confidence explanation", value: salesRecommendationConfidenceExplanation, icon: ShieldCheck }
+                ].map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <article key={item.label} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                      <div className="flex items-center gap-3">
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white">
+                          <Icon size={18} />
+                        </span>
+                        <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
+                      </div>
+                      <p className="mt-3 text-sm font-semibold leading-6 text-white">{t(String(item.value || unavailable))}</p>
+                    </article>
+                  );
+                })}
+              </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <Target className="text-emerald-300" size={18} />
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Top buying signals")}</p>
+                  </div>
+                  {salesRecommendationSignals.length ? (
+                    <ul className="mt-3 space-y-2 text-sm text-slate-100">
+                      {salesRecommendationSignals.map((item, index) => (
+                        <li key={`recommendation-signal-${index}`} className="rounded-xl bg-white/5 px-3 py-2 ring-1 ring-white/10">{t(String(item))}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-sm text-slate-300">{t(unavailable)}</p>
+                  )}
+                </article>
+                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="text-amber-300" size={18} />
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Top risks or objections")}</p>
+                  </div>
+                  {salesRecommendationRisks.length ? (
+                    <ul className="mt-3 space-y-2 text-sm text-slate-100">
+                      {salesRecommendationRisks.map((item, index) => (
+                        <li key={`recommendation-risk-${index}`} className="rounded-xl bg-white/5 px-3 py-2 ring-1 ring-white/10">{t(String(item))}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-sm text-slate-300">{t(unavailable)}</p>
+                  )}
+                </article>
+              </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="text-cyan-300" size={18} />
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Personalized opening message")}</p>
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-slate-100">{t(String(salesRecommendationOpeningMessage))}</p>
+                </article>
+                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <CalendarDays className="text-violet-300" size={18} />
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Personalized follow-up sequence")}</p>
+                  </div>
+                  {salesRecommendationFollowUps.length ? (
+                    <ol className="mt-3 space-y-2 text-sm text-slate-100">
+                      {salesRecommendationFollowUps.map((item, index) => (
+                        <li key={`recommendation-follow-up-${index}`} className="rounded-xl bg-white/5 px-3 py-2 ring-1 ring-white/10">
+                          <span className="font-black text-white">{index + 1}.</span> {t(String(item))}
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-sm text-slate-300">{t(unavailable)}</p>
+                  )}
+                </article>
+              </div>
+            </div>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {[
                 ["ICP fit", `${String(salesAnalysis.icp_fit_score ?? salesAnalysis.ai_lead_score ?? salesAnalysis.opportunity_score ?? 0)}%`],

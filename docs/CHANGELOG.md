@@ -2,6 +2,22 @@
 
 ## 2026-07-15
 
+### feat(frontend)
+- Added a dedicated AI Recommendations panel to the Company page with cards, badges, and priority indicators.
+- Surfaced buying intent, reply probability, lead priority, ICP fit, recommended decision maker, best outreach channel, best contact timing, top buying signals, top risks or objections, personalized opening message, personalized follow-up sequence, recommended next action, and confidence explanation.
+- Kept analysis version history and regeneration controls fully compatible with the existing AI sales analysis engine.
+
+### test(frontend)
+- Added a Playwright regression that verifies the AI Recommendations panel renders and version switching still works for the company workspace.
+
+### validation
+- `npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` passed in `apps/web`.
+- `npm run lint` passed in `apps/web`.
+- `npm test -- --run` passed in `apps/web`.
+- `npm run build` passed in `apps/web`.
+
+## 2026-07-15
+
 ### feat(api)
 - Added automatic AI Sales Copilot refresh during company-intelligence regeneration and cache reuse.
 - Preserved metadata-backed AI sales version history while avoiding duplicate background versions when the analysis content has not changed.

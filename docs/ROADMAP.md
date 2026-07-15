@@ -1,5 +1,11 @@
 # Roadmap
 
+## 2026-07-15 - Phase 4 (AI Recommendation Engine) Execution Started
+- Started the Company-page recommendation layer on the existing AI Sales Intelligence engine.
+- Added a high-signal visual recommendations panel for buying intent, reply probability, lead priority, ICP fit, recommended decision maker, outreach channel, timing, buying signals, risks, opening message, follow-up sequence, next action, and confidence explanation.
+- Preserved version history, regeneration, and cached-analysis compatibility so the recommendation layer works across historical snapshots.
+- Next execution checkpoint: verify production deployment on the phase4 branch preview or release target and complete multi-company end-to-end checks before merge to `main`.
+
 ## 2026-07-15 - Phase 3 (v1.2) Execution Started
 - Started the AI Sales Copilot layer on the Company page using the existing enrichment, monitoring, and metadata pipeline.
 - Completed automatic sales-analysis refresh after company-intelligence updates and cache reuse.

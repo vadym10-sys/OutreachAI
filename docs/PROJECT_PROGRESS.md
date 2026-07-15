@@ -1,5 +1,25 @@
 # Project Progress
 
+# Project Progress
+
+## 2026-07-15 - Phase 4 (Recommendation Engine) Company-Page Expansion
+
+### Scope Completed
+- Added a dedicated AI Recommendations panel on the Company page that surfaces actionable sales guidance from the existing AI sales analysis payload.
+- Exposed buying intent, reply probability, lead priority, ICP fit, recommended decision maker, best outreach channel, best contact timing, top buying signals, top risks/objections, personalized opening message, personalized follow-up sequence, recommended next action, and confidence explanation in a single visual surface.
+- Preserved version history, regeneration, and cached analysis compatibility by reading the new panel from the existing versioned analysis engine.
+- Added a focused Playwright regression and mock analysis fixture to prove the panel renders and version switching still works.
+
+### Validation Status
+- Focused Playwright regression: passed (`tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history"`).
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend tests: passed (`npm test -- --run` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+
+### Notes
+- The recommendation layer is derived from the existing AI sales analysis payload, so background refreshes and cached version history remain unchanged.
+- The new UI intentionally keeps the recommendation summary separate from the detailed analysis cards so the next action is visible in seconds.
+
 ## 2026-07-15 - Phase 3 (v1.2) AI Sales Copilot Auto-Refresh
 
 ### Scope Completed
