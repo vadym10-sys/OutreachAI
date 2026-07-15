@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     debug: bool = False
     encryption_key: str = "replace-with-32-byte-url-safe-key"
     auto_create_tables: bool = True
-    cors_origins: str = "http://localhost:3000,https://outreachaiaiai.com,https://outreachaiweb-production.up.railway.app"
+    cors_origins: str = "http://localhost:3000,https://outreachaiaiai.com,https://outreachaiweb-production.up.railway.app,https://outreach-ai-web-git-phase5-vadym10-ai-1.vercel.app,https://outreach-ai-orcf1s9vv-vadym10-ai-1.vercel.app"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
