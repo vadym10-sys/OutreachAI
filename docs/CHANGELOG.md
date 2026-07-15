@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-15
+
+### ops(release)
+- Finalized Production Release v1.0 stabilization verification against `origin/main` commit `ba17a26...`.
+- Confirmed API, web, and database-ready status from production health checks.
+- Redeployed only the lagging Railway worker/web service to align active deployment commit with latest production commit.
+
+### docs
+- Added short production release summary in `RELEASE.md`.
+- Added ranked next-phase implementation plan in `docs/NEXT_PHASE_ROADMAP.md` with top-10 impact/effort priorities.
+
 ### fix(api)
 - Verified worker restart recovery by safely reclaiming stale running enrichment jobs and preventing old claims from completing reclaimed work.
 - Added owner-only queue observability at `/api/admin/queue/health` with depth, active-job, retry, dead-letter, stale-running, and latency metrics.
