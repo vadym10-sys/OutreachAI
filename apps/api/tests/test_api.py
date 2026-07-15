@@ -3413,6 +3413,89 @@ def test_ai_sales_analysis_generate_success(monkeypatch) -> None:
     assert payload["analysis"]["personalized_follow_up_sequence"]
 
 
+def test_ai_sales_analysis_get_auto_generates_when_missing(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-auto-get@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Auto Get Co", "website": "https://analysis-auto-get.example", "industry": "SaaS", "country": "Germany", "city": "Berlin"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    monkeypatch.setattr(
+        usage_module,
+        "build_ai_sales_workspace_analysis",
+        lambda **_: {
+            "generated_at": datetime.utcnow().isoformat(),
+            "provider": "openai",
+            "model": "gpt-test",
+            "summary": "Autonomous copilot generated on read.",
+            "company_summary": "Autonomous copilot generated on read.",
+            "pain_points": ["Manual qualification"],
+            "buying_signals": ["Hiring SDRs"],
+            "recommended_decision_maker_role": "VP Sales",
+            "recommended_first_message": "Hi team, we can reduce qualification workload while improving speed-to-meeting.",
+            "personalized_follow_up_sequence": ["Day 3: share one customer proof", "Day 7: low-friction CTA"],
+            "recommended_next_action": "Send first personalized email.",
+            "confidence_score": 81,
+            "score_explanation": "High ICP fit and verified growth intent.",
+            "reasoning": ["Verified growth signals and clear contact hypothesis."],
+            "evidence": [{"source_field": "company.website", "value": "analysis-auto-get.example", "confidence": 95}],
+            "decision_maker": {"name": "Jordan Revenue", "title": "VP Sales", "email": "jordan@analysis-auto-get.example"},
+            "lead_priority_score": 86,
+            "lead_priority_tier": "Hot",
+            "opportunity_score": 84,
+            "buying_intent_score": 79,
+            "next_action": "Send first personalized email.",
+            "risk_to_check": "Confirm procurement timeline.",
+            "missing_data": [],
+            "version": 1,
+        },
+    )
+
+    loaded = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers)
+    assert loaded.status_code == 200
+    payload = loaded.json()
+    assert payload["status"] == "success"
+    assert payload["cached"] is False
+    assert payload["analysis"]["buying_signals"] == ["Hiring SDRs"]
+    assert payload["analysis"]["pain_points"] == ["Manual qualification"]
+    assert payload["analysis"]["recommended_decision_maker_role"] == "VP Sales"
+    assert payload["analysis"]["recommended_first_message"]
+    assert payload["analysis"]["personalized_follow_up_sequence"]
+    assert payload["analysis"]["recommended_next_action"] == "Send first personalized email."
+    assert payload["analysis"]["confidence_score"] == 81
+    assert payload["analysis"]["evidence"]
+    assert payload["analysis"]["reasoning"]
+    assert payload["analysis"]["version"] == 1
+    assert payload["latest_version"] == 1
+    assert payload["available_versions"][0]["version"] == 1
+
+
+def test_ai_sales_analysis_get_auto_generation_provider_failure_returns_provider_unavailable(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-auto-get-failure@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Auto Get Failure Co", "website": "https://analysis-auto-get-failure.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    monkeypatch.setattr(usage_module, "build_ai_sales_workspace_analysis", lambda **_: (_ for _ in ()).throw(ProviderRequestError("provider down")))
+    loaded = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers)
+    assert loaded.status_code == 200
+    payload = loaded.json()
+    assert payload["status"] == "provider_unavailable"
+    assert payload["analysis"] == {}
+    assert payload["cached"] is False
+
+
 def test_ai_sales_analysis_partial_when_missing_data(monkeypatch) -> None:
     import app.api.usage as usage_module
 

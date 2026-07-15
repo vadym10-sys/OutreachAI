@@ -7220,7 +7220,7 @@ def get_company(company_id: UUID, user: WorkspaceUserContext, db: Session = Depe
 
 
 @router.get("/companies/{company_id}/ai-sales-analysis", response_model=UsageAISalesAnalysisOut)
-def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, version: Optional[int] = Query(default=None, ge=1), db: Session = Depends(get_db)) -> UsageAISalesAnalysisOut:
+def get_ai_sales_analysis(company_id: UUID, request: Request, user: WorkspaceUserContext, version: Optional[int] = Query(default=None, ge=1), db: Session = Depends(get_db)) -> UsageAISalesAnalysisOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
 
@@ -7245,17 +7245,74 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, version:
             analysis = cached
     generated_at = _analysis_visible_timestamp(analysis)
     if not analysis:
-        return UsageAISalesAnalysisOut(
-            status="empty",
-            message="No AI sales analysis generated yet.",
-            company_id=company.id,
-            analysis={},
-            generated_at=None,
-            cached=False,
-            requested_version=version,
-            latest_version=latest_version,
-            available_versions=available_versions,
+        lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+        contacts = list(
+            db.scalars(
+                select(Contact)
+                .where(Contact.workspace_id == workspace.id, Contact.company_id == company.id)
+                .order_by(Contact.updated_at.desc())
+                .limit(20)
+            ).all()
         )
+        website_analysis = _latest_website_analysis_for_lead(db, workspace.id, company.lead_id)
+        language = _workspace_language(request, workspace)
+        try:
+            analysis = build_ai_sales_workspace_analysis(
+                company=company,
+                lead=lead,
+                contacts=contacts,
+                website_analysis=website_analysis,
+                language=language,
+            )
+            analysis = _stamp_analysis_payload(analysis, force=False, previous_analysis=None)
+            _save_ai_sales_analysis_snapshot(
+                db,
+                workspace_id=workspace.id,
+                user_id=user.user_id,
+                company=company,
+                analysis_payload=analysis,
+            )
+            _store_ai_sales_analysis_metadata(company, analysis)
+            db.commit()
+            available_versions = _available_ai_sales_versions(db, workspace.id, company)
+            latest_version = available_versions[0].version if available_versions else _version_from_analysis(analysis)
+            return UsageAISalesAnalysisOut(
+                status="success",
+                message="AI sales analysis generated automatically.",
+                company_id=company.id,
+                analysis=analysis,
+                generated_at=_analysis_visible_timestamp(analysis),
+                cached=False,
+                requested_version=_version_from_analysis(analysis),
+                latest_version=latest_version,
+                available_versions=available_versions,
+            )
+        except (ProviderConfigurationError, ProviderRequestError) as exc:
+            capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis.auto_generate_on_read", workspace_id=workspace.id, lead_id=company.lead_id)
+            return UsageAISalesAnalysisOut(
+                status="provider_unavailable",
+                message=_safe_provider_warning(exc),
+                company_id=company.id,
+                analysis={},
+                generated_at=None,
+                cached=False,
+                requested_version=version,
+                latest_version=latest_version,
+                available_versions=available_versions,
+            )
+        except Exception as exc:
+            capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis.auto_generate_on_read_unexpected", workspace_id=workspace.id, lead_id=company.lead_id)
+            return UsageAISalesAnalysisOut(
+                status="error",
+                message="AI sales analysis could not be generated right now.",
+                company_id=company.id,
+                analysis={},
+                generated_at=None,
+                cached=False,
+                requested_version=version,
+                latest_version=latest_version,
+                available_versions=available_versions,
+            )
     return UsageAISalesAnalysisOut(
         status="success",
         message="AI sales analysis loaded.",

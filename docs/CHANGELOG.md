@@ -2,6 +2,23 @@
 
 ## 2026-07-15
 
+### feat(api)
+- Phase 6 autonomous AI Sales Copilot now auto-generates analysis on first read for companies that do not yet have a sales analysis snapshot.
+- Auto-generated analyses are persisted with the existing versioning, cache, regeneration, recommendation-action, and history mechanisms.
+- The automatic read-path keeps provider-failure safety by returning `provider_unavailable` without breaking company workflows.
+
+### test(api)
+- Added regression coverage for:
+	- automatic AI sales analysis generation on read when missing
+	- provider-failure fallback behavior for automatic read generation
+
+### validation
+- `PYTHONPATH=apps/api python3 -m pytest apps/api/tests -q` passed.
+- `npm run lint` passed in `apps/web`.
+- `npm run test -- --run` passed in `apps/web`.
+- `npm run build` passed in `apps/web`.
+- `npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` passed in `apps/web`.
+
 ### feat(frontend)
 - Phase 6 started on `phase6` with the first lead-prioritization UX improvement in Leads workspace.
 - Opportunity cards now show an explicit priority tier badge (`Hot`, `Warm`, `Cold`) with the calculated opportunity score.

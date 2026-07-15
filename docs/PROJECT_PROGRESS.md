@@ -2,6 +2,25 @@
 
 # Project Progress
 
+## 2026-07-15 - Phase 6 Autonomous AI Sales Copilot (Automatic Generation)
+
+### Scope Completed
+- Implemented autonomous AI Sales Copilot generation on analysis read for companies with no existing sales analysis.
+- Added API behavior so the first `GET /api/workspace-app/companies/{company_id}/ai-sales-analysis` call now automatically generates and persists analysis when missing.
+- Preserved backward-compatible versioning, cache, regeneration, recommendation actions, and history storage by reusing the existing snapshot and metadata pathways.
+- Preserved provider-failure safety by returning `provider_unavailable` status instead of breaking the customer workflow.
+
+### Validation Status
+- Backend tests: passed (`PYTHONPATH=apps/api python3 -m pytest apps/api/tests -q`).
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend unit tests: passed (`npm run test -- --run` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+- Focused production-like Playwright regression: passed (`npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` in `apps/web`).
+
+### Notes
+- Added focused backend regressions for automatic generation-on-read and provider-failure fallback.
+- No schema-breaking API changes were introduced.
+
 ## 2026-07-15 - Phase 6 (Value and UX) First Improvement Completed
 
 ### Scope Completed
