@@ -15,7 +15,18 @@ from app.core.config import get_settings
 from app.core.observability import capture_provider_exception
 
 logger = logging.getLogger("outreachai.database")
-REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _resolve_repo_root() -> Path:
+    current = Path(__file__).resolve()
+    for candidate in current.parents:
+        if (candidate / "db" / "schema.sql").exists() and (candidate / "db" / "migrations").exists():
+            return candidate
+    # Fallback keeps the app bootable even if schema files are missing in a custom runtime image.
+    return current.parents[-1]
+
+
+REPO_ROOT = _resolve_repo_root()
 SCHEMA_PATH = REPO_ROOT / "db" / "schema.sql"
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 
