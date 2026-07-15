@@ -221,7 +221,10 @@ def personalize_email(payload: PersonalizeRequest) -> EmailVariantOut:
         "subject, preview, full_email, cta, cold_email, follow_ups, ab_tests. Write concise, "
         "personalized B2B email copy in the requested language and tone. Every email must use "
         "specific details from the provided company, website summary, industry, location, services, "
-        "and pain points when present. Avoid generic first lines. Do not use unverified metrics."
+        "and pain points when present. If analysis_context is provided, prioritize its company stage, "
+        "value proposition, outreach angle, best communication channel, personalization variables, "
+        "predicted objections, and next recommended action. Avoid generic first lines. Do not use "
+        "unverified metrics."
     )
     data = _json_completion(system, payload.model_dump())
     subject = str(data.get("subject") or "")

@@ -610,6 +610,7 @@ class PersonalizeRequest(BaseModel):
     tone: str = "Professional"
     language: str = "English"
     signature: str = ""
+    analysis_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerateEmailRequest(BaseModel):

@@ -406,7 +406,7 @@ class AICEOBriefing(Base):
 
 class AISalesWorkspaceAnalysis(Base):
     __tablename__ = "ai_sales_workspace_analyses"
-    __table_args__ = (UniqueConstraint("workspace_id", "company_id", name="uq_ai_sales_workspace_company"),)
+    __table_args__ = (UniqueConstraint("workspace_id", "company_id", "version_number", name="uq_ai_sales_workspace_company_version"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
@@ -416,6 +416,7 @@ class AISalesWorkspaceAnalysis(Base):
     provider: Mapped[str] = mapped_column(String(80), default="openai")
     model: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(32), default="ready")
+    version_number: Mapped[int] = mapped_column(Integer, default=1, index=True)
     analysis_json: Mapped[dict] = mapped_column(JSON, default=dict)
     evidence_json: Mapped[list[dict]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

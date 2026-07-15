@@ -111,6 +111,14 @@ type WorkspaceDeepContactJobStatusResponse = {
 
 type WorkspaceAiSalesAnalysis = NonNullable<CrmCompany["ai_sales_workspace"]>;
 
+type WorkspaceAiSalesAnalysisVersion = {
+  version: number;
+  generated_at?: string | null;
+  provider?: string;
+  model?: string;
+  status?: string;
+};
+
 type WorkspaceAiSalesAnalysisResponse = {
   status: "success" | "partial_success" | "empty" | "provider_unavailable" | "timeout" | "error";
   message: string;
@@ -118,6 +126,9 @@ type WorkspaceAiSalesAnalysisResponse = {
   analysis: WorkspaceAiSalesAnalysis | Record<string, never>;
   generated_at?: string | null;
   cached: boolean;
+  requested_version?: number | null;
+  latest_version?: number | null;
+  available_versions?: WorkspaceAiSalesAnalysisVersion[];
 };
 
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
@@ -682,22 +693,26 @@ async function devApi<T>(path: string, init: ClientApiInit = {}) {
   return clientApi<T>(path, "dev", init);
 }
 
-function useTokenApi(): { api: ApiFn; ready: boolean } {
-  const { clerkEnabled } = useAuthRuntime();
-  if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
-    return { api: devApi, ready: true };
-  }
-  if (!clerkEnabled) {
+function useClerkTokenApi(clerkEnabled: boolean) {
+  if (!clerkEnabled || isClerkE2EBypass) {
     return {
-      api: async () => {
-        redirectToSignIn();
-        throw new Error("Please sign in again before continuing.");
-      },
-      ready: false
+      getToken: async () => isClerkE2EBypass ? "dev" : null,
+      isLoaded: !clerkEnabled || isClerkE2EBypass,
+      isSignedIn: isClerkE2EBypass
     };
   }
+  // The no-Clerk branch above is required for local/E2E builds where ClerkProvider is intentionally not mounted.
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  const { getToken, isLoaded, isSignedIn } = useAuth();
+  return useAuth();
+}
+
+function useTokenApi(): { api: ApiFn; ready: boolean } {
+  const { clerkEnabled } = useAuthRuntime();
+  const { getToken, isLoaded, isSignedIn } = useClerkTokenApi(clerkEnabled);
+  const disabledApi = useCallback(async () => {
+    redirectToSignIn();
+    throw new Error("Please sign in again before continuing.");
+  }, []);
   const getFreshToken = useCallback(async () => {
     let token = await getToken({ skipCache: true });
     for (let attempt = 0; !token && attempt < 20; attempt += 1) {
@@ -706,14 +721,19 @@ function useTokenApi(): { api: ApiFn; ready: boolean } {
     }
     return token;
   }, [getToken]);
-  // The no-Clerk branch above is required for local/E2E builds where ClerkProvider is intentionally not mounted.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const api = useCallback(async function api<T>(path: string, init: ClientApiInit = {}) {
     if (!isLoaded || !isSignedIn) throw new Error("Please sign in again before continuing.");
     const token = await getFreshToken();
     if (!token) throw new Error("Please sign in again before continuing.");
     return clientApi<T>(path, token, init);
   }, [getFreshToken, isLoaded, isSignedIn]);
+
+  if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
+    return { api: devApi, ready: true };
+  }
+  if (!clerkEnabled) {
+    return { api: disabledApi, ready: false };
+  }
   return { api, ready: isLoaded && Boolean(isSignedIn) };
 }
 
@@ -1560,6 +1580,9 @@ function OpportunityCard({
   const [salesAnalysis, setSalesAnalysis] = useState<WorkspaceAiSalesAnalysis | null>(null);
   const [salesAnalysisLoading, setSalesAnalysisLoading] = useState(false);
   const [salesAnalysisError, setSalesAnalysisError] = useState("");
+  const [salesAnalysisVersions, setSalesAnalysisVersions] = useState<WorkspaceAiSalesAnalysisVersion[]>([]);
+  const [salesAnalysisRequestedVersion, setSalesAnalysisRequestedVersion] = useState<number | null>(null);
+  const [salesAnalysisLatestVersion, setSalesAnalysisLatestVersion] = useState<number | null>(null);
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
@@ -1594,26 +1617,54 @@ function OpportunityCard({
   const reviewEmailHref = companyId ? `#outreach-${companyId}` : "#lead-search-form";
   const openCompanyHref = companyId ? `/dashboard/companies?company=${companyId}` : "/dashboard/companies";
 
+  function applySalesAnalysisResult(result: WorkspaceAiSalesAnalysisResponse) {
+    const next = result.analysis && Object.keys(result.analysis).length ? (result.analysis as WorkspaceAiSalesAnalysis) : null;
+    setSalesAnalysis(next);
+    setSalesAnalysisVersions(Array.isArray(result.available_versions) ? result.available_versions : []);
+    setSalesAnalysisRequestedVersion(result.requested_version ?? next?.version ?? null);
+    setSalesAnalysisLatestVersion(result.latest_version ?? next?.version ?? null);
+  }
+
+  async function loadSalesAnalysis(version: number | null = null) {
+    if (!companyId) return;
+    setSalesAnalysisLoading(true);
+    try {
+      const suffix = version ? `?version=${version}` : "";
+      const result = await withTimeout(
+        api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis${suffix}`),
+        12000,
+        "AI sales analysis is temporarily unavailable."
+      );
+      applySalesAnalysisResult(result);
+    } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = friendlyErrorMessage(err, "AI sales analysis could not be loaded.");
+      setSalesAnalysisError(t(reason));
+    } finally {
+      setSalesAnalysisLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!companyId) return;
     let cancelled = false;
     async function loadCachedAnalysis() {
-      setSalesAnalysisLoading(true);
       try {
-        const result = await withTimeout(
-          api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis`),
-          12000,
-          "AI sales analysis is temporarily unavailable."
-        );
+        setSalesAnalysisLoading(true);
+        const result = await withTimeout(api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis`), 12000, "AI sales analysis is temporarily unavailable.");
         if (cancelled) return;
-        const next = result.analysis && Object.keys(result.analysis).length ? (result.analysis as WorkspaceAiSalesAnalysis) : null;
-        setSalesAnalysis(next);
+        applySalesAnalysisResult(result);
       } catch (err) {
         if (cancelled) return;
         if (isSessionExpiredError(err)) {
           redirectToSignIn();
           return;
         }
+        const reason = friendlyErrorMessage(err, "AI sales analysis could not be loaded.");
+        setSalesAnalysisError(t(reason));
       } finally {
         if (!cancelled) setSalesAnalysisLoading(false);
       }
@@ -1622,7 +1673,7 @@ function OpportunityCard({
     return () => {
       cancelled = true;
     };
-  }, [api, companyId]);
+  }, [api, companyId, t]);
 
   async function runSalesAnalysis(force = false) {
     if (!companyId) {
@@ -1642,8 +1693,7 @@ function OpportunityCard({
         20000,
         "AI sales analysis could not be generated."
       );
-      const next = result.analysis && Object.keys(result.analysis).length ? (result.analysis as WorkspaceAiSalesAnalysis) : null;
-      setSalesAnalysis(next);
+      applySalesAnalysisResult(result);
       setStatus(t(result.message || "AI sales analysis generated."));
     } catch (err) {
       if (isSessionExpiredError(err)) {
@@ -1997,16 +2047,44 @@ function OpportunityCard({
             </SecondaryButton>
           </div>
         </div>
-        <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">{t("Status")}: {salesAnalysisUiState}</p>
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs font-bold uppercase tracking-wide text-slate-500">
+          <p>{t("Status")}: {salesAnalysisUiState}</p>
+          {salesAnalysisRequestedVersion ? <p>{t("Version")}: {salesAnalysisRequestedVersion}{salesAnalysisLatestVersion && salesAnalysisLatestVersion !== salesAnalysisRequestedVersion ? ` / ${salesAnalysisLatestVersion}` : ""}</p> : null}
+        </div>
         {salesAnalysisError ? <p className="mt-2 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{salesAnalysisError}</p> : null}
         {salesAnalysis ? (
           <>
+            {salesAnalysisVersions.length > 1 ? (
+              <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <label className="text-xs font-black uppercase tracking-wide text-slate-500" htmlFor="sales-analysis-version-select">{t("Analysis version")}</label>
+                <select
+                  id="sales-analysis-version-select"
+                  className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800"
+                  value={String(salesAnalysisRequestedVersion || salesAnalysisLatestVersion || salesAnalysis.version || "")}
+                  onChange={(event) => {
+                    const nextVersion = Number(event.target.value || 0);
+                    void loadSalesAnalysis(Number.isFinite(nextVersion) && nextVersion > 0 ? nextVersion : null);
+                  }}
+                >
+                  {salesAnalysisVersions.map((item) => (
+                    <option key={`analysis-version-${item.version}`} value={item.version}>
+                      {`v${item.version}${item.generated_at ? ` · ${new Date(item.generated_at).toLocaleString()}` : ""}`}
+                    </option>
+                  ))}
+                </select>
+                {salesAnalysisLatestVersion && salesAnalysisRequestedVersion && salesAnalysisLatestVersion !== salesAnalysisRequestedVersion ? (
+                  <button type="button" onClick={() => void loadSalesAnalysis(null)} className="text-sm font-bold text-brand underline-offset-2 hover:underline">
+                    {t("View latest")}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {[
-                ["AI Lead Score", String(salesAnalysis.ai_lead_score ?? salesAnalysis.opportunity_score ?? 0)],
-                ["Buying intent", String(salesAnalysis.buying_intent_score ?? 0)],
-                ["Reply probability", `${String(salesAnalysis.estimated_reply_probability ?? salesAnalysis.buying_intent_score ?? 0)}%`],
-                ["Decision maker", `${salesAnalysis.decision_maker?.name || "Unknown"}${salesAnalysis.recommended_decision_maker_role ? ` · ${salesAnalysis.recommended_decision_maker_role}` : (salesAnalysis.decision_maker?.title ? ` · ${salesAnalysis.decision_maker?.title}` : "")}`]
+                ["ICP fit", `${String(salesAnalysis.icp_fit_score ?? salesAnalysis.ai_lead_score ?? salesAnalysis.opportunity_score ?? 0)}%`],
+                ["Buying probability", `${String(salesAnalysis.buying_probability ?? salesAnalysis.buying_intent_score ?? 0)}%`],
+                ["Company stage", String(salesAnalysis.company_stage || unavailable)],
+                ["Best channel", String(salesAnalysis.best_communication_channel || unavailable)]
               ].map(([label, value]) => (
                 <article key={String(label)} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
@@ -2018,6 +2096,10 @@ function OpportunityCard({
               <div className="rounded-xl bg-slate-50 p-3">
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Company summary")}</p>
                 <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.company_summary || salesAnalysis.summary || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Business model")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.business_model || unavailable))}</p>
               </div>
               <div className="rounded-xl bg-slate-50 p-3">
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("What the company sells")}</p>
@@ -2034,6 +2116,10 @@ function OpportunityCard({
             </div>
             <div className="mt-4 grid gap-3 lg:grid-cols-2">
               <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Value proposition")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.value_proposition || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Score explanation")}</p>
                 <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.score_explanation || unavailable))}</p>
               </div>
@@ -2049,6 +2135,38 @@ function OpportunityCard({
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Recommended next action")}</p>
                 <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.recommended_next_action || salesAnalysis.next_action || unavailable))}</p>
               </div>
+            </div>
+            {Array.isArray(salesAnalysis.decision_makers) && salesAnalysis.decision_makers.length ? (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Decision makers")}</p>
+                <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                  {salesAnalysis.decision_makers.slice(0, 3).map((item, index) => (
+                    <li key={`decision-maker-${index}`} className="rounded-lg bg-slate-50 px-3 py-2">
+                      {t(String(item.name || "Unknown"))}{item.title ? ` · ${t(String(item.title))}` : ""}{item.email ? ` · ${item.email}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              {[
+                ["Pain points", Array.isArray(salesAnalysis.pain_points) ? salesAnalysis.pain_points : salesAnalysis.likely_business_pains],
+                ["Personalization variables", salesAnalysis.personalization_variables],
+                ["Predicted objections", salesAnalysis.predicted_objections]
+              ].map(([label, items]) => (
+                <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
+                  {Array.isArray(items) && items.length ? (
+                    <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                      {items.slice(0, 4).map((item, index) => (
+                        <li key={`${String(label)}-${index}`} className="rounded-lg bg-slate-50 px-3 py-2">{t(String(item || ""))}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">{t(unavailable)}</p>
+                  )}
+                </div>
+              ))}
             </div>
             {Array.isArray(salesAnalysis.strongest_sales_arguments) && salesAnalysis.strongest_sales_arguments.length ? (
               <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">

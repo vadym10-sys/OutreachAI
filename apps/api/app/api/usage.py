@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func, or_, select
@@ -219,6 +219,14 @@ class UsageAISalesAnalysisIn(BaseModel):
     force: bool = False
 
 
+class UsageAISalesAnalysisVersionOut(BaseModel):
+    version: int = 1
+    generated_at: Optional[str] = None
+    provider: str = ""
+    model: str = ""
+    status: str = "ready"
+
+
 class UsageAISalesAnalysisOut(BaseModel):
     status: UsageStatus
     message: str
@@ -226,6 +234,9 @@ class UsageAISalesAnalysisOut(BaseModel):
     analysis: dict[str, Any] = Field(default_factory=dict)
     generated_at: Optional[str] = None
     cached: bool = False
+    requested_version: Optional[int] = None
+    latest_version: Optional[int] = None
+    available_versions: list[UsageAISalesAnalysisVersionOut] = Field(default_factory=list)
 
 
 class UsageMonitoringChangeOut(BaseModel):
@@ -6281,10 +6292,15 @@ def _save_ai_sales_analysis_snapshot(
     company: Company,
     analysis_payload: dict[str, Any],
 ) -> Optional[AISalesWorkspaceAnalysis]:
+    version_number = _version_from_analysis(analysis_payload)
     try:
         snapshot = db.scalar(
             select(AISalesWorkspaceAnalysis)
-            .where(AISalesWorkspaceAnalysis.workspace_id == workspace_id, AISalesWorkspaceAnalysis.company_id == company.id)
+            .where(
+                AISalesWorkspaceAnalysis.workspace_id == workspace_id,
+                AISalesWorkspaceAnalysis.company_id == company.id,
+                AISalesWorkspaceAnalysis.version_number == version_number,
+            )
             .limit(1)
         )
     except SQLAlchemyError as exc:
@@ -6305,6 +6321,7 @@ def _save_ai_sales_analysis_snapshot(
     snapshot.provider = str(analysis_payload.get("provider") or "openai")
     snapshot.model = str(analysis_payload.get("model") or get_settings().openai_model)
     snapshot.status = "ready"
+    snapshot.version_number = version_number
     snapshot.analysis_json = analysis_payload
     snapshot.evidence_json = [item for item in analysis_payload.get("evidence", []) if isinstance(item, dict)]
     snapshot.updated_at = datetime.utcnow()
@@ -6324,6 +6341,34 @@ def _analysis_visible_timestamp(analysis: dict[str, Any]) -> Optional[str]:
         if value:
             return value
     return None
+
+
+def _analysis_version_summary(snapshot: AISalesWorkspaceAnalysis) -> UsageAISalesAnalysisVersionOut:
+    analysis = snapshot.analysis_json if isinstance(snapshot.analysis_json, dict) else {}
+    return UsageAISalesAnalysisVersionOut(
+        version=snapshot.version_number or _version_from_analysis(analysis),
+        generated_at=_analysis_visible_timestamp(analysis),
+        provider=str(snapshot.provider or analysis.get("provider") or ""),
+        model=str(snapshot.model or analysis.get("model") or ""),
+        status=str(snapshot.status or "ready"),
+    )
+
+
+def _list_ai_sales_snapshot_versions(db: Session, workspace_id: UUID, company_id: UUID) -> list[UsageAISalesAnalysisVersionOut]:
+    try:
+        snapshots = list(
+            db.scalars(
+                select(AISalesWorkspaceAnalysis)
+                .where(AISalesWorkspaceAnalysis.workspace_id == workspace_id, AISalesWorkspaceAnalysis.company_id == company_id)
+                .order_by(AISalesWorkspaceAnalysis.version_number.desc(), AISalesWorkspaceAnalysis.updated_at.desc())
+            ).all()
+        )
+    except SQLAlchemyError as exc:
+        logger.warning("AI sales snapshot version list failed; using metadata cache", exc_info=exc)
+        db.rollback()
+        capture_provider_exception(exc, provider="database", endpoint="workspace_app.ai_sales_analysis.snapshot_list")
+        return []
+    return [_analysis_version_summary(snapshot) for snapshot in snapshots]
 
 
 def _version_from_analysis(analysis: dict[str, Any] | None) -> int:
@@ -6362,7 +6407,7 @@ def _latest_ai_sales_snapshot(db: Session, workspace_id: UUID, company_id: UUID)
         return db.scalar(
             select(AISalesWorkspaceAnalysis)
             .where(AISalesWorkspaceAnalysis.workspace_id == workspace_id, AISalesWorkspaceAnalysis.company_id == company_id)
-            .order_by(AISalesWorkspaceAnalysis.updated_at.desc())
+            .order_by(AISalesWorkspaceAnalysis.version_number.desc(), AISalesWorkspaceAnalysis.updated_at.desc())
             .limit(1)
         )
     except SQLAlchemyError as exc:
@@ -6370,6 +6415,46 @@ def _latest_ai_sales_snapshot(db: Session, workspace_id: UUID, company_id: UUID)
         db.rollback()
         capture_provider_exception(exc, provider="database", endpoint="workspace_app.ai_sales_analysis.snapshot_read")
         return None
+
+
+def _ai_sales_snapshot_by_version(db: Session, workspace_id: UUID, company_id: UUID, version: int) -> Optional[AISalesWorkspaceAnalysis]:
+    try:
+        return db.scalar(
+            select(AISalesWorkspaceAnalysis)
+            .where(
+                AISalesWorkspaceAnalysis.workspace_id == workspace_id,
+                AISalesWorkspaceAnalysis.company_id == company_id,
+                AISalesWorkspaceAnalysis.version_number == version,
+            )
+            .limit(1)
+        )
+    except SQLAlchemyError as exc:
+        logger.warning("AI sales snapshot version query failed; using metadata cache", exc_info=exc)
+        db.rollback()
+        capture_provider_exception(exc, provider="database", endpoint="workspace_app.ai_sales_analysis.snapshot_read_version")
+        return None
+
+
+def _email_analysis_context(analysis: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(analysis, dict):
+        return {}
+    return {
+        "company_summary": str(analysis.get("company_summary") or analysis.get("summary") or ""),
+        "business_model": str(analysis.get("business_model") or ""),
+        "icp_fit_score": int(analysis.get("icp_fit_score") or analysis.get("ai_lead_score") or 0),
+        "buying_probability": int(analysis.get("buying_probability") or analysis.get("buying_intent_score") or 0),
+        "company_stage": str(analysis.get("company_stage") or ""),
+        "pain_points": [str(item) for item in analysis.get("pain_points", analysis.get("likely_business_pains", [])) if str(item or "").strip()] if isinstance(analysis.get("pain_points", analysis.get("likely_business_pains", [])), list) else [],
+        "decision_makers": [item for item in analysis.get("decision_makers", []) if isinstance(item, dict)] if isinstance(analysis.get("decision_makers"), list) else ([analysis.get("decision_maker")] if isinstance(analysis.get("decision_maker"), dict) else []),
+        "outreach_angle": str(analysis.get("best_outreach_angle") or analysis.get("outreach_angle") or ""),
+        "value_proposition": str(analysis.get("value_proposition") or ""),
+        "best_communication_channel": str(analysis.get("best_communication_channel") or ""),
+        "personalization_variables": [str(item) for item in analysis.get("personalization_variables", []) if str(item or "").strip()] if isinstance(analysis.get("personalization_variables"), list) else [],
+        "predicted_objections": [str(item) for item in analysis.get("predicted_objections", []) if str(item or "").strip()] if isinstance(analysis.get("predicted_objections"), list) else [],
+        "next_recommended_action": str(analysis.get("recommended_next_action") or analysis.get("next_action") or ""),
+        "best_subject_line": str(analysis.get("best_subject_line") or ""),
+        "suggested_cta": str(analysis.get("suggested_cta") or analysis.get("best_cta") or ""),
+    }
 
 
 def _domain_from_website(website: str | None) -> str:
@@ -6800,14 +6885,21 @@ def get_company(company_id: UUID, user: WorkspaceUserContext, db: Session = Depe
 
 
 @router.get("/companies/{company_id}/ai-sales-analysis", response_model=UsageAISalesAnalysisOut)
-def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageAISalesAnalysisOut:
+def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, version: Optional[int] = Query(default=None, ge=1), db: Session = Depends(get_db)) -> UsageAISalesAnalysisOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
 
     cached = _cached_ai_sales_analysis_from_company(company)
-    snapshot = _latest_ai_sales_snapshot(db, workspace.id, company.id)
+    snapshot = _ai_sales_snapshot_by_version(db, workspace.id, company.id, version) if version else _latest_ai_sales_snapshot(db, workspace.id, company.id)
+    available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
     analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json else cached
+    if version and not analysis:
+        if cached and _version_from_analysis(cached) == version:
+            analysis = cached
+        else:
+            raise HTTPException(status_code=404, detail="AI sales analysis version not found.")
     generated_at = _analysis_visible_timestamp(analysis)
+    latest_version = available_versions[0].version if available_versions else (_version_from_analysis(cached) if cached else None)
     if not analysis:
         return UsageAISalesAnalysisOut(
             status="empty",
@@ -6816,6 +6908,9 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, db: Sess
             analysis={},
             generated_at=None,
             cached=False,
+            requested_version=version,
+            latest_version=latest_version,
+            available_versions=available_versions,
         )
     return UsageAISalesAnalysisOut(
         status="success",
@@ -6824,6 +6919,9 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, db: Sess
         analysis=analysis,
         generated_at=generated_at,
         cached=True,
+        requested_version=version or _version_from_analysis(analysis),
+        latest_version=latest_version,
+        available_versions=available_versions,
     )
 
 
@@ -6845,6 +6943,7 @@ def generate_ai_sales_analysis(
 
     if not payload.force:
         if cached:
+            available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="Using cached AI sales analysis.",
@@ -6852,6 +6951,9 @@ def generate_ai_sales_analysis(
                 analysis=cached,
                 generated_at=_analysis_visible_timestamp(cached),
                 cached=True,
+                requested_version=_version_from_analysis(cached),
+                latest_version=available_versions[0].version if available_versions else _version_from_analysis(cached),
+                available_versions=available_versions,
             )
 
     lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
@@ -6894,6 +6996,7 @@ def generate_ai_sales_analysis(
             }
             company.updated_at = datetime.utcnow()
             db.commit()
+            available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="AI regenerated from latest available analysis snapshot.",
@@ -6901,7 +7004,11 @@ def generate_ai_sales_analysis(
                 analysis=analysis,
                 generated_at=_analysis_visible_timestamp(analysis),
                 cached=False,
+                requested_version=_version_from_analysis(analysis),
+                latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
+                available_versions=available_versions,
             )
+        available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
         return UsageAISalesAnalysisOut(
             status="provider_unavailable",
             message=_safe_provider_warning(exc),
@@ -6909,6 +7016,9 @@ def generate_ai_sales_analysis(
             analysis=cached,
             generated_at=_analysis_visible_timestamp(cached),
             cached=bool(cached),
+            requested_version=_version_from_analysis(cached) if cached else None,
+            latest_version=available_versions[0].version if available_versions else (_version_from_analysis(cached) if cached else None),
+            available_versions=available_versions,
         )
     except Exception as exc:
         capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis.unexpected", workspace_id=workspace.id, lead_id=company.lead_id)
@@ -6929,6 +7039,7 @@ def generate_ai_sales_analysis(
             }
             company.updated_at = datetime.utcnow()
             db.commit()
+            available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="AI regenerated from latest available analysis snapshot.",
@@ -6936,7 +7047,11 @@ def generate_ai_sales_analysis(
                 analysis=analysis,
                 generated_at=_analysis_visible_timestamp(analysis),
                 cached=False,
+                requested_version=_version_from_analysis(analysis),
+                latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
+                available_versions=available_versions,
             )
+        available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
         return UsageAISalesAnalysisOut(
             status="provider_unavailable",
             message="AI sales analysis is temporarily unavailable. Please try again.",
@@ -6944,6 +7059,9 @@ def generate_ai_sales_analysis(
             analysis=cached,
             generated_at=_analysis_visible_timestamp(cached),
             cached=bool(cached),
+            requested_version=_version_from_analysis(cached) if cached else None,
+            latest_version=available_versions[0].version if available_versions else (_version_from_analysis(cached) if cached else None),
+            available_versions=available_versions,
         )
 
     _save_ai_sales_analysis_snapshot(
@@ -6977,6 +7095,7 @@ def generate_ai_sales_analysis(
     db.commit()
 
     missing_data = analysis.get("missing_data", []) if isinstance(analysis.get("missing_data"), list) else []
+    available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
     return UsageAISalesAnalysisOut(
         status="partial_success" if missing_data else "success",
         message="AI sales analysis generated with missing data warnings." if missing_data else "AI sales analysis generated.",
@@ -6984,6 +7103,9 @@ def generate_ai_sales_analysis(
         analysis=analysis,
         generated_at=_analysis_visible_timestamp(analysis),
         cached=False,
+        requested_version=_version_from_analysis(analysis),
+        latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
+        available_versions=available_versions,
     )
 
 
@@ -7259,6 +7381,9 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
     lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id))
     if not lead:
         return UsageActionOut(status="error", message="This company needs a saved lead before email generation.", company=_crm_company_out(db, workspace, user.user_id, company))
+    analysis_snapshot = _latest_ai_sales_snapshot(db, workspace.id, company.id)
+    analysis = analysis_snapshot.analysis_json if analysis_snapshot and isinstance(analysis_snapshot.analysis_json, dict) and analysis_snapshot.analysis_json else _cached_ai_sales_analysis_from_company(company)
+    analysis_context = _email_analysis_context(analysis)
     try:
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
         if _needs_ai_research(lead):
@@ -7269,12 +7394,13 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
             PersonalizeRequest(
                 company=lead.company,
                 niche=lead.industry or lead.niche or "",
-                website_summary=company.ai_summary or _lead_metadata(lead).get("ai_summary") or "",
-                offer=company.suggested_offer or workspace.company or "AI-powered lead generation and outbound growth",
-                cta="Book a quick call",
+                website_summary=(str(analysis_context.get("company_summary") or "") + "\n" + str(company.ai_summary or _lead_metadata(lead).get("ai_summary") or "")).strip(),
+                offer=str(analysis_context.get("value_proposition") or company.suggested_offer or workspace.company or "AI-powered lead generation and outbound growth"),
+                cta=str(analysis_context.get("suggested_cta") or "Book a quick call"),
                 tone="Professional",
                 language=_workspace_language(request, workspace),
                 signature="",
+                analysis_context=analysis_context,
             )
         )
     except Exception as exc:

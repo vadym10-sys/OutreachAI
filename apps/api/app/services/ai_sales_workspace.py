@@ -29,18 +29,28 @@ class AISalesWorkspaceAnalysisPayload(BaseModel):
     model: str
     version: int
     company_summary: str
+    business_model: str
     what_company_sells: str
     target_customers: str
+    company_stage: str
+    pain_points: list[str] = Field(default_factory=list)
     likely_business_pains: list[str] = Field(default_factory=list)
     buying_signals: list[str] = Field(default_factory=list)
     relevant_technologies: list[str] = Field(default_factory=list)
     why_fits_icp: list[str] = Field(default_factory=list)
     why_may_not_fit: list[str] = Field(default_factory=list)
+    icp_fit_score: int = Field(ge=0, le=100)
     ai_lead_score: int = Field(ge=0, le=100)
+    buying_probability: int = Field(ge=0, le=100)
     score_explanation: str
     estimated_reply_probability: int = Field(ge=0, le=100)
     recommended_decision_maker_role: str
+    decision_makers: list[AISalesWorkspaceDecisionMaker] = Field(default_factory=list)
     best_outreach_angle: str
+    value_proposition: str
+    best_communication_channel: str
+    personalization_variables: list[str] = Field(default_factory=list)
+    predicted_objections: list[str] = Field(default_factory=list)
     personalized_opening_line: str
     strongest_sales_arguments: list[str] = Field(default_factory=list)
     suggested_cta: str
@@ -96,6 +106,93 @@ def _first_contact(contacts: list[Contact]) -> Optional[Contact]:
         if contact.email:
             return contact
     return contacts[0]
+
+
+def _decision_makers(contacts: list[Contact]) -> list[dict[str, str]]:
+    decision_makers: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for contact in contacts:
+        name = _clean_text(contact.name)
+        title = _clean_text(contact.title)
+        email = _clean_text(contact.email)
+        if not any([name, title, email]):
+            continue
+        key = (name.lower(), title.lower(), email.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        decision_makers.append({"name": name, "title": title, "email": email})
+        if len(decision_makers) >= 3:
+            break
+    return decision_makers
+
+
+def _best_communication_channel(top_contact: Optional[Contact], company: Company) -> str:
+    if top_contact and _clean_text(top_contact.email):
+        return "Email"
+    if top_contact and _clean_text(top_contact.linkedin):
+        return "LinkedIn"
+    if top_contact and _clean_text(top_contact.phone):
+        return "Phone"
+    if _clean_text(company.phone):
+        return "Phone"
+    if _clean_text(company.website) or _clean_text(company.domain):
+        return "Website form"
+    return "Manual research"
+
+
+def _company_stage(*, lead: Optional[Lead], buying_signals: list[str], missing_data: list[str]) -> str:
+    if lead and lead.status in {"Meeting", "Won"}:
+        return "Late-stage evaluation"
+    if lead and lead.status in {"Replied", "Opened", "Sent", "Contacted", "Interested", "Email Generated"}:
+        return "Active outreach"
+    if buying_signals:
+        return "Active evaluation"
+    if "decision_maker" in missing_data or "decision_maker_email" in missing_data:
+        return "Researching stakeholders"
+    return "Early research"
+
+
+def _business_model(company: Company, target_customers: str) -> str:
+    industry = _clean_text(company.industry)
+    if industry and target_customers:
+        return f"{industry} provider serving {target_customers}."
+    if industry:
+        return f"{industry} business with a likely B2B sales motion."
+    return "Business model is only partially visible from current public data."
+
+
+def _personalization_variables(
+    *,
+    company: Company,
+    top_contact: Optional[Contact],
+    target_customers: str,
+    technologies: list[str],
+    buying_signals: list[str],
+) -> list[str]:
+    return _compact_list(
+        [
+            company.city and company.country and f"{company.city}, {company.country} market context",
+            company.industry and f"Industry focus: {company.industry}",
+            target_customers and f"Target customer fit: {target_customers}",
+            top_contact and top_contact.title and f"Decision-maker role: {top_contact.title}",
+            technologies[0] and f"Technology signal: {technologies[0]}" if technologies else "",
+            buying_signals[0] and f"Buying signal: {buying_signals[0]}" if buying_signals else "",
+        ],
+        max_items=6,
+    )
+
+
+def _predicted_objections(*, missing_data: list[str], risk_to_check: str, buying_signals: list[str]) -> list[str]:
+    return _compact_list(
+        [
+            risk_to_check,
+            "Priority may be unclear without a confirmed active initiative" if not buying_signals else "",
+            "Decision-maker ownership may still need verification" if "decision_maker" in missing_data else "",
+            "Recipient relevance may be challenged until the email is tied to one concrete pain point" if "decision_maker_email" in missing_data else "",
+        ],
+        max_items=4,
+    )
 
 
 def _build_evidence(
@@ -232,6 +329,22 @@ def build_ai_sales_workspace_analysis(
     decision_role = _clean_text(top_contact.title if top_contact else "") or "Founder, CEO, VP Sales, or Revenue leader"
     opening_line = f"Hi {top_contact.name if top_contact and top_contact.name else 'there'}, I noticed {company.name} is focused on {target_customers.lower()} and thought this might be relevant."
     score_explanation = str(copilot.fit_reason or "") or "Score is based on fit, buyer intent, and available evidence quality."
+    decision_makers = _decision_makers(contacts)
+    best_communication_channel = _best_communication_channel(top_contact, company)
+    company_stage = _company_stage(lead=lead, buying_signals=buying_signals, missing_data=missing_data)
+    value_proposition = _clean_text(company.suggested_offer) or str(copilot.best_first_contact or company.sales_angle or "Lead with a concrete operational outcome.")
+    personalization_variables = _personalization_variables(
+        company=company,
+        top_contact=top_contact,
+        target_customers=target_customers,
+        technologies=technologies,
+        buying_signals=buying_signals,
+    )
+    predicted_objections = _predicted_objections(
+        missing_data=missing_data,
+        risk_to_check=str(copilot.risk_to_check or "Verify decision-maker context and active need before outreach."),
+        buying_signals=buying_signals,
+    )
 
     payload = {
         "generated_at": datetime.utcnow().isoformat(),
@@ -239,18 +352,28 @@ def build_ai_sales_workspace_analysis(
         "model": settings.openai_model,
         "version": 2,
         "company_summary": _clean_text(copilot.fit_reason) or company.ai_summary or "Potential fit exists but needs validation before outreach.",
+        "business_model": _business_model(company, target_customers),
         "what_company_sells": sells,
         "target_customers": target_customers,
+        "company_stage": company_stage,
+        "pain_points": pains,
         "likely_business_pains": pains,
         "buying_signals": buying_signals,
         "relevant_technologies": technologies,
         "why_fits_icp": fit_reasons,
         "why_may_not_fit": misfit_reasons,
+        "icp_fit_score": max(0, min(100, opportunity_score)),
         "ai_lead_score": max(0, min(100, opportunity_score)),
+        "buying_probability": max(0, min(100, copilot.probability_to_buy)),
         "score_explanation": score_explanation,
         "estimated_reply_probability": max(0, min(100, copilot.probability_to_reply)),
         "recommended_decision_maker_role": decision_role,
+        "decision_makers": decision_makers,
         "best_outreach_angle": str(copilot.best_first_contact or company.sales_angle or "Lead with a concrete operational outcome."),
+        "value_proposition": value_proposition,
+        "best_communication_channel": best_communication_channel,
+        "personalization_variables": personalization_variables,
+        "predicted_objections": predicted_objections,
         "personalized_opening_line": opening_line,
         "strongest_sales_arguments": strongest_arguments,
         "suggested_cta": str(copilot.best_cta or "Book a 15-minute discovery call"),
@@ -292,4 +415,14 @@ def read_cached_analysis(metadata_json: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("evidence", [])
     payload.setdefault("reasoning", [])
     payload.setdefault("missing_data", [])
+    payload.setdefault("business_model", "")
+    payload.setdefault("company_stage", "")
+    payload.setdefault("pain_points", payload.get("likely_business_pains", []) if isinstance(payload.get("likely_business_pains"), list) else [])
+    payload.setdefault("icp_fit_score", _safe_int(payload.get("ai_lead_score"), 0))
+    payload.setdefault("buying_probability", _safe_int(payload.get("buying_intent_score"), 0))
+    payload.setdefault("decision_makers", [payload.get("decision_maker", {})] if isinstance(payload.get("decision_maker"), dict) and payload.get("decision_maker") else [])
+    payload.setdefault("value_proposition", "")
+    payload.setdefault("best_communication_channel", "")
+    payload.setdefault("personalization_variables", [])
+    payload.setdefault("predicted_objections", [])
     return payload

@@ -16,3 +16,5 @@ artifacts
 postgres_data
 outreachai.db
 startup-check.db
+.vercel
+.env*

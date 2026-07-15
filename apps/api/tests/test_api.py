@@ -3041,6 +3041,102 @@ def test_workspace_app_manual_company_gets_fallback_intelligence_and_review_draf
     assert captured["offer"]
 
 
+def test_workspace_app_email_draft_uses_structured_ai_sales_analysis(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-analysis-context@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Context Build", "website": "https://analysis-context.example", "country": "Germany", "city": "Berlin", "industry": "B2B SaaS"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    contact = client.post(
+        f"/api/workspace-app/companies/{company_id}/contacts/manual",
+        headers=headers,
+        json={"name": "Avery Founder", "title": "Founder", "email": "avery@analysis-context.example"},
+    )
+    assert contact.status_code == 200
+
+    seeded_analysis = {
+        "generated_at": "2026-01-05T09:30:00",
+        "provider": "openai",
+        "model": "gpt-test",
+        "version": 3,
+        "company_summary": "Strong fit because the team still relies on manual outbound.",
+        "business_model": "B2B SaaS provider serving sales leaders.",
+        "what_company_sells": "Revenue workflow software for lean sales teams.",
+        "target_customers": "Sales leaders at B2B SaaS companies",
+        "company_stage": "Active evaluation",
+        "pain_points": ["Manual outbound", "Slow follow-up"],
+        "likely_business_pains": ["Manual outbound", "Slow follow-up"],
+        "buying_signals": ["Recent hiring for sales operations"],
+        "relevant_technologies": ["HubSpot"],
+        "why_fits_icp": ["Clear outbound workflow pain"],
+        "why_may_not_fit": [],
+        "icp_fit_score": 84,
+        "ai_lead_score": 84,
+        "buying_probability": 61,
+        "score_explanation": "Fit is strong and there is a visible operations signal.",
+        "estimated_reply_probability": 48,
+        "recommended_decision_maker_role": "Founder",
+        "decision_makers": [{"name": "Avery Founder", "title": "Founder", "email": "avery@analysis-context.example"}],
+        "best_outreach_angle": "Lead with faster follow-up and cleaner qualification.",
+        "value_proposition": "Reduce manual outbound work while improving qualified conversations.",
+        "best_communication_channel": "Email",
+        "personalization_variables": ["Berlin market context", "Recent hiring for sales operations"],
+        "predicted_objections": ["Timing is unclear", "Current workflow may feel good enough"],
+        "personalized_opening_line": "Hi Avery, I noticed your team is still scaling outbound operations manually.",
+        "strongest_sales_arguments": ["Manual work can be removed", "Reply quality can improve"],
+        "suggested_cta": "Book a 15-minute workflow review",
+        "recommended_next_action": "Send a short founder-level email.",
+        "decision_maker": {"name": "Avery Founder", "title": "Founder", "email": "avery@analysis-context.example"},
+        "reasoning": ["Visible sales-ops hiring signal"],
+        "missing_data": [],
+        "evidence": [{"source_field": "company.industry", "value": "B2B SaaS", "confidence": 90}],
+        "summary": "Strong fit because the team still relies on manual outbound.",
+        "opportunity_score": 84,
+        "buying_intent_score": 61,
+        "confidence_score": 79,
+        "outreach_angle": "Lead with faster follow-up and cleaner qualification.",
+        "best_subject_line": "Idea for your outbound workflow",
+        "best_cta": "Book a 15-minute workflow review",
+        "risk_to_check": "Confirm active priority.",
+        "next_action": "Send a short founder-level email.",
+    }
+    with get_sessionmaker()() as db:
+        company = db.scalar(select(Company).where(Company.id == UUID(company_id)))
+        assert company is not None
+        company.metadata_json = {**(company.metadata_json or {}), "ai_sales_workspace": seeded_analysis, "ai_sales_workspace_updated_at": seeded_analysis["generated_at"]}
+        db.commit()
+
+    captured: dict[str, Any] = {}
+
+    def fake_personalize(payload):
+        captured["offer"] = payload.offer
+        captured["cta"] = payload.cta
+        captured["website_summary"] = payload.website_summary
+        captured["analysis_context"] = payload.analysis_context
+        return EmailVariantOut(
+            subject="Idea for Analysis Context Build",
+            preview="Prepared with structured analysis",
+            full_email="Hi Avery, I found a practical way to reduce manual outbound work.",
+            cta=payload.cta,
+            cold_email="Hi Avery, I found a practical way to reduce manual outbound work.",
+            follow_ups=["Worth a quick review?", "Should I send more detail?"],
+        )
+
+    monkeypatch.setattr("app.api.usage.personalize_email", fake_personalize)
+    draft = client.post(f"/api/workspace-app/companies/{company_id}/email-draft", headers=headers)
+    assert draft.status_code == 200
+    assert captured["offer"] == "Reduce manual outbound work while improving qualified conversations."
+    assert captured["cta"] == "Book a 15-minute workflow review"
+    assert "Strong fit because the team still relies on manual outbound." in captured["website_summary"]
+    assert captured["analysis_context"]["best_communication_channel"] == "Email"
+    assert captured["analysis_context"]["company_stage"] == "Active evaluation"
+    assert captured["analysis_context"]["decision_makers"][0]["email"] == "avery@analysis-context.example"
+
+
 def test_workspace_app_manual_company_fallback_uses_requested_locale() -> None:
     headers = {
         "Authorization": "Bearer dev",
@@ -3383,17 +3479,27 @@ def test_ai_sales_analysis_force_regeneration_updates_snapshot_and_avoids_duplic
     loaded_payload = loaded.json()
     assert loaded_payload["analysis"]["version"] == second_payload["analysis"]["version"]
     assert loaded_payload["generated_at"] == second_payload["generated_at"]
+    assert loaded_payload["latest_version"] == second_payload["analysis"]["version"]
+    assert [item["version"] for item in loaded_payload["available_versions"]] == [second_payload["analysis"]["version"], first_version]
+
+    historical = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis?version={first_version}", headers=headers)
+    assert historical.status_code == 200
+    historical_payload = historical.json()
+    assert historical_payload["requested_version"] == first_version
+    assert historical_payload["latest_version"] == second_payload["analysis"]["version"]
+    assert historical_payload["analysis"]["version"] == first_version
 
     with get_sessionmaker()() as db:
         snapshots = list(
             db.scalars(
                 select(AISalesWorkspaceAnalysis).where(
                     AISalesWorkspaceAnalysis.company_id == UUID(company_id),
-                )
+                ).order_by(AISalesWorkspaceAnalysis.version_number.asc())
             )
         )
-        assert len(snapshots) == 1
-        assert snapshots[0].analysis_json.get("version") == second_payload["analysis"]["version"]
+        assert len(snapshots) == 2
+        assert [snapshot.version_number for snapshot in snapshots] == [first_version, second_payload["analysis"]["version"]]
+        assert snapshots[-1].analysis_json.get("version") == second_payload["analysis"]["version"]
 
 
 def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:

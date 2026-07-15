@@ -37,6 +37,8 @@ Mode: Continuous production QA + targeted bug fixing
 - Added global exception-handler downgrade for restart-path 5xx responses to return `partial_success` payload instead of HTTP 500
 - Added regression tests for dependency/runtime and dependency/http-500 failures on restart path
 - Re-ran backend test suite: `153 passed`
+- Deployed commit `e7c939d` to production and re-ran authenticated customer flow
+- Production restart action still returns HTTP 500; latest request id `ba438720-01c6-467a-8249-fd764a2e93ea`
 
 ## Open QA Items
 
@@ -53,4 +55,4 @@ Mode: Continuous production QA + targeted bug fixing
 ## Blocking Issues
 
 - High: `Run all missing steps` still returns HTTP 500 in production after latest resilience patch.
-- Action needed: verify latest global fallback deployment in production using request path `/api/workspace-app/companies/{id}/enrichment/restart`; previous failing request ids include `c892f49e-d7b8-4820-8c0a-2c10a6ec252c` and `3ba81abf-5f24-4f96-b0c5-d4f9f9985da4`.
+- Action needed: production service log inspection for request ids `c892f49e-d7b8-4820-8c0a-2c10a6ec252c`, `3ba81abf-5f24-4f96-b0c5-d4f9f9985da4`, and `ba438720-01c6-467a-8249-fd764a2e93ea` to isolate an error source outside the deployed restart-path guards.

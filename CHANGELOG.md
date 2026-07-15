@@ -39,4 +39,4 @@
 ### Validation Notes
 
 - Production re-check after latest deployment still returns HTTP 500 for `Run all missing steps` in authenticated customer flow.
-- Latest observed failing request ids before global-handler fallback deployment: `c892f49e-d7b8-4820-8c0a-2c10a6ec252c`, `3ba81abf-5f24-4f96-b0c5-d4f9f9985da4`.
+- Latest observed failing request ids: `c892f49e-d7b8-4820-8c0a-2c10a6ec252c`, `3ba81abf-5f24-4f96-b0c5-d4f9f9985da4`, `ba438720-01c6-467a-8249-fd764a2e93ea`.

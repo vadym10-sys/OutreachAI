@@ -2,19 +2,22 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from functools import lru_cache
+from pathlib import Path
 
 import logging
 import time
 
 from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy import event
-from sqlalchemy.schema import CreateColumn
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
 from app.core.observability import capture_provider_exception
 
 logger = logging.getLogger("outreachai.database")
+REPO_ROOT = Path(__file__).resolve().parents[4]
+SCHEMA_PATH = REPO_ROOT / "db" / "schema.sql"
+MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 
 
 class Base(DeclarativeBase):
@@ -63,31 +66,63 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def ensure_runtime_schema(engine: Engine) -> None:
-    """Add missing ORM columns in production without destructive migrations.
+def _execute_sql_script(engine: Engine, script_path: Path) -> None:
+    sql_text = script_path.read_text(encoding="utf-8")
+    if not sql_text.strip():
+        return
 
-    This is a safety net for the current Railway/PostgreSQL deployment where
-    tables may already exist from older builds. SQLAlchemy create_all() creates
-    missing tables, but it does not alter existing tables, which can break
-    workspace/CRM endpoints after new columns are introduced.
-    """
+    logger.info("Applying database script %s", script_path.relative_to(REPO_ROOT))
+    with engine.begin() as connection:
+        connection.execute(text(sql_text))
+
+
+def _ensure_schema_migrations_table(engine: Engine) -> None:
     if engine.dialect.name != "postgresql":
         return
 
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version VARCHAR(255) PRIMARY KEY,
+                applied_at TIMESTAMP NOT NULL DEFAULT now()
+            )
+        """))
+
+
+def _applied_migration_versions(engine: Engine) -> set[str]:
+    if engine.dialect.name != "postgresql":
+        return set()
+
+    with engine.connect() as connection:
+        try:
+            rows = connection.execute(text("SELECT version FROM schema_migrations")).fetchall()
+        except Exception:
+            return set()
+    return {row[0] for row in rows}
+
+
+def initialize_database_schema(engine: Engine) -> None:
+    if engine.dialect.name != "postgresql":
+        Base.metadata.create_all(bind=engine)
+        return
+
+    _ensure_schema_migrations_table(engine)
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
-    with engine.begin() as connection:
-        for table in Base.metadata.sorted_tables:
-            if table.name not in existing_tables:
-                continue
-            existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
-            for column in table.columns:
-                if column.name in existing_columns:
-                    continue
-                if column.primary_key:
-                    continue
-                compiled = str(CreateColumn(column).compile(dialect=engine.dialect))
-                compiled = compiled.replace(" NOT NULL", "")
-                statement = f'ALTER TABLE "{table.name}" ADD COLUMN IF NOT EXISTS {compiled}'
-                logger.warning("Adding missing production column table=%s column=%s", table.name, column.name)
-                connection.execute(text(statement))
+
+    if not existing_tables:
+        _execute_sql_script(engine, SCHEMA_PATH)
+
+    applied_versions = _applied_migration_versions(engine)
+    for migration_path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        version = migration_path.stem
+        if version in applied_versions:
+            continue
+        _execute_sql_script(engine, migration_path)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO schema_migrations (version) VALUES (:version)"), {"version": version})
+
+
+def ensure_runtime_schema(engine: Engine) -> None:
+    """Apply the authoritative schema and migration scripts for the current engine."""
+    initialize_database_schema(engine)

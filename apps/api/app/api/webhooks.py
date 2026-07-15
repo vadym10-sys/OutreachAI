@@ -17,10 +17,11 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.observability import capture_provider_exception
-from app.models.entities import AppSettings, AuditLog, Company, Deal, EmailMessage, Lead, LeadStatus, Subscription, User, Workspace
+from app.models.entities import AppSettings, AuditLog, Company, Deal, EmailMessage, Lead, LeadStatus, Note, Subscription, User, Workspace
 from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 from app.services.billing import plan_from_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
+from app.services.continuous_learning import apply_continuous_learning_event
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 logger = logging.getLogger("outreachai.stripe")
@@ -350,15 +351,213 @@ def _event_reply_body(data: dict) -> str:
     return str(data.get("text") or data.get("html") or data.get("reply") or data.get("message") or "")
 
 
-def _reply_category(reply_body: str, assistant: dict) -> str:
-    text = " ".join([reply_body, str(assistant.get("next_step") or ""), str(assistant.get("suggested_response") or "")]).lower()
-    if any(term in text for term in ["meeting", "calendar", "book", "call", "demo"]):
-        return "Meeting"
-    if any(term in text for term in ["not interested", "unsubscribe", "remove me", "stop"]):
-        return "Not interested"
-    if any(term in text for term in ["interested", "tell me more", "send", "pricing"]):
+def _sales_inbox_classification(reply_body: str, assistant: dict[str, Any]) -> str:
+    text = " ".join(
+        [
+            reply_body,
+            str(assistant.get("next_step") or ""),
+            str(assistant.get("suggested_response") or ""),
+        ]
+    ).lower()
+    if any(term in text for term in ["unsubscribe", "remove me", "stop emailing", "do not contact", "not relevant"]):
+        return "Not Interested"
+    if any(term in text for term in ["spam", "scam", "junk", "phishing"]):
+        return "Spam"
+    if any(term in text for term in ["refer", "referral", "intro", "connect you with", "speak with "]):
+        return "Referral"
+    if any(term in text for term in ["meeting", "calendar", "book", "call", "demo", "schedule"]):
+        return "Meeting Requested"
+    if any(term in text for term in ["interested", "tell me more", "pricing", "sounds good", "yes"]):
         return "Interested"
-    return "Needs review"
+    return "Need Follow-up"
+
+
+def _sales_inbox_output(
+    *,
+    classification: str,
+    reply_body: str,
+    lead: Lead | None,
+    assistant: dict[str, Any],
+) -> dict[str, Any]:
+    company_name = lead.company if lead and lead.company else "your company"
+    recommended_reply = str(assistant.get("suggested_response") or "").strip()
+    if not recommended_reply:
+        templates = {
+            "Interested": f"Thanks for the reply. Happy to share a concise breakdown tailored for {company_name}. Would tomorrow work for a quick walkthrough?",
+            "Not Interested": "Thanks for letting me know. I will close this thread and stop follow-ups.",
+            "Need Follow-up": "Thanks for the response. To keep this useful, I can send a brief 3-point summary and a recommended next step.",
+            "Meeting Requested": "Great, thank you. I can propose two time slots and share a short agenda so the meeting is productive.",
+            "Referral": "Appreciate the referral. Could you share the best contact details and context so I can tailor the outreach?",
+            "Spam": "Acknowledged. This thread will be closed and no further emails will be sent.",
+        }
+        recommended_reply = templates.get(classification, "Thanks for your response.")
+
+    meeting_preparation = {
+        "is_required": classification == "Meeting Requested",
+        "agenda": [
+            "Confirm current goals and constraints",
+            "Align on buying timeline and stakeholders",
+            "Review tailored solution fit and next step",
+        ]
+        if classification == "Meeting Requested"
+        else [],
+        "materials": ["Company brief", "Opportunity summary", "Relevant case examples"] if classification == "Meeting Requested" else [],
+    }
+
+    crm_update = {
+        "crm_stage": "Meeting Scheduled"
+        if classification == "Meeting Requested"
+        else "Lost"
+        if classification in {"Not Interested", "Spam"}
+        else "Replied"
+        if classification in {"Interested", "Need Follow-up", "Referral"}
+        else "Replied",
+        "email_status": "Replied" if classification != "Spam" else "Spam",
+        "lead_status": "Meeting"
+        if classification == "Meeting Requested"
+        else "Archive"
+        if classification in {"Not Interested", "Spam"}
+        else "Interested"
+        if classification in {"Interested", "Referral"}
+        else "Contacted",
+    }
+
+    next_action = {
+        "Interested": "Send a concise value-focused reply and propose a short qualification call.",
+        "Not Interested": "Close the opportunity and stop follow-ups.",
+        "Need Follow-up": "Send clarifying follow-up and set reminder for 48 hours.",
+        "Meeting Requested": "Confirm time slots, send agenda, and prepare meeting brief.",
+        "Referral": "Contact referred person with context from the original thread.",
+        "Spam": "Mark as spam and suppress future outreach.",
+    }.get(classification, "Review the reply and decide next step.")
+
+    task_creation = {
+        "title": f"Sales Inbox: {classification} - {company_name}",
+        "description": f"Reply classification: {classification}. Next action: {next_action}",
+        "due_in_hours": 4 if classification == "Meeting Requested" else 24,
+    }
+
+    return {
+        "classified_as": classification,
+        "next_action": next_action,
+        "recommended_reply": recommended_reply,
+        "meeting_preparation": meeting_preparation,
+        "crm_update": crm_update,
+        "task_creation": task_creation,
+        "reply_excerpt": str(reply_body or "")[:300],
+    }
+
+
+def _apply_sales_inbox_crm_update(db: Session, message: EmailMessage, classification: str, crm_update: dict[str, Any]) -> None:
+    if not message.lead_id:
+        return
+    lead = db.get(Lead, message.lead_id)
+    if lead is not None:
+        status_map = {
+            "Meeting": LeadStatus.meeting,
+            "Archive": LeadStatus.archive,
+            "Interested": LeadStatus.interested,
+            "Contacted": LeadStatus.contacted,
+        }
+        mapped_status = status_map.get(str(crm_update.get("lead_status") or ""))
+        if mapped_status is not None:
+            lead.status = mapped_status
+    _sync_crm_email_status(
+        db,
+        message,
+        str(crm_update.get("crm_stage") or "Replied"),
+        str(crm_update.get("email_status") or "Replied"),
+    )
+
+
+def _record_sales_inbox_company_history(db: Session, message: EmailMessage, sales_inbox: dict[str, Any]) -> None:
+    if not message.lead_id:
+        return
+    company = db.scalar(select(Company).where(Company.lead_id == message.lead_id).order_by(Company.updated_at.desc()))
+    if company is None:
+        return
+    metadata = company.metadata_json or {}
+    history = metadata.get("ai_sales_inbox_history") if isinstance(metadata.get("ai_sales_inbox_history"), list) else []
+    entry = {
+        "at": datetime.utcnow().isoformat(),
+        "email_id": str(message.id),
+        "provider_message_id": str(message.provider_message_id or ""),
+        **sales_inbox,
+    }
+    history.append(entry)
+    company.metadata_json = {
+        **metadata,
+        "ai_sales_inbox_latest": entry,
+        "ai_sales_inbox_history": history[-200:],
+    }
+    company.updated_at = datetime.utcnow()
+
+
+def _create_sales_inbox_task_note(db: Session, message: EmailMessage, sales_inbox: dict[str, Any]) -> None:
+    task = sales_inbox.get("task_creation") if isinstance(sales_inbox.get("task_creation"), dict) else {}
+    title = str(task.get("title") or "Sales Inbox task").strip()
+    description = str(task.get("description") or "").strip()
+    note_body = f"{title}\n{description}".strip()
+    db.add(
+        Note(
+            user_id=message.user_id,
+            workspace_id=message.workspace_id,
+            lead_id=message.lead_id,
+            body=note_body,
+            kind="sales_inbox_task",
+        )
+    )
+
+
+def _learning_factors_from_company_metadata(metadata: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    opportunity = {}
+    prioritization = {}
+    ranking = metadata.get("opportunity_ranking") if isinstance(metadata.get("opportunity_ranking"), dict) else {}
+    if isinstance(ranking.get("factors"), dict):
+        opportunity = ranking.get("factors") or {}
+    prio = metadata.get("ai_lead_prioritization") if isinstance(metadata.get("ai_lead_prioritization"), dict) else {}
+    if isinstance(prio.get("factors"), dict):
+        prioritization = prio.get("factors") or {}
+    return opportunity, prioritization
+
+
+def _learning_settings_for_message(db: Session, message: EmailMessage) -> AppSettings:
+    settings = None
+    if message.workspace_id:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == message.workspace_id))
+    if settings is None:
+        settings = db.scalar(select(AppSettings).where(AppSettings.user_id == message.user_id))
+    if settings is None:
+        settings = AppSettings(user_id=message.user_id, workspace_id=message.workspace_id)
+        db.add(settings)
+        db.flush()
+    return settings
+
+
+def _record_continuous_learning_event(
+    db: Session,
+    *,
+    message: EmailMessage,
+    outcome: str,
+    company: Company | None,
+) -> None:
+    settings = _learning_settings_for_message(db, message)
+    company_metadata = company.metadata_json if company is not None and isinstance(company.metadata_json, dict) else {}
+    opportunity_factors, prioritization_factors = _learning_factors_from_company_metadata(company_metadata)
+    updated_ai, profile = apply_continuous_learning_event(
+        settings.ai if isinstance(settings.ai, dict) else {},
+        outcome=outcome,
+        opportunity_factors=opportunity_factors,
+        prioritization_factors=prioritization_factors,
+    )
+    settings.ai = updated_ai
+    db.add(settings)
+    if company is not None:
+        company.metadata_json = {
+            **company_metadata,
+            "continuous_learning": profile,
+        }
+        company.updated_at = datetime.utcnow()
 
 
 def _sync_crm_email_status(db: Session, message: EmailMessage, stage: str, email_status: str) -> None:
@@ -400,10 +599,15 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         return {"received": True, "matched": False}
 
     now = datetime.utcnow()
+    company = db.scalar(select(Company).where(Company.lead_id == message.lead_id).order_by(Company.updated_at.desc())) if message.lead_id else None
     if event_type == "email.delivered":
         message.delivered_at = message.delivered_at or now
         message.delivery_status = "delivered"
         _sync_crm_email_status(db, message, "Sent", "Delivered")
+        tags = message.tags if isinstance(message.tags, dict) else {}
+        if not bool(tags.get("continuous_learning_sent_recorded")):
+            _record_continuous_learning_event(db, message=message, outcome="sent", company=company)
+            message.tags = {**tags, "continuous_learning_sent_recorded": True}
     elif event_type == "email.opened":
         message.opened_at = message.opened_at or now
         message.delivery_status = "opened"
@@ -428,18 +632,34 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
             lead.status = LeadStatus.interested
         try:
             assistant = suggest_reply(ReplyAssistantRequest(company=lead.company if lead else "", reply_body=reply_body, campaign_offer=""))
-            message.reply_assistant = assistant.model_dump()
+            base_assistant = assistant.model_dump()
         except (ProviderConfigurationError, ProviderRequestError):
-            message.reply_assistant = {}
-        category = _reply_category(reply_body, message.reply_assistant or {})
-        if category == "Meeting" and lead:
-            lead.status = LeadStatus.meeting
-            _sync_crm_email_status(db, message, "Meeting Scheduled", "Replied")
-        if category == "Not interested" and lead:
-            lead.status = LeadStatus.archive
-            _sync_crm_email_status(db, message, "Lost", "Replied")
-        if category not in {"Meeting", "Not interested"}:
-            _sync_crm_email_status(db, message, "Replied", "Replied")
+            base_assistant = {}
+        classification = _sales_inbox_classification(reply_body, base_assistant)
+        sales_inbox = _sales_inbox_output(
+            classification=classification,
+            reply_body=reply_body,
+            lead=lead,
+            assistant=base_assistant,
+        )
+        _apply_sales_inbox_crm_update(db, message, classification, sales_inbox.get("crm_update") if isinstance(sales_inbox.get("crm_update"), dict) else {})
+        _record_sales_inbox_company_history(db, message, sales_inbox)
+        _create_sales_inbox_task_note(db, message, sales_inbox)
+        tags = message.tags if isinstance(message.tags, dict) else {}
+        if not bool(tags.get("continuous_learning_reply_recorded")):
+            _record_continuous_learning_event(db, message=message, outcome="reply", company=company)
+            if classification == "Meeting Requested":
+                _record_continuous_learning_event(db, message=message, outcome="meeting", company=company)
+            tags = {**tags, "continuous_learning_reply_recorded": True}
+        message.reply_assistant = {
+            **base_assistant,
+            "sales_inbox": sales_inbox,
+        }
+        message.tags = {
+            **tags,
+            "continuous_learning_last_outcome": "meeting" if classification == "Meeting Requested" else "reply",
+            "continuous_learning_last_outcome_at": now.isoformat(),
+        }
         inbound_exists = db.scalar(
             select(EmailMessage.id).where(
                 EmailMessage.provider_message_id == f"reply:{message_id}",
@@ -460,7 +680,7 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
                     provider_message_id=f"reply:{message_id}",
                     delivery_status="received",
                     reply_assistant=message.reply_assistant or {},
-                    tags={"category": category, "auto_archive": category == "Not interested"},
+                    tags={"category": classification, "auto_archive": classification in {"Not Interested", "Spam"}},
                 )
             )
     else:

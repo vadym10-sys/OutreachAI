@@ -74,4 +74,5 @@ IN PROGRESS
 Reason:
 - High-severity bug was fixed and tested locally across enqueue/setup/serialization failure paths.
 - Production still returned 500 before latest global-handler fallback deployment (`x-request-id: c892f49e-d7b8-4820-8c0a-2c10a6ec252c`, `x-request-id: 3ba81abf-5f24-4f96-b0c5-d4f9f9985da4`).
+- Production still returned 500 after deploying commit `e7c939d` (`x-request-id: ba438720-01c6-467a-8249-fd764a2e93ea`).
 - Next checkpoint: verify post-deploy behavior in production and continue full customer journey once restart no longer fails hard.
