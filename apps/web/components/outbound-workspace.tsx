@@ -2367,6 +2367,15 @@ function OpportunityCard({
                   );
                 })}
               </div>
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-300/20 bg-cyan-500/10 px-4 py-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-200">{t("Open workflow")}</p>
+                  <p className="mt-1 text-sm font-semibold leading-6 text-white">{t(String(salesRecommendationNextAction || salesRecommendationConfidenceExplanation || unavailable))}</p>
+                </div>
+                <Link href="#ai-sdr-workflow" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-white px-4 text-sm font-bold text-slate-950">
+                  {t("Jump to workflow")}
+                </Link>
+              </div>
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
                   <div className="flex items-center gap-2">
@@ -2600,7 +2609,7 @@ function OpportunityCard({
                   <p className="mt-4 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">{t("No action plan yet. Generate AI sales analysis to create prioritized tasks.")}</p>
                 )}
               </div>
-              <div className="mt-4 rounded-2xl border border-white/15 bg-slate-950/45 p-4">
+              <div id="ai-sdr-workflow" className="mt-4 rounded-2xl border border-white/15 bg-slate-950/45 p-4 scroll-mt-6">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-black uppercase tracking-wide text-cyan-200">{t("AI SDR Workflow")}</p>

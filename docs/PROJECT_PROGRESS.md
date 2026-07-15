@@ -2,6 +2,22 @@
 
 # Project Progress
 
+## 2026-07-16 - Phase 6 Company Workflow Jump CTA
+
+### Scope Completed
+- Added a direct `Jump to workflow` CTA inside the company AI Sales Intelligence panel so the rep can move from recommendation review into execution without extra scrolling.
+- Anchored the AI SDR Workflow section to make the analysis-to-action handoff shareable and fast.
+
+### Validation Status
+- Backend tests: passed (`python3 -m pytest -q tests/test_api.py` in `apps/api`, 188 passed).
+- Frontend unit tests: passed (`npm run test -- --run` in `apps/web`, 31 tests).
+- Frontend Playwright regression: passed (`npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+
+### Notes
+- This change is frontend-only and keeps the existing AI sales, Action Center, and workflow data model intact.
+- It improves customer decision speed by collapsing the path from insight to execution into one visible action.
+
 ## 2026-07-15 - Phase 6 AI SDR Workflow (End-to-End Execution Path)
 
 ### Scope Completed

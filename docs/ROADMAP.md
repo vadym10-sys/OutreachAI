@@ -1,5 +1,10 @@
 # Roadmap
 
+## 2026-07-16 - Phase 6 Analysis-to-Workflow Handoff
+- Completed a direct jump from company AI recommendations into the AI SDR Workflow section so reps can move from deciding to doing in one click.
+- Kept the handoff shallow and reversible by reusing existing workflow state, timeline, and action controls.
+- Next execution checkpoint: verify whether this shortcut measurably reduces time-to-first-action in live customer sessions before expanding the same pattern elsewhere.
+
 ## 2026-07-15 - Phase 6 (Value and Customer Experience) Execution Started
 - Started Phase 6 delivery on dedicated `phase6` branch with one completed quick win in Leads workspace prioritization UX.
 - Completed explicit priority tiering (`Hot`, `Warm`, `Cold`) and deterministic top-down ordering of lead opportunity cards.

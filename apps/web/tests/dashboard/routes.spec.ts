@@ -289,6 +289,9 @@ test.describe("customer workspace routes", () => {
     await expect(page.getByRole("button", { name: "Postpone" }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Dismiss" }).first()).toBeVisible();
     await expect(page.getByText("AI SDR Workflow").first()).toBeVisible();
+    await expect(page.getByRole("link", { name: "Jump to workflow" }).first()).toBeVisible();
+    await page.getByRole("link", { name: "Jump to workflow" }).first().click();
+    await expect(page).toHaveURL(/#ai-sdr-workflow$/);
     await expect(page.getByText("New Lead").first()).toBeVisible();
     await expect(page.getByText("Analyzed").first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Generate personalized email" }).first()).toBeVisible();
