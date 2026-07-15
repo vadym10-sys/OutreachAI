@@ -3316,13 +3316,48 @@ def test_ai_sales_analysis_generate_success(monkeypatch) -> None:
             "provider": "openai",
             "model": "gpt-test",
             "summary": "Strong fit for outbound automation.",
+            "company_summary": "Strong fit for outbound automation.",
+            "business_model": "B2B SaaS provider serving revenue teams.",
+            "what_company_sells": "Outbound workflow automation.",
+            "target_customers": "Mid-market revenue teams",
+            "company_stage": "Active evaluation",
+            "pain_points": ["Manual pipeline qualification"],
+            "likely_business_pains": ["Manual pipeline qualification"],
+            "buying_signals": ["Hiring SDRs"],
+            "relevant_technologies": ["HubSpot"],
+            "company_growth_indicators": ["New sales hiring"],
+            "why_fits_icp": ["Matches B2B SaaS ICP"],
+            "why_may_not_fit": [],
+            "icp_fit_score": 84,
+            "ai_lead_score": 82,
+            "lead_priority_score": 88,
+            "lead_priority_tier": "Hot",
+            "buying_probability": 78,
+            "score_explanation": "Strong ICP fit plus active growth signals.",
+            "estimated_reply_probability": 66,
+            "estimated_company_size": "51-200 employees",
+            "estimated_revenue": "$10M-$25M ARR",
+            "recommended_decision_maker_role": "Founder or VP Sales",
+            "decision_makers": [{"name": "Alex Founder", "title": "Founder", "email": "alex@analysis-success.example"}],
+            "best_outreach_angle": "Lead with faster pipeline outcomes.",
+            "value_proposition": "Automate qualification and follow-up without adding headcount.",
+            "best_communication_channel": "Email",
+            "personalization_variables": ["Recent SDR hiring"],
+            "predicted_objections": ["Timing"],
+            "personalized_opening_line": "Hi Alex, I noticed your team is scaling pipeline operations manually.",
+            "strongest_sales_arguments": ["More qualified meetings with the same team"],
+            "suggested_cta": "Open to a 15-minute call next week?",
+            "recommended_next_action": "Send first email.",
             "opportunity_score": 82,
             "buying_intent_score": 78,
             "confidence_score": 80,
             "decision_maker": {"name": "Alex Founder", "title": "Founder", "email": "alex@analysis-success.example"},
             "outreach_angle": "Lead with faster pipeline outcomes.",
             "recommended_first_message": "Hi Alex, I noticed your team is scaling pipeline operations manually. We help SaaS teams automate qualification and follow-up without adding headcount. Open to a short call next week?",
+            "personalized_follow_up_sequence": ["Day 3: share one relevant customer result", "Day 7: offer a short teardown"],
             "best_timing_to_contact": "Tuesday to Thursday between 09:00-11:00 local time.",
+            "best_subject_line": "Quick idea for your SDR team",
+            "best_cta": "Open to a short call next week?",
             "next_action": "Send first email.",
             "risk_to_check": "Confirm timing.",
             "reasoning": ["Recent growth signals"],
@@ -3339,6 +3374,11 @@ def test_ai_sales_analysis_generate_success(monkeypatch) -> None:
     assert payload["analysis"]["opportunity_score"] == 82
     assert payload["analysis"]["recommended_first_message"]
     assert payload["analysis"]["best_timing_to_contact"]
+    assert payload["analysis"]["lead_priority_score"] == 88
+    assert payload["analysis"]["lead_priority_tier"] == "Hot"
+    assert payload["analysis"]["company_growth_indicators"] == ["New sales hiring"]
+    assert payload["analysis"]["estimated_revenue"] == "$10M-$25M ARR"
+    assert payload["analysis"]["personalized_follow_up_sequence"]
 
 
 def test_ai_sales_analysis_partial_when_missing_data(monkeypatch) -> None:
@@ -3546,6 +3586,9 @@ def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:
     assert loaded.json()["analysis"]["summary"] == "Initial cached"
     assert loaded.json()["analysis"]["recommended_first_message"] == ""
     assert loaded.json()["analysis"]["best_timing_to_contact"] == ""
+    assert loaded.json()["analysis"]["lead_priority_score"] == 0
+    assert loaded.json()["analysis"]["estimated_company_size"] == ""
+    assert loaded.json()["analysis"]["personalized_follow_up_sequence"] == []
 
     monkeypatch.setattr(
         usage_module,
@@ -3555,6 +3598,108 @@ def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:
     refreshed = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
     assert refreshed.status_code == 200
     assert refreshed.json()["analysis"]["summary"] == "Refreshed analysis"
+
+
+def test_ai_sales_analysis_auto_refresh_reuses_versions_until_content_changes(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-auto-refresh@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Auto Refresh Co", "website": "https://analysis-auto-refresh.example", "industry": "SaaS", "country": "Germany", "city": "Berlin"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    client.post(
+        f"/api/workspace-app/companies/{company_id}/contacts/manual",
+        headers=headers,
+        json={"name": "Jordan Revenue", "title": "VP Sales", "email": "jordan@analysis-auto-refresh.example"},
+    )
+
+    def payload(summary: str, priority: int) -> dict:
+        return {
+            "generated_at": datetime.utcnow().isoformat(),
+            "provider": "openai",
+            "model": "gpt-test",
+            "summary": summary,
+            "company_summary": summary,
+            "business_model": "B2B SaaS provider serving revenue teams.",
+            "what_company_sells": "Outbound workflow automation.",
+            "target_customers": "Mid-market revenue teams",
+            "company_stage": "Active evaluation",
+            "pain_points": ["Manual pipeline qualification"],
+            "likely_business_pains": ["Manual pipeline qualification"],
+            "buying_signals": ["Hiring SDRs"],
+            "relevant_technologies": ["HubSpot"],
+            "company_growth_indicators": ["New sales hiring"],
+            "why_fits_icp": ["Matches B2B SaaS ICP"],
+            "why_may_not_fit": [],
+            "icp_fit_score": 84,
+            "ai_lead_score": 82,
+            "lead_priority_score": priority,
+            "lead_priority_tier": "Hot",
+            "buying_probability": 78,
+            "score_explanation": "Strong ICP fit plus active growth signals.",
+            "estimated_reply_probability": 66,
+            "estimated_company_size": "51-200 employees",
+            "estimated_revenue": "$10M-$25M ARR",
+            "recommended_decision_maker_role": "VP Sales",
+            "decision_makers": [{"name": "Jordan Revenue", "title": "VP Sales", "email": "jordan@analysis-auto-refresh.example"}],
+            "best_outreach_angle": "Lead with measurable pipeline outcomes.",
+            "value_proposition": "Automate qualification and follow-up without adding headcount.",
+            "best_communication_channel": "Email",
+            "personalization_variables": ["Recent SDR hiring"],
+            "predicted_objections": ["Timing"],
+            "personalized_opening_line": "Hi Jordan, I noticed the team is adding SDR capacity.",
+            "strongest_sales_arguments": ["More qualified meetings with the same team"],
+            "suggested_cta": "Open to a 15-minute call next week?",
+            "recommended_next_action": "Send first email.",
+            "recommended_first_message": "Hi Jordan, we help revenue teams automate qualification and follow-up without adding headcount.",
+            "personalized_follow_up_sequence": ["Day 3: share one relevant customer result"],
+            "best_timing_to_contact": "Tuesday to Thursday between 09:00-11:00 local time.",
+            "decision_maker": {"name": "Jordan Revenue", "title": "VP Sales", "email": "jordan@analysis-auto-refresh.example"},
+            "reasoning": ["Recent growth signals"],
+            "missing_data": [],
+            "evidence": [{"source_field": "company.website", "value": "analysis-auto-refresh.example", "confidence": 95}],
+            "opportunity_score": 82,
+            "buying_intent_score": 78,
+            "confidence_score": 80,
+            "outreach_angle": "Lead with measurable pipeline outcomes.",
+            "best_subject_line": "Quick idea for your SDR team",
+            "best_cta": "Open to a short call next week?",
+            "risk_to_check": "Confirm timing.",
+            "next_action": "Send first email.",
+            "version": 1,
+        }
+
+    payloads = [payload("Auto refresh v1", 88), payload("Auto refresh v1", 88), payload("Auto refresh v2", 91)]
+    monkeypatch.setattr(usage_module, "build_ai_sales_workspace_analysis", lambda **_: payloads.pop(0))
+
+    with get_sessionmaker()() as db:
+        company = db.scalar(select(Company).where(Company.id == UUID(company_id)))
+        workspace = db.get(Workspace, company.workspace_id) if company else None
+        lead = db.get(Lead, company.lead_id) if company and company.lead_id else None
+        assert company is not None
+        assert workspace is not None
+        assert lead is not None
+
+        first = usage_module._refresh_cached_ai_sales_workspace_analysis(db, workspace=workspace, user_id=str(company.user_id or ""), company=company, lead=lead)
+        db.commit()
+        assert first["version"] == 1
+        assert company.metadata_json["ai_sales_workspace"]["lead_priority_score"] == 88
+
+        second = usage_module._refresh_cached_ai_sales_workspace_analysis(db, workspace=workspace, user_id=str(company.user_id or ""), company=company, lead=lead)
+        db.commit()
+        assert second["version"] == 1
+        assert [item["version"] for item in company.metadata_json["ai_sales_workspace_history"]] == [1]
+
+        third = usage_module._refresh_cached_ai_sales_workspace_analysis(db, workspace=workspace, user_id=str(company.user_id or ""), company=company, lead=lead)
+        db.commit()
+        assert third["version"] == 2
+        assert company.metadata_json["ai_sales_workspace"]["summary"] == "Auto refresh v2"
+        assert [item["version"] for item in company.metadata_json["ai_sales_workspace_history"]] == [2, 1]
 
 
 def test_ai_sales_analysis_isolation_between_workspaces() -> None:

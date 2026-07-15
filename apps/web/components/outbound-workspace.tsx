@@ -1620,9 +1620,26 @@ function OpportunityCard({
   function applySalesAnalysisResult(result: WorkspaceAiSalesAnalysisResponse) {
     const next = result.analysis && Object.keys(result.analysis).length ? (result.analysis as WorkspaceAiSalesAnalysis) : null;
     setSalesAnalysis(next);
+    setSalesAnalysisError("");
     setSalesAnalysisVersions(Array.isArray(result.available_versions) ? result.available_versions : []);
     setSalesAnalysisRequestedVersion(result.requested_version ?? next?.version ?? null);
     setSalesAnalysisLatestVersion(result.latest_version ?? next?.version ?? null);
+  }
+
+  function applySalesAnalysisFromCompany(company: CrmCompany | null | undefined) {
+    const next = company?.ai_sales_workspace && Object.keys(company.ai_sales_workspace).length
+      ? (company.ai_sales_workspace as WorkspaceAiSalesAnalysis)
+      : null;
+    if (!next) return;
+    setSalesAnalysis(next);
+    setSalesAnalysisError("");
+    setSalesAnalysisRequestedVersion(next.version ?? null);
+    setSalesAnalysisLatestVersion(next.version ?? null);
+    setSalesAnalysisVersions((current) => {
+      if (!next.version) return current;
+      const existing = current.filter((item) => item.version !== next.version);
+      return [{ version: next.version, generated_at: next.generated_at, provider: next.provider, model: next.model, status: "ready" }, ...existing];
+    });
   }
 
   async function loadSalesAnalysis(version: number | null = null) {
@@ -1772,8 +1789,10 @@ function OpportunityCard({
       setAiMissingFields(safeArray(result.missing_fields).filter((item): item is string => Boolean(item)));
       if (result.company) {
         const updatedCompany = normalizeCrmCompany(result.company);
+        applySalesAnalysisFromCompany(updatedCompany);
         onCompanyUpdated?.(updatedCompany);
         onLeadUpdated?.(leadFromCrmCompany(updatedCompany));
+        void loadSalesAnalysis();
       }
       setStatus(t(result.message || "AI enrichment restarted. This card will update as data arrives."));
       trackEvent("sales_research_queued", {
@@ -2050,6 +2069,7 @@ function OpportunityCard({
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs font-bold uppercase tracking-wide text-slate-500">
           <p>{t("Status")}: {salesAnalysisUiState}</p>
           {salesAnalysisRequestedVersion ? <p>{t("Version")}: {salesAnalysisRequestedVersion}{salesAnalysisLatestVersion && salesAnalysisLatestVersion !== salesAnalysisRequestedVersion ? ` / ${salesAnalysisLatestVersion}` : ""}</p> : null}
+          {salesAnalysis?.generated_at ? <p>{t("Updated")}: {new Date(salesAnalysis.generated_at).toLocaleString()}</p> : null}
         </div>
         {salesAnalysisError ? <p className="mt-2 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{salesAnalysisError}</p> : null}
         {salesAnalysis ? (
@@ -2084,10 +2104,26 @@ function OpportunityCard({
                 ["ICP fit", `${String(salesAnalysis.icp_fit_score ?? salesAnalysis.ai_lead_score ?? salesAnalysis.opportunity_score ?? 0)}%`],
                 ["Buying probability", `${String(salesAnalysis.buying_probability ?? salesAnalysis.buying_intent_score ?? 0)}%`],
                 ["Confidence", `${String(salesAnalysis.confidence_score ?? 0)}%`],
+                ["Lead priority", salesAnalysis.lead_priority_tier ? `${String(salesAnalysis.lead_priority_tier)} · ${String(salesAnalysis.lead_priority_score ?? 0)}%` : `${String(salesAnalysis.lead_priority_score ?? 0)}%`],
                 ["Company stage", String(salesAnalysis.company_stage || unavailable)],
-                ["Best channel", String(salesAnalysis.best_communication_channel || unavailable)]
+                ["Best channel", String(salesAnalysis.best_communication_channel || unavailable)],
+                ["Reply probability", `${String(salesAnalysis.estimated_reply_probability ?? 0)}%`],
+                ["Recommended buyer", String(salesAnalysis.recommended_decision_maker_role || unavailable)]
               ].map(([label, value]) => (
                 <article key={String(label)} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
+                  <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(value))}</p>
+                </article>
+              ))}
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                ["Estimated company size", String(salesAnalysis.estimated_company_size || unavailable)],
+                ["Estimated revenue", String(salesAnalysis.estimated_revenue || unavailable)],
+                ["Best subject line", String(salesAnalysis.best_subject_line || unavailable)],
+                ["Primary decision maker", salesAnalysis.decision_maker?.title ? `${String(salesAnalysis.decision_maker.title)}${salesAnalysis.decision_maker.name ? ` · ${String(salesAnalysis.decision_maker.name)}` : ""}` : String(salesAnalysis.decision_maker?.name || unavailable)]
+              ].map(([label, value]) => (
+                <article key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3">
                   <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
                   <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(value))}</p>
                 </article>
@@ -2161,6 +2197,9 @@ function OpportunityCard({
               {[
                 ["Buying signals", salesAnalysis.buying_signals],
                 ["Pain points", Array.isArray(salesAnalysis.pain_points) ? salesAnalysis.pain_points : salesAnalysis.likely_business_pains],
+                ["Growth indicators", salesAnalysis.company_growth_indicators],
+                ["Why it fits ICP", salesAnalysis.why_fits_icp],
+                ["Watchouts", salesAnalysis.why_may_not_fit],
                 ["Personalization variables", salesAnalysis.personalization_variables],
                 ["Predicted objections", salesAnalysis.predicted_objections]
               ].map(([label, items]) => (
@@ -2178,6 +2217,18 @@ function OpportunityCard({
                 </div>
               ))}
             </div>
+            {Array.isArray(salesAnalysis.personalized_follow_up_sequence) && salesAnalysis.personalized_follow_up_sequence.length ? (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Personalized follow-up sequence")}</p>
+                <ol className="mt-2 space-y-2 text-sm text-slate-700">
+                  {salesAnalysis.personalized_follow_up_sequence.slice(0, 4).map((item, index) => (
+                    <li key={`follow-up-${index}`} className="rounded-lg bg-slate-50 px-3 py-2">
+                      <span className="font-bold text-ink">{index + 1}.</span> {t(String(item || ""))}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
             {Array.isArray(salesAnalysis.reasoning) && salesAnalysis.reasoning.length ? (
               <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Reasoning")}</p>

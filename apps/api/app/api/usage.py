@@ -5050,6 +5050,13 @@ def _refresh_company_intelligence(db: Session, user_id: str, workspace, lead: Le
                 "decision_maker_intelligence_generated_at": decision_maker_intelligence.get("generated_at"),
             }
             contact.updated_at = datetime.utcnow()
+        _refresh_cached_ai_sales_workspace_analysis(
+            db,
+            workspace=workspace,
+            user_id=user_id,
+            company=company,
+            lead=lead,
+        )
         company.updated_at = datetime.utcnow()
     return intelligence
 
@@ -5096,6 +5103,13 @@ def _apply_cached_company_intelligence(db: Session, user_id: str, workspace, lea
                 "company_intelligence_cached_at": datetime.utcnow().isoformat(),
             }
             own_company.updated_at = datetime.utcnow()
+            _refresh_cached_ai_sales_workspace_analysis(
+                db,
+                workspace=workspace,
+                user_id=user_id,
+                company=own_company,
+                lead=lead,
+            )
         _lead_trace(request_id, "company_intelligence_cache_hit", lead_id=str(lead.id), company=lead.company)
         return True
     return False
@@ -6455,6 +6469,70 @@ def _stamp_analysis_payload(
             stamped["generated_at"] = now
         stamped.setdefault("analysis_timestamp", str(stamped.get("generated_at") or now))
         stamped["version"] = _version_from_analysis(stamped)
+    return stamped
+
+
+def _analysis_content_key(analysis_payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = read_cached_analysis({"ai_sales_workspace": analysis_payload}) if isinstance(analysis_payload, dict) else {}
+    comparable = dict(normalized)
+    for key in ("generated_at", "analysis_timestamp", "regenerated_at", "version"):
+        comparable.pop(key, None)
+    return comparable
+
+
+def _refresh_cached_ai_sales_workspace_analysis(
+    db: Session,
+    *,
+    workspace,
+    user_id: str,
+    company: Company,
+    lead: Lead | None,
+) -> dict[str, Any]:
+    previous_analysis = _cached_ai_sales_analysis_from_company(company)
+    contacts = list(
+        db.scalars(
+            select(Contact)
+            .where(Contact.workspace_id == workspace.id, Contact.company_id == company.id)
+            .order_by(Contact.updated_at.desc())
+            .limit(20)
+        ).all()
+    )
+    website_analysis = _latest_website_analysis_for_lead(db, workspace.id, company.lead_id)
+    language = str(getattr(workspace, "language", "") or "English")
+
+    try:
+        analysis = build_ai_sales_workspace_analysis(
+            company=company,
+            lead=lead,
+            contacts=contacts,
+            website_analysis=website_analysis,
+            language=language,
+        )
+    except (ProviderConfigurationError, ProviderRequestError) as exc:
+        capture_provider_exception(
+            exc,
+            provider="openai",
+            endpoint="workspace_app.ai_sales_analysis.auto_refresh",
+            workspace_id=workspace.id,
+            lead_id=company.lead_id,
+        )
+        return previous_analysis
+    except Exception as exc:
+        capture_provider_exception(
+            exc,
+            provider="openai",
+            endpoint="workspace_app.ai_sales_analysis.auto_refresh_unexpected",
+            workspace_id=workspace.id,
+            lead_id=company.lead_id,
+        )
+        return previous_analysis
+
+    if previous_analysis and _analysis_content_key(previous_analysis) == _analysis_content_key(analysis):
+        _store_ai_sales_analysis_metadata(company, previous_analysis)
+        return previous_analysis
+
+    stamped = _stamp_analysis_payload(analysis, force=bool(previous_analysis), previous_analysis=previous_analysis)
+    _store_ai_sales_analysis_metadata(company, stamped)
     return stamped
 
 

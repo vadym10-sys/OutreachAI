@@ -3,6 +3,23 @@
 ## 2026-07-15
 
 ### feat(api)
+- Added automatic AI Sales Copilot refresh during company-intelligence regeneration and cache reuse.
+- Preserved metadata-backed AI sales version history while avoiding duplicate background versions when the analysis content has not changed.
+
+### feat(frontend)
+- Expanded the Company-page AI Sales Intelligence panel with Phase 3 fields for lead priority, growth indicators, estimated revenue/size, ICP fit/watchouts, and personalized follow-up sequencing.
+- Hydrated the Company-page AI sales panel from returned company payloads and refreshed it immediately after enrichment updates.
+
+### test(api)
+- Added regression coverage for Phase 3 AI sales payload fields and background auto-refresh versioning behavior.
+
+### validation
+- `python3 -m pytest -q tests/test_api.py -k 'ai_sales_analysis'` passed in `apps/api`.
+- `npm run lint` passed in `apps/web`.
+- `npm test -- --run` passed in `apps/web`.
+- `npm run build` passed in `apps/web`.
+
+### feat(api)
 - Expanded AI Sales Intelligence analysis schema with required outbound fields:
 	- `recommended_first_message`
 	- `best_timing_to_contact`

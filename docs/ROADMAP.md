@@ -1,5 +1,11 @@
 # Roadmap
 
+## 2026-07-15 - Phase 3 (v1.2) Execution Started
+- Started the AI Sales Copilot layer on the Company page using the existing enrichment, monitoring, and metadata pipeline.
+- Completed automatic sales-analysis refresh after company-intelligence updates and cache reuse.
+- Completed Company-page rendering for lead priority, growth indicators, estimated revenue/size, ICP fit/watchouts, and follow-up sequencing.
+- Next execution checkpoint: production deployment verification and a real-company end-to-end Sales Copilot walkthrough.
+
 ## 2026-07-15 - Phase 2 (v1.1) Execution Started
 - Started implementation of AI Sales Intelligence in production workflow surfaces.
 - Delivered required schema and UI field coverage for structured target-fit analysis and regeneration history.

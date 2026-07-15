@@ -847,13 +847,18 @@ export type CrmCompany = {
     likely_business_pains?: string[];
     buying_signals?: string[];
     relevant_technologies?: string[];
+    company_growth_indicators?: string[];
     why_fits_icp?: string[];
     why_may_not_fit?: string[];
     icp_fit_score?: number;
     ai_lead_score?: number;
+    lead_priority_score?: number;
+    lead_priority_tier?: string;
     buying_probability?: number;
     score_explanation?: string;
     estimated_reply_probability?: number;
+    estimated_company_size?: string;
+    estimated_revenue?: string;
     recommended_decision_maker_role?: string;
     decision_makers?: Array<{
       name?: string;
@@ -867,6 +872,7 @@ export type CrmCompany = {
     predicted_objections?: string[];
     personalized_opening_line?: string;
     recommended_first_message?: string;
+    personalized_follow_up_sequence?: string[];
     best_timing_to_contact?: string;
     strongest_sales_arguments?: string[];
     suggested_cta?: string;

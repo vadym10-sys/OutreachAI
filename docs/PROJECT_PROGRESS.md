@@ -1,5 +1,30 @@
 # Project Progress
 
+## 2026-07-15 - Phase 3 (v1.2) AI Sales Copilot Auto-Refresh
+
+### Scope Completed
+- Extended the Company-page AI Sales Intelligence contract to surface Phase 3 fields:
+  - `company_growth_indicators`
+  - `lead_priority_score`
+  - `lead_priority_tier`
+  - `estimated_company_size`
+  - `estimated_revenue`
+  - `personalized_follow_up_sequence`
+- Added automatic AI Sales Copilot refresh inside company-intelligence regeneration and cache reuse so enriched companies now keep a current sales report without requiring a manual generate step.
+- Preserved metadata-backed version history while preventing duplicate versions when background refresh produces the same content.
+- Updated the Company page to render priority, revenue/size, growth indicators, ICP fit/watchouts, and follow-up sequence guidance.
+- Added regression coverage for expanded payload fields, legacy cached defaults, and auto-refresh versioning behavior.
+
+### Validation Status
+- Targeted backend analysis regression slice: passed (`10 passed` in `apps/api/tests/test_api.py`).
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend tests: passed (`npm test -- --run` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+
+### Notes
+- Automatic refresh writes versioned analysis history into company metadata so background enrichment and monitoring can update the Company page without depending on snapshot-table availability.
+- Duplicate background analyses now reuse the existing version until meaningful content changes.
+
 ## 2026-07-15 - Phase 2 (v1.1) AI Sales Intelligence
 
 ### Scope Completed
