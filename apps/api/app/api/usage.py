@@ -6452,6 +6452,8 @@ def _email_analysis_context(analysis: dict[str, Any]) -> dict[str, Any]:
         "personalization_variables": [str(item) for item in analysis.get("personalization_variables", []) if str(item or "").strip()] if isinstance(analysis.get("personalization_variables"), list) else [],
         "predicted_objections": [str(item) for item in analysis.get("predicted_objections", []) if str(item or "").strip()] if isinstance(analysis.get("predicted_objections"), list) else [],
         "next_recommended_action": str(analysis.get("recommended_next_action") or analysis.get("next_action") or ""),
+        "recommended_first_message": str(analysis.get("recommended_first_message") or analysis.get("personalized_opening_line") or ""),
+        "best_timing_to_contact": str(analysis.get("best_timing_to_contact") or ""),
         "best_subject_line": str(analysis.get("best_subject_line") or ""),
         "suggested_cta": str(analysis.get("suggested_cta") or analysis.get("best_cta") or ""),
     }

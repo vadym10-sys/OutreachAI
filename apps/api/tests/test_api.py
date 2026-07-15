@@ -3321,6 +3321,8 @@ def test_ai_sales_analysis_generate_success(monkeypatch) -> None:
             "confidence_score": 80,
             "decision_maker": {"name": "Alex Founder", "title": "Founder", "email": "alex@analysis-success.example"},
             "outreach_angle": "Lead with faster pipeline outcomes.",
+            "recommended_first_message": "Hi Alex, I noticed your team is scaling pipeline operations manually. We help SaaS teams automate qualification and follow-up without adding headcount. Open to a short call next week?",
+            "best_timing_to_contact": "Tuesday to Thursday between 09:00-11:00 local time.",
             "next_action": "Send first email.",
             "risk_to_check": "Confirm timing.",
             "reasoning": ["Recent growth signals"],
@@ -3335,6 +3337,8 @@ def test_ai_sales_analysis_generate_success(monkeypatch) -> None:
     payload = generated.json()
     assert payload["status"] == "success"
     assert payload["analysis"]["opportunity_score"] == 82
+    assert payload["analysis"]["recommended_first_message"]
+    assert payload["analysis"]["best_timing_to_contact"]
 
 
 def test_ai_sales_analysis_partial_when_missing_data(monkeypatch) -> None:
@@ -3540,6 +3544,8 @@ def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:
     loaded = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers)
     assert loaded.status_code == 200
     assert loaded.json()["analysis"]["summary"] == "Initial cached"
+    assert loaded.json()["analysis"]["recommended_first_message"] == ""
+    assert loaded.json()["analysis"]["best_timing_to_contact"] == ""
 
     monkeypatch.setattr(
         usage_module,

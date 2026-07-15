@@ -2,6 +2,19 @@
 
 ## 2026-07-15
 
+### feat(api)
+- Expanded AI Sales Intelligence analysis schema with required outbound fields:
+	- `recommended_first_message`
+	- `best_timing_to_contact`
+- Included new intelligence fields in draft-generation analysis context.
+
+### feat(frontend)
+- Updated company workspace to a dedicated AI Sales Intelligence panel.
+- Added explicit rendering for buying signals, confidence score, reasoning, recommended first message, and best timing to contact.
+
+### test(api)
+- Added regression assertions for required new analysis fields and legacy-cache fallback defaults.
+
 ### ops(release)
 - Finalized Production Release v1.0 stabilization verification against `origin/main` commit `ba17a26...`.
 - Confirmed API, web, and database-ready status from production health checks.

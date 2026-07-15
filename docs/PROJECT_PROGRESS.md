@@ -1,5 +1,28 @@
 # Project Progress
 
+## 2026-07-15 - Phase 2 (v1.1) AI Sales Intelligence
+
+### Scope Completed
+- Extended structured AI analysis payloads with required fields:
+  - `recommended_first_message`
+  - `best_timing_to_contact`
+- Preserved versioned history and regeneration behavior for analysis snapshots.
+- Updated the company workspace AI panel to a dedicated AI Sales Intelligence view with:
+  - loading and cached result handling
+  - generation and regeneration actions
+  - version history selector
+  - required surfaced fields (buying signals, confidence score, reasoning, first message, timing guidance)
+- Added coverage updates in backend tests to verify new required fields and cached fallback defaults.
+
+### Validation Status
+- Targeted backend analysis regression slice: passed (`6 passed` in `apps/api/tests/test_api.py`).
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+
+### Notes
+- Legacy cached analysis payloads remain backward-compatible via safe default field hydration.
+- Existing outbound and CRM workflows were preserved while expanding intelligence depth.
+
 ## 2026-07-15 - Production Release v1.0 Stable and Next-Phase Planning
 
 ### Scope Completed

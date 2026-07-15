@@ -55,6 +55,8 @@ class AISalesWorkspaceAnalysisPayload(BaseModel):
     strongest_sales_arguments: list[str] = Field(default_factory=list)
     suggested_cta: str
     recommended_next_action: str
+    recommended_first_message: str
+    best_timing_to_contact: str
     decision_maker: AISalesWorkspaceDecisionMaker
     reasoning: list[str] = Field(default_factory=list)
     missing_data: list[str] = Field(default_factory=list)
@@ -193,6 +195,23 @@ def _predicted_objections(*, missing_data: list[str], risk_to_check: str, buying
         ],
         max_items=4,
     )
+
+
+def _best_timing_to_contact(*, company_stage: str, best_communication_channel: str, top_contact: Optional[Contact]) -> str:
+    contact_tz = ""
+    if top_contact and isinstance(top_contact.metadata_json, dict):
+        contact_tz = _clean_text(top_contact.metadata_json.get("timezone"))
+    if contact_tz:
+        return f"Weekdays between 09:00-11:00 in {contact_tz}."
+    if best_communication_channel == "Email":
+        if company_stage == "Active outreach":
+            return "Tuesday to Thursday between 08:30-10:30 local time."
+        return "Tuesday to Thursday between 09:00-11:00 local time."
+    if best_communication_channel == "LinkedIn":
+        return "Weekday mornings and late afternoons in the company local timezone."
+    if best_communication_channel == "Phone":
+        return "Weekday mornings after 09:30 local time to improve answer rates."
+    return "Contact during weekday business hours in the company local timezone."
 
 
 def _build_evidence(
@@ -345,6 +364,20 @@ def build_ai_sales_workspace_analysis(
         risk_to_check=str(copilot.risk_to_check or "Verify decision-maker context and active need before outreach."),
         buying_signals=buying_signals,
     )
+    best_timing_to_contact = _best_timing_to_contact(
+        company_stage=company_stage,
+        best_communication_channel=best_communication_channel,
+        top_contact=top_contact,
+    )
+    recommended_first_message = " ".join(
+        item
+        for item in [
+            opening_line,
+            value_proposition,
+            str(copilot.best_cta or "Would a short 15-minute call next week be useful?"),
+        ]
+        if _clean_text(item)
+    ).strip()
 
     payload = {
         "generated_at": datetime.utcnow().isoformat(),
@@ -378,6 +411,8 @@ def build_ai_sales_workspace_analysis(
         "strongest_sales_arguments": strongest_arguments,
         "suggested_cta": str(copilot.best_cta or "Book a 15-minute discovery call"),
         "recommended_next_action": str(copilot.next_best_action or "Review fit and send first personalized email."),
+        "recommended_first_message": recommended_first_message,
+        "best_timing_to_contact": best_timing_to_contact,
         "decision_maker": {
             "name": top_contact.name if top_contact else "",
             "title": top_contact.title if top_contact else "",
@@ -425,4 +460,6 @@ def read_cached_analysis(metadata_json: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("best_communication_channel", "")
     payload.setdefault("personalization_variables", [])
     payload.setdefault("predicted_objections", [])
+    payload.setdefault("recommended_first_message", payload.get("personalized_opening_line", ""))
+    payload.setdefault("best_timing_to_contact", "")
     return payload

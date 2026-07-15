@@ -2035,8 +2035,8 @@ function OpportunityCard({
       <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("AI Sales Workspace")}</p>
-            <h3 className="mt-1 text-lg font-black text-ink">{t("Evidence-backed sales analysis")}</h3>
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("AI Sales Intelligence")}</p>
+            <h3 className="mt-1 text-lg font-black text-ink">{t("Evidence-backed targeting intelligence")}</h3>
           </div>
           <div className="flex flex-wrap gap-2">
             <SecondaryButton type="button" onClick={() => runSalesAnalysis(false)} disabled={salesAnalysisLoading}>
@@ -2083,6 +2083,7 @@ function OpportunityCard({
               {[
                 ["ICP fit", `${String(salesAnalysis.icp_fit_score ?? salesAnalysis.ai_lead_score ?? salesAnalysis.opportunity_score ?? 0)}%`],
                 ["Buying probability", `${String(salesAnalysis.buying_probability ?? salesAnalysis.buying_intent_score ?? 0)}%`],
+                ["Confidence", `${String(salesAnalysis.confidence_score ?? 0)}%`],
                 ["Company stage", String(salesAnalysis.company_stage || unavailable)],
                 ["Best channel", String(salesAnalysis.best_communication_channel || unavailable)]
               ].map(([label, value]) => (
@@ -2113,6 +2114,10 @@ function OpportunityCard({
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Best outreach angle")}</p>
                 <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.best_outreach_angle || salesAnalysis.outreach_angle || unavailable))}</p>
               </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Best timing to contact")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.best_timing_to_contact || unavailable))}</p>
+              </div>
             </div>
             <div className="mt-4 grid gap-3 lg:grid-cols-2">
               <div className="rounded-xl bg-slate-50 p-3">
@@ -2126,6 +2131,10 @@ function OpportunityCard({
               <div className="rounded-xl bg-slate-50 p-3">
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Personalized opening line")}</p>
                 <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{t(String(salesAnalysis.personalized_opening_line || unavailable))}</p>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Recommended first message")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-800 whitespace-pre-wrap">{t(String(salesAnalysis.recommended_first_message || salesAnalysis.personalized_opening_line || unavailable))}</p>
               </div>
               <div className="rounded-xl bg-slate-50 p-3">
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Suggested CTA")}</p>
@@ -2150,6 +2159,7 @@ function OpportunityCard({
             ) : null}
             <div className="mt-4 grid gap-3 lg:grid-cols-3">
               {[
+                ["Buying signals", salesAnalysis.buying_signals],
                 ["Pain points", Array.isArray(salesAnalysis.pain_points) ? salesAnalysis.pain_points : salesAnalysis.likely_business_pains],
                 ["Personalization variables", salesAnalysis.personalization_variables],
                 ["Predicted objections", salesAnalysis.predicted_objections]
@@ -2168,6 +2178,16 @@ function OpportunityCard({
                 </div>
               ))}
             </div>
+            {Array.isArray(salesAnalysis.reasoning) && salesAnalysis.reasoning.length ? (
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Reasoning")}</p>
+                <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                  {salesAnalysis.reasoning.slice(0, 5).map((item, index) => (
+                    <li key={`reasoning-${index}`} className="rounded-lg bg-slate-50 px-3 py-2">{t(String(item || ""))}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {Array.isArray(salesAnalysis.strongest_sales_arguments) && salesAnalysis.strongest_sales_arguments.length ? (
               <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
                 <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("3 strongest sales arguments")}</p>

@@ -866,6 +866,8 @@ export type CrmCompany = {
     personalization_variables?: string[];
     predicted_objections?: string[];
     personalized_opening_line?: string;
+    recommended_first_message?: string;
+    best_timing_to_contact?: string;
     strongest_sales_arguments?: string[];
     suggested_cta?: string;
     recommended_next_action?: string;
