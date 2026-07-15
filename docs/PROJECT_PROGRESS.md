@@ -1,5 +1,56 @@
 # Project Progress
 
+# Project Progress
+
+## 2026-07-15 - Phase 5 (Autonomous AI SDR) Workflow and Copilot Controls
+
+### Scope Completed
+- Created `phase5` branch from `phase4` and implemented all Phase 5 changes only on that branch.
+- Extended AI sales workspace payload generation to include structured recommendation actions, AI Copilot panel metadata, and recommendation audit history.
+- Added a new recommendation action API endpoint (`approve`, `edit`, `regenerate`) that updates individual recommendations, stamps a new version, preserves snapshot/history compatibility, and writes audit activity.
+- Added interactive AI Copilot controls in the company workspace so each core recommendation can be approved, edited, or regenerated in place:
+  - best decision maker
+  - personalized first message
+  - follow-up sequence
+  - best outreach channel
+  - reply probability
+  - deal success probability
+  - priority score
+  - next best action
+- Preserved and reused prior-phase mechanisms for cached reads, regeneration, version history, metadata fallback, and audit logging.
+- Extended frontend mock API and focused e2e regression to cover the new AI Copilot controls in the company workspace route.
+- Added backend regression coverage for recommendation action versioning and audit-log behavior.
+
+### Validation Status
+- Backend AI sales analysis test slice: passed (`python3 -m pytest -q tests/test_api.py -k "ai_sales_analysis"` in `apps/api`).
+- Focused backend recommendation tests: passed (`python3 -m pytest -q tests/test_api.py -k "ai_sales_analysis_recommendation_actions_are_versioned_and_audited or ai_sales_analysis_force_regeneration_updates_snapshot_and_avoids_duplicates"` in `apps/api`).
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend unit tests: passed (`npm test -- --run` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+- Focused Playwright regression: passed (`npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` in `apps/web`).
+
+### Notes
+- Phase 5 implementation keeps previous versioning and metadata history semantics intact by using the same snapshot and cache pathways.
+- Recommendation-level user operations now produce auditable, versioned analysis updates without changing existing send/approval safety gates.
+
+## 2026-07-15 - Phase 4 (Recommendation Engine) Company-Page Expansion
+
+### Scope Completed
+- Added a dedicated AI Recommendations panel on the Company page that surfaces actionable sales guidance from the existing AI sales analysis payload.
+- Exposed buying intent, reply probability, lead priority, ICP fit, recommended decision maker, best outreach channel, best contact timing, top buying signals, top risks/objections, personalized opening message, personalized follow-up sequence, recommended next action, and confidence explanation in a single visual surface.
+- Preserved version history, regeneration, and cached analysis compatibility by reading the new panel from the existing versioned analysis engine.
+- Added a focused Playwright regression and mock analysis fixture to prove the panel renders and version switching still works.
+
+### Validation Status
+- Focused Playwright regression: passed (`tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history"`).
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend tests: passed (`npm test -- --run` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+
+### Notes
+- The recommendation layer is derived from the existing AI sales analysis payload, so background refreshes and cached version history remain unchanged.
+- The new UI intentionally keeps the recommendation summary separate from the detailed analysis cards so the next action is visible in seconds.
+
 ## 2026-07-15 - Phase 3 (v1.2) AI Sales Copilot Auto-Refresh
 
 ### Scope Completed

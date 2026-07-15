@@ -131,6 +131,13 @@ type WorkspaceAiSalesAnalysisResponse = {
   available_versions?: WorkspaceAiSalesAnalysisVersion[];
 };
 
+type WorkspaceAiSalesRecommendationActionIn = {
+  key: "decision_maker" | "first_message" | "follow_up_sequence" | "best_channel" | "reply_probability" | "deal_success_probability" | "priority_score" | "next_best_action";
+  action: "approve" | "edit" | "regenerate";
+  value?: unknown;
+  reason?: string;
+};
+
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
 
 type WorkspaceIntegrationStatus = {
@@ -1583,6 +1590,10 @@ function OpportunityCard({
   const [salesAnalysisVersions, setSalesAnalysisVersions] = useState<WorkspaceAiSalesAnalysisVersion[]>([]);
   const [salesAnalysisRequestedVersion, setSalesAnalysisRequestedVersion] = useState<number | null>(null);
   const [salesAnalysisLatestVersion, setSalesAnalysisLatestVersion] = useState<number | null>(null);
+  const [salesRecommendationBusyKey, setSalesRecommendationBusyKey] = useState("");
+  const [salesRecommendationEditKey, setSalesRecommendationEditKey] = useState("");
+  const [salesRecommendationEditValue, setSalesRecommendationEditValue] = useState("");
+  const [salesRecommendationEditReason, setSalesRecommendationEditReason] = useState("");
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
@@ -1726,6 +1737,62 @@ function OpportunityCard({
     }
   }
 
+  async function updateSalesRecommendation(payload: WorkspaceAiSalesRecommendationActionIn) {
+    if (!companyId) return;
+    const busyKey = `${payload.key}:${payload.action}`;
+    setSalesRecommendationBusyKey(busyKey);
+    setSalesAnalysisError("");
+    setError("");
+    setStatus(t("Updating AI recommendation..."));
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis/recommendations`, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }),
+        20000,
+        "AI recommendation could not be updated."
+      );
+      applySalesAnalysisResult(result);
+      setStatus(t(result.message || "AI recommendation updated."));
+      setSalesRecommendationEditKey("");
+      setSalesRecommendationEditValue("");
+      setSalesRecommendationEditReason("");
+    } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = friendlyErrorMessage(err, "AI recommendation could not be updated.");
+      setError(t(reason));
+      setSalesAnalysisError(t(reason));
+      setStatus("");
+    } finally {
+      setSalesRecommendationBusyKey("");
+    }
+  }
+
+  function recommendationValueToText(value: unknown): string {
+    if (Array.isArray(value)) return value.map((item) => String(item || "")).filter(Boolean).join("\n");
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      return [String(record.name || ""), String(record.title || record.recommended_role || ""), String(record.email || "")]
+        .filter(Boolean)
+        .join(" | ");
+    }
+    return String(value || "");
+  }
+
+  function recommendationTextToValue(key: WorkspaceAiSalesRecommendationActionIn["key"], value: string): unknown {
+    const raw = value.trim();
+    if (key === "follow_up_sequence") return raw ? raw.split("\n").map((item) => item.trim()).filter(Boolean) : [];
+    if (key === "reply_probability" || key === "deal_success_probability" || key === "priority_score") {
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : 0;
+    }
+    return raw;
+  }
+
   const salesAnalysisUiState = salesAnalysisLoading
     ? t("Generating")
     : salesAnalysis
@@ -1733,6 +1800,44 @@ function OpportunityCard({
       : salesAnalysisError
         ? t("Failed")
         : t("Not generated");
+
+  const salesRecommendationPriorityScore = salesAnalysis?.lead_priority_score ?? salesAnalysis?.ai_lead_score ?? salesAnalysis?.opportunity_score ?? 0;
+  const salesRecommendationPriorityTier = salesAnalysis?.lead_priority_tier || (salesRecommendationPriorityScore >= 75 ? "Hot" : salesRecommendationPriorityScore >= 45 ? "Warm" : "Cold");
+  const salesRecommendationPriorityTone = salesRecommendationPriorityTier === "Hot"
+    ? "bg-rose-500/15 text-rose-200 ring-1 ring-inset ring-rose-400/40"
+    : salesRecommendationPriorityTier === "Warm"
+      ? "bg-amber-500/15 text-amber-100 ring-1 ring-inset ring-amber-400/40"
+      : "bg-sky-500/15 text-sky-100 ring-1 ring-inset ring-sky-400/40";
+  const salesRecommendationBuyingIntent = salesAnalysis?.buying_probability ?? salesAnalysis?.buying_intent_score ?? 0;
+  const salesRecommendationReplyProbability = salesAnalysis?.estimated_reply_probability ?? 0;
+  const salesRecommendationConfidence = salesAnalysis?.confidence_score ?? 0;
+  const salesRecommendationIcPFit = salesAnalysis?.icp_fit_score ?? salesAnalysis?.ai_lead_score ?? salesAnalysis?.opportunity_score ?? 0;
+  const salesRecommendationDecisionMaker = salesAnalysis?.decision_maker?.title || salesAnalysis?.recommended_decision_maker_role || unavailable;
+  const salesRecommendationDecisionMakerName = salesAnalysis?.decision_maker?.name || salesAnalysis?.recommended_decision_maker_role || unavailable;
+  const salesRecommendationSignals = (salesAnalysis?.buying_signals || []).slice(0, 4);
+  const salesRecommendationRisks = ((salesAnalysis?.predicted_objections && salesAnalysis.predicted_objections.length ? salesAnalysis.predicted_objections : salesAnalysis?.why_may_not_fit) || []).slice(0, 4);
+  const salesRecommendationFollowUps = (salesAnalysis?.personalized_follow_up_sequence || []).slice(0, 4);
+  const salesRecommendationConfidenceExplanation = salesAnalysis?.score_explanation || (salesAnalysis?.reasoning || [])[0] || salesAnalysis?.summary || unavailable;
+  const salesRecommendationOpeningMessage = salesAnalysis?.recommended_first_message || salesAnalysis?.personalized_opening_line || salesAnalysis?.best_outreach_angle || unavailable;
+  const salesRecommendationNextAction = salesAnalysis?.recommended_next_action || salesAnalysis?.next_action || unavailable;
+  const salesRecommendationBestChannel = salesAnalysis?.best_communication_channel || unavailable;
+  const salesRecommendationBestTiming = salesAnalysis?.best_timing_to_contact || unavailable;
+  const salesRecommendationActions: Record<string, any> = salesAnalysis?.recommendation_actions && typeof salesAnalysis.recommendation_actions === "object"
+    ? salesAnalysis.recommendation_actions
+    : {};
+  const salesCopilotPanel: Record<string, any> = salesAnalysis?.ai_copilot_panel && typeof salesAnalysis.ai_copilot_panel === "object"
+    ? salesAnalysis.ai_copilot_panel
+    : {};
+  const salesRecommendationRows: Array<{ key: WorkspaceAiSalesRecommendationActionIn["key"]; label: string; value: unknown; helper: string }> = [
+    { key: "decision_maker", label: "Best decision maker", value: salesRecommendationActions.decision_maker?.value ?? salesRecommendationDecisionMaker, helper: "Who should receive the first outreach" },
+    { key: "first_message", label: "Personalized first message", value: salesRecommendationActions.first_message?.value ?? salesRecommendationOpeningMessage, helper: "Opening line adapted to this company" },
+    { key: "follow_up_sequence", label: "Follow-up sequence", value: salesRecommendationActions.follow_up_sequence?.value ?? salesRecommendationFollowUps, helper: "Multi-step cadence after first touch" },
+    { key: "best_channel", label: "Best outreach channel", value: salesRecommendationActions.best_channel?.value ?? salesRecommendationBestChannel, helper: "Channel with strongest expected response" },
+    { key: "reply_probability", label: "Reply probability", value: salesRecommendationActions.reply_probability?.value ?? salesRecommendationReplyProbability, helper: "Estimated chance of getting a response" },
+    { key: "deal_success_probability", label: "Deal success probability", value: salesRecommendationActions.deal_success_probability?.value ?? salesRecommendationBuyingIntent, helper: "Estimated chance to move to deal progress" },
+    { key: "priority_score", label: "Priority score", value: salesRecommendationActions.priority_score?.value ?? salesRecommendationPriorityScore, helper: "Priority for execution order" },
+    { key: "next_best_action", label: "Next best action", value: salesRecommendationActions.next_best_action?.value ?? salesRecommendationNextAction, helper: "Safest immediate step to take" },
+  ];
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
@@ -2099,6 +2204,227 @@ function OpportunityCard({
                 ) : null}
               </div>
             ) : null}
+            <div className="mt-4 rounded-[1.5rem] border border-slate-900/10 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-4 text-white shadow-[0_24px_70px_rgba(15,23,42,0.28)]">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">{t("AI Recommendations")}</p>
+                  <h4 className="mt-1 text-xl font-black text-white">{t("What to do next with this company")}</h4>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">{t(String(salesRecommendationConfidenceExplanation))}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${salesRecommendationPriorityTone}`}>{t(salesRecommendationPriorityTier)}</span>
+                  <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-black text-white">{t("Confidence")}: {salesRecommendationConfidence}%</span>
+                  <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-black text-white">{t("ICP fit")}: {salesRecommendationIcPFit}%</span>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {[
+                  { label: "Buying intent", value: `${String(salesRecommendationBuyingIntent)}%`, icon: Target, note: salesAnalysis?.company_stage || unavailable },
+                  { label: "Reply probability", value: `${String(salesRecommendationReplyProbability)}%`, icon: MessageSquare, note: salesRecommendationBestChannel },
+                  { label: "Lead priority", value: salesAnalysis?.lead_priority_tier ? `${String(salesAnalysis.lead_priority_tier)} · ${String(salesAnalysis.lead_priority_score ?? salesRecommendationPriorityScore)}%` : `${String(salesRecommendationPriorityScore)}%`, icon: Rocket, note: salesRecommendationNextAction },
+                  { label: "Recommended buyer", value: salesRecommendationDecisionMaker, icon: UserRound, note: salesRecommendationDecisionMakerName }
+                ].map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <article key={item.label} className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
+                          <p className="mt-2 text-2xl font-black text-white">{t(item.value)}</p>
+                        </div>
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white">
+                          <Icon size={18} />
+                        </span>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-slate-300">{t(String(item.note || unavailable))}</p>
+                    </article>
+                  );
+                })}
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {[
+                  { label: "Best outreach channel", value: salesRecommendationBestChannel, icon: Send },
+                  { label: "Best contact timing", value: salesRecommendationBestTiming, icon: Clock3 },
+                  { label: "Recommended next action", value: salesRecommendationNextAction, icon: CheckCircle2 },
+                  { label: "Confidence explanation", value: salesRecommendationConfidenceExplanation, icon: ShieldCheck }
+                ].map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <article key={item.label} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                      <div className="flex items-center gap-3">
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white">
+                          <Icon size={18} />
+                        </span>
+                        <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
+                      </div>
+                      <p className="mt-3 text-sm font-semibold leading-6 text-white">{t(String(item.value || unavailable))}</p>
+                    </article>
+                  );
+                })}
+              </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <Target className="text-emerald-300" size={18} />
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Top buying signals")}</p>
+                  </div>
+                  {salesRecommendationSignals.length ? (
+                    <ul className="mt-3 space-y-2 text-sm text-slate-100">
+                      {salesRecommendationSignals.map((item, index) => (
+                        <li key={`recommendation-signal-${index}`} className="rounded-xl bg-white/5 px-3 py-2 ring-1 ring-white/10">{t(String(item))}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-sm text-slate-300">{t(unavailable)}</p>
+                  )}
+                </article>
+                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="text-amber-300" size={18} />
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Top risks or objections")}</p>
+                  </div>
+                  {salesRecommendationRisks.length ? (
+                    <ul className="mt-3 space-y-2 text-sm text-slate-100">
+                      {salesRecommendationRisks.map((item, index) => (
+                        <li key={`recommendation-risk-${index}`} className="rounded-xl bg-white/5 px-3 py-2 ring-1 ring-white/10">{t(String(item))}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-sm text-slate-300">{t(unavailable)}</p>
+                  )}
+                </article>
+              </div>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="text-cyan-300" size={18} />
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Personalized opening message")}</p>
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-slate-100">{t(String(salesRecommendationOpeningMessage))}</p>
+                </article>
+                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <CalendarDays className="text-violet-300" size={18} />
+                    <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Personalized follow-up sequence")}</p>
+                  </div>
+                  {salesRecommendationFollowUps.length ? (
+                    <ol className="mt-3 space-y-2 text-sm text-slate-100">
+                      {salesRecommendationFollowUps.map((item, index) => (
+                        <li key={`recommendation-follow-up-${index}`} className="rounded-xl bg-white/5 px-3 py-2 ring-1 ring-white/10">
+                          <span className="font-black text-white">{index + 1}.</span> {t(String(item))}
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-sm text-slate-300">{t(unavailable)}</p>
+                  )}
+                </article>
+              </div>
+              <div className="mt-4 rounded-2xl border border-white/15 bg-slate-950/45 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wide text-cyan-200">{t("AI Copilot")}</p>
+                    <p className="mt-1 text-sm text-slate-200">{t(String(salesCopilotPanel.summary || "Every recommendation below includes confidence, reasoning, and evidence."))}</p>
+                  </div>
+                  <span className="inline-flex items-center rounded-full bg-cyan-500/20 px-3 py-1 text-xs font-black text-cyan-100">{t("Confidence")}: {Number(salesCopilotPanel.confidence || salesRecommendationConfidence)}%</span>
+                </div>
+                <div className="mt-4 grid gap-3">
+                  {salesRecommendationRows.map((item) => {
+                    const rowState = salesRecommendationActions[item.key] && typeof salesRecommendationActions[item.key] === "object"
+                      ? salesRecommendationActions[item.key]
+                      : {};
+                    const rowValue = rowState.value ?? item.value;
+                    const rowReasoning = String(rowState.reasoning || salesRecommendationConfidenceExplanation || "");
+                    const rowConfidence = Number(rowState.confidence || salesRecommendationConfidence || 0);
+                    const isEditing = salesRecommendationEditKey === item.key;
+                    return (
+                      <article key={`recommendation-action-${item.key}`} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
+                            <p className="mt-2 text-sm font-semibold text-white whitespace-pre-wrap">{t(recommendationValueToText(rowValue) || unavailable)}</p>
+                            <p className="mt-2 text-xs text-slate-300">{t(item.helper)}</p>
+                            <p className="mt-1 text-xs text-slate-300">{t("Reasoning")}: {t(rowReasoning || unavailable)}</p>
+                            <p className="mt-1 text-xs font-bold text-cyan-100">{t("Confidence")}: {rowConfidence}%</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void updateSalesRecommendation({ key: item.key, action: "approve" })}
+                              disabled={salesAnalysisLoading || salesRecommendationBusyKey !== ""}
+                              className="inline-flex min-h-10 items-center justify-center rounded-md border border-emerald-300/40 bg-emerald-500/20 px-3 text-xs font-black text-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {salesRecommendationBusyKey === `${item.key}:approve` ? <Loader2 className="animate-spin" size={14} /> : null} {t("Approve")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSalesRecommendationEditKey(item.key);
+                                setSalesRecommendationEditValue(recommendationValueToText(rowValue));
+                                setSalesRecommendationEditReason("");
+                              }}
+                              disabled={salesAnalysisLoading || salesRecommendationBusyKey !== ""}
+                              className="inline-flex min-h-10 items-center justify-center rounded-md border border-amber-300/40 bg-amber-500/20 px-3 text-xs font-black text-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {t("Edit")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void updateSalesRecommendation({ key: item.key, action: "regenerate" })}
+                              disabled={salesAnalysisLoading || salesRecommendationBusyKey !== ""}
+                              className="inline-flex min-h-10 items-center justify-center rounded-md border border-sky-300/40 bg-sky-500/20 px-3 text-xs font-black text-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {salesRecommendationBusyKey === `${item.key}:regenerate` ? <Loader2 className="animate-spin" size={14} /> : null} {t("Regenerate")}
+                            </button>
+                          </div>
+                        </div>
+                        {isEditing ? (
+                          <div className="mt-3 grid gap-2">
+                            <textarea
+                              value={salesRecommendationEditValue}
+                              onChange={(event) => setSalesRecommendationEditValue(event.target.value)}
+                              className="min-h-24 w-full rounded-md border border-white/20 bg-slate-900/70 p-2 text-sm text-white"
+                            />
+                            <input
+                              value={salesRecommendationEditReason}
+                              onChange={(event) => setSalesRecommendationEditReason(event.target.value)}
+                              placeholder={t("Why was this edit made?")}
+                              className="min-h-10 w-full rounded-md border border-white/20 bg-slate-900/70 px-3 text-sm text-white placeholder:text-slate-400"
+                            />
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void updateSalesRecommendation({
+                                  key: item.key,
+                                  action: "edit",
+                                  value: recommendationTextToValue(item.key, salesRecommendationEditValue),
+                                  reason: salesRecommendationEditReason,
+                                })}
+                                disabled={salesAnalysisLoading || salesRecommendationBusyKey !== ""}
+                                className="inline-flex min-h-10 items-center justify-center rounded-md bg-white px-3 text-xs font-black text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {salesRecommendationBusyKey === `${item.key}:edit` ? <Loader2 className="animate-spin" size={14} /> : null} {t("Save edit")}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSalesRecommendationEditKey("");
+                                  setSalesRecommendationEditValue("");
+                                  setSalesRecommendationEditReason("");
+                                }}
+                                className="inline-flex min-h-10 items-center justify-center rounded-md border border-white/20 px-3 text-xs font-black text-slate-200"
+                              >
+                                {t("Cancel")}
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {[
                 ["ICP fit", `${String(salesAnalysis.icp_fit_score ?? salesAnalysis.ai_lead_score ?? salesAnalysis.opportunity_score ?? 0)}%`],

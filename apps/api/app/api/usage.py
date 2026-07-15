@@ -219,6 +219,22 @@ class UsageAISalesAnalysisIn(BaseModel):
     force: bool = False
 
 
+class UsageAISalesRecommendationActionIn(BaseModel):
+    key: Literal[
+        "decision_maker",
+        "first_message",
+        "follow_up_sequence",
+        "best_channel",
+        "reply_probability",
+        "deal_success_probability",
+        "priority_score",
+        "next_best_action",
+    ]
+    action: Literal["approve", "edit", "regenerate"]
+    value: Any = None
+    reason: str = ""
+
+
 class UsageAISalesAnalysisVersionOut(BaseModel):
     version: int = 1
     generated_at: Optional[str] = None
@@ -6480,6 +6496,189 @@ def _analysis_content_key(analysis_payload: dict[str, Any]) -> dict[str, Any]:
     return comparable
 
 
+def _analysis_recommendation_defaults(analysis: dict[str, Any]) -> dict[str, Any]:
+    decision_maker = analysis.get("decision_maker") if isinstance(analysis.get("decision_maker"), dict) else {}
+    confidence = max(1, min(100, int(analysis.get("confidence_score") or 70)))
+    reasoning = ""
+    if isinstance(analysis.get("reasoning"), list) and analysis.get("reasoning"):
+        reasoning = str(analysis.get("reasoning")[0] or "")
+    if not reasoning:
+        reasoning = str(analysis.get("score_explanation") or "")
+    evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), list) else []
+
+    def _entry(label: str, value: Any) -> dict[str, Any]:
+        return {
+            "label": label,
+            "value": value,
+            "approved": False,
+            "edited": False,
+            "regenerated": False,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "evidence": [item for item in evidence if isinstance(item, dict)][:3],
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+    return {
+        "decision_maker": _entry(
+            "Best decision maker",
+            {
+                "name": str(decision_maker.get("name") or ""),
+                "title": str(decision_maker.get("title") or ""),
+                "email": str(decision_maker.get("email") or ""),
+                "recommended_role": str(analysis.get("recommended_decision_maker_role") or ""),
+            },
+        ),
+        "first_message": _entry("Personalized first message", str(analysis.get("recommended_first_message") or analysis.get("personalized_opening_line") or "")),
+        "follow_up_sequence": _entry("Follow-up sequence", analysis.get("personalized_follow_up_sequence") if isinstance(analysis.get("personalized_follow_up_sequence"), list) else []),
+        "best_channel": _entry("Best outreach channel", str(analysis.get("best_communication_channel") or "")),
+        "reply_probability": _entry("Reply probability", max(0, min(100, int(analysis.get("estimated_reply_probability") or 0)))),
+        "deal_success_probability": _entry("Deal success probability", max(0, min(100, int(analysis.get("buying_probability") or 0)))),
+        "priority_score": _entry("Priority score", max(0, min(100, int(analysis.get("lead_priority_score") or 0)))),
+        "next_best_action": _entry("Next best action", str(analysis.get("recommended_next_action") or analysis.get("next_action") or "")),
+    }
+
+
+def _ensure_analysis_recommendation_structures(analysis: dict[str, Any]) -> dict[str, Any]:
+    normalized = read_cached_analysis({"ai_sales_workspace": analysis})
+    recommendation_actions = normalized.get("recommendation_actions") if isinstance(normalized.get("recommendation_actions"), dict) else {}
+    defaults = _analysis_recommendation_defaults(normalized)
+    merged_actions: dict[str, Any] = {}
+    for key, value in defaults.items():
+        existing = recommendation_actions.get(key)
+        merged_actions[key] = {**value, **existing} if isinstance(existing, dict) else value
+    normalized["recommendation_actions"] = merged_actions
+
+    copilot = normalized.get("ai_copilot_panel") if isinstance(normalized.get("ai_copilot_panel"), dict) else {}
+    recommendations = []
+    for key, item in merged_actions.items():
+        if not isinstance(item, dict):
+            continue
+        recommendations.append(
+            {
+                "key": key,
+                "label": str(item.get("label") or key.replace("_", " ").title()),
+                "confidence": max(1, min(100, int(item.get("confidence") or normalized.get("confidence_score") or 70))),
+                "reasoning": str(item.get("reasoning") or normalized.get("score_explanation") or ""),
+                "value": item.get("value"),
+                "evidence": item.get("evidence") if isinstance(item.get("evidence"), list) else [],
+            }
+        )
+
+    normalized["ai_copilot_panel"] = {
+        **copilot,
+        "generated_at": str(copilot.get("generated_at") or datetime.utcnow().isoformat()),
+        "summary": str(copilot.get("summary") or normalized.get("summary") or normalized.get("company_summary") or ""),
+        "confidence": max(1, min(100, int(copilot.get("confidence") or normalized.get("confidence_score") or 70))),
+        "reasoning": copilot.get("reasoning") if isinstance(copilot.get("reasoning"), list) else (normalized.get("reasoning") if isinstance(normalized.get("reasoning"), list) else []),
+        "recommendations": recommendations,
+        "evidence": copilot.get("evidence") if isinstance(copilot.get("evidence"), list) else (normalized.get("evidence") if isinstance(normalized.get("evidence"), list) else []),
+        "policy": str(copilot.get("policy") or "Every recommendation is evidence-backed, confidence-scored, editable, and auditable."),
+    }
+    normalized["recommendation_audit_log"] = normalized.get("recommendation_audit_log") if isinstance(normalized.get("recommendation_audit_log"), list) else []
+    return normalized
+
+
+def _apply_recommendation_action(
+    analysis: dict[str, Any],
+    *,
+    key: str,
+    action: str,
+    value: Any,
+    reason: str,
+    actor: str,
+) -> dict[str, Any]:
+    updated = _ensure_analysis_recommendation_structures(analysis)
+    actions = updated.get("recommendation_actions") if isinstance(updated.get("recommendation_actions"), dict) else {}
+    if key not in actions or not isinstance(actions.get(key), dict):
+        raise HTTPException(status_code=400, detail="Unsupported recommendation key.")
+
+    now = datetime.utcnow().isoformat()
+    entry = dict(actions[key])
+    current_value = entry.get("value")
+
+    if action == "edit":
+        if value in (None, ""):
+            raise HTTPException(status_code=400, detail="Edited value is required.")
+        next_value = value
+    elif action == "regenerate":
+        if isinstance(current_value, list):
+            next_value = current_value
+        elif isinstance(current_value, dict):
+            next_value = current_value
+        elif isinstance(current_value, (int, float)):
+            next_value = max(0, min(100, int(current_value)))
+        else:
+            text = str(current_value or "").strip()
+            next_value = text if text else str(updated.get("recommended_next_action") or updated.get("next_action") or "")
+        entry["regenerated"] = True
+    elif action == "approve":
+        next_value = current_value
+        entry["approved"] = True
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported recommendation action.")
+
+    entry["value"] = next_value
+    if action == "edit":
+        entry["edited"] = True
+    if reason.strip():
+        entry["reasoning"] = reason.strip()
+    entry["updated_at"] = now
+    actions[key] = entry
+    updated["recommendation_actions"] = actions
+
+    if key == "decision_maker":
+        if isinstance(next_value, dict):
+            updated["decision_maker"] = {
+                "name": str(next_value.get("name") or updated.get("decision_maker", {}).get("name") if isinstance(updated.get("decision_maker"), dict) else ""),
+                "title": str(next_value.get("title") or updated.get("decision_maker", {}).get("title") if isinstance(updated.get("decision_maker"), dict) else ""),
+                "email": str(next_value.get("email") or updated.get("decision_maker", {}).get("email") if isinstance(updated.get("decision_maker"), dict) else ""),
+            }
+            updated["recommended_decision_maker_role"] = str(next_value.get("recommended_role") or next_value.get("title") or updated.get("recommended_decision_maker_role") or "")
+        else:
+            updated["recommended_decision_maker_role"] = str(next_value or updated.get("recommended_decision_maker_role") or "")
+    elif key == "first_message":
+        updated["recommended_first_message"] = str(next_value or "")
+    elif key == "follow_up_sequence":
+        updated["personalized_follow_up_sequence"] = next_value if isinstance(next_value, list) else ([str(next_value)] if str(next_value).strip() else [])
+    elif key == "best_channel":
+        updated["best_communication_channel"] = str(next_value or "")
+    elif key == "reply_probability":
+        updated["estimated_reply_probability"] = max(0, min(100, int(next_value or 0)))
+    elif key == "deal_success_probability":
+        updated["buying_probability"] = max(0, min(100, int(next_value or 0)))
+    elif key == "priority_score":
+        updated["lead_priority_score"] = max(0, min(100, int(next_value or 0)))
+        updated["lead_priority_tier"] = "Hot" if updated["lead_priority_score"] >= 75 else ("Warm" if updated["lead_priority_score"] >= 45 else "Cold")
+    elif key == "next_best_action":
+        updated["recommended_next_action"] = str(next_value or "")
+        updated["next_action"] = str(next_value or "")
+
+    audit_log = updated.get("recommendation_audit_log") if isinstance(updated.get("recommendation_audit_log"), list) else []
+    audit_log.append(
+        {
+            "event": f"recommendation_{action}",
+            "key": key,
+            "actor": actor,
+            "at": now,
+            "reason": reason.strip(),
+            "value_preview": str(next_value)[:280],
+        }
+    )
+    updated["recommendation_audit_log"] = audit_log[-50:]
+
+    copilot = updated.get("ai_copilot_panel") if isinstance(updated.get("ai_copilot_panel"), dict) else {}
+    copilot["generated_at"] = now
+    copilot["last_action"] = {
+        "key": key,
+        "action": action,
+        "at": now,
+        "actor": actor,
+    }
+    updated["ai_copilot_panel"] = copilot
+    return updated
+
+
 def _refresh_cached_ai_sales_workspace_analysis(
     db: Session,
     *,
@@ -7226,6 +7425,100 @@ def generate_ai_sales_analysis(
         cached=False,
         requested_version=_version_from_analysis(analysis),
         latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
+        available_versions=available_versions,
+    )
+
+
+@router.post("/companies/{company_id}/ai-sales-analysis/recommendations", response_model=UsageAISalesAnalysisOut)
+def update_ai_sales_recommendation(
+    company_id: UUID,
+    payload: UsageAISalesRecommendationActionIn,
+    request: Request,
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+) -> UsageAISalesAnalysisOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+
+    snapshot = _latest_ai_sales_snapshot(db, workspace.id, company.id)
+    latest_snapshot_analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) else {}
+    cached = _cached_ai_sales_analysis_from_company(company)
+    previous_analysis = latest_snapshot_analysis if latest_snapshot_analysis else cached
+    if not previous_analysis:
+        available_versions = _available_ai_sales_versions(db, workspace.id, company)
+        return UsageAISalesAnalysisOut(
+            status="empty",
+            message="No AI sales analysis generated yet.",
+            company_id=company.id,
+            analysis={},
+            generated_at=None,
+            cached=False,
+            requested_version=None,
+            latest_version=available_versions[0].version if available_versions else None,
+            available_versions=available_versions,
+        )
+
+    updated = _apply_recommendation_action(
+        previous_analysis,
+        key=payload.key,
+        action=payload.action,
+        value=payload.value,
+        reason=payload.reason,
+        actor=user.user_id,
+    )
+    stamped = _stamp_analysis_payload(updated, force=True, previous_analysis=previous_analysis)
+
+    _save_ai_sales_analysis_snapshot(
+        db,
+        workspace_id=workspace.id,
+        user_id=user.user_id,
+        company=company,
+        analysis_payload=stamped,
+    )
+    _store_ai_sales_analysis_metadata(company, stamped)
+
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+    if lead:
+        _add_lead_activity(
+            db,
+            request,
+            user.user_id,
+            workspace,
+            "ai.sales_workspace.recommendation_updated",
+            lead,
+            {
+                "company_id": str(company.id),
+                "recommendation_key": payload.key,
+                "recommendation_action": payload.action,
+                "version": stamped.get("version", 1),
+            },
+        )
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="ai.sales_workspace.recommendation_updated",
+            metadata_json={
+                "company_id": str(company.id),
+                "recommendation_key": payload.key,
+                "recommendation_action": payload.action,
+                "reason": payload.reason,
+                "version": stamped.get("version", 1),
+            },
+        )
+    )
+    db.commit()
+
+    available_versions = _available_ai_sales_versions(db, workspace.id, company)
+    return UsageAISalesAnalysisOut(
+        status="success",
+        message="AI recommendation updated.",
+        company_id=company.id,
+        analysis=stamped,
+        generated_at=_analysis_visible_timestamp(stamped),
+        cached=False,
+        requested_version=_version_from_analysis(stamped),
+        latest_version=available_versions[0].version if available_versions else _version_from_analysis(stamped),
         available_versions=available_versions,
     )
 

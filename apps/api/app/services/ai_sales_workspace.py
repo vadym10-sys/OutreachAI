@@ -76,6 +76,9 @@ class AISalesWorkspaceAnalysisPayload(BaseModel):
     best_cta: str
     risk_to_check: str
     next_action: str
+    recommendation_actions: dict[str, Any] = Field(default_factory=dict)
+    ai_copilot_panel: dict[str, Any] = Field(default_factory=dict)
+    recommendation_audit_log: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _clean_text(value: Any) -> str:
@@ -331,6 +334,111 @@ def _build_evidence(
         seen.add(key)
         deduped.append(item)
     return deduped[:12]
+
+
+def _build_recommendation_actions(*, payload: dict[str, Any]) -> dict[str, Any]:
+    confidence = max(1, min(100, _safe_int(payload.get("confidence_score"), 70)))
+
+    def _entry(label: str, value: Any, reasoning: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "label": label,
+            "value": value,
+            "approved": False,
+            "edited": False,
+            "regenerated": False,
+            "confidence": confidence,
+            "reasoning": _clean_text(reasoning),
+            "evidence": evidence[:3],
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+    top_evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+    first_reason = _clean_text((payload.get("reasoning") or [""])[0] if isinstance(payload.get("reasoning"), list) else "")
+
+    return {
+        "decision_maker": _entry(
+            "Best decision maker",
+            {
+                "name": _clean_text(payload.get("decision_maker", {}).get("name") if isinstance(payload.get("decision_maker"), dict) else ""),
+                "title": _clean_text(payload.get("decision_maker", {}).get("title") if isinstance(payload.get("decision_maker"), dict) else ""),
+                "email": _clean_text(payload.get("decision_maker", {}).get("email") if isinstance(payload.get("decision_maker"), dict) else ""),
+                "recommended_role": _clean_text(payload.get("recommended_decision_maker_role")),
+            },
+            payload.get("score_explanation") or first_reason,
+            top_evidence,
+        ),
+        "first_message": _entry(
+            "Personalized first message",
+            _clean_text(payload.get("recommended_first_message") or payload.get("personalized_opening_line")),
+            payload.get("best_outreach_angle") or first_reason,
+            top_evidence,
+        ),
+        "follow_up_sequence": _entry(
+            "Follow-up sequence",
+            payload.get("personalized_follow_up_sequence") if isinstance(payload.get("personalized_follow_up_sequence"), list) else [],
+            payload.get("recommended_next_action") or first_reason,
+            top_evidence,
+        ),
+        "best_channel": _entry(
+            "Best outreach channel",
+            _clean_text(payload.get("best_communication_channel")),
+            payload.get("best_timing_to_contact") or first_reason,
+            top_evidence,
+        ),
+        "reply_probability": _entry(
+            "Reply probability",
+            max(0, min(100, _safe_int(payload.get("estimated_reply_probability"), 0))),
+            payload.get("score_explanation") or first_reason,
+            top_evidence,
+        ),
+        "deal_success_probability": _entry(
+            "Deal success probability",
+            max(0, min(100, _safe_int(payload.get("buying_probability"), 0))),
+            payload.get("score_explanation") or first_reason,
+            top_evidence,
+        ),
+        "priority_score": _entry(
+            "Priority score",
+            max(0, min(100, _safe_int(payload.get("lead_priority_score"), 0))),
+            payload.get("score_explanation") or first_reason,
+            top_evidence,
+        ),
+        "next_best_action": _entry(
+            "Next best action",
+            _clean_text(payload.get("recommended_next_action") or payload.get("next_action")),
+            payload.get("score_explanation") or first_reason,
+            top_evidence,
+        ),
+    }
+
+
+def _build_ai_copilot_panel(*, payload: dict[str, Any], recommendation_actions: dict[str, Any]) -> dict[str, Any]:
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+    reasoning = payload.get("reasoning") if isinstance(payload.get("reasoning"), list) else []
+    recommendations: list[dict[str, Any]] = []
+    for key, item in recommendation_actions.items():
+        if not isinstance(item, dict):
+            continue
+        recommendations.append(
+            {
+                "key": key,
+                "label": _clean_text(item.get("label")) or key.replace("_", " ").title(),
+                "confidence": max(1, min(100, _safe_int(item.get("confidence"), _safe_int(payload.get("confidence_score"), 70)))),
+                "reasoning": _clean_text(item.get("reasoning")) or _clean_text((reasoning[0] if reasoning else payload.get("score_explanation"))),
+                "value": item.get("value"),
+                "evidence": item.get("evidence") if isinstance(item.get("evidence"), list) else [],
+            }
+        )
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "summary": _clean_text(payload.get("summary") or payload.get("company_summary")),
+        "confidence": max(1, min(100, _safe_int(payload.get("confidence_score"), 70))),
+        "reasoning": [_clean_text(item) for item in reasoning if _clean_text(item)][:6],
+        "recommendations": recommendations,
+        "evidence": [item for item in evidence if isinstance(item, dict)][:12],
+        "policy": "Every recommendation is evidence-backed, confidence-scored, editable, and auditable.",
+    }
 
 
 def build_ai_sales_workspace_analysis(
@@ -599,6 +707,19 @@ def build_ai_sales_workspace_analysis(
         "next_action": str(revenue_engine_report.get("recommended_next_action") or copilot.next_best_action or "Review the contact profile and send a tailored intro email."),
     }
 
+    recommendation_actions = _build_recommendation_actions(payload=payload)
+    payload["recommendation_actions"] = recommendation_actions
+    payload["ai_copilot_panel"] = _build_ai_copilot_panel(payload=payload, recommendation_actions=recommendation_actions)
+    payload["recommendation_audit_log"] = [
+        {
+            "event": "generated",
+            "actor": "ai-system",
+            "at": datetime.utcnow().isoformat(),
+            "version": payload.get("version", 1),
+            "details": "Initial autonomous SDR recommendations generated.",
+        }
+    ]
+
     try:
         validated = AISalesWorkspaceAnalysisPayload.model_validate(payload)
     except ValidationError as exc:
@@ -635,4 +756,7 @@ def read_cached_analysis(metadata_json: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("personalized_follow_up_sequence", [])
     payload.setdefault("best_timing_to_contact", "")
     payload.setdefault("company_growth_indicators", [])
+    payload.setdefault("recommendation_actions", {})
+    payload.setdefault("ai_copilot_panel", {})
+    payload.setdefault("recommendation_audit_log", [])
     return payload

@@ -267,6 +267,33 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("company workspace shows AI recommendations and version history", async ({ page }, testInfo) => {
+    const guards = installQaGuards(page, testInfo);
+    await mockWorkspaceApi(page);
+
+    await page.goto("/dashboard/companies?company=44444444-4444-4444-4444-444444444444", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "What to do next with this company" })).toBeVisible();
+    await expect(page.getByText("AI Recommendations").first()).toBeVisible();
+    await expect(page.getByText("Top buying signals").first()).toBeVisible();
+    await expect(page.getByText("Top risks or objections").first()).toBeVisible();
+    await expect(page.getByText("Personalized follow-up sequence").first()).toBeVisible();
+    await expect(page.getByText("Quick idea for Hill Country Build Co").first()).toBeVisible();
+    await expect(page.getByText("AI Copilot").first()).toBeVisible();
+    await expect(page.getByText("Best decision maker").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Regenerate" }).first()).toBeVisible();
+    await expect(page.getByText("Hot").first()).toBeVisible();
+    await expect(page.getByLabel("Analysis version")).toHaveValue("2");
+
+    await page.getByLabel("Analysis version").selectOption("1");
+    await expect(page.getByText("Warm · 74%").first()).toBeVisible();
+    await expect(page.getByText("This earlier version focused on the owner contact and the website conversion gap.").first()).toBeVisible();
+
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
   test("Russian mobile workspace pages do not show the English lead/settings copy", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.addInitScript(() => {

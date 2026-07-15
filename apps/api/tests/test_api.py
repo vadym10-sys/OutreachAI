@@ -3546,6 +3546,104 @@ def test_ai_sales_analysis_force_regeneration_updates_snapshot_and_avoids_duplic
         assert snapshots[-1].analysis_json.get("version") == second_payload["analysis"]["version"]
 
 
+def test_ai_sales_analysis_recommendation_actions_are_versioned_and_audited(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-recommendations@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Recommendations Co", "website": "https://analysis-recommendations.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    monkeypatch.setattr(
+        usage_module,
+        "build_ai_sales_workspace_analysis",
+        lambda **_: {
+            "generated_at": datetime.utcnow().isoformat(),
+            "provider": "openai",
+            "model": "gpt-test",
+            "summary": "Recommendation baseline",
+            "company_summary": "Recommendation baseline",
+            "business_model": "B2B SaaS",
+            "what_company_sells": "Outbound automation",
+            "target_customers": "Revenue teams",
+            "company_stage": "Active evaluation",
+            "pain_points": ["Manual qualification"],
+            "likely_business_pains": ["Manual qualification"],
+            "buying_signals": ["Hiring SDRs"],
+            "relevant_technologies": ["HubSpot"],
+            "company_growth_indicators": ["New sales hiring"],
+            "why_fits_icp": ["Matches ICP"],
+            "why_may_not_fit": [],
+            "icp_fit_score": 81,
+            "ai_lead_score": 80,
+            "lead_priority_score": 82,
+            "lead_priority_tier": "Hot",
+            "buying_probability": 74,
+            "score_explanation": "High fit and clear intent signals.",
+            "estimated_reply_probability": 62,
+            "estimated_company_size": "11-50",
+            "estimated_revenue": "$1M-$10M",
+            "recommended_decision_maker_role": "Founder",
+            "decision_makers": [{"name": "Alex", "title": "Founder", "email": "alex@analysis-recommendations.example"}],
+            "best_outreach_angle": "Lead with speed-to-pipeline outcome.",
+            "value_proposition": "Automate qualification and follow-up.",
+            "best_communication_channel": "Email",
+            "personalization_variables": ["Recent hiring"],
+            "predicted_objections": ["Timing"],
+            "personalized_opening_line": "Hi Alex, noticed SDR hiring momentum.",
+            "strongest_sales_arguments": ["Improve qualification throughput"],
+            "suggested_cta": "Open to a 15-minute fit check?",
+            "recommended_next_action": "Send first message.",
+            "recommended_first_message": "Hi Alex, we help teams automate qualification and follow-up.",
+            "personalized_follow_up_sequence": ["Day 3: customer proof", "Day 7: low-friction CTA"],
+            "best_timing_to_contact": "Tue-Thu mornings",
+            "decision_maker": {"name": "Alex", "title": "Founder", "email": "alex@analysis-recommendations.example"},
+            "reasoning": ["Verified profile and growth signals"],
+            "missing_data": [],
+            "evidence": [{"source_field": "company.website", "value": "analysis-recommendations.example", "confidence": 95}],
+            "opportunity_score": 80,
+            "buying_intent_score": 74,
+            "confidence_score": 79,
+            "outreach_angle": "Lead with speed-to-pipeline outcome.",
+            "best_subject_line": "Quick idea for your SDR team",
+            "best_cta": "Open to a 15-minute fit check?",
+            "risk_to_check": "Confirm timing.",
+            "next_action": "Send first message.",
+            "version": 1,
+        },
+    )
+
+    generated = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert generated.status_code == 200
+    base_version = generated.json()["analysis"]["version"]
+
+    edited = client.post(
+        f"/api/workspace-app/companies/{company_id}/ai-sales-analysis/recommendations",
+        headers=headers,
+        json={"key": "first_message", "action": "edit", "value": "Hi Alex, quick tailored idea for your outbound pipeline.", "reason": "Tighter opener"},
+    )
+    assert edited.status_code == 200
+    edited_payload = edited.json()
+    assert edited_payload["analysis"]["version"] == base_version + 1
+    assert edited_payload["analysis"]["recommended_first_message"] == "Hi Alex, quick tailored idea for your outbound pipeline."
+    assert edited_payload["analysis"]["recommendation_actions"]["first_message"]["edited"] is True
+
+    approved = client.post(
+        f"/api/workspace-app/companies/{company_id}/ai-sales-analysis/recommendations",
+        headers=headers,
+        json={"key": "next_best_action", "action": "approve", "reason": "Ready to execute"},
+    )
+    assert approved.status_code == 200
+    approved_payload = approved.json()
+    assert approved_payload["analysis"]["version"] == base_version + 2
+    assert approved_payload["analysis"]["recommendation_actions"]["next_best_action"]["approved"] is True
+    assert any(item.get("event") == "recommendation_approve" for item in approved_payload["analysis"].get("recommendation_audit_log", []))
+
+
 def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:
     import app.api.usage as usage_module
 

@@ -144,6 +144,99 @@ export const qaCompany = {
   stage_changed_at: now
 };
 
+const qaSalesAnalysisV2 = {
+  generated_at: now,
+  provider: "openai",
+  model: "gpt-4.1-mini",
+  summary: "Outbound-ready with strong proof signals and a clear owner contact.",
+  company_summary: "Hill Country Build Co is a commercial renovation company with visible service pages and a clear conversion gap.",
+  business_model: "Commercial renovation provider serving property owners and facilities teams.",
+  what_company_sells: "Commercial renovation and build services.",
+  target_customers: "Property owners and facilities teams",
+  company_stage: "Active outreach",
+  pain_points: ["Website has a weak consultation CTA", "The business needs more qualified renovation leads"],
+  likely_business_pains: ["Website has a weak consultation CTA", "The business needs more qualified renovation leads"],
+  buying_signals: ["Recent service-page activity", "Verified owner contact", "Clear website conversion gap"],
+  relevant_technologies: ["WordPress"],
+  company_growth_indicators: ["Recent service-page updates", "Visible trust signals"],
+  why_fits_icp: ["Matches a B2B local-services outreach motion", "Strong owner-level contact fit"],
+  why_may_not_fit: ["Lead volume may already be adequate"],
+  icp_fit_score: 82,
+  ai_lead_score: 79,
+  lead_priority_score: 86,
+  lead_priority_tier: "Hot",
+  buying_probability: 73,
+  score_explanation: "Strong ICP fit, verified contact, and a simple conversion opportunity make this a high-priority account.",
+  estimated_reply_probability: 64,
+  estimated_company_size: "11-50 employees",
+  estimated_revenue: "$1M-$10M ARR",
+  recommended_decision_maker_role: "Owner",
+  decision_makers: [{ name: "Jane Doe", title: "Owner", email: "jane@example.com" }],
+  best_outreach_angle: "Lead with a specific website conversion idea tied to renovation demand.",
+  value_proposition: "Help the owner turn website visitors into qualified renovation calls.",
+  best_communication_channel: "Email",
+  personalization_variables: ["Austin market context", "Commercial renovation niche", "Owner decision-maker"],
+  predicted_objections: ["They may already have enough local demand", "Timing could be the main blocker"],
+  personalized_opening_line: "Hi Jane, I noticed Hill Country Build Co has strong service pages but could convert more visitors into consults.",
+  strongest_sales_arguments: ["Clear website conversion opportunity", "Verified owner-level contact", "Strong local service fit"],
+  suggested_cta: "Open to a quick call to review the site conversion path?",
+  recommended_next_action: "Send the personalized first email and track the reply window.",
+  recommended_first_message: "Hi Jane, I noticed Hill Country Build Co has strong service pages but could convert more visitors into consults. We help renovation teams turn local website traffic into qualified calls without adding headcount. Open to a quick call to review the site conversion path?",
+  personalized_follow_up_sequence: ["Day 3: share one website-specific improvement", "Day 7: offer a short teardown with 2 quick fixes"],
+  best_timing_to_contact: "Tuesday to Thursday between 09:00-11:00 local time.",
+  decision_maker: { name: "Jane Doe", title: "Owner", email: "jane@example.com" },
+  reasoning: ["Verified owner contact", "Strong website conversion gap", "Clear local-service ICP fit"],
+  missing_data: [],
+  evidence: [{ source_field: "company.website", value: "https://example.com", confidence: 95 }],
+  recommendation_actions: {
+    decision_maker: { label: "Best decision maker", value: { name: "Jane Doe", title: "Owner", email: "jane@example.com", recommended_role: "Owner" }, approved: false, edited: false, regenerated: false, confidence: 84, reasoning: "Owner contact is verified and aligned with purchase authority.", evidence: [{ source_field: "company.contacts", value: "Verified owner contact", confidence: 92 }], updated_at: now },
+    first_message: { label: "Personalized first message", value: "Hi Jane, I noticed Hill Country Build Co has strong service pages but could convert more visitors into consults.", approved: false, edited: false, regenerated: false, confidence: 84, reasoning: "Message references visible website conversion gap.", evidence: [{ source_field: "website.summary", value: "Conversion gap identified", confidence: 86 }], updated_at: now },
+    follow_up_sequence: { label: "Follow-up sequence", value: ["Day 3: share one website-specific improvement", "Day 7: offer a short teardown with 2 quick fixes"], approved: false, edited: false, regenerated: false, confidence: 82, reasoning: "Sequence is short and CTA-focused.", evidence: [{ source_field: "outreach.follow_up", value: "Two-step cadence", confidence: 80 }], updated_at: now },
+    best_channel: { label: "Best outreach channel", value: "Email", approved: false, edited: false, regenerated: false, confidence: 83, reasoning: "Verified owner email is available.", evidence: [{ source_field: "contact.email", value: "jane@example.com", confidence: 95 }], updated_at: now },
+    reply_probability: { label: "Reply probability", value: 64, approved: false, edited: false, regenerated: false, confidence: 80, reasoning: "Based on contact quality and offer relevance.", evidence: [{ source_field: "analysis.reply_probability", value: "64", confidence: 78 }], updated_at: now },
+    deal_success_probability: { label: "Deal success probability", value: 73, approved: false, edited: false, regenerated: false, confidence: 79, reasoning: "Buying probability reflects fit and intent.", evidence: [{ source_field: "analysis.buying_probability", value: "73", confidence: 77 }], updated_at: now },
+    priority_score: { label: "Priority score", value: 86, approved: false, edited: false, regenerated: false, confidence: 84, reasoning: "High fit with a clear next step.", evidence: [{ source_field: "analysis.lead_priority", value: "Hot", confidence: 82 }], updated_at: now },
+    next_best_action: { label: "Next best action", value: "Send the personalized first email and track the reply window.", approved: false, edited: false, regenerated: false, confidence: 84, reasoning: "First message is ready and recipient is verified.", evidence: [{ source_field: "analysis.recommended_next_action", value: "Send the personalized first email", confidence: 84 }], updated_at: now }
+  },
+  ai_copilot_panel: {
+    generated_at: now,
+    summary: "Copilot explains each recommendation with confidence and evidence.",
+    confidence: 84,
+    reasoning: ["Recommendations are generated from verified CRM and analysis data."],
+    evidence: [{ source_field: "company.website", value: "https://example.com", confidence: 95 }],
+    policy: "Every recommendation is evidence-backed, confidence-scored, editable, and auditable."
+  },
+  recommendation_audit_log: [{ event: "generated", key: "all", actor: "ai-system", at: now, reason: "initial generation", value_preview: "phase4 baseline" }],
+  opportunity_score: 81,
+  buying_intent_score: 73,
+  confidence_score: 84,
+  outreach_angle: "Lead with a specific website conversion idea tied to renovation demand.",
+  best_subject_line: "Quick idea for Hill Country Build Co",
+  best_cta: "Open to a quick call to review the site conversion path?",
+  risk_to_check: "Verify whether the owner is already happy with current lead volume.",
+  next_action: "Send the personalized first email and track the reply window.",
+  version: 2
+};
+
+const qaSalesAnalysisV1 = {
+  ...qaSalesAnalysisV2,
+  generated_at: "2026-07-15T15:30:00.000Z",
+  summary: "Earlier analysis with a narrower view of the opportunity.",
+  company_summary: "Earlier snapshot of Hill Country Build Co.",
+  score_explanation: "This earlier version focused on the owner contact and the website conversion gap.",
+  lead_priority_score: 74,
+  lead_priority_tier: "Warm",
+  buying_probability: 60,
+  estimated_reply_probability: 52,
+  personalized_follow_up_sequence: ["Day 3: send one more website idea", "Day 7: follow up with a short CTA"],
+  recommended_first_message: "Hi Jane, I noticed Hill Country Build Co has a solid website and thought one quick conversion idea could be useful.",
+  best_subject_line: "One quick idea for Hill Country Build Co",
+  best_timing_to_contact: "Weekdays between 09:00-11:00 local time.",
+  next_action: "Review the website and send the first outreach draft.",
+  recommendation_audit_log: [{ event: "generated", key: "all", actor: "ai-system", at: "2026-07-15T15:30:00.000Z", reason: "initial generation", value_preview: "version1" }],
+  version: 1
+};
+
 async function fulfillJson(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
@@ -156,6 +249,8 @@ type MockOverride = {
 export async function mockWorkspaceApi(page: Page, overrides: Record<string, MockOverride> = {}) {
   let manualCompany: any = null;
   let currentCampaign: any = qaCampaign;
+  let currentAnalysis: any = { ...qaSalesAnalysisV2 };
+  let analysisHistory: any[] = [{ ...qaSalesAnalysisV2 }, { ...qaSalesAnalysisV1 }];
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
@@ -292,6 +387,98 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [qaCompany]);
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, qaCompany);
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis`) {
+      if (route.request().method() === "POST") {
+        const body = route.request().postDataJSON() as { force?: boolean };
+        if (body?.force) {
+          const nextVersion = Number(currentAnalysis.version || 2) + 1;
+          currentAnalysis = { ...currentAnalysis, version: nextVersion, generated_at: new Date().toISOString() };
+          analysisHistory = [currentAnalysis, ...analysisHistory.filter((item) => item.version !== nextVersion)].slice(0, 10);
+        }
+        return fulfillJson(route, {
+          status: "success",
+          message: "AI sales analysis generated.",
+          company_id: qaCompany.id,
+          analysis: currentAnalysis,
+          generated_at: currentAnalysis.generated_at,
+          cached: false,
+          requested_version: currentAnalysis.version,
+          latest_version: currentAnalysis.version,
+          available_versions: analysisHistory.map((item) => ({ version: item.version, generated_at: item.generated_at, provider: item.provider, model: item.model, status: "success" }))
+        });
+      }
+      const requestedVersion = Number(url.searchParams.get("version") || 0);
+      const analysis = requestedVersion ? (analysisHistory.find((item) => item.version === requestedVersion) || currentAnalysis) : currentAnalysis;
+      return fulfillJson(route, {
+        status: "success",
+        message: requestedVersion ? "Loaded historical AI sales analysis." : "AI sales analysis generated.",
+        company_id: qaCompany.id,
+        analysis,
+        generated_at: analysis.generated_at,
+        cached: false,
+        requested_version: requestedVersion || analysis.version || null,
+        latest_version: currentAnalysis.version,
+        available_versions: analysisHistory.map((item) => ({ version: item.version, generated_at: item.generated_at, provider: item.provider, model: item.model, status: "success" }))
+      });
+    }
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis/recommendations` && route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as { key: string; action: "approve" | "edit" | "regenerate"; value?: unknown; reason?: string };
+      const nowIso = new Date().toISOString();
+      const key = body.key;
+      const previous = currentAnalysis.recommendation_actions?.[key] || { label: key, value: null, confidence: currentAnalysis.confidence_score || 80 };
+      let nextValue = previous.value;
+      if (body.action === "edit") nextValue = body.value;
+      if (body.action === "regenerate") nextValue = previous.value;
+      const nextActionState = {
+        ...previous,
+        value: nextValue,
+        approved: body.action === "approve" ? true : Boolean(previous.approved),
+        edited: body.action === "edit" ? true : Boolean(previous.edited),
+        regenerated: body.action === "regenerate" ? true : Boolean(previous.regenerated),
+        reasoning: body.reason || previous.reasoning,
+        updated_at: nowIso,
+      };
+      const recommendationActions = { ...(currentAnalysis.recommendation_actions || {}), [key]: nextActionState };
+      const updated: any = {
+        ...currentAnalysis,
+        recommendation_actions: recommendationActions,
+        ai_copilot_panel: {
+          ...(currentAnalysis.ai_copilot_panel || {}),
+          generated_at: nowIso,
+          last_action: { key, action: body.action, at: nowIso, actor: "qa-user" }
+        },
+        recommendation_audit_log: [
+          ...((currentAnalysis.recommendation_audit_log || []) as any[]),
+          { event: `recommendation_${body.action}`, key, actor: "qa-user", at: nowIso, reason: body.reason || "", value_preview: String(nextValue || "").slice(0, 180) }
+        ].slice(-50),
+      };
+      if (key === "first_message") updated.recommended_first_message = String(nextValue || "");
+      if (key === "follow_up_sequence") updated.personalized_follow_up_sequence = Array.isArray(nextValue) ? nextValue : [String(nextValue || "")].filter(Boolean);
+      if (key === "best_channel") updated.best_communication_channel = String(nextValue || "");
+      if (key === "reply_probability") updated.estimated_reply_probability = Number(nextValue || 0);
+      if (key === "deal_success_probability") updated.buying_probability = Number(nextValue || 0);
+      if (key === "priority_score") updated.lead_priority_score = Number(nextValue || 0);
+      if (key === "next_best_action") {
+        updated.recommended_next_action = String(nextValue || "");
+        updated.next_action = String(nextValue || "");
+      }
+
+      const nextVersion = Number(currentAnalysis.version || 2) + 1;
+      currentAnalysis = { ...updated, version: nextVersion, generated_at: nowIso };
+      analysisHistory = [currentAnalysis, ...analysisHistory.filter((item) => item.version !== nextVersion)].slice(0, 10);
+
+      return fulfillJson(route, {
+        status: "success",
+        message: "AI recommendation updated.",
+        company_id: qaCompany.id,
+        analysis: currentAnalysis,
+        generated_at: currentAnalysis.generated_at,
+        cached: false,
+        requested_version: currentAnalysis.version,
+        latest_version: currentAnalysis.version,
+        available_versions: analysisHistory.map((item) => ({ version: item.version, generated_at: item.generated_at, provider: item.provider, model: item.model, status: "success" }))
+      });
+    }
     const workspaceCompanyAction = apiPath.match(/^\/api\/workspace-app\/companies\/([^/]+)\/(analyze|contacts|email-draft|complete-opportunity|enrichment\/restart)$/);
     if (workspaceCompanyAction) {
       const [, companyId, action] = workspaceCompanyAction;

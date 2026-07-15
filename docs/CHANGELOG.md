@@ -3,6 +3,46 @@
 ## 2026-07-15
 
 ### feat(api)
+- Extended AI sales workspace generation to include recommendation action payloads, AI Copilot panel structures, and recommendation audit history.
+- Added recommendation control endpoint: `POST /api/workspace-app/companies/{company_id}/ai-sales-analysis/recommendations`.
+- Implemented versioned recommendation updates for `approve`, `edit`, and `regenerate` actions while preserving snapshot and metadata history compatibility.
+
+### feat(frontend)
+- Added AI Copilot recommendation control panel in the company workspace AI Recommendations section.
+- Added per-recommendation user actions (approve, edit, regenerate) with inline editing and confidence/reasoning display.
+- Wired recommendation updates to backend versioned analysis lifecycle and preserved existing generation/regeneration workflows.
+
+### test(api)
+- Added backend regression coverage for recommendation action updates, version increments, and recommendation audit log persistence.
+
+### test(frontend)
+- Expanded company workspace Playwright regression to validate AI Copilot controls rendering alongside version-history behavior.
+- Extended workspace API mocks with recommendation action and versioned analysis-update behaviors.
+
+### validation
+- `python3 -m pytest -q tests/test_api.py -k "ai_sales_analysis"` passed in `apps/api`.
+- `npm run lint` passed in `apps/web`.
+- `npm test -- --run` passed in `apps/web`.
+- `npm run build` passed in `apps/web`.
+- `npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` passed in `apps/web`.
+
+### feat(frontend)
+- Added a dedicated AI Recommendations panel to the Company page with cards, badges, and priority indicators.
+- Surfaced buying intent, reply probability, lead priority, ICP fit, recommended decision maker, best outreach channel, best contact timing, top buying signals, top risks or objections, personalized opening message, personalized follow-up sequence, recommended next action, and confidence explanation.
+- Kept analysis version history and regeneration controls fully compatible with the existing AI sales analysis engine.
+
+### test(frontend)
+- Added a Playwright regression that verifies the AI Recommendations panel renders and version switching still works for the company workspace.
+
+### validation
+- `npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` passed in `apps/web`.
+- `npm run lint` passed in `apps/web`.
+- `npm test -- --run` passed in `apps/web`.
+- `npm run build` passed in `apps/web`.
+
+## 2026-07-15
+
+### feat(api)
 - Added automatic AI Sales Copilot refresh during company-intelligence regeneration and cache reuse.
 - Preserved metadata-backed AI sales version history while avoiding duplicate background versions when the analysis content has not changed.
 

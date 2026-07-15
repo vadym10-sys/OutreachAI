@@ -893,6 +893,50 @@ export type CrmCompany = {
     reasoning?: string[];
     missing_data?: string[];
     evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    recommendation_actions?: Record<
+      string,
+      {
+        label?: string;
+        value?: unknown;
+        approved?: boolean;
+        edited?: boolean;
+        regenerated?: boolean;
+        confidence?: number;
+        reasoning?: string;
+        evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+        updated_at?: string;
+      }
+    >;
+    ai_copilot_panel?: {
+      generated_at?: string;
+      summary?: string;
+      confidence?: number;
+      reasoning?: string[];
+      evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+      policy?: string;
+      recommendations?: Array<{
+        key?: string;
+        label?: string;
+        confidence?: number;
+        reasoning?: string;
+        value?: unknown;
+        evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+      }>;
+      last_action?: {
+        key?: string;
+        action?: string;
+        at?: string;
+        actor?: string;
+      };
+    };
+    recommendation_audit_log?: Array<{
+      event?: string;
+      key?: string;
+      actor?: string;
+      at?: string;
+      reason?: string;
+      value_preview?: string;
+    }>;
     version?: number;
   } | null;
   ai_sales_workspace_updated_at?: string | null;
