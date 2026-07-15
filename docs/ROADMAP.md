@@ -4,6 +4,7 @@
 - Started Phase 6 delivery on dedicated `phase6` branch with one completed quick win in Leads workspace prioritization UX.
 - Completed explicit priority tiering (`Hot`, `Warm`, `Cold`) and deterministic top-down ordering of lead opportunity cards.
 - Completed autonomous AI Sales Copilot generation on analysis read so companies without existing analysis now receive persisted, versioned recommendations automatically.
+- Completed AI Action Center with ranked task execution plan per company and versioned task-state transitions (`complete`, `postpone`, `dismiss`) with audit history.
 - Preserved backward compatibility and existing end-to-end workflow actions.
 - Next execution checkpoint: deploy `phase6` preview and validate decision-speed impact and lead triage clarity in production-like customer flows.
 

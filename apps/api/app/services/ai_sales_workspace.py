@@ -79,6 +79,8 @@ class AISalesWorkspaceAnalysisPayload(BaseModel):
     recommendation_actions: dict[str, Any] = Field(default_factory=dict)
     ai_copilot_panel: dict[str, Any] = Field(default_factory=dict)
     recommendation_audit_log: list[dict[str, Any]] = Field(default_factory=list)
+    action_center: dict[str, Any] = Field(default_factory=dict)
+    action_center_audit_log: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _clean_text(value: Any) -> str:
@@ -441,6 +443,119 @@ def _build_ai_copilot_panel(*, payload: dict[str, Any], recommendation_actions: 
     }
 
 
+def _default_action_center_tasks(*, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    priority_score = max(0, min(100, _safe_int(payload.get("lead_priority_score"), _safe_int(payload.get("opportunity_score"), 0))))
+    confidence = max(1, min(100, _safe_int(payload.get("confidence_score"), 70)))
+    buying_probability = max(0, min(100, _safe_int(payload.get("buying_probability"), _safe_int(payload.get("buying_intent_score"), 0))))
+    reply_probability = max(0, min(100, _safe_int(payload.get("estimated_reply_probability"), 0)))
+    next_action = _clean_text(payload.get("recommended_next_action") or payload.get("next_action"))
+    best_channel = _clean_text(payload.get("best_communication_channel")) or "Email"
+    decision_maker = payload.get("decision_maker") if isinstance(payload.get("decision_maker"), dict) else {}
+    decision_maker_name = _clean_text(decision_maker.get("name")) or _clean_text(payload.get("recommended_decision_maker_role")) or "Decision maker"
+    reasoning = _clean_text((payload.get("reasoning") or [""])[0] if isinstance(payload.get("reasoning"), list) else payload.get("score_explanation"))
+
+    def task(
+        task_id: str,
+        title: str,
+        action_type: str,
+        *,
+        priority: int,
+        estimated_impact: str,
+        expected_outcome: str,
+        task_reasoning: str,
+    ) -> dict[str, Any]:
+        return {
+            "task_id": task_id,
+            "title": title,
+            "action_type": action_type,
+            "priority": max(0, min(100, priority)),
+            "estimated_impact": estimated_impact,
+            "confidence_score": confidence,
+            "reasoning": _clean_text(task_reasoning),
+            "expected_outcome": _clean_text(expected_outcome),
+            "status": "pending",
+            "status_reason": "",
+            "status_history": [],
+            "updated_at": datetime.utcnow().isoformat(),
+            "rank": 0,
+        }
+
+    tasks = [
+        task(
+            "send_first_email",
+            "Send first personalized email",
+            "send_first_email",
+            priority=priority_score,
+            estimated_impact="High",
+            expected_outcome="Start a direct sales conversation with the best-fit buyer.",
+            task_reasoning=next_action or reasoning or "First outreach is ready and prioritized.",
+        ),
+        task(
+            "connect_linkedin",
+            f"Connect with {decision_maker_name} on LinkedIn",
+            "connect_linkedin",
+            priority=max(10, priority_score - 8),
+            estimated_impact="Medium",
+            expected_outcome="Create a second touchpoint to increase reply likelihood.",
+            task_reasoning="Multi-channel outreach improves response rates when email alone is uncertain.",
+        ),
+        task(
+            "call_decision_maker",
+            f"Call {decision_maker_name}",
+            action_type="call_decision_maker",
+            priority=max(10, min(100, buying_probability + 8)),
+            estimated_impact="High",
+            expected_outcome="Qualify urgency and move the lead into active pipeline discussion.",
+            task_reasoning="Call is recommended when intent is strong and speed matters.",
+        ),
+        task(
+            "wait_three_days",
+            "Wait 3 days before the next touch",
+            action_type="wait_3_days",
+            priority=max(5, min(100, reply_probability - 12)),
+            estimated_impact="Medium",
+            expected_outcome="Avoid over-messaging and time follow-up for better engagement.",
+            task_reasoning="Spacing touches can improve response quality for outbound sequences.",
+        ),
+        task(
+            "send_follow_up",
+            "Send follow-up sequence",
+            action_type="send_follow_up",
+            priority=max(10, min(100, reply_probability + 6)),
+            estimated_impact="High",
+            expected_outcome="Recover silent opportunities and prompt a clear yes/no response.",
+            task_reasoning="Follow-up sequence is available and tailored for this company.",
+        ),
+        task(
+            "research_funding_news",
+            "Research funding and company news",
+            action_type="research_funding_news",
+            priority=max(5, min(100, priority_score - 20)),
+            estimated_impact="Medium",
+            expected_outcome="Improve personalization and confidence with fresher buying context.",
+            task_reasoning="Additional context can sharpen pitch timing and messaging relevance.",
+        ),
+        task(
+            "skip_lead",
+            "Skip this lead for now",
+            action_type="skip_lead",
+            priority=70 if buying_probability < 35 else 12,
+            estimated_impact="Low",
+            expected_outcome="Preserve sales capacity for better-fit opportunities.",
+            task_reasoning="Skip is recommended only when confidence or intent is too weak.",
+        ),
+    ]
+
+    ranked = sorted(tasks, key=lambda item: int(item.get("priority") or 0), reverse=True)
+    for index, item in enumerate(ranked, start=1):
+        item["rank"] = index
+    return ranked
+
+
+def build_default_action_center_tasks(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return _default_action_center_tasks(payload=payload)
+
+
 def build_ai_sales_workspace_analysis(
     *,
     company: Company,
@@ -719,6 +834,22 @@ def build_ai_sales_workspace_analysis(
             "details": "Initial autonomous SDR recommendations generated.",
         }
     ]
+    payload["action_center"] = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "summary": _clean_text(payload.get("recommended_next_action") or payload.get("next_action") or payload.get("summary")),
+        "tasks": _default_action_center_tasks(payload=payload),
+        "policy": "Action Center ranks next steps by priority, expected impact, and confidence, and keeps every state change auditable.",
+    }
+    payload["action_center_audit_log"] = [
+        {
+            "event": "action_center_generated",
+            "actor": "ai-system",
+            "at": datetime.utcnow().isoformat(),
+            "reason": "initial generation",
+            "task_id": "all",
+            "new_status": "pending",
+        }
+    ]
 
     try:
         validated = AISalesWorkspaceAnalysisPayload.model_validate(payload)
@@ -759,4 +890,6 @@ def read_cached_analysis(metadata_json: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("recommendation_actions", {})
     payload.setdefault("ai_copilot_panel", {})
     payload.setdefault("recommendation_audit_log", [])
+    payload.setdefault("action_center", {})
+    payload.setdefault("action_center_audit_log", [])
     return payload

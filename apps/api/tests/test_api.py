@@ -3411,6 +3411,8 @@ def test_ai_sales_analysis_generate_success(monkeypatch) -> None:
     assert payload["analysis"]["company_growth_indicators"] == ["New sales hiring"]
     assert payload["analysis"]["estimated_revenue"] == "$10M-$25M ARR"
     assert payload["analysis"]["personalized_follow_up_sequence"]
+    assert payload["analysis"]["action_center"]["tasks"]
+    assert any(item.get("task_id") == "send_first_email" for item in payload["analysis"]["action_center"]["tasks"])
 
 
 def test_ai_sales_analysis_get_auto_generates_when_missing(monkeypatch) -> None:
@@ -3473,6 +3475,8 @@ def test_ai_sales_analysis_get_auto_generates_when_missing(monkeypatch) -> None:
     assert payload["analysis"]["version"] == 1
     assert payload["latest_version"] == 1
     assert payload["available_versions"][0]["version"] == 1
+    assert payload["analysis"]["action_center"]["tasks"]
+    assert any(item.get("task_id") == "send_first_email" for item in payload["analysis"]["action_center"]["tasks"])
 
 
 def test_ai_sales_analysis_get_auto_generation_provider_failure_returns_provider_unavailable(monkeypatch) -> None:
@@ -3840,6 +3844,121 @@ def test_ai_sales_analysis_recommendation_actions_are_versioned_and_audited(monk
     assert approved_payload["analysis"]["version"] == base_version + 2
     assert approved_payload["analysis"]["recommendation_actions"]["next_best_action"]["approved"] is True
     assert any(item.get("event") == "recommendation_approve" for item in approved_payload["analysis"].get("recommendation_audit_log", []))
+
+
+def test_ai_sales_action_center_updates_are_versioned_and_audited(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-action-center@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Action Center Co", "website": "https://analysis-action-center.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    monkeypatch.setattr(
+        usage_module,
+        "build_ai_sales_workspace_analysis",
+        lambda **_: {
+            "generated_at": datetime.utcnow().isoformat(),
+            "provider": "openai",
+            "model": "gpt-test",
+            "summary": "Action center baseline",
+            "company_summary": "Action center baseline",
+            "business_model": "B2B SaaS",
+            "what_company_sells": "Outbound automation",
+            "target_customers": "Revenue teams",
+            "company_stage": "Active evaluation",
+            "pain_points": ["Manual qualification"],
+            "likely_business_pains": ["Manual qualification"],
+            "buying_signals": ["Hiring SDRs"],
+            "relevant_technologies": ["HubSpot"],
+            "company_growth_indicators": ["New sales hiring"],
+            "why_fits_icp": ["Matches ICP"],
+            "why_may_not_fit": [],
+            "icp_fit_score": 83,
+            "ai_lead_score": 82,
+            "lead_priority_score": 84,
+            "lead_priority_tier": "Hot",
+            "buying_probability": 76,
+            "score_explanation": "Fit and intent are both strong.",
+            "estimated_reply_probability": 63,
+            "estimated_company_size": "11-50",
+            "estimated_revenue": "$1M-$10M",
+            "recommended_decision_maker_role": "Founder",
+            "decision_makers": [{"name": "Alex", "title": "Founder", "email": "alex@analysis-action-center.example"}],
+            "best_outreach_angle": "Lead with speed-to-pipeline outcome.",
+            "value_proposition": "Automate qualification and follow-up.",
+            "best_communication_channel": "Email",
+            "personalization_variables": ["Recent hiring"],
+            "predicted_objections": ["Timing"],
+            "personalized_opening_line": "Hi Alex, noticed SDR hiring momentum.",
+            "strongest_sales_arguments": ["Improve qualification throughput"],
+            "suggested_cta": "Open to a 15-minute fit check?",
+            "recommended_next_action": "Send first message.",
+            "recommended_first_message": "Hi Alex, we help teams automate qualification and follow-up.",
+            "personalized_follow_up_sequence": ["Day 3: customer proof", "Day 7: low-friction CTA"],
+            "best_timing_to_contact": "Tue-Thu mornings",
+            "decision_maker": {"name": "Alex", "title": "Founder", "email": "alex@analysis-action-center.example"},
+            "reasoning": ["Verified profile and growth signals"],
+            "missing_data": [],
+            "evidence": [{"source_field": "company.website", "value": "analysis-action-center.example", "confidence": 95}],
+            "opportunity_score": 82,
+            "buying_intent_score": 76,
+            "confidence_score": 80,
+            "outreach_angle": "Lead with speed-to-pipeline outcome.",
+            "best_subject_line": "Quick idea for your SDR team",
+            "best_cta": "Open to a 15-minute fit check?",
+            "risk_to_check": "Confirm timing.",
+            "next_action": "Send first message.",
+            "version": 1,
+        },
+    )
+
+    generated = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert generated.status_code == 200
+    base_payload = generated.json()
+    base_version = base_payload["analysis"]["version"]
+    task_id = next((item.get("task_id") for item in base_payload["analysis"]["action_center"]["tasks"] if item.get("task_id") == "send_first_email"), None)
+    assert task_id == "send_first_email"
+
+    completed = client.post(
+        f"/api/workspace-app/companies/{company_id}/ai-sales-analysis/action-center",
+        headers=headers,
+        json={"task_id": "send_first_email", "action": "complete", "reason": "Email sent by rep"},
+    )
+    assert completed.status_code == 200
+    completed_payload = completed.json()
+    assert completed_payload["analysis"]["version"] == base_version + 1
+    completed_task = next(item for item in completed_payload["analysis"]["action_center"]["tasks"] if item.get("task_id") == "send_first_email")
+    assert completed_task["status"] == "completed"
+    assert any(item.get("event") == "action_center_complete" for item in completed_payload["analysis"].get("action_center_audit_log", []))
+
+    postponed = client.post(
+        f"/api/workspace-app/companies/{company_id}/ai-sales-analysis/action-center",
+        headers=headers,
+        json={"task_id": "send_follow_up", "action": "postpone", "reason": "Waiting for first reply window"},
+    )
+    assert postponed.status_code == 200
+    postponed_payload = postponed.json()
+    assert postponed_payload["analysis"]["version"] == base_version + 2
+    postponed_task = next(item for item in postponed_payload["analysis"]["action_center"]["tasks"] if item.get("task_id") == "send_follow_up")
+    assert postponed_task["status"] == "postponed"
+    assert any(item.get("event") == "action_center_postpone" for item in postponed_payload["analysis"].get("action_center_audit_log", []))
+
+    dismissed = client.post(
+        f"/api/workspace-app/companies/{company_id}/ai-sales-analysis/action-center",
+        headers=headers,
+        json={"task_id": "skip_lead", "action": "dismiss", "reason": "Lead still active"},
+    )
+    assert dismissed.status_code == 200
+    dismissed_payload = dismissed.json()
+    assert dismissed_payload["analysis"]["version"] == base_version + 3
+    dismissed_task = next(item for item in dismissed_payload["analysis"]["action_center"]["tasks"] if item.get("task_id") == "skip_lead")
+    assert dismissed_task["status"] == "dismissed"
+    assert any(item.get("event") == "action_center_dismiss" for item in dismissed_payload["analysis"].get("action_center_audit_log", []))
 
 
 def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:

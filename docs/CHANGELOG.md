@@ -3,6 +3,29 @@
 ## 2026-07-15
 
 ### feat(api)
+- Added AI Action Center generation for each company AI sales analysis with ranked execution tasks (for example: send first email, connect on LinkedIn, call decision maker, wait 3 days, send follow-up, research funding/news, skip lead).
+- Each task now carries priority, estimated impact, confidence score, reasoning, expected outcome, and rank.
+- Added Action Center task-state endpoint: `POST /api/workspace-app/companies/{company_id}/ai-sales-analysis/action-center` with `complete`, `postpone`, and `dismiss` actions.
+- Action Center task updates are versioned using the existing analysis snapshot flow and persisted with action-center audit history.
+
+### feat(frontend)
+- Added AI Action Center panel to company workspace AI Sales Intelligence view.
+- Added per-task controls to mark actions as Complete, Postpone, or Dismiss and reflect updated status/rank after each versioned update.
+
+### test(api)
+- Added backend regression coverage for Action Center versioned state transitions and audit history persistence.
+
+### test(frontend)
+- Expanded company workspace Playwright regression to validate AI Action Center rendering and task state updates.
+
+### validation
+- `PYTHONPATH=apps/api python3 -m pytest apps/api/tests -q` passed.
+- `npm run lint` passed in `apps/web`.
+- `npm run test -- --run` passed in `apps/web`.
+- `npm run build` passed in `apps/web`.
+- `npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` passed in `apps/web`.
+
+### feat(api)
 - Phase 6 autonomous AI Sales Copilot now auto-generates analysis on first read for companies that do not yet have a sales analysis snapshot.
 - Auto-generated analyses are persisted with the existing versioning, cache, regeneration, recommendation-action, and history mechanisms.
 - The automatic read-path keeps provider-failure safety by returning `provider_unavailable` without breaking company workflows.

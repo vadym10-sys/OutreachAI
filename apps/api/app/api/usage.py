@@ -49,7 +49,7 @@ from app.core.security import WorkspaceUserContext
 from app.models.entities import AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
-from app.services.ai_sales_workspace import build_ai_sales_workspace_analysis, read_cached_analysis
+from app.services.ai_sales_workspace import build_ai_sales_workspace_analysis, build_default_action_center_tasks, read_cached_analysis
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, enqueue_company_enrichment_job, enqueue_deep_contact_search_job, mark_cancelled, update_job_progress
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
@@ -232,6 +232,12 @@ class UsageAISalesRecommendationActionIn(BaseModel):
     ]
     action: Literal["approve", "edit", "regenerate"]
     value: Any = None
+    reason: str = ""
+
+
+class UsageAISalesActionCenterActionIn(BaseModel):
+    task_id: str = Field(min_length=2, max_length=120)
+    action: Literal["complete", "postpone", "dismiss"]
     reason: str = ""
 
 
@@ -6539,6 +6545,57 @@ def _analysis_recommendation_defaults(analysis: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _ensure_analysis_action_center_structures(analysis: dict[str, Any]) -> dict[str, Any]:
+    normalized = read_cached_analysis({"ai_sales_workspace": analysis})
+    action_center = normalized.get("action_center") if isinstance(normalized.get("action_center"), dict) else {}
+    existing_tasks = action_center.get("tasks") if isinstance(action_center.get("tasks"), list) else []
+    tasks = [dict(item) for item in existing_tasks if isinstance(item, dict)]
+    if not tasks:
+        tasks = [dict(item) for item in build_default_action_center_tasks(normalized)]
+
+    normalized_tasks: list[dict[str, Any]] = []
+    for item in tasks:
+        task_id = str(item.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        status = str(item.get("status") or "pending").lower()
+        if status not in {"pending", "completed", "postponed", "dismissed"}:
+            status = "pending"
+        normalized_tasks.append(
+            {
+                "task_id": task_id,
+                "title": str(item.get("title") or task_id.replace("_", " ").title()),
+                "action_type": str(item.get("action_type") or task_id),
+                "priority": max(0, min(100, int(item.get("priority") if str(item.get("priority") or "").isdigit() else 0))),
+                "estimated_impact": str(item.get("estimated_impact") or "Medium"),
+                "confidence_score": max(1, min(100, int(item.get("confidence_score") if str(item.get("confidence_score") or "").isdigit() else normalized.get("confidence_score") or 70))),
+                "reasoning": str(item.get("reasoning") or normalized.get("score_explanation") or ""),
+                "expected_outcome": str(item.get("expected_outcome") or ""),
+                "status": status,
+                "status_reason": str(item.get("status_reason") or ""),
+                "status_history": [history for history in item.get("status_history", []) if isinstance(history, dict)] if isinstance(item.get("status_history"), list) else [],
+                "updated_at": str(item.get("updated_at") or datetime.utcnow().isoformat()),
+                "rank": int(item.get("rank") if str(item.get("rank") or "").isdigit() else 0),
+            }
+        )
+
+    pending = sorted([item for item in normalized_tasks if item.get("status") == "pending"], key=lambda item: int(item.get("priority") or 0), reverse=True)
+    non_pending = [item for item in normalized_tasks if item.get("status") != "pending"]
+    ranked = pending + non_pending
+    for index, item in enumerate(ranked, start=1):
+        item["rank"] = index
+
+    normalized["action_center"] = {
+        **action_center,
+        "generated_at": str(action_center.get("generated_at") or datetime.utcnow().isoformat()),
+        "summary": str(action_center.get("summary") or normalized.get("recommended_next_action") or normalized.get("next_action") or ""),
+        "tasks": ranked,
+        "policy": str(action_center.get("policy") or "Action Center ranks next steps by priority, expected impact, and confidence, and keeps every state change auditable."),
+    }
+    normalized["action_center_audit_log"] = normalized.get("action_center_audit_log") if isinstance(normalized.get("action_center_audit_log"), list) else []
+    return normalized
+
+
 def _ensure_analysis_recommendation_structures(analysis: dict[str, Any]) -> dict[str, Any]:
     normalized = read_cached_analysis({"ai_sales_workspace": analysis})
     recommendation_actions = normalized.get("recommendation_actions") if isinstance(normalized.get("recommendation_actions"), dict) else {}
@@ -6576,7 +6633,7 @@ def _ensure_analysis_recommendation_structures(analysis: dict[str, Any]) -> dict
         "policy": str(copilot.get("policy") or "Every recommendation is evidence-backed, confidence-scored, editable, and auditable."),
     }
     normalized["recommendation_audit_log"] = normalized.get("recommendation_audit_log") if isinstance(normalized.get("recommendation_audit_log"), list) else []
-    return normalized
+    return _ensure_analysis_action_center_structures(normalized)
 
 
 def _apply_recommendation_action(
@@ -6676,6 +6733,79 @@ def _apply_recommendation_action(
         "actor": actor,
     }
     updated["ai_copilot_panel"] = copilot
+    return updated
+
+
+def _apply_action_center_action(
+    analysis: dict[str, Any],
+    *,
+    task_id: str,
+    action: str,
+    reason: str,
+    actor: str,
+) -> dict[str, Any]:
+    updated = _ensure_analysis_action_center_structures(analysis)
+    action_center = updated.get("action_center") if isinstance(updated.get("action_center"), dict) else {}
+    tasks = action_center.get("tasks") if isinstance(action_center.get("tasks"), list) else []
+    indexed = [dict(item) for item in tasks if isinstance(item, dict)]
+    target_index = next((index for index, item in enumerate(indexed) if str(item.get("task_id") or "") == task_id), None)
+    if target_index is None:
+        raise HTTPException(status_code=400, detail="Unsupported action center task id.")
+
+    now = datetime.utcnow().isoformat()
+    current = dict(indexed[target_index])
+    previous_status = str(current.get("status") or "pending")
+    new_status = "completed" if action == "complete" else "postponed" if action == "postpone" else "dismissed" if action == "dismiss" else ""
+    if not new_status:
+        raise HTTPException(status_code=400, detail="Unsupported action center action.")
+
+    history = current.get("status_history") if isinstance(current.get("status_history"), list) else []
+    history.append(
+        {
+            "event": f"task_{action}",
+            "at": now,
+            "actor": actor,
+            "previous_status": previous_status,
+            "new_status": new_status,
+            "reason": reason.strip(),
+        }
+    )
+    current["status"] = new_status
+    current["status_reason"] = reason.strip()
+    current["status_history"] = history[-20:]
+    current["updated_at"] = now
+    indexed[target_index] = current
+
+    pending = sorted([item for item in indexed if str(item.get("status") or "") == "pending"], key=lambda item: int(item.get("priority") or 0), reverse=True)
+    non_pending = [item for item in indexed if str(item.get("status") or "") != "pending"]
+    ranked = pending + non_pending
+    for index, item in enumerate(ranked, start=1):
+        item["rank"] = index
+
+    action_center["tasks"] = ranked
+    action_center["generated_at"] = str(action_center.get("generated_at") or now)
+    action_center["last_action"] = {
+        "task_id": task_id,
+        "action": action,
+        "at": now,
+        "actor": actor,
+    }
+    updated["action_center"] = action_center
+
+    audit_log = updated.get("action_center_audit_log") if isinstance(updated.get("action_center_audit_log"), list) else []
+    audit_log.append(
+        {
+            "event": f"action_center_{action}",
+            "task_id": task_id,
+            "title": str(current.get("title") or ""),
+            "actor": actor,
+            "at": now,
+            "reason": reason.strip(),
+            "previous_status": previous_status,
+            "new_status": new_status,
+        }
+    )
+    updated["action_center_audit_log"] = audit_log[-100:]
     return updated
 
 
@@ -7280,7 +7410,7 @@ def get_ai_sales_analysis(company_id: UUID, request: Request, user: WorkspaceUse
                 status="success",
                 message="AI sales analysis generated automatically.",
                 company_id=company.id,
-                analysis=analysis,
+                analysis=_ensure_analysis_action_center_structures(analysis),
                 generated_at=_analysis_visible_timestamp(analysis),
                 cached=False,
                 requested_version=_version_from_analysis(analysis),
@@ -7317,7 +7447,7 @@ def get_ai_sales_analysis(company_id: UUID, request: Request, user: WorkspaceUse
         status="success",
         message="AI sales analysis loaded.",
         company_id=company.id,
-        analysis=analysis,
+        analysis=_ensure_analysis_action_center_structures(analysis),
         generated_at=generated_at,
         cached=True,
         requested_version=version or latest_version or _version_from_analysis(analysis),
@@ -7378,6 +7508,7 @@ def generate_ai_sales_analysis(
             language=language,
         )
         analysis = _stamp_analysis_payload(analysis, force=payload.force, previous_analysis=previous_analysis)
+        analysis = _ensure_analysis_action_center_structures(analysis)
     except (ProviderConfigurationError, ProviderRequestError) as exc:
         capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis", workspace_id=workspace.id, lead_id=company.lead_id)
         if payload.force and previous_analysis:
@@ -7576,6 +7707,99 @@ def update_ai_sales_recommendation(
     return UsageAISalesAnalysisOut(
         status="success",
         message="AI recommendation updated.",
+        company_id=company.id,
+        analysis=stamped,
+        generated_at=_analysis_visible_timestamp(stamped),
+        cached=False,
+        requested_version=_version_from_analysis(stamped),
+        latest_version=available_versions[0].version if available_versions else _version_from_analysis(stamped),
+        available_versions=available_versions,
+    )
+
+
+@router.post("/companies/{company_id}/ai-sales-analysis/action-center", response_model=UsageAISalesAnalysisOut)
+def update_ai_sales_action_center(
+    company_id: UUID,
+    payload: UsageAISalesActionCenterActionIn,
+    request: Request,
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+) -> UsageAISalesAnalysisOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+
+    snapshot = _latest_ai_sales_snapshot(db, workspace.id, company.id)
+    latest_snapshot_analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) else {}
+    cached = _cached_ai_sales_analysis_from_company(company)
+    previous_analysis = latest_snapshot_analysis if latest_snapshot_analysis else cached
+    if not previous_analysis:
+        available_versions = _available_ai_sales_versions(db, workspace.id, company)
+        return UsageAISalesAnalysisOut(
+            status="empty",
+            message="No AI sales analysis generated yet.",
+            company_id=company.id,
+            analysis={},
+            generated_at=None,
+            cached=False,
+            requested_version=None,
+            latest_version=available_versions[0].version if available_versions else None,
+            available_versions=available_versions,
+        )
+
+    updated = _apply_action_center_action(
+        previous_analysis,
+        task_id=payload.task_id,
+        action=payload.action,
+        reason=payload.reason,
+        actor=user.user_id,
+    )
+    stamped = _stamp_analysis_payload(updated, force=True, previous_analysis=previous_analysis)
+
+    _save_ai_sales_analysis_snapshot(
+        db,
+        workspace_id=workspace.id,
+        user_id=user.user_id,
+        company=company,
+        analysis_payload=stamped,
+    )
+    _store_ai_sales_analysis_metadata(company, stamped)
+
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+    if lead:
+        _add_lead_activity(
+            db,
+            request,
+            user.user_id,
+            workspace,
+            "ai.sales_workspace.action_center_updated",
+            lead,
+            {
+                "company_id": str(company.id),
+                "task_id": payload.task_id,
+                "task_action": payload.action,
+                "version": stamped.get("version", 1),
+            },
+        )
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="ai.sales_workspace.action_center_updated",
+            metadata_json={
+                "company_id": str(company.id),
+                "task_id": payload.task_id,
+                "task_action": payload.action,
+                "reason": payload.reason,
+                "version": stamped.get("version", 1),
+            },
+        )
+    )
+    db.commit()
+
+    available_versions = _available_ai_sales_versions(db, workspace.id, company)
+    return UsageAISalesAnalysisOut(
+        status="success",
+        message="AI action center task updated.",
         company_id=company.id,
         analysis=stamped,
         generated_at=_analysis_visible_timestamp(stamped),

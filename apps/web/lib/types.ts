@@ -937,6 +937,49 @@ export type CrmCompany = {
       reason?: string;
       value_preview?: string;
     }>;
+    action_center?: {
+      generated_at?: string;
+      summary?: string;
+      policy?: string;
+      last_action?: {
+        task_id?: string;
+        action?: string;
+        at?: string;
+        actor?: string;
+      };
+      tasks?: Array<{
+        task_id?: string;
+        title?: string;
+        action_type?: string;
+        priority?: number;
+        estimated_impact?: string;
+        confidence_score?: number;
+        reasoning?: string;
+        expected_outcome?: string;
+        status?: "pending" | "completed" | "postponed" | "dismissed" | string;
+        status_reason?: string;
+        status_history?: Array<{
+          event?: string;
+          at?: string;
+          actor?: string;
+          previous_status?: string;
+          new_status?: string;
+          reason?: string;
+        }>;
+        updated_at?: string;
+        rank?: number;
+      }>;
+    };
+    action_center_audit_log?: Array<{
+      event?: string;
+      task_id?: string;
+      title?: string;
+      actor?: string;
+      at?: string;
+      reason?: string;
+      previous_status?: string;
+      new_status?: string;
+    }>;
     version?: number;
   } | null;
   ai_sales_workspace_updated_at?: string | null;

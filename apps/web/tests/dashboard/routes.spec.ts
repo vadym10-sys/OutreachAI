@@ -283,8 +283,16 @@ test.describe("customer workspace routes", () => {
     await expect(page.getByRole("button", { name: "Approve" }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Edit" }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Regenerate" }).first()).toBeVisible();
+    await expect(page.getByText("AI Action Center").first()).toBeVisible();
+    await expect(page.getByText("Send first personalized email").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Complete" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Postpone" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Dismiss" }).first()).toBeVisible();
     await expect(page.getByText("Hot").first()).toBeVisible();
     await expect(page.getByLabel("Analysis version")).toHaveValue("2");
+
+    await page.getByRole("button", { name: "Complete" }).first().click();
+    await expect(page.getByText("completed").first()).toBeVisible();
 
     await page.getByLabel("Analysis version").selectOption("1");
     await expect(page.getByText("Warm · 74%").first()).toBeVisible();

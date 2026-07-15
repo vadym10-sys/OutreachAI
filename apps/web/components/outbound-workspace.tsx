@@ -138,6 +138,12 @@ type WorkspaceAiSalesRecommendationActionIn = {
   reason?: string;
 };
 
+type WorkspaceAiSalesActionCenterActionIn = {
+  task_id: string;
+  action: "complete" | "postpone" | "dismiss";
+  reason?: string;
+};
+
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
 
 type WorkspaceIntegrationStatus = {
@@ -1597,6 +1603,7 @@ function OpportunityCard({
   const [salesAnalysisRequestedVersion, setSalesAnalysisRequestedVersion] = useState<number | null>(null);
   const [salesAnalysisLatestVersion, setSalesAnalysisLatestVersion] = useState<number | null>(null);
   const [salesRecommendationBusyKey, setSalesRecommendationBusyKey] = useState("");
+  const [salesActionCenterBusyKey, setSalesActionCenterBusyKey] = useState("");
   const [salesRecommendationEditKey, setSalesRecommendationEditKey] = useState("");
   const [salesRecommendationEditValue, setSalesRecommendationEditValue] = useState("");
   const [salesRecommendationEditReason, setSalesRecommendationEditReason] = useState("");
@@ -1779,6 +1786,38 @@ function OpportunityCard({
     }
   }
 
+  async function updateSalesActionCenterTask(payload: WorkspaceAiSalesActionCenterActionIn) {
+    if (!companyId) return;
+    const busyKey = `${payload.task_id}:${payload.action}`;
+    setSalesActionCenterBusyKey(busyKey);
+    setSalesAnalysisError("");
+    setError("");
+    setStatus(t("Updating AI action plan..."));
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis/action-center`, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }),
+        20000,
+        "AI action plan could not be updated."
+      );
+      applySalesAnalysisResult(result);
+      setStatus(t(result.message || "AI action plan updated."));
+    } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = friendlyErrorMessage(err, "AI action plan could not be updated.");
+      setError(t(reason));
+      setSalesAnalysisError(t(reason));
+      setStatus("");
+    } finally {
+      setSalesActionCenterBusyKey("");
+    }
+  }
+
   function recommendationValueToText(value: unknown): string {
     if (Array.isArray(value)) return value.map((item) => String(item || "")).filter(Boolean).join("\n");
     if (value && typeof value === "object") {
@@ -1845,6 +1884,16 @@ function OpportunityCard({
     { key: "priority_score", label: "Priority score", value: salesRecommendationActions.priority_score?.value ?? salesRecommendationPriorityScore, helper: "Priority for execution order" },
     { key: "next_best_action", label: "Next best action", value: salesRecommendationActions.next_best_action?.value ?? salesRecommendationNextAction, helper: "Safest immediate step to take" },
   ];
+  const salesActionCenterTasks = Array.isArray(salesAnalysis?.action_center?.tasks)
+    ? [...salesAnalysis.action_center.tasks]
+        .filter((task) => Boolean(task))
+        .sort((left: any, right: any) => {
+          const leftRank = Number(left?.rank || 0);
+          const rightRank = Number(right?.rank || 0);
+          if (leftRank > 0 || rightRank > 0) return leftRank - rightRank;
+          return Number(right?.priority || 0) - Number(left?.priority || 0);
+        })
+    : [];
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
@@ -2432,6 +2481,77 @@ function OpportunityCard({
                     );
                   })}
                 </div>
+              </div>
+              <div className="mt-4 rounded-2xl border border-white/15 bg-slate-950/45 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wide text-emerald-200">{t("AI Action Center")}</p>
+                    <p className="mt-1 text-sm text-slate-200">{t(String(salesAnalysis?.action_center?.summary || "Prioritized execution plan for this company."))}</p>
+                  </div>
+                  <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-100">{t("Tasks")}: {salesActionCenterTasks.length}</span>
+                </div>
+                {salesActionCenterTasks.length ? (
+                  <div className="mt-4 grid gap-3">
+                    {salesActionCenterTasks.map((task: any) => {
+                      const taskId = String(task.task_id || "");
+                      const taskStatus = String(task.status || "pending");
+                      const busyComplete = salesActionCenterBusyKey === `${taskId}:complete`;
+                      const busyPostpone = salesActionCenterBusyKey === `${taskId}:postpone`;
+                      const busyDismiss = salesActionCenterBusyKey === `${taskId}:dismiss`;
+                      const statusTone = taskStatus === "completed"
+                        ? "bg-emerald-500/20 text-emerald-100"
+                        : taskStatus === "postponed"
+                          ? "bg-amber-500/20 text-amber-100"
+                          : taskStatus === "dismissed"
+                            ? "bg-slate-500/20 text-slate-200"
+                            : "bg-sky-500/20 text-sky-100";
+                      return (
+                        <article key={`action-center-task-${taskId}`} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Rank")} {Number(task.rank || 0) || "-"} · {t(String(task.estimated_impact || "Impact"))}</p>
+                              <p className="mt-1 text-sm font-semibold text-white">{t(String(task.title || taskId || unavailable))}</p>
+                              <p className="mt-2 text-xs text-slate-300">{t("Priority")}: {Number(task.priority || 0)} · {t("Confidence")}: {Number(task.confidence_score || salesRecommendationConfidence || 0)}%</p>
+                              <p className="mt-1 text-xs text-slate-300">{t("Reasoning")}: {t(String(task.reasoning || unavailable))}</p>
+                              <p className="mt-1 text-xs text-slate-300">{t("Expected outcome")}: {t(String(task.expected_outcome || unavailable))}</p>
+                            </div>
+                            <div className="flex flex-col items-end gap-2">
+                              <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${statusTone}`}>{t(taskStatus)}</span>
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void updateSalesActionCenterTask({ task_id: taskId, action: "complete" })}
+                                  disabled={salesAnalysisLoading || salesActionCenterBusyKey !== "" || !taskId}
+                                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-emerald-300/40 bg-emerald-500/20 px-3 text-xs font-black text-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {busyComplete ? <Loader2 className="animate-spin" size={14} /> : null} {t("Complete")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void updateSalesActionCenterTask({ task_id: taskId, action: "postpone" })}
+                                  disabled={salesAnalysisLoading || salesActionCenterBusyKey !== "" || !taskId}
+                                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-amber-300/40 bg-amber-500/20 px-3 text-xs font-black text-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {busyPostpone ? <Loader2 className="animate-spin" size={14} /> : <Pause size={14} />} {t("Postpone")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void updateSalesActionCenterTask({ task_id: taskId, action: "dismiss" })}
+                                  disabled={salesAnalysisLoading || salesActionCenterBusyKey !== "" || !taskId}
+                                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-slate-300/40 bg-slate-600/20 px-3 text-xs font-black text-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {busyDismiss ? <Loader2 className="animate-spin" size={14} /> : null} {t("Dismiss")}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="mt-4 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">{t("No action plan yet. Generate AI sales analysis to create prioritized tasks.")}</p>
+                )}
               </div>
             </div>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">

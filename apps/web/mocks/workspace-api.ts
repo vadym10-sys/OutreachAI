@@ -207,6 +207,19 @@ const qaSalesAnalysisV2 = {
     policy: "Every recommendation is evidence-backed, confidence-scored, editable, and auditable."
   },
   recommendation_audit_log: [{ event: "generated", key: "all", actor: "ai-system", at: now, reason: "initial generation", value_preview: "phase4 baseline" }],
+  action_center: {
+    generated_at: now,
+    summary: "Prioritized actions to convert this company into pipeline progress.",
+    policy: "Action Center ranks next steps by priority, expected impact, and confidence, and keeps every state change auditable.",
+    tasks: [
+      { task_id: "send_first_email", title: "Send first personalized email", action_type: "send_first_email", priority: 86, estimated_impact: "High", confidence_score: 84, reasoning: "First message and owner contact are ready.", expected_outcome: "Start a conversation with the owner.", status: "pending", status_reason: "", status_history: [], updated_at: now, rank: 1 },
+      { task_id: "call_decision_maker", title: "Call Jane Doe", action_type: "call_decision_maker", priority: 79, estimated_impact: "High", confidence_score: 82, reasoning: "Intent and contact confidence are high.", expected_outcome: "Qualify urgency quickly.", status: "pending", status_reason: "", status_history: [], updated_at: now, rank: 2 },
+      { task_id: "send_follow_up", title: "Send follow-up sequence", action_type: "send_follow_up", priority: 71, estimated_impact: "High", confidence_score: 81, reasoning: "Follow-up sequence is prepared.", expected_outcome: "Recover no-response opportunities.", status: "pending", status_reason: "", status_history: [], updated_at: now, rank: 3 },
+      { task_id: "research_funding_news", title: "Research funding and news", action_type: "research_funding_news", priority: 56, estimated_impact: "Medium", confidence_score: 77, reasoning: "Fresh signals improve personalization.", expected_outcome: "Increase message relevance.", status: "pending", status_reason: "", status_history: [], updated_at: now, rank: 4 },
+      { task_id: "skip_lead", title: "Skip this lead for now", action_type: "skip_lead", priority: 12, estimated_impact: "Low", confidence_score: 70, reasoning: "Use only when fit degrades.", expected_outcome: "Protect rep capacity.", status: "pending", status_reason: "", status_history: [], updated_at: now, rank: 5 }
+    ]
+  },
+  action_center_audit_log: [{ event: "action_center_generated", task_id: "all", actor: "ai-system", at: now, reason: "initial generation", previous_status: "", new_status: "pending" }],
   opportunity_score: 81,
   buying_intent_score: 73,
   confidence_score: 84,
@@ -470,6 +483,62 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, {
         status: "success",
         message: "AI recommendation updated.",
+        company_id: qaCompany.id,
+        analysis: currentAnalysis,
+        generated_at: currentAnalysis.generated_at,
+        cached: false,
+        requested_version: currentAnalysis.version,
+        latest_version: currentAnalysis.version,
+        available_versions: analysisHistory.map((item) => ({ version: item.version, generated_at: item.generated_at, provider: item.provider, model: item.model, status: "success" }))
+      });
+    }
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis/action-center` && route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as { task_id: string; action: "complete" | "postpone" | "dismiss"; reason?: string };
+      const nowIso = new Date().toISOString();
+      const taskId = String(body.task_id || "");
+      const nextStatus = body.action === "complete" ? "completed" : body.action === "postpone" ? "postponed" : "dismissed";
+      const existingCenter = currentAnalysis.action_center || { generated_at: nowIso, summary: "", policy: "", tasks: [] };
+      const tasks = Array.isArray(existingCenter.tasks) ? [...existingCenter.tasks] : [];
+      const index = tasks.findIndex((item) => String(item?.task_id || "") === taskId);
+      if (index >= 0) {
+        const currentTask = tasks[index] || {};
+        tasks[index] = {
+          ...currentTask,
+          status: nextStatus,
+          status_reason: body.reason || "",
+          updated_at: nowIso,
+          status_history: [
+            ...((Array.isArray(currentTask.status_history) ? currentTask.status_history : []) as any[]),
+            { event: `task_${body.action}`, at: nowIso, actor: "qa-user", previous_status: String(currentTask.status || "pending"), new_status: nextStatus, reason: body.reason || "" }
+          ].slice(-20)
+        };
+      }
+      const pending = tasks.filter((item) => String(item?.status || "pending") === "pending").sort((left, right) => Number(right?.priority || 0) - Number(left?.priority || 0));
+      const nonPending = tasks.filter((item) => String(item?.status || "pending") !== "pending");
+      const rankedTasks = [...pending, ...nonPending].map((item, idx) => ({ ...item, rank: idx + 1 }));
+      const nextActionCenter = {
+        ...existingCenter,
+        generated_at: String(existingCenter.generated_at || nowIso),
+        last_action: { task_id: taskId, action: body.action, at: nowIso, actor: "qa-user" },
+        tasks: rankedTasks
+      };
+
+      const nextVersion = Number(currentAnalysis.version || 2) + 1;
+      currentAnalysis = {
+        ...currentAnalysis,
+        action_center: nextActionCenter,
+        action_center_audit_log: [
+          ...((currentAnalysis.action_center_audit_log || []) as any[]),
+          { event: `action_center_${body.action}`, task_id: taskId, title: String(rankedTasks.find((item) => String(item?.task_id || "") === taskId)?.title || taskId), actor: "qa-user", at: nowIso, reason: body.reason || "", previous_status: "pending", new_status: nextStatus }
+        ].slice(-100),
+        version: nextVersion,
+        generated_at: nowIso
+      };
+      analysisHistory = [currentAnalysis, ...analysisHistory.filter((item) => item.version !== nextVersion)].slice(0, 10);
+
+      return fulfillJson(route, {
+        status: "success",
+        message: "AI action center task updated.",
         company_id: qaCompany.id,
         analysis: currentAnalysis,
         generated_at: currentAnalysis.generated_at,
