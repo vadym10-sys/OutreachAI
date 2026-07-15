@@ -2,6 +2,16 @@
 
 ## 2026-07-15
 
+### feat(frontend)
+- Phase 6 started on `phase6` with the first lead-prioritization UX improvement in Leads workspace.
+- Opportunity cards now show an explicit priority tier badge (`Hot`, `Warm`, `Cold`) with the calculated opportunity score.
+- Lead cards in the primary Leads list now render in deterministic descending opportunity-priority order.
+
+### validation
+- `npm run lint` passed in `apps/web`.
+- `npm run test -- --run` passed in `apps/web`.
+- `npm run build` passed in `apps/web`.
+
 ### fix(api)
 - Fixed default AI sales analysis reads to resolve and return the latest persisted version when stale metadata cache versions are present.
 

@@ -894,6 +894,12 @@ function leadOpportunityScoreForWorkspace(lead: Lead) {
   return Math.max(0, Math.min(100, Math.round(withFallback + emailReady + researched)));
 }
 
+function leadPriorityTierFromScore(score: number) {
+  if (score >= 75) return "Hot";
+  if (score >= 45) return "Warm";
+  return "Cold";
+}
+
 function leadBuyingIntentForWorkspace(lead: Lead) {
   const replyRate = parseReplyRate(String(lead.expected_reply_rate || ""));
   const opportunity = leadOpportunityScoreForWorkspace(lead);
@@ -1617,6 +1623,7 @@ function OpportunityCard({
   const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
   const recipientEmail = String(lead.email || "").trim();
   const opportunityScore = leadOpportunityScoreForWorkspace(lead);
+  const priorityTier = leadPriorityTierFromScore(opportunityScore);
   const buyingIntent = leadBuyingIntentForWorkspace(lead);
   const confidence = leadConfidenceForWorkspace(lead);
   const topPainPoint = leadTopPainPointForWorkspace(lead);
@@ -2098,6 +2105,7 @@ function OpportunityCard({
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t("Completion count").replace("{count}", String(completed))}</span>
+          <span className={`rounded-full px-3 py-1 text-xs font-bold ${priorityTier === "Hot" ? "bg-red-50 text-red-700" : priorityTier === "Warm" ? "bg-amber-50 text-amber-700" : "bg-slate-200 text-slate-700"}`}>{t("Priority")}: {t(priorityTier)} · {opportunityScore}</span>
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Data")}: {t(sourceLabel(profile.source))}</span>
         </div>
       </div>
@@ -2130,6 +2138,7 @@ function OpportunityCard({
           {[
             ["Company", lead.company],
             ["Opportunity Score", String(opportunityScore)],
+            ["Priority", `${priorityTier} · ${opportunityScore}`],
             ["Buying Intent", String(buyingIntent)],
             ["Decision Maker", decisionMaker],
             ["AI Summary", aiSummary],
@@ -3821,7 +3830,7 @@ export function LeadFinderPage() {
         </form>
         </div>
       </details>
-          {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : visibleLeads.length ? <div className="grid gap-5">{visibleLeads.map((lead) => <OpportunityCard key={`${lead.id || lead.place_id || lead.company}:${lead.generated_emails?.[0]?.id || "no-draft"}:${lead.generated_emails?.[0]?.delivery_status || ""}`} lead={lead} api={api} onLeadUpdated={(updated) => {
+          {searching ? <LoadingSkeleton title="Searching companies" /> : loading && !hasSearched ? <LoadingSkeleton title="Loading saved companies." /> : error && !hasSearched ? <EmptyState title="Lead data unavailable" copy={error} /> : visibleLeads.length ? <div className="grid gap-5">{rankedLeads.map((lead) => <OpportunityCard key={`${lead.id || lead.place_id || lead.company}:${lead.generated_emails?.[0]?.id || "no-draft"}:${lead.generated_emails?.[0]?.delivery_status || ""}`} lead={lead} api={api} onLeadUpdated={(updated) => {
             setLeads((items) => items.map((item) => item.id === updated.id ? updated : item));
             setSearchResults((items) => items.map((item) => item.id === updated.id ? updated : item));
           }} onOpenWorkflow={setActiveWorkflowCompanyId} />)}</div> : <EmptyState title={hasSearched || aiFilters.length ? "No matching companies found" : "No real leads yet"} copy={hasSearched || aiFilters.length ? "No companies matched those filters. Broaden the city, category, or radius and search again." : "Run a lead search or add a company manually. No demo companies are shown."} />}

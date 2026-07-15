@@ -1,5 +1,11 @@
 # Roadmap
 
+## 2026-07-15 - Phase 6 (Value and Customer Experience) Execution Started
+- Started Phase 6 delivery on dedicated `phase6` branch with one completed quick win in Leads workspace prioritization UX.
+- Completed explicit priority tiering (`Hot`, `Warm`, `Cold`) and deterministic top-down ordering of lead opportunity cards.
+- Preserved backward compatibility and existing end-to-end workflow actions.
+- Next execution checkpoint: deploy `phase6` preview and validate decision-speed impact and lead triage clarity in production-like customer flows.
+
 ## 2026-07-15 - Production Hardening Release Completed
 - Release scope closed after Critical and High customer-facing issues were resolved and validated.
 - Deferred backlog remains intentionally limited to Medium and Low items for future releases.

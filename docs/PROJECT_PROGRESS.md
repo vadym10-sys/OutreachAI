@@ -2,6 +2,23 @@
 
 # Project Progress
 
+## 2026-07-15 - Phase 6 (Value and UX) First Improvement Completed
+
+### Scope Completed
+- Started Phase 6 implementation on `phase6` with one focused, backward-compatible frontend improvement in the Leads workspace.
+- Added an explicit lead-priority tier badge (`Hot`, `Warm`, `Cold`) to each Opportunity Card, paired with the opportunity score so the rep can triage in seconds.
+- Switched the primary Leads Opportunity Card list rendering to deterministic descending opportunity score order so highest-value leads are always surfaced first.
+- Preserved existing actions, data contracts, and workflow behavior.
+
+### Validation Status
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend unit tests: passed (`npm run test -- --run` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+
+### Notes
+- Scope intentionally limited to one customer-value improvement before proceeding to the next Phase 6 item.
+- No backend, API, database, worker, or migration files changed.
+
 ## 2026-07-15 - Phase 5 Hardening (Critical and High Customer Risks)
 
 ### Scope Completed
