@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.reliability import retry_operation
 from app.models.entities import (
     AuditLog,
     Campaign,
@@ -514,10 +515,26 @@ def _sync_crm(db: Session, workspace: Workspace, campaign: Campaign) -> int:
     synced = 0
     with httpx.Client(timeout=15) as client:
         for lead in leads:
-            response = client.post(url, json={"workspace_id": str(workspace.id), "campaign_id": str(campaign.id), "lead": _lead_payload(lead)})
-            response.raise_for_status()
-            synced += 1
-            _audit(db, workspace.owner_user_id, workspace.id, "automation.crm_synced", {"lead_id": str(lead.id)})
+            payload = {"workspace_id": str(workspace.id), "campaign_id": str(campaign.id), "lead": _lead_payload(lead)}
+            try:
+                response = retry_operation(
+                    lambda: client.post(url, json=payload),
+                    attempts=3,
+                    base_delay_seconds=0.4,
+                    operation_name="automation.crm_sync",
+                )
+                response.raise_for_status()
+                synced += 1
+                _audit(db, workspace.owner_user_id, workspace.id, "automation.crm_synced", {"lead_id": str(lead.id)})
+            except Exception as exc:
+                logger.warning("CRM sync failed lead_id=%s campaign_id=%s reason=%s", lead.id, campaign.id, exc)
+                _audit(
+                    db,
+                    workspace.owner_user_id,
+                    workspace.id,
+                    "automation.crm_sync_failed",
+                    {"lead_id": str(lead.id), "campaign_id": str(campaign.id), "reason": str(exc)[:220]},
+                )
     return synced
 
 

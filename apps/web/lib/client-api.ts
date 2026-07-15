@@ -95,8 +95,22 @@ export type ClientApiInit = RequestInit & {
   retryDelayMs?: number;
 };
 
+function requestMethod(init: ClientApiInit) {
+  return String(init.method || 'GET').toUpperCase();
+}
+
+function defaultRetriesForMethod(method: string) {
+  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS' ? 1 : 0;
+}
+
+function transientStatus(status: number | undefined) {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
 export async function clientApi<T>(path: string, token: string | null, init: ClientApiInit = {}): Promise<T> {
-  const { retries = 0, retryDelayMs = 750 } = init;
+  const method = requestMethod(init);
+  const retries = typeof init.retries === 'number' ? init.retries : defaultRetriesForMethod(method);
+  const retryDelayMs = typeof init.retryDelayMs === 'number' ? init.retryDelayMs : 750;
   let attempt = 0;
   let lastError: unknown = null;
   while (attempt <= retries) {
@@ -105,14 +119,21 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : '';
+      const status = typeof (error as { status?: unknown })?.status === 'number'
+        ? Number((error as { status?: unknown }).status)
+        : undefined;
       const retryable =
         attempt < retries
         && !init.signal?.aborted
         && (
+          transientStatus(status)
+          ||
           message.includes('REQUEST_FAILED:This request took too long')
           || message.includes('REQUEST_FAILED:Something went wrong while processing your request')
           || message.includes('REQUEST_FAILED:This action is temporarily limited')
           || message.includes('REQUEST_FAILED:We could not finish this action')
+          || message.includes('REQUEST_FAILED:Lead search is temporarily unavailable')
+          || message.includes('REQUEST_FAILED:AI analysis is temporarily unavailable')
         );
       if (!retryable) break;
       await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelayMs * (attempt + 1)));
@@ -183,7 +204,9 @@ async function clientApiOnce<T>(path: string, token: string | null, init: Client
 
   if (!response.ok) {
     const detail = await logApiFailure(requestPath, response, requestId);
-    throw new Error(`REQUEST_FAILED:${safeApiMessage(response.status, detail)}`);
+    const requestError = new Error(`REQUEST_FAILED:${safeApiMessage(response.status, detail)}`) as Error & { status?: number };
+    requestError.status = response.status;
+    throw requestError;
   }
 
   return response.json() as Promise<T>;
