@@ -2,6 +2,31 @@
 
 # Project Progress
 
+## 2026-07-16 - Phase 6 AI Company Memory
+
+### Scope Completed
+- Implemented persistent AI company memory (`ai_company_memory`) in the AI sales analysis payload, preserving full version compatibility.
+- Added unified company memory timeline that merges AI analysis versions, recommendation actions, action-center actions, workflow actions, CRM context, outreach/reply status signals, and manual-note context.
+- Added automatic `What's Changed` diff generation on each new analysis version with:
+  - new buying signals
+  - removed risks
+  - new decision makers
+  - new recommendations
+  - confidence change
+- Added recommendation memory logic to avoid repeating the same recommendation when evidence has not changed.
+- Added company-workspace UI panel for AI Company Memory with visible `What's Changed` and timeline output.
+
+### Validation Status
+- Backend tests: passed (`python3 -m pytest -q tests/test_api.py` in `apps/api`, 190 passed).
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend unit tests: passed (`npm run test -- --run` in `apps/web`, 31 tests).
+- Frontend Playwright regression: passed (`npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` in `apps/web`).
+- Frontend production build: passed (`npm run build` in `apps/web`).
+
+### Notes
+- Backward compatibility preserved by hydrating `ai_company_memory` for existing cached analysis versions.
+- Rollback and version history remain intact through existing snapshot versioning and reversible workflow actions.
+
 ## 2026-07-16 - Phase 6 Company Workflow Jump CTA
 
 ### Scope Completed

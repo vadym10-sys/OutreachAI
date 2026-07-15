@@ -1941,6 +1941,17 @@ function OpportunityCard({
   const salesWorkflowTimeline = Array.isArray(salesAnalysis?.sdr_workflow?.timeline)
     ? salesAnalysis.sdr_workflow.timeline.slice(0, 8)
     : [];
+  const salesCompanyMemory: Record<string, any> = salesAnalysis?.ai_company_memory && typeof salesAnalysis.ai_company_memory === "object"
+    ? salesAnalysis.ai_company_memory
+    : {};
+  const salesMemoryChanges: Record<string, any> = salesCompanyMemory.whats_changed && typeof salesCompanyMemory.whats_changed === "object"
+    ? salesCompanyMemory.whats_changed
+    : {};
+  const salesMemoryTimeline = Array.isArray(salesCompanyMemory.timeline)
+    ? salesCompanyMemory.timeline.slice(0, 8)
+    : [];
+  const salesMemoryConfidenceDelta = Number(salesMemoryChanges.confidence?.delta || 0);
+  const salesMemoryRepeatPrevented = Boolean(salesCompanyMemory.recommendation_memory?.repeat_prevented);
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
@@ -2680,6 +2691,64 @@ function OpportunityCard({
                     </div>
                   ) : (
                     <p className="mt-2 text-sm text-slate-300">{t("Timeline will appear as soon as workflow actions are executed.")}</p>
+                  )}
+                </div>
+              </div>
+              <div className="mt-4 rounded-2xl border border-violet-300/20 bg-violet-500/10 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wide text-violet-100">{t("AI Company Memory")}</p>
+                    <p className="mt-1 text-sm text-violet-50">{t("Persistent memory across versions, actions, outreach outcomes, CRM updates, and notes.")}</p>
+                  </div>
+                  <span className="inline-flex items-center rounded-full bg-violet-900/50 px-3 py-1 text-xs font-black text-violet-100">{t("Version")}: {Number(salesCompanyMemory.latest_version || salesAnalysis?.version || 1)}</span>
+                </div>
+                <div className="mt-3 rounded-xl border border-white/15 bg-slate-950/50 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-black uppercase tracking-wide text-violet-100">{t("What's Changed")}</p>
+                    <span className={`inline-flex items-center rounded-full px-2 py-1 text-[11px] font-black ${salesMemoryConfidenceDelta >= 0 ? "bg-emerald-500/20 text-emerald-100" : "bg-rose-500/20 text-rose-100"}`}>
+                      {t("Confidence")}: {salesMemoryConfidenceDelta >= 0 ? "+" : ""}{salesMemoryConfidenceDelta}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-200">{t(String(salesMemoryChanges.summary || "No material changes detected from the previous version."))}</p>
+                  {salesMemoryRepeatPrevented ? (
+                    <p className="mt-2 text-xs font-semibold text-amber-100">{t("Repeated recommendation was prevented because no new evidence was detected.")}</p>
+                  ) : null}
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    {[
+                      { label: "New buying signals", items: salesMemoryChanges.new_buying_signals },
+                      { label: "Removed risks", items: salesMemoryChanges.removed_risks },
+                      { label: "New decision makers", items: salesMemoryChanges.new_decision_makers },
+                      { label: "New recommendations", items: salesMemoryChanges.new_recommendations },
+                    ].map((bucket) => (
+                      <div key={bucket.label} className="rounded-lg border border-white/10 bg-white/5 p-2">
+                        <p className="text-[11px] font-black uppercase tracking-wide text-violet-100">{t(bucket.label)}</p>
+                        {Array.isArray(bucket.items) && bucket.items.length ? (
+                          <ul className="mt-1 space-y-1 text-xs text-slate-200">
+                            {bucket.items.slice(0, 3).map((entry: any, index: number) => (
+                              <li key={`${bucket.label}-${index}`} className="rounded bg-slate-900/50 px-2 py-1">{t(String(entry))}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="mt-1 text-xs text-slate-300">{t("No updates")}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-3 rounded-xl border border-white/15 bg-slate-950/50 p-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-violet-100">{t("Unified timeline")}</p>
+                  {salesMemoryTimeline.length ? (
+                    <div className="mt-2 space-y-2">
+                      {salesMemoryTimeline.map((item: any, index: number) => (
+                        <div key={`company-memory-event-${index}`} className="rounded-md border border-white/10 bg-slate-900/40 p-2">
+                          <p className="text-xs font-black text-white">{t(String(item.title || item.event || "Memory event"))}</p>
+                          <p className="mt-1 text-xs text-slate-300">{t(String(item.details || unavailable))}</p>
+                          <p className="mt-1 text-[11px] text-slate-400">{t(String(item.source || "memory"))} · {item.at ? new Date(String(item.at)).toLocaleString() : unavailable}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-slate-300">{t("Memory timeline will populate as analysis and workflow history grows.")}</p>
                   )}
                 </div>
               </div>

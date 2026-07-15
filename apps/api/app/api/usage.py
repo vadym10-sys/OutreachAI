@@ -6519,6 +6519,7 @@ def _analysis_content_key(analysis_payload: dict[str, Any]) -> dict[str, Any]:
     comparable.pop("recommendation_audit_log", None)
     comparable.pop("action_center_audit_log", None)
     comparable.pop("sdr_workflow_audit_log", None)
+    comparable.pop("ai_company_memory", None)
 
     recommendation_actions = comparable.get("recommendation_actions") if isinstance(comparable.get("recommendation_actions"), dict) else {}
     for value in recommendation_actions.values():
@@ -6591,6 +6592,317 @@ def _analysis_recommendation_defaults(analysis: dict[str, Any]) -> dict[str, Any
         "priority_score": _entry("Priority score", max(0, min(100, int(analysis.get("lead_priority_score") or 0)))),
         "next_best_action": _entry("Next best action", str(analysis.get("recommended_next_action") or analysis.get("next_action") or "")),
     }
+
+
+def _memory_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _memory_decision_makers(analysis: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    makers = analysis.get("decision_makers") if isinstance(analysis.get("decision_makers"), list) else []
+    for item in makers:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        title = str(item.get("title") or "").strip()
+        email = str(item.get("email") or "").strip()
+        label = " · ".join(part for part in [name, title, email] if part)
+        if label:
+            values.append(label)
+    decision = analysis.get("decision_maker") if isinstance(analysis.get("decision_maker"), dict) else {}
+    name = str(decision.get("name") or "").strip()
+    title = str(decision.get("title") or "").strip()
+    email = str(decision.get("email") or "").strip()
+    fallback = " · ".join(part for part in [name, title, email] if part)
+    if fallback:
+        values.append(fallback)
+    return _memory_text_list(values)
+
+
+def _memory_recommendations(analysis: dict[str, Any]) -> list[str]:
+    recommendations: list[str] = []
+    next_action = str(analysis.get("recommended_next_action") or analysis.get("next_action") or "").strip()
+    if next_action:
+        recommendations.append(next_action)
+    recommendation_actions = analysis.get("recommendation_actions") if isinstance(analysis.get("recommendation_actions"), dict) else {}
+    for item in recommendation_actions.values():
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        if isinstance(value, list):
+            recommendations.extend(str(entry or "").strip() for entry in value)
+        elif isinstance(value, dict):
+            composed = " · ".join(str(value.get(part) or "").strip() for part in ["name", "title", "recommended_role"] if str(value.get(part) or "").strip())
+            if composed:
+                recommendations.append(composed)
+        else:
+            text = str(value or "").strip()
+            if text:
+                recommendations.append(text)
+    return _memory_text_list(recommendations)
+
+
+def _memory_evidence_hash(analysis: dict[str, Any]) -> str:
+    evidence = analysis.get("evidence") if isinstance(analysis.get("evidence"), list) else []
+    normalized: list[str] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source_field") or "").strip().lower()
+        value = str(item.get("value") or "").strip().lower()
+        if source or value:
+            normalized.append(f"{source}:{value}")
+    normalized.sort()
+    return hashlib.sha256("|".join(normalized).encode("utf-8")).hexdigest()
+
+
+def _memory_recommendation_hash(analysis: dict[str, Any]) -> str:
+    values = _memory_recommendations(analysis)
+    return hashlib.sha256("|".join(values).encode("utf-8")).hexdigest()
+
+
+def _extract_whats_changed(previous_analysis: dict[str, Any], current_analysis: dict[str, Any]) -> dict[str, Any]:
+    previous_signals = set(text.lower() for text in _memory_text_list(previous_analysis.get("buying_signals")))
+    current_signals = _memory_text_list(current_analysis.get("buying_signals"))
+    new_buying_signals = [item for item in current_signals if item.lower() not in previous_signals]
+
+    previous_risks = set(text.lower() for text in _memory_text_list(previous_analysis.get("predicted_objections")))
+    previous_risks.update(text.lower() for text in _memory_text_list(previous_analysis.get("why_may_not_fit")))
+    current_risks = set(text.lower() for text in _memory_text_list(current_analysis.get("predicted_objections")))
+    current_risks.update(text.lower() for text in _memory_text_list(current_analysis.get("why_may_not_fit")))
+    removed_risks = [item for item in _memory_text_list(previous_analysis.get("predicted_objections")) + _memory_text_list(previous_analysis.get("why_may_not_fit")) if item.lower() not in current_risks]
+
+    previous_decision_makers = set(text.lower() for text in _memory_decision_makers(previous_analysis))
+    current_decision_makers = _memory_decision_makers(current_analysis)
+    new_decision_makers = [item for item in current_decision_makers if item.lower() not in previous_decision_makers]
+
+    previous_recommendations = set(text.lower() for text in _memory_recommendations(previous_analysis))
+    current_recommendations = _memory_recommendations(current_analysis)
+    new_recommendations = [item for item in current_recommendations if item.lower() not in previous_recommendations]
+
+    previous_confidence = int(previous_analysis.get("confidence_score") or 0)
+    current_confidence = int(current_analysis.get("confidence_score") or 0)
+    confidence_delta = current_confidence - previous_confidence
+
+    summary_parts: list[str] = []
+    if new_buying_signals:
+        summary_parts.append(f"{len(new_buying_signals)} new buying signals")
+    if removed_risks:
+        summary_parts.append(f"{len(removed_risks)} risks removed")
+    if new_decision_makers:
+        summary_parts.append(f"{len(new_decision_makers)} new decision-maker insights")
+    if new_recommendations:
+        summary_parts.append(f"{len(new_recommendations)} new recommendations")
+    if confidence_delta != 0:
+        summary_parts.append(f"confidence {'increased' if confidence_delta > 0 else 'decreased'} by {abs(confidence_delta)}")
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "new_buying_signals": new_buying_signals[:8],
+        "removed_risks": removed_risks[:8],
+        "new_decision_makers": new_decision_makers[:6],
+        "new_recommendations": new_recommendations[:8],
+        "confidence": {
+            "previous": previous_confidence,
+            "current": current_confidence,
+            "delta": confidence_delta,
+        },
+        "summary": "; ".join(summary_parts) if summary_parts else "No material changes detected from the previous version.",
+    }
+
+
+def _memory_external_events(company: Company | None, lead: Lead | None) -> list[dict[str, Any]]:
+    if company is None:
+        return []
+    events: list[dict[str, Any]] = []
+    now = datetime.utcnow().isoformat()
+    stage = str(company.crm_stage or "").strip()
+    if stage:
+        events.append(
+            {
+                "source": "crm",
+                "event": "crm_stage",
+                "actor": "system",
+                "at": str(company.updated_at.isoformat() if getattr(company, "updated_at", None) else now),
+                "title": "CRM stage",
+                "details": stage,
+                "reversible": False,
+            }
+        )
+
+    email_status = str(company.email_status or "").strip().lower()
+    if "reply" in email_status:
+        events.append(
+            {
+                "source": "reply",
+                "event": "reply_detected",
+                "actor": "system",
+                "at": str(company.updated_at.isoformat() if getattr(company, "updated_at", None) else now),
+                "title": "Reply detected",
+                "details": str(company.email_status or "Reply"),
+                "reversible": False,
+            }
+        )
+    elif "sent" in email_status or "approved" in email_status:
+        events.append(
+            {
+                "source": "outreach",
+                "event": "outreach_status",
+                "actor": "system",
+                "at": str(company.updated_at.isoformat() if getattr(company, "updated_at", None) else now),
+                "title": "Outreach result",
+                "details": str(company.email_status or "Sent"),
+                "reversible": False,
+            }
+        )
+
+    if lead is not None:
+        note = str(lead.notes or "").strip()
+        if note:
+            events.append(
+                {
+                    "source": "note",
+                    "event": "manual_note",
+                    "actor": "user",
+                    "at": str(lead.updated_at.isoformat() if getattr(lead, "updated_at", None) else now),
+                    "title": "Manual note",
+                    "details": note[:300],
+                    "reversible": False,
+                }
+            )
+    return events
+
+
+def _memory_timeline_merge(previous_timeline: list[dict[str, Any]], current_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    combined: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in [*previous_timeline, *current_events]:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "").strip().lower()
+        event = str(item.get("event") or "").strip().lower()
+        at = str(item.get("at") or "").strip()
+        details = str(item.get("details") or "").strip().lower()
+        key = f"{source}|{event}|{at}|{details}"
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(item)
+    combined.sort(key=lambda item: str(item.get("at") or ""), reverse=True)
+    return combined[:240]
+
+
+def _memory_alternative_recommendation(analysis: dict[str, Any], current_recommendation: str) -> str:
+    tasks = analysis.get("action_center", {}).get("tasks") if isinstance(analysis.get("action_center"), dict) else []
+    if isinstance(tasks, list):
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").lower()
+            title = str(item.get("title") or "").strip()
+            if status == "pending" and title and title.lower() != current_recommendation.lower():
+                return title
+    follow_ups = _memory_text_list(analysis.get("personalized_follow_up_sequence"))
+    for item in follow_ups:
+        if item.lower() != current_recommendation.lower():
+            return item
+    return "Execute the highest-priority pending Action Center task and log outcome evidence in the timeline."
+
+
+def _ensure_analysis_company_memory(
+    analysis: dict[str, Any],
+    *,
+    previous_analysis: dict[str, Any] | None,
+    company: Company | None,
+    lead: Lead | None,
+) -> dict[str, Any]:
+    normalized = read_cached_analysis({"ai_sales_workspace": analysis}) if isinstance(analysis, dict) else {}
+    memory = normalized.get("ai_company_memory") if isinstance(normalized.get("ai_company_memory"), dict) else {}
+    previous_memory = previous_analysis.get("ai_company_memory") if isinstance(previous_analysis, dict) and isinstance(previous_analysis.get("ai_company_memory"), dict) else {}
+
+    previous_timeline = previous_memory.get("timeline") if isinstance(previous_memory.get("timeline"), list) else []
+    workflow_log = normalized.get("sdr_workflow_audit_log") if isinstance(normalized.get("sdr_workflow_audit_log"), list) else []
+    audit_timeline = _timeline_from_audit_logs(normalized, [item for item in workflow_log if isinstance(item, dict)])
+    generated_at = str(normalized.get("generated_at") or datetime.utcnow().isoformat())
+    analysis_event = {
+        "source": "analysis",
+        "event": "analysis_version",
+        "actor": "ai-system",
+        "at": generated_at,
+        "title": "AI analysis version",
+        "details": f"Version {_version_from_analysis(normalized)} generated",
+        "reversible": False,
+    }
+    unified_timeline = _memory_timeline_merge(
+        [item for item in previous_timeline if isinstance(item, dict)],
+        [*audit_timeline, *_memory_external_events(company, lead), analysis_event],
+    )
+
+    previous_for_changes = previous_analysis if isinstance(previous_analysis, dict) else {}
+    whats_changed = _extract_whats_changed(previous_for_changes, normalized) if previous_for_changes else {
+        "generated_at": generated_at,
+        "new_buying_signals": _memory_text_list(normalized.get("buying_signals"))[:8],
+        "removed_risks": [],
+        "new_decision_makers": _memory_decision_makers(normalized)[:6],
+        "new_recommendations": _memory_recommendations(normalized)[:8],
+        "confidence": {
+            "previous": 0,
+            "current": int(normalized.get("confidence_score") or 0),
+            "delta": int(normalized.get("confidence_score") or 0),
+        },
+        "summary": "Initial AI company memory baseline created.",
+    }
+
+    previous_evidence_hash = str(previous_memory.get("recommendation_memory", {}).get("evidence_hash") or "") if isinstance(previous_memory.get("recommendation_memory"), dict) else ""
+    previous_recommendation_hash = str(previous_memory.get("recommendation_memory", {}).get("recommendation_hash") or "") if isinstance(previous_memory.get("recommendation_memory"), dict) else ""
+    evidence_hash = _memory_evidence_hash(normalized)
+    recommendation_hash = _memory_recommendation_hash(normalized)
+    repeat_prevented = bool(previous_recommendation_hash and previous_evidence_hash and previous_recommendation_hash == recommendation_hash and previous_evidence_hash == evidence_hash)
+    if repeat_prevented:
+        current_action = str(normalized.get("recommended_next_action") or normalized.get("next_action") or "").strip()
+        alternative = _memory_alternative_recommendation(normalized, current_action)
+        normalized["recommended_next_action"] = alternative
+        normalized["next_action"] = alternative
+        recommendation_actions = normalized.get("recommendation_actions") if isinstance(normalized.get("recommendation_actions"), dict) else {}
+        next_action_item = recommendation_actions.get("next_best_action") if isinstance(recommendation_actions.get("next_best_action"), dict) else {}
+        if next_action_item:
+            next_action_item["value"] = alternative
+            next_action_item["reasoning"] = "Recommendation memory avoided repeating identical advice because no new evidence was detected."
+            next_action_item["updated_at"] = datetime.utcnow().isoformat()
+            recommendation_actions["next_best_action"] = next_action_item
+            normalized["recommendation_actions"] = recommendation_actions
+        whats_changed["new_recommendations"] = [alternative]
+        whats_changed["summary"] = "No new evidence detected, so AI company memory advanced to the next best action instead of repeating the same recommendation."
+
+    normalized["ai_company_memory"] = {
+        **memory,
+        "generated_at": generated_at,
+        "latest_version": _version_from_analysis(normalized),
+        "rollback_available": True,
+        "timeline": unified_timeline,
+        "whats_changed": whats_changed,
+        "recommendation_memory": {
+            "recommendation_hash": _memory_recommendation_hash(normalized),
+            "evidence_hash": _memory_evidence_hash(normalized),
+            "repeat_prevented": repeat_prevented,
+            "reason": "No new evidence since previous version." if repeat_prevented else "New evidence or recommendation updates detected.",
+        },
+    }
+    return normalized
 
 
 def _sdr_stage_order() -> list[str]:
@@ -6733,7 +7045,7 @@ def _ensure_analysis_sdr_workflow_structures(analysis: dict[str, Any]) -> dict[s
         "timeline": _timeline_from_audit_logs(normalized, [item for item in workflow_log if isinstance(item, dict)]),
     }
     normalized["sdr_workflow_audit_log"] = [item for item in workflow_log if isinstance(item, dict)][-120:]
-    return normalized
+    return _ensure_analysis_company_memory(normalized, previous_analysis=None, company=None, lead=None)
 
 
 def _ensure_analysis_action_center_structures(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -7189,6 +7501,7 @@ def _refresh_cached_ai_sales_workspace_analysis(
         return previous_analysis
 
     stamped = _stamp_analysis_payload(analysis, force=bool(previous_analysis), previous_analysis=previous_analysis)
+    stamped = _ensure_analysis_company_memory(stamped, previous_analysis=previous_analysis, company=company, lead=lead)
     _store_ai_sales_analysis_metadata(company, stamped)
     return stamped
 
@@ -7681,6 +7994,7 @@ def get_company(company_id: UUID, user: WorkspaceUserContext, db: Session = Depe
 def get_ai_sales_analysis(company_id: UUID, request: Request, user: WorkspaceUserContext, version: Optional[int] = Query(default=None, ge=1), db: Session = Depends(get_db)) -> UsageAISalesAnalysisOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     company = _scoped_company(db, workspace.id, company_id)
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
 
     cached = _cached_ai_sales_analysis_from_company(company)
     available_versions = _available_ai_sales_versions(db, workspace.id, company)
@@ -7703,7 +8017,6 @@ def get_ai_sales_analysis(company_id: UUID, request: Request, user: WorkspaceUse
             analysis = cached
     generated_at = _analysis_visible_timestamp(analysis)
     if not analysis:
-        lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
         contacts = list(
             db.scalars(
                 select(Contact)
@@ -7723,6 +8036,7 @@ def get_ai_sales_analysis(company_id: UUID, request: Request, user: WorkspaceUse
                 language=language,
             )
             analysis = _stamp_analysis_payload(analysis, force=False, previous_analysis=None)
+            analysis = _ensure_analysis_company_memory(analysis, previous_analysis=None, company=company, lead=lead)
             _save_ai_sales_analysis_snapshot(
                 db,
                 workspace_id=workspace.id,
@@ -7738,7 +8052,7 @@ def get_ai_sales_analysis(company_id: UUID, request: Request, user: WorkspaceUse
                 status="success",
                 message="AI sales analysis generated automatically.",
                 company_id=company.id,
-                analysis=_ensure_analysis_action_center_structures(analysis),
+                analysis=_ensure_analysis_company_memory(_ensure_analysis_action_center_structures(analysis), previous_analysis=None, company=company, lead=lead),
                 generated_at=_analysis_visible_timestamp(analysis),
                 cached=False,
                 requested_version=_version_from_analysis(analysis),
@@ -7775,7 +8089,7 @@ def get_ai_sales_analysis(company_id: UUID, request: Request, user: WorkspaceUse
         status="success",
         message="AI sales analysis loaded.",
         company_id=company.id,
-        analysis=_ensure_analysis_action_center_structures(analysis),
+        analysis=_ensure_analysis_company_memory(_ensure_analysis_action_center_structures(analysis), previous_analysis=None, company=company, lead=lead),
         generated_at=generated_at,
         cached=True,
         requested_version=version or latest_version or _version_from_analysis(analysis),
@@ -7838,10 +8152,12 @@ def generate_ai_sales_analysis(
         )
         analysis = _stamp_analysis_payload(analysis, force=payload.force, previous_analysis=previous_analysis)
         analysis = _ensure_analysis_action_center_structures(analysis)
+        analysis = _ensure_analysis_company_memory(analysis, previous_analysis=previous_analysis, company=company, lead=lead)
     except (ProviderConfigurationError, ProviderRequestError) as exc:
         capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis", workspace_id=workspace.id, lead_id=company.lead_id)
         if payload.force and previous_analysis:
             analysis = _stamp_analysis_payload(previous_analysis, force=True, previous_analysis=previous_analysis)
+            analysis = _ensure_analysis_company_memory(analysis, previous_analysis=previous_analysis, company=company, lead=lead)
             _save_ai_sales_analysis_snapshot(
                 db,
                 workspace_id=workspace.id,
@@ -7879,6 +8195,7 @@ def generate_ai_sales_analysis(
         capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis.unexpected", workspace_id=workspace.id, lead_id=company.lead_id)
         if payload.force and previous_analysis:
             analysis = _stamp_analysis_payload(previous_analysis, force=True, previous_analysis=previous_analysis)
+            analysis = _ensure_analysis_company_memory(analysis, previous_analysis=previous_analysis, company=company, lead=lead)
             _save_ai_sales_analysis_snapshot(
                 db,
                 workspace_id=workspace.id,
@@ -7981,6 +8298,8 @@ def update_ai_sales_recommendation(
             available_versions=available_versions,
         )
 
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+
     updated = _apply_recommendation_action(
         previous_analysis,
         key=payload.key,
@@ -7990,6 +8309,7 @@ def update_ai_sales_recommendation(
         actor=user.user_id,
     )
     stamped = _stamp_analysis_payload(updated, force=True, previous_analysis=previous_analysis)
+    stamped = _ensure_analysis_company_memory(stamped, previous_analysis=previous_analysis, company=company, lead=lead)
 
     _save_ai_sales_analysis_snapshot(
         db,
@@ -8000,7 +8320,6 @@ def update_ai_sales_recommendation(
     )
     _store_ai_sales_analysis_metadata(company, stamped)
 
-    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
     if lead:
         _add_lead_activity(
             db,
@@ -8075,6 +8394,8 @@ def update_ai_sales_action_center(
             available_versions=available_versions,
         )
 
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+
     updated = _apply_action_center_action(
         previous_analysis,
         task_id=payload.task_id,
@@ -8083,6 +8404,7 @@ def update_ai_sales_action_center(
         actor=user.user_id,
     )
     stamped = _stamp_analysis_payload(updated, force=True, previous_analysis=previous_analysis)
+    stamped = _ensure_analysis_company_memory(stamped, previous_analysis=previous_analysis, company=company, lead=lead)
 
     _save_ai_sales_analysis_snapshot(
         db,
@@ -8093,7 +8415,6 @@ def update_ai_sales_action_center(
     )
     _store_ai_sales_analysis_metadata(company, stamped)
 
-    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
     if lead:
         _add_lead_activity(
             db,
@@ -8168,6 +8489,8 @@ def update_ai_sales_workflow(
             available_versions=available_versions,
         )
 
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+
     updated = _apply_sdr_workflow_action(
         previous_analysis,
         company=company,
@@ -8176,6 +8499,7 @@ def update_ai_sales_workflow(
         actor=user.user_id,
     )
     stamped = _stamp_analysis_payload(updated, force=True, previous_analysis=previous_analysis)
+    stamped = _ensure_analysis_company_memory(stamped, previous_analysis=previous_analysis, company=company, lead=lead)
 
     _save_ai_sales_analysis_snapshot(
         db,
@@ -8186,7 +8510,6 @@ def update_ai_sales_workflow(
     )
     _store_ai_sales_analysis_metadata(company, stamped)
 
-    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
     if lead:
         _add_lead_activity(
             db,

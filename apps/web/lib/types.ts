@@ -1022,6 +1022,39 @@ export type CrmCompany = {
       reverted?: boolean;
       reverted_at?: string;
     }>;
+    ai_company_memory?: {
+      generated_at?: string;
+      latest_version?: number;
+      rollback_available?: boolean;
+      timeline?: Array<{
+        source?: string;
+        event?: string;
+        actor?: string;
+        at?: string;
+        title?: string;
+        details?: string;
+        reversible?: boolean;
+      }>;
+      whats_changed?: {
+        generated_at?: string;
+        summary?: string;
+        new_buying_signals?: string[];
+        removed_risks?: string[];
+        new_decision_makers?: string[];
+        new_recommendations?: string[];
+        confidence?: {
+          previous?: number;
+          current?: number;
+          delta?: number;
+        };
+      };
+      recommendation_memory?: {
+        recommendation_hash?: string;
+        evidence_hash?: string;
+        repeat_prevented?: boolean;
+        reason?: string;
+      };
+    };
     version?: number;
   } | null;
   ai_sales_workspace_updated_at?: string | null;

@@ -83,6 +83,7 @@ class AISalesWorkspaceAnalysisPayload(BaseModel):
     action_center_audit_log: list[dict[str, Any]] = Field(default_factory=list)
     sdr_workflow: dict[str, Any] = Field(default_factory=dict)
     sdr_workflow_audit_log: list[dict[str, Any]] = Field(default_factory=list)
+    ai_company_memory: dict[str, Any] = Field(default_factory=dict)
 
 
 def _clean_text(value: Any) -> str:
@@ -961,4 +962,5 @@ def read_cached_analysis(metadata_json: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("action_center_audit_log", [])
     payload.setdefault("sdr_workflow", _default_sdr_workflow(payload=payload))
     payload.setdefault("sdr_workflow_audit_log", [])
+    payload.setdefault("ai_company_memory", {})
     return payload

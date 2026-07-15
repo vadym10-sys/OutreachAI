@@ -1,5 +1,11 @@
 # Roadmap
 
+## 2026-07-16 - Phase 6 AI Company Memory Delivered
+- Completed persistent AI company memory so each company now maintains cross-version context, change history, and recommendation memory state.
+- Completed unified memory timeline and `What's Changed` summaries to make version-to-version movement explicit for sales reps.
+- Completed repeat-prevention behavior so recommendations are not repeated when no new evidence appears.
+- Next execution checkpoint: run production-like user walkthrough to verify memory timeline and change summaries improve decision confidence before broadening memory surfaces to other pages.
+
 ## 2026-07-16 - Phase 6 Analysis-to-Workflow Handoff
 - Completed a direct jump from company AI recommendations into the AI SDR Workflow section so reps can move from deciding to doing in one click.
 - Kept the handoff shallow and reversible by reusing existing workflow state, timeline, and action controls.

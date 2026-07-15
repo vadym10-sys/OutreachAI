@@ -4069,6 +4069,196 @@ def test_ai_sales_sdr_workflow_actions_are_versioned_and_reversible(monkeypatch)
     assert any(item.get("event") == "workflow_reverted" for item in reverted_payload["analysis"].get("sdr_workflow_audit_log", []))
 
 
+def test_ai_sales_company_memory_tracks_changes_and_timeline(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-company-memory@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Company Memory Co", "website": "https://analysis-company-memory.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    base_payload = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "provider": "openai",
+        "model": "gpt-test",
+        "summary": "Memory baseline",
+        "company_summary": "Memory baseline",
+        "business_model": "B2B SaaS",
+        "what_company_sells": "Outbound automation",
+        "target_customers": "Revenue teams",
+        "company_stage": "Active evaluation",
+        "pain_points": ["Manual qualification"],
+        "likely_business_pains": ["Manual qualification"],
+        "buying_signals": ["Hiring SDRs"],
+        "relevant_technologies": ["HubSpot"],
+        "company_growth_indicators": ["New sales hiring"],
+        "why_fits_icp": ["Matches ICP"],
+        "why_may_not_fit": [],
+        "icp_fit_score": 85,
+        "ai_lead_score": 84,
+        "lead_priority_score": 86,
+        "lead_priority_tier": "Hot",
+        "buying_probability": 77,
+        "score_explanation": "Fit and intent are strong.",
+        "estimated_reply_probability": 64,
+        "estimated_company_size": "11-50",
+        "estimated_revenue": "$1M-$10M",
+        "recommended_decision_maker_role": "Founder",
+        "decision_makers": [{"name": "Alex", "title": "Founder", "email": "alex@analysis-company-memory.example"}],
+        "best_outreach_angle": "Lead with speed-to-pipeline outcome.",
+        "value_proposition": "Automate qualification and follow-up.",
+        "best_communication_channel": "Email",
+        "personalization_variables": ["Recent hiring"],
+        "predicted_objections": ["Timing"],
+        "personalized_opening_line": "Hi Alex, noticed SDR hiring momentum.",
+        "strongest_sales_arguments": ["Improve qualification throughput"],
+        "suggested_cta": "Open to a 15-minute fit check?",
+        "recommended_next_action": "Send first message.",
+        "recommended_first_message": "Hi Alex, we help teams automate qualification and follow-up.",
+        "personalized_follow_up_sequence": ["Day 3: customer proof", "Day 7: low-friction CTA"],
+        "best_timing_to_contact": "Tue-Thu mornings",
+        "decision_maker": {"name": "Alex", "title": "Founder", "email": "alex@analysis-company-memory.example"},
+        "reasoning": ["Verified profile and growth signals"],
+        "missing_data": [],
+        "evidence": [{"source_field": "company.website", "value": "analysis-company-memory.example", "confidence": 95}],
+        "opportunity_score": 84,
+        "buying_intent_score": 77,
+        "confidence_score": 81,
+        "outreach_angle": "Lead with speed-to-pipeline outcome.",
+        "best_subject_line": "Quick idea for your SDR team",
+        "best_cta": "Open to a 15-minute fit check?",
+        "risk_to_check": "Confirm timing.",
+        "next_action": "Send first message.",
+        "version": 1,
+    }
+
+    payload_v1 = dict(base_payload)
+    payload_v2 = {
+        **base_payload,
+        "generated_at": (datetime.utcnow() + timedelta(minutes=1)).isoformat(),
+        "buying_signals": ["Hiring SDRs", "New pricing page"],
+        "predicted_objections": [],
+        "why_may_not_fit": [],
+        "decision_makers": [
+            {"name": "Alex", "title": "Founder", "email": "alex@analysis-company-memory.example"},
+            {"name": "Beth", "title": "VP Sales", "email": "beth@analysis-company-memory.example"},
+        ],
+        "recommended_next_action": "Call VP Sales.",
+        "next_action": "Call VP Sales.",
+        "confidence_score": 89,
+        "evidence": [
+            {"source_field": "company.website", "value": "analysis-company-memory.example", "confidence": 95},
+            {"source_field": "pricing.page", "value": "new pricing page", "confidence": 82},
+        ],
+    }
+
+    versions = iter([payload_v1, payload_v2])
+    monkeypatch.setattr(usage_module, "build_ai_sales_workspace_analysis", lambda **_: dict(next(versions)))
+
+    first = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert first.status_code == 200
+    second = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert second.status_code == 200
+
+    second_analysis = second.json()["analysis"]
+    memory = second_analysis.get("ai_company_memory") or {}
+    changes = memory.get("whats_changed") or {}
+    assert "New pricing page" in changes.get("new_buying_signals", [])
+    assert "Timing" in changes.get("removed_risks", [])
+    assert any("Beth" in item for item in changes.get("new_decision_makers", []))
+    assert any("Call VP Sales." in item for item in changes.get("new_recommendations", []))
+    assert (changes.get("confidence") or {}).get("delta") == 8
+    assert isinstance(memory.get("timeline"), list)
+    assert len(memory.get("timeline", [])) >= 1
+
+
+def test_ai_sales_company_memory_avoids_repeated_recommendations_without_new_evidence(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-company-memory-repeat@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Company Memory Repeat Co", "website": "https://analysis-company-memory-repeat.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    repeated_payload = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "provider": "openai",
+        "model": "gpt-test",
+        "summary": "Repeat baseline",
+        "company_summary": "Repeat baseline",
+        "business_model": "B2B SaaS",
+        "what_company_sells": "Outbound automation",
+        "target_customers": "Revenue teams",
+        "company_stage": "Active evaluation",
+        "pain_points": ["Manual qualification"],
+        "likely_business_pains": ["Manual qualification"],
+        "buying_signals": ["Hiring SDRs"],
+        "relevant_technologies": ["HubSpot"],
+        "company_growth_indicators": ["New sales hiring"],
+        "why_fits_icp": ["Matches ICP"],
+        "why_may_not_fit": [],
+        "icp_fit_score": 85,
+        "ai_lead_score": 84,
+        "lead_priority_score": 86,
+        "lead_priority_tier": "Hot",
+        "buying_probability": 77,
+        "score_explanation": "Fit and intent are strong.",
+        "estimated_reply_probability": 64,
+        "estimated_company_size": "11-50",
+        "estimated_revenue": "$1M-$10M",
+        "recommended_decision_maker_role": "Founder",
+        "decision_makers": [{"name": "Alex", "title": "Founder", "email": "alex@analysis-company-memory-repeat.example"}],
+        "best_outreach_angle": "Lead with speed-to-pipeline outcome.",
+        "value_proposition": "Automate qualification and follow-up.",
+        "best_communication_channel": "Email",
+        "personalization_variables": ["Recent hiring"],
+        "predicted_objections": ["Timing"],
+        "personalized_opening_line": "Hi Alex, noticed SDR hiring momentum.",
+        "strongest_sales_arguments": ["Improve qualification throughput"],
+        "suggested_cta": "Open to a 15-minute fit check?",
+        "recommended_next_action": "Send first message.",
+        "recommended_first_message": "Hi Alex, we help teams automate qualification and follow-up.",
+        "personalized_follow_up_sequence": ["Day 3: customer proof", "Day 7: low-friction CTA"],
+        "best_timing_to_contact": "Tue-Thu mornings",
+        "decision_maker": {"name": "Alex", "title": "Founder", "email": "alex@analysis-company-memory-repeat.example"},
+        "reasoning": ["Verified profile and growth signals"],
+        "missing_data": [],
+        "evidence": [{"source_field": "company.website", "value": "analysis-company-memory-repeat.example", "confidence": 95}],
+        "opportunity_score": 84,
+        "buying_intent_score": 77,
+        "confidence_score": 81,
+        "outreach_angle": "Lead with speed-to-pipeline outcome.",
+        "best_subject_line": "Quick idea for your SDR team",
+        "best_cta": "Open to a 15-minute fit check?",
+        "risk_to_check": "Confirm timing.",
+        "next_action": "Send first message.",
+        "version": 1,
+    }
+
+    monkeypatch.setattr(usage_module, "build_ai_sales_workspace_analysis", lambda **_: dict(repeated_payload))
+
+    first = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert first.status_code == 200
+    second = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert second.status_code == 200
+
+    first_action = first.json()["analysis"].get("recommended_next_action")
+    second_analysis = second.json()["analysis"]
+    second_action = second_analysis.get("recommended_next_action")
+    memory = second_analysis.get("ai_company_memory") or {}
+    recommendation_memory = memory.get("recommendation_memory") or {}
+    assert recommendation_memory.get("repeat_prevented") is True
+    assert second_action != first_action
+
+
 def test_ai_sales_analysis_cache_load_and_refresh(monkeypatch) -> None:
     import app.api.usage as usage_module
 

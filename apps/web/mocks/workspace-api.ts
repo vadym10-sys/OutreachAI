@@ -239,6 +239,31 @@ const qaSalesAnalysisV2 = {
     timeline: [{ source: "workflow", event: "analysis_generated", actor: "ai-system", at: now, title: "AI analysis completed", details: "Lead moved to analyzed stage.", reversible: false }]
   },
   sdr_workflow_audit_log: [{ event: "workflow_initialized", action: "analysis_generated", actor: "ai-system", at: now, from_stage: "New Lead", to_stage: "Analyzed", reason: "Initial AI SDR workflow created.", reversible: false, reverted: false }],
+  ai_company_memory: {
+    generated_at: now,
+    latest_version: 2,
+    rollback_available: true,
+    whats_changed: {
+      generated_at: now,
+      summary: "1 new buying signal and confidence increased by 6 compared to the previous version.",
+      new_buying_signals: ["New pricing page"],
+      removed_risks: ["No verified decision-maker email"],
+      new_decision_makers: ["Jane Doe · Owner · jane@example.com"],
+      new_recommendations: ["Send the personalized first email and track the reply window."],
+      confidence: { previous: 78, current: 84, delta: 6 }
+    },
+    recommendation_memory: {
+      recommendation_hash: "qa-memory-hash-v2",
+      evidence_hash: "qa-evidence-hash-v2",
+      repeat_prevented: false,
+      reason: "New evidence detected."
+    },
+    timeline: [
+      { source: "analysis", event: "analysis_version", actor: "ai-system", at: now, title: "AI analysis version", details: "Version 2 generated", reversible: false },
+      { source: "recommendation", event: "recommendation_approve", actor: "qa-user", at: now, title: "Recommendation approved", details: "next best action", reversible: true },
+      { source: "workflow", event: "workflow_action", actor: "qa-user", at: now, title: "Generate email", details: "Draft prepared", reversible: true }
+    ]
+  },
   opportunity_score: 81,
   buying_intent_score: 73,
   confidence_score: 84,
@@ -265,6 +290,29 @@ const qaSalesAnalysisV1 = {
   best_subject_line: "One quick idea for Hill Country Build Co",
   best_timing_to_contact: "Weekdays between 09:00-11:00 local time.",
   next_action: "Review the website and send the first outreach draft.",
+  ai_company_memory: {
+    generated_at: "2026-07-15T15:30:00.000Z",
+    latest_version: 1,
+    rollback_available: true,
+    whats_changed: {
+      generated_at: "2026-07-15T15:30:00.000Z",
+      summary: "Initial AI company memory baseline created.",
+      new_buying_signals: ["Verified owner contact"],
+      removed_risks: [],
+      new_decision_makers: ["Jane Doe · Owner · jane@example.com"],
+      new_recommendations: ["Review the website and send the first outreach draft."],
+      confidence: { previous: 0, current: 78, delta: 78 }
+    },
+    recommendation_memory: {
+      recommendation_hash: "qa-memory-hash-v1",
+      evidence_hash: "qa-evidence-hash-v1",
+      repeat_prevented: false,
+      reason: "Initial baseline."
+    },
+    timeline: [
+      { source: "analysis", event: "analysis_version", actor: "ai-system", at: "2026-07-15T15:30:00.000Z", title: "AI analysis version", details: "Version 1 generated", reversible: false }
+    ]
+  },
   recommendation_audit_log: [{ event: "generated", key: "all", actor: "ai-system", at: "2026-07-15T15:30:00.000Z", reason: "initial generation", value_preview: "version1" }],
   version: 1
 };

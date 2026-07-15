@@ -2,6 +2,31 @@
 
 ## 2026-07-16
 
+### feat(api)
+- Added persistent `ai_company_memory` to company AI sales analysis so each company now acts as a long-lived AI knowledge object across versions.
+- Added unified memory timeline synthesis that combines AI analysis versions, recommendation actions, action-center actions, SDR workflow actions, CRM stage context, outreach status signals, reply signals, and manual-note context.
+- Added automatic `what's_changed` comparison on each new analysis version with explicit sections for new buying signals, removed risks, new decision makers, new recommendations, and confidence delta.
+- Added recommendation memory hashing (recommendations + evidence) so repeated recommendations are automatically avoided when no new evidence appears.
+
+### feat(frontend)
+- Added an `AI Company Memory` panel in company AI Sales Intelligence view with a visible `What's Changed` summary and unified timeline feed.
+
+### test(api)
+- Added backend regression coverage for company-memory change tracking across versions.
+- Added backend regression coverage for repeat-prevention behavior when evidence did not change.
+
+### test(frontend)
+- Expanded company workspace Playwright regression to verify `AI Company Memory`, `What's Changed`, and unified timeline rendering.
+
+### validation
+- `python3 -m pytest -q tests/test_api.py` passed in `apps/api` (190 passed).
+- `npm run lint` passed in `apps/web`.
+- `npm run test -- --run` passed in `apps/web` (31 tests).
+- `npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` passed in `apps/web`.
+- `npm run build` passed in `apps/web`.
+
+## 2026-07-16
+
 ### feat(frontend)
 - Added a direct `Jump to workflow` CTA in the company AI Sales Intelligence panel so reps can move from recommendations to execution in one click.
 - Anchored the AI SDR Workflow section for fast analysis-to-action navigation without hunting through the page.
