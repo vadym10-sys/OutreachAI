@@ -4342,6 +4342,70 @@ def test_campaign_lead_email_and_dashboard_flow(monkeypatch) -> None:
     assert metrics["campaigns"] >= 1
 
 
+def test_update_lead_returns_409_for_duplicate_email() -> None:
+    first = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={
+            "company": "Duplicate First Co",
+            "website": "https://duplicate-first.example",
+            "industry": "Construction",
+            "country": "Germany",
+            "city": "Berlin",
+            "email": "duplicate-check@example.com",
+            "status": "Qualified",
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={
+            "company": "Duplicate Second Co",
+            "website": "https://duplicate-second.example",
+            "industry": "Construction",
+            "country": "Germany",
+            "city": "Berlin",
+            "email": "unique-update-target@example.com",
+            "status": "Qualified",
+        },
+    )
+    assert second.status_code == 200
+
+    update = client.patch(
+        f"/api/leads/{second.json()['id']}",
+        headers=AUTH,
+        json={"email": "duplicate-check@example.com"},
+    )
+    assert update.status_code == 409
+    assert update.json()["detail"] == "A lead with this email already exists. Use a different email."
+
+
+def test_update_lead_returns_404_for_unknown_campaign() -> None:
+    created = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={
+            "company": "Campaign Guard Co",
+            "website": "https://campaign-guard.example",
+            "industry": "Construction",
+            "country": "Germany",
+            "city": "Berlin",
+            "email": "campaign-guard@example.com",
+            "status": "Qualified",
+        },
+    )
+    assert created.status_code == 200
+
+    update = client.patch(
+        f"/api/leads/{created.json()['id']}",
+        headers=AUTH,
+        json={"campaign_id": "6a1d8cd2-8cdf-4fdc-931c-5642bb95a5dd"},
+    )
+    assert update.status_code == 404
+
+
 def test_manual_lead_creation_enriches_with_hunter_and_ai(monkeypatch) -> None:
     def enriched(leads):
         lead = leads[0]

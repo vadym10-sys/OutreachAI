@@ -15,7 +15,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, asc, desc, func, or_, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -1112,6 +1112,17 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
         "ai_workflow_engine": workflow_state,
     }
     return company
+
+
+def _lead_update_integrity_detail(exc: IntegrityError) -> tuple[int, str]:
+    message = str(getattr(exc, "orig", exc)).lower()
+    if "uq_user_lead_email" in message or ("unique constraint failed" in message and "leads.user_id" in message and "leads.email" in message):
+        return 409, "A lead with this email already exists. Use a different email."
+    if "not null" in message and "leads.company" in message:
+        return 400, "Company name is required."
+    if "foreign key" in message and "campaign" in message:
+        return 404, "Campaign not found"
+    return 409, "Lead update conflicts with existing data."
 
 
 def _existing_duplicate_lead(db: Session, workspace: Workspace, user_id: str, item: LeadOut) -> Lead | None:
@@ -4525,19 +4536,47 @@ def update_lead(lead_id: UUID, payload: LeadUpdate, request: Request, user_id: C
     lead = db.scalar(select(Lead).where(Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)))
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    if "company" in updates:
+        company = str(updates.get("company") or "").strip()
+        if not company:
+            raise HTTPException(status_code=400, detail="Company name is required.")
+        updates["company"] = company
+    if "email" in updates:
+        email = str(updates.get("email") or "").strip().lower()
+        updates["email"] = email or None
+    if updates.get("campaign_id"):
+        campaign_exists = db.scalar(
+            select(Campaign.id).where(
+                Campaign.id == updates["campaign_id"],
+                _workspace_stmt(Campaign, workspace, user_id),
+            )
+        )
+        if campaign_exists is None:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+    for key, value in updates.items():
         if key == "status" and value:
             value = _status(value)
         setattr(lead, key, value)
-    if payload.campaign_id:
+    if updates.get("campaign_id"):
         db.query(EmailMessage).filter(
             EmailMessage.workspace_id == workspace.id,
             EmailMessage.lead_id == lead.id,
             EmailMessage.campaign_id.is_(None),
-        ).update({"campaign_id": payload.campaign_id}, synchronize_session=False)
-    _sync_lead_to_crm(db, user_id, workspace, lead)
-    log_event(db, request, user_id, "lead.updated", {"lead_id": str(lead.id)})
-    db.commit()
+        ).update({"campaign_id": updates["campaign_id"]}, synchronize_session=False)
+    try:
+        _sync_lead_to_crm(db, user_id, workspace, lead)
+        log_event(db, request, user_id, "lead.updated", {"lead_id": str(lead.id)})
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        status_code, detail = _lead_update_integrity_detail(exc)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("lead_update_failed", extra={"lead_id": str(lead_id), "workspace_id": str(workspace.id), "user_id": user_id})
+        raise HTTPException(status_code=409, detail="Lead update could not be applied due to data state conflict.") from exc
     db.refresh(lead)
     return _lead_out(lead)
 
