@@ -2,6 +2,26 @@
 
 # Project Progress
 
+## 2026-07-15 - Phase 6 AI SDR Workflow (End-to-End Execution Path)
+
+### Scope Completed
+- Implemented a complete AI SDR workflow layer on top of AI recommendations and Action Center so execution now runs as one auditable flow instead of isolated controls.
+- Added explicit stage progression model: `New Lead` -> `Analyzed` -> `Email Generated` -> `Approved` -> `Sent` -> `Follow-up` -> `Completed`.
+- Added versioned workflow action endpoint for execution updates with full audit trail and reversible transitions (`revert_last`).
+- Added unified workflow timeline synthesis that includes recommendation actions, action-center task updates, and workflow actions in one visible feed.
+- Added AI SDR Workflow panel in company workspace with stage rail, progress bar, workflow action controls, and timeline visibility.
+
+### Validation Status
+- Backend tests: passed (`PYTHONPATH=apps/api python3 -m pytest apps/api/tests -q`) with 188 passing tests.
+- Frontend lint: passed (`npm run lint` in `apps/web`).
+- Frontend unit tests: passed (`npm run test -- --run` in `apps/web`) with 31 tests.
+- Frontend production build: passed (`npm run build` in `apps/web`).
+- Focused production-like Playwright regression: passed (`npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` in `apps/web`).
+
+### Notes
+- Backward compatibility preserved: older cached analyses are auto-normalized to include workflow structures without breaking existing recommendations or Action Center behavior.
+- Existing recommendation and action-center flows remain versioned and now surface in the workflow timeline for better operator visibility.
+
 ## 2026-07-15 - Phase 6 AI Action Center (Ranked Execution Plan)
 
 ### Scope Completed

@@ -3,6 +3,33 @@
 ## 2026-07-15
 
 ### feat(api)
+- Added a versioned AI SDR workflow endpoint: `POST /api/workspace-app/companies/{company_id}/ai-sales-analysis/workflow`.
+- Added end-to-end workflow state inside AI sales analysis (`sdr_workflow` + `sdr_workflow_audit_log`) with explicit progression stages: `New Lead` -> `Analyzed` -> `Email Generated` -> `Approved` -> `Sent` -> `Follow-up` -> `Completed`.
+- Added reversible workflow execution via `revert_last`, including workflow snapshot restore and audit marker updates.
+- Added timeline synthesis so recommendation actions, action-center actions, and workflow actions are visible in a single auditable SDR timeline.
+- Preserved backward compatibility by auto-normalizing cached analyses with missing workflow structures.
+
+### feat(frontend)
+- Added AI SDR Workflow panel in company workspace AI Sales Intelligence view.
+- Added executable workflow controls for: review recommendations, generate personalized email, approve, push to CRM, mark sent, schedule follow-up, mark completed, and revert last action.
+- Added visible stage rail and progress bar for SDR lifecycle progression and a workflow timeline feed in the same panel.
+
+### test(api)
+- Added backend regression coverage for AI SDR workflow versioning, audit history, and reversible state transitions.
+- Updated analysis refresh content-stability handling to keep version reuse behavior correct when workflow/audit timestamps change.
+
+### test(frontend)
+- Added unit coverage for AI SDR workflow stage helper logic.
+- Expanded company workspace Playwright regression to validate AI SDR workflow rendering and progression interaction.
+
+### validation
+- `PYTHONPATH=apps/api python3 -m pytest apps/api/tests -q` passed (188 passed).
+- `npm run lint` passed in `apps/web`.
+- `npm run test -- --run` passed in `apps/web` (31 tests).
+- `npm run build` passed in `apps/web`.
+- `npm run e2e -- tests/dashboard/routes.spec.ts -g "company workspace shows AI recommendations and version history" --project=laptop` passed in `apps/web`.
+
+### feat(api)
 - Added AI Action Center generation for each company AI sales analysis with ranked execution tasks (for example: send first email, connect on LinkedIn, call decision maker, wait 3 days, send follow-up, research funding/news, skip lead).
 - Each task now carries priority, estimated impact, confidence score, reasoning, expected outcome, and rank.
 - Added Action Center task-state endpoint: `POST /api/workspace-app/companies/{company_id}/ai-sales-analysis/action-center` with `complete`, `postpone`, and `dismiss` actions.

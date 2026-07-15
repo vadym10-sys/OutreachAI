@@ -980,6 +980,48 @@ export type CrmCompany = {
       previous_status?: string;
       new_status?: string;
     }>;
+    sdr_workflow?: {
+      generated_at?: string;
+      updated_at?: string;
+      current_stage?: "New Lead" | "Analyzed" | "Email Generated" | "Approved" | "Sent" | "Follow-up" | "Completed" | string;
+      progress_percent?: number;
+      stage_order?: string[];
+      checkpoints?: Record<
+        string,
+        {
+          label?: string;
+          status?: "pending" | "completed" | string;
+          completed_at?: string;
+        }
+      >;
+      crm_sync?: {
+        status?: "pending" | "completed" | string;
+        pushed?: boolean;
+        last_pushed_at?: string;
+        notes?: string;
+      };
+      timeline?: Array<{
+        source?: string;
+        event?: string;
+        actor?: string;
+        at?: string;
+        title?: string;
+        details?: string;
+        reversible?: boolean;
+      }>;
+    };
+    sdr_workflow_audit_log?: Array<{
+      event?: string;
+      action?: string;
+      actor?: string;
+      at?: string;
+      from_stage?: string;
+      to_stage?: string;
+      reason?: string;
+      reversible?: boolean;
+      reverted?: boolean;
+      reverted_at?: string;
+    }>;
     version?: number;
   } | null;
   ai_sales_workspace_updated_at?: string | null;

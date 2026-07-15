@@ -81,6 +81,8 @@ class AISalesWorkspaceAnalysisPayload(BaseModel):
     recommendation_audit_log: list[dict[str, Any]] = Field(default_factory=list)
     action_center: dict[str, Any] = Field(default_factory=dict)
     action_center_audit_log: list[dict[str, Any]] = Field(default_factory=list)
+    sdr_workflow: dict[str, Any] = Field(default_factory=dict)
+    sdr_workflow_audit_log: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _clean_text(value: Any) -> str:
@@ -556,6 +558,57 @@ def build_default_action_center_tasks(payload: dict[str, Any]) -> list[dict[str,
     return _default_action_center_tasks(payload=payload)
 
 
+def _default_sdr_workflow(*, payload: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.utcnow().isoformat()
+    stage_order = [
+        "New Lead",
+        "Analyzed",
+        "Email Generated",
+        "Approved",
+        "Sent",
+        "Follow-up",
+        "Completed",
+    ]
+    checkpoints = {
+        "new_lead": {"label": "New Lead", "status": "completed", "completed_at": now},
+        "analyzed": {"label": "Analyzed", "status": "completed", "completed_at": now},
+        "email_generated": {"label": "Email Generated", "status": "pending", "completed_at": ""},
+        "approved": {"label": "Approved", "status": "pending", "completed_at": ""},
+        "sent": {"label": "Sent", "status": "pending", "completed_at": ""},
+        "follow_up": {"label": "Follow-up", "status": "pending", "completed_at": ""},
+        "completed": {"label": "Completed", "status": "pending", "completed_at": ""},
+    }
+    return {
+        "generated_at": now,
+        "updated_at": now,
+        "current_stage": "Analyzed",
+        "progress_percent": 29,
+        "stage_order": stage_order,
+        "checkpoints": checkpoints,
+        "crm_sync": {
+            "status": "pending",
+            "pushed": False,
+            "last_pushed_at": "",
+            "notes": "",
+        },
+        "timeline": [
+            {
+                "source": "workflow",
+                "event": "analysis_generated",
+                "actor": "ai-system",
+                "at": now,
+                "title": "AI analysis completed",
+                "details": "Lead moved to analyzed stage with recommendations and prioritized actions.",
+                "reversible": False,
+            }
+        ],
+    }
+
+
+def build_default_sdr_workflow(payload: dict[str, Any]) -> dict[str, Any]:
+    return _default_sdr_workflow(payload=payload)
+
+
 def build_ai_sales_workspace_analysis(
     *,
     company: Company,
@@ -850,6 +903,20 @@ def build_ai_sales_workspace_analysis(
             "new_status": "pending",
         }
     ]
+    payload["sdr_workflow"] = _default_sdr_workflow(payload=payload)
+    payload["sdr_workflow_audit_log"] = [
+        {
+            "event": "workflow_initialized",
+            "action": "analysis_generated",
+            "actor": "ai-system",
+            "at": datetime.utcnow().isoformat(),
+            "from_stage": "New Lead",
+            "to_stage": "Analyzed",
+            "reason": "Initial AI SDR workflow created from analysis.",
+            "reversible": False,
+            "reverted": False,
+        }
+    ]
 
     try:
         validated = AISalesWorkspaceAnalysisPayload.model_validate(payload)
@@ -892,4 +959,6 @@ def read_cached_analysis(metadata_json: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("recommendation_audit_log", [])
     payload.setdefault("action_center", {})
     payload.setdefault("action_center_audit_log", [])
+    payload.setdefault("sdr_workflow", _default_sdr_workflow(payload=payload))
+    payload.setdefault("sdr_workflow_audit_log", [])
     return payload

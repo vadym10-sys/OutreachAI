@@ -288,11 +288,21 @@ test.describe("customer workspace routes", () => {
     await expect(page.getByRole("button", { name: "Complete" }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Postpone" }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: "Dismiss" }).first()).toBeVisible();
+    await expect(page.getByText("AI SDR Workflow").first()).toBeVisible();
+    await expect(page.getByText("New Lead").first()).toBeVisible();
+    await expect(page.getByText("Analyzed").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Generate personalized email" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Push to CRM" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Revert last action" }).first()).toBeVisible();
     await expect(page.getByText("Hot").first()).toBeVisible();
     await expect(page.getByLabel("Analysis version")).toHaveValue("2");
 
     await page.getByRole("button", { name: "Complete" }).first().click();
     await expect(page.getByText("completed").first()).toBeVisible();
+
+    await page.getByRole("button", { name: "Generate personalized email" }).first().click();
+    await expect(page.getByText("Email Generated").first()).toBeVisible();
+    await expect(page.getByText("Workflow timeline").first()).toBeVisible();
 
     await page.getByLabel("Analysis version").selectOption("1");
     await expect(page.getByText("Warm · 74%").first()).toBeVisible();

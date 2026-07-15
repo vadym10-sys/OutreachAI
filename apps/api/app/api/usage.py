@@ -5,6 +5,7 @@ import json
 import hashlib
 import logging
 import re
+from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, Literal, Optional
@@ -49,7 +50,7 @@ from app.core.security import WorkspaceUserContext
 from app.models.entities import AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
-from app.services.ai_sales_workspace import build_ai_sales_workspace_analysis, build_default_action_center_tasks, read_cached_analysis
+from app.services.ai_sales_workspace import build_ai_sales_workspace_analysis, build_default_action_center_tasks, build_default_sdr_workflow, read_cached_analysis
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, enqueue_company_enrichment_job, enqueue_deep_contact_search_job, mark_cancelled, update_job_progress
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
@@ -238,6 +239,20 @@ class UsageAISalesRecommendationActionIn(BaseModel):
 class UsageAISalesActionCenterActionIn(BaseModel):
     task_id: str = Field(min_length=2, max_length=120)
     action: Literal["complete", "postpone", "dismiss"]
+    reason: str = ""
+
+
+class UsageAISalesWorkflowActionIn(BaseModel):
+    action: Literal[
+        "review_recommendations",
+        "generate_email",
+        "approve",
+        "push_to_crm",
+        "mark_sent",
+        "schedule_follow_up",
+        "mark_completed",
+        "revert_last",
+    ]
     reason: str = ""
 
 
@@ -6499,6 +6514,39 @@ def _analysis_content_key(analysis_payload: dict[str, Any]) -> dict[str, Any]:
     comparable = dict(normalized)
     for key in ("generated_at", "analysis_timestamp", "regenerated_at", "version"):
         comparable.pop(key, None)
+
+    # Ignore dynamic audit trails and runtime timestamps when deciding if content changed.
+    comparable.pop("recommendation_audit_log", None)
+    comparable.pop("action_center_audit_log", None)
+    comparable.pop("sdr_workflow_audit_log", None)
+
+    recommendation_actions = comparable.get("recommendation_actions") if isinstance(comparable.get("recommendation_actions"), dict) else {}
+    for value in recommendation_actions.values():
+        if isinstance(value, dict):
+            value.pop("updated_at", None)
+
+    copilot = comparable.get("ai_copilot_panel") if isinstance(comparable.get("ai_copilot_panel"), dict) else {}
+    copilot.pop("generated_at", None)
+    copilot.pop("last_action", None)
+
+    action_center = comparable.get("action_center") if isinstance(comparable.get("action_center"), dict) else {}
+    action_center.pop("generated_at", None)
+    action_center.pop("last_action", None)
+    tasks = action_center.get("tasks") if isinstance(action_center.get("tasks"), list) else []
+    for task in tasks:
+        if isinstance(task, dict):
+            task.pop("updated_at", None)
+            task.pop("status_history", None)
+
+    workflow = comparable.get("sdr_workflow") if isinstance(comparable.get("sdr_workflow"), dict) else {}
+    workflow.pop("generated_at", None)
+    workflow.pop("updated_at", None)
+    workflow.pop("timeline", None)
+    checkpoints = workflow.get("checkpoints") if isinstance(workflow.get("checkpoints"), dict) else {}
+    for checkpoint in checkpoints.values():
+        if isinstance(checkpoint, dict):
+            checkpoint.pop("completed_at", None)
+
     return comparable
 
 
@@ -6543,6 +6591,149 @@ def _analysis_recommendation_defaults(analysis: dict[str, Any]) -> dict[str, Any
         "priority_score": _entry("Priority score", max(0, min(100, int(analysis.get("lead_priority_score") or 0)))),
         "next_best_action": _entry("Next best action", str(analysis.get("recommended_next_action") or analysis.get("next_action") or "")),
     }
+
+
+def _sdr_stage_order() -> list[str]:
+    return ["New Lead", "Analyzed", "Email Generated", "Approved", "Sent", "Follow-up", "Completed"]
+
+
+def _normalize_checkpoint_status(value: Any) -> str:
+    status = str(value or "pending").strip().lower()
+    return status if status in {"pending", "completed"} else "pending"
+
+
+def _derive_sdr_stage(checkpoints: dict[str, Any]) -> str:
+    if str(((checkpoints.get("completed") or {}).get("status") if isinstance(checkpoints.get("completed"), dict) else "")).lower() == "completed":
+        return "Completed"
+    if str(((checkpoints.get("follow_up") or {}).get("status") if isinstance(checkpoints.get("follow_up"), dict) else "")).lower() == "completed":
+        return "Follow-up"
+    if str(((checkpoints.get("sent") or {}).get("status") if isinstance(checkpoints.get("sent"), dict) else "")).lower() == "completed":
+        return "Sent"
+    if str(((checkpoints.get("approved") or {}).get("status") if isinstance(checkpoints.get("approved"), dict) else "")).lower() == "completed":
+        return "Approved"
+    if str(((checkpoints.get("email_generated") or {}).get("status") if isinstance(checkpoints.get("email_generated"), dict) else "")).lower() == "completed":
+        return "Email Generated"
+    if str(((checkpoints.get("analyzed") or {}).get("status") if isinstance(checkpoints.get("analyzed"), dict) else "")).lower() == "completed":
+        return "Analyzed"
+    return "New Lead"
+
+
+def _timeline_from_audit_logs(analysis: dict[str, Any], workflow_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    recommendation_log = analysis.get("recommendation_audit_log") if isinstance(analysis.get("recommendation_audit_log"), list) else []
+    for item in recommendation_log:
+        if not isinstance(item, dict):
+            continue
+        event = str(item.get("event") or "recommendation_updated")
+        key = str(item.get("key") or "recommendation")
+        timeline.append(
+            {
+                "source": "recommendation",
+                "event": event,
+                "actor": str(item.get("actor") or "system"),
+                "at": str(item.get("at") or datetime.utcnow().isoformat()),
+                "title": f"Recommendation {event.replace('recommendation_', '').replace('_', ' ')}",
+                "details": str(item.get("reason") or key.replace("_", " ")),
+                "reversible": True,
+            }
+        )
+
+    action_log = analysis.get("action_center_audit_log") if isinstance(analysis.get("action_center_audit_log"), list) else []
+    for item in action_log:
+        if not isinstance(item, dict):
+            continue
+        event = str(item.get("event") or "action_center_updated")
+        task_id = str(item.get("task_id") or "task")
+        timeline.append(
+            {
+                "source": "action_center",
+                "event": event,
+                "actor": str(item.get("actor") or "system"),
+                "at": str(item.get("at") or datetime.utcnow().isoformat()),
+                "title": f"Action Center {event.replace('action_center_', '').replace('_', ' ')}",
+                "details": str(item.get("reason") or item.get("title") or task_id.replace("_", " ")),
+                "reversible": True,
+            }
+        )
+
+    for item in workflow_log:
+        if not isinstance(item, dict):
+            continue
+        timeline.append(
+            {
+                "source": "workflow",
+                "event": str(item.get("event") or "workflow_updated"),
+                "actor": str(item.get("actor") or "system"),
+                "at": str(item.get("at") or datetime.utcnow().isoformat()),
+                "title": str(item.get("title") or item.get("action") or "Workflow updated").replace("_", " ").title(),
+                "details": str(item.get("reason") or ""),
+                "reversible": bool(item.get("reversible", False)),
+            }
+        )
+
+    timeline.sort(key=lambda item: str(item.get("at") or ""), reverse=True)
+    return timeline[:120]
+
+
+def _ensure_analysis_sdr_workflow_structures(analysis: dict[str, Any]) -> dict[str, Any]:
+    normalized = read_cached_analysis({"ai_sales_workspace": analysis})
+    workflow = normalized.get("sdr_workflow") if isinstance(normalized.get("sdr_workflow"), dict) else {}
+    default_workflow = build_default_sdr_workflow(normalized)
+    checkpoints_raw = workflow.get("checkpoints") if isinstance(workflow.get("checkpoints"), dict) else {}
+
+    now = datetime.utcnow().isoformat()
+    checkpoints: dict[str, dict[str, Any]] = {}
+    checkpoint_map = {
+        "new_lead": "New Lead",
+        "analyzed": "Analyzed",
+        "email_generated": "Email Generated",
+        "approved": "Approved",
+        "sent": "Sent",
+        "follow_up": "Follow-up",
+        "completed": "Completed",
+    }
+    for key, label in checkpoint_map.items():
+        existing = checkpoints_raw.get(key) if isinstance(checkpoints_raw.get(key), dict) else {}
+        default_entry = default_workflow.get("checkpoints", {}).get(key) if isinstance(default_workflow.get("checkpoints"), dict) else {}
+        checkpoints[key] = {
+            "label": str(existing.get("label") or default_entry.get("label") or label),
+            "status": _normalize_checkpoint_status(existing.get("status") or default_entry.get("status") or "pending"),
+            "completed_at": str(existing.get("completed_at") or default_entry.get("completed_at") or ""),
+        }
+
+    # Keep workflow anchored to analyzed data at minimum.
+    checkpoints["new_lead"]["status"] = "completed"
+    if not checkpoints["new_lead"]["completed_at"]:
+        checkpoints["new_lead"]["completed_at"] = now
+    checkpoints["analyzed"]["status"] = "completed"
+    if not checkpoints["analyzed"]["completed_at"]:
+        checkpoints["analyzed"]["completed_at"] = str(normalized.get("generated_at") or now)
+
+    current_stage = _derive_sdr_stage(checkpoints)
+    completed_count = sum(1 for item in checkpoints.values() if str(item.get("status") or "") == "completed")
+    progress_percent = int(round((completed_count / max(1, len(_sdr_stage_order()))) * 100))
+
+    workflow_log = normalized.get("sdr_workflow_audit_log") if isinstance(normalized.get("sdr_workflow_audit_log"), list) else []
+    crm_sync = workflow.get("crm_sync") if isinstance(workflow.get("crm_sync"), dict) else {}
+    normalized["sdr_workflow"] = {
+        **default_workflow,
+        **workflow,
+        "generated_at": str(workflow.get("generated_at") or default_workflow.get("generated_at") or now),
+        "updated_at": str(workflow.get("updated_at") or now),
+        "stage_order": _sdr_stage_order(),
+        "current_stage": current_stage,
+        "progress_percent": progress_percent,
+        "checkpoints": checkpoints,
+        "crm_sync": {
+            "status": str(crm_sync.get("status") or ("completed" if crm_sync.get("pushed") else "pending")),
+            "pushed": bool(crm_sync.get("pushed", False)),
+            "last_pushed_at": str(crm_sync.get("last_pushed_at") or ""),
+            "notes": str(crm_sync.get("notes") or ""),
+        },
+        "timeline": _timeline_from_audit_logs(normalized, [item for item in workflow_log if isinstance(item, dict)]),
+    }
+    normalized["sdr_workflow_audit_log"] = [item for item in workflow_log if isinstance(item, dict)][-120:]
+    return normalized
 
 
 def _ensure_analysis_action_center_structures(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -6593,7 +6784,7 @@ def _ensure_analysis_action_center_structures(analysis: dict[str, Any]) -> dict[
         "policy": str(action_center.get("policy") or "Action Center ranks next steps by priority, expected impact, and confidence, and keeps every state change auditable."),
     }
     normalized["action_center_audit_log"] = normalized.get("action_center_audit_log") if isinstance(normalized.get("action_center_audit_log"), list) else []
-    return normalized
+    return _ensure_analysis_sdr_workflow_structures(normalized)
 
 
 def _ensure_analysis_recommendation_structures(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -6633,7 +6824,7 @@ def _ensure_analysis_recommendation_structures(analysis: dict[str, Any]) -> dict
         "policy": str(copilot.get("policy") or "Every recommendation is evidence-backed, confidence-scored, editable, and auditable."),
     }
     normalized["recommendation_audit_log"] = normalized.get("recommendation_audit_log") if isinstance(normalized.get("recommendation_audit_log"), list) else []
-    return _ensure_analysis_action_center_structures(normalized)
+    return _ensure_analysis_sdr_workflow_structures(_ensure_analysis_action_center_structures(normalized))
 
 
 def _apply_recommendation_action(
@@ -6733,7 +6924,7 @@ def _apply_recommendation_action(
         "actor": actor,
     }
     updated["ai_copilot_panel"] = copilot
-    return updated
+    return _ensure_analysis_sdr_workflow_structures(updated)
 
 
 def _apply_action_center_action(
@@ -6806,7 +6997,144 @@ def _apply_action_center_action(
         }
     )
     updated["action_center_audit_log"] = audit_log[-100:]
-    return updated
+    return _ensure_analysis_sdr_workflow_structures(updated)
+
+
+def _set_workflow_checkpoint(checkpoints: dict[str, dict[str, Any]], key: str, *, completed: bool, now: str) -> None:
+    checkpoint = checkpoints.get(key)
+    if not isinstance(checkpoint, dict):
+        return
+    checkpoint["status"] = "completed" if completed else "pending"
+    checkpoint["completed_at"] = now if completed else ""
+
+
+def _apply_sdr_workflow_action(
+    analysis: dict[str, Any],
+    *,
+    company: Company,
+    action: str,
+    reason: str,
+    actor: str,
+) -> dict[str, Any]:
+    updated = _ensure_analysis_sdr_workflow_structures(analysis)
+    workflow = updated.get("sdr_workflow") if isinstance(updated.get("sdr_workflow"), dict) else {}
+    checkpoints = workflow.get("checkpoints") if isinstance(workflow.get("checkpoints"), dict) else {}
+    if not checkpoints:
+        raise HTTPException(status_code=400, detail="SDR workflow is not available.")
+
+    now = datetime.utcnow().isoformat()
+    previous_workflow = deepcopy(workflow)
+    previous_company_stage = str(company.crm_stage or "")
+    reversible = action != "review_recommendations"
+
+    if action == "review_recommendations":
+        pass
+    elif action == "generate_email":
+        _set_workflow_checkpoint(checkpoints, "email_generated", completed=True, now=now)
+    elif action == "approve":
+        _set_workflow_checkpoint(checkpoints, "email_generated", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "approved", completed=True, now=now)
+        company.crm_stage = "Approved"
+        company.stage_changed_at = datetime.utcnow()
+    elif action == "push_to_crm":
+        crm_sync = workflow.get("crm_sync") if isinstance(workflow.get("crm_sync"), dict) else {}
+        crm_sync["pushed"] = True
+        crm_sync["status"] = "completed"
+        crm_sync["last_pushed_at"] = now
+        crm_sync["notes"] = reason.strip()
+        workflow["crm_sync"] = crm_sync
+        if not company.crm_stage or str(company.crm_stage).strip() in {"", "New Lead", "Website Analyzed", "Contact Found", "Email Draft Ready"}:
+            company.crm_stage = "Approved"
+            company.stage_changed_at = datetime.utcnow()
+    elif action == "mark_sent":
+        _set_workflow_checkpoint(checkpoints, "email_generated", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "approved", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "sent", completed=True, now=now)
+        company.crm_stage = "Sent"
+        company.stage_changed_at = datetime.utcnow()
+    elif action == "schedule_follow_up":
+        _set_workflow_checkpoint(checkpoints, "email_generated", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "approved", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "sent", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "follow_up", completed=True, now=now)
+    elif action == "mark_completed":
+        _set_workflow_checkpoint(checkpoints, "email_generated", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "approved", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "sent", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "follow_up", completed=True, now=now)
+        _set_workflow_checkpoint(checkpoints, "completed", completed=True, now=now)
+        company.crm_stage = "Won"
+        company.stage_changed_at = datetime.utcnow()
+    elif action == "revert_last":
+        workflow_log = updated.get("sdr_workflow_audit_log") if isinstance(updated.get("sdr_workflow_audit_log"), list) else []
+        prior = next(
+            (
+                item for item in reversed(workflow_log)
+                if isinstance(item, dict)
+                and item.get("reversible") is True
+                and item.get("reverted") is not True
+                and isinstance(item.get("undo"), dict)
+                and isinstance(item.get("undo", {}).get("workflow"), dict)
+            ),
+            None,
+        )
+        if not isinstance(prior, dict):
+            raise HTTPException(status_code=400, detail="No reversible workflow action found.")
+        undo = prior.get("undo") if isinstance(prior.get("undo"), dict) else {}
+        restored_workflow = undo.get("workflow") if isinstance(undo.get("workflow"), dict) else {}
+        if not restored_workflow:
+            raise HTTPException(status_code=400, detail="Workflow undo data is unavailable.")
+        updated["sdr_workflow"] = restored_workflow
+        company.crm_stage = str(undo.get("company_crm_stage") or previous_company_stage)
+        company.stage_changed_at = datetime.utcnow() if company.crm_stage != previous_company_stage else company.stage_changed_at
+        prior["reverted"] = True
+        prior["reverted_at"] = now
+        workflow_log.append(
+            {
+                "event": "workflow_reverted",
+                "action": action,
+                "actor": actor,
+                "at": now,
+                "from_stage": str(workflow.get("current_stage") or ""),
+                "to_stage": str(restored_workflow.get("current_stage") or ""),
+                "reason": reason.strip() or "Reverted last workflow action.",
+                "reversible": False,
+                "reverted": False,
+                "title": "Workflow action reverted",
+            }
+        )
+        updated["sdr_workflow_audit_log"] = workflow_log[-120:]
+        return _ensure_analysis_sdr_workflow_structures(updated)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported SDR workflow action.")
+
+    workflow["checkpoints"] = checkpoints
+    from_stage = str(previous_workflow.get("current_stage") or "")
+    updated["sdr_workflow"] = workflow
+    normalized = _ensure_analysis_sdr_workflow_structures(updated)
+    to_stage = str((normalized.get("sdr_workflow") or {}).get("current_stage") if isinstance(normalized.get("sdr_workflow"), dict) else "")
+
+    workflow_log = normalized.get("sdr_workflow_audit_log") if isinstance(normalized.get("sdr_workflow_audit_log"), list) else []
+    workflow_log.append(
+        {
+            "event": "workflow_action",
+            "action": action,
+            "actor": actor,
+            "at": now,
+            "from_stage": from_stage,
+            "to_stage": to_stage,
+            "reason": reason.strip(),
+            "reversible": reversible,
+            "reverted": False,
+            "title": action.replace("_", " ").title(),
+            "undo": {
+                "workflow": previous_workflow,
+                "company_crm_stage": previous_company_stage,
+            } if reversible else {},
+        }
+    )
+    normalized["sdr_workflow_audit_log"] = workflow_log[-120:]
+    return _ensure_analysis_sdr_workflow_structures(normalized)
 
 
 def _refresh_cached_ai_sales_workspace_analysis(
@@ -7474,16 +7802,17 @@ def generate_ai_sales_analysis(
 
     if not payload.force:
         if cached:
+            normalized_cached = _ensure_analysis_sdr_workflow_structures(cached)
             available_versions = _available_ai_sales_versions(db, workspace.id, company)
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="Using cached AI sales analysis.",
                 company_id=company.id,
-                analysis=cached,
-                generated_at=_analysis_visible_timestamp(cached),
+                analysis=normalized_cached,
+                generated_at=_analysis_visible_timestamp(normalized_cached),
                 cached=True,
-                requested_version=_version_from_analysis(cached),
-                latest_version=available_versions[0].version if available_versions else _version_from_analysis(cached),
+                requested_version=_version_from_analysis(normalized_cached),
+                latest_version=available_versions[0].version if available_versions else _version_from_analysis(normalized_cached),
                 available_versions=available_versions,
             )
 
@@ -7800,6 +8129,98 @@ def update_ai_sales_action_center(
     return UsageAISalesAnalysisOut(
         status="success",
         message="AI action center task updated.",
+        company_id=company.id,
+        analysis=stamped,
+        generated_at=_analysis_visible_timestamp(stamped),
+        cached=False,
+        requested_version=_version_from_analysis(stamped),
+        latest_version=available_versions[0].version if available_versions else _version_from_analysis(stamped),
+        available_versions=available_versions,
+    )
+
+
+@router.post("/companies/{company_id}/ai-sales-analysis/workflow", response_model=UsageAISalesAnalysisOut)
+def update_ai_sales_workflow(
+    company_id: UUID,
+    payload: UsageAISalesWorkflowActionIn,
+    request: Request,
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+) -> UsageAISalesAnalysisOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+
+    snapshot = _latest_ai_sales_snapshot(db, workspace.id, company.id)
+    latest_snapshot_analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) else {}
+    cached = _cached_ai_sales_analysis_from_company(company)
+    previous_analysis = latest_snapshot_analysis if latest_snapshot_analysis else cached
+    if not previous_analysis:
+        available_versions = _available_ai_sales_versions(db, workspace.id, company)
+        return UsageAISalesAnalysisOut(
+            status="empty",
+            message="No AI sales analysis generated yet.",
+            company_id=company.id,
+            analysis={},
+            generated_at=None,
+            cached=False,
+            requested_version=None,
+            latest_version=available_versions[0].version if available_versions else None,
+            available_versions=available_versions,
+        )
+
+    updated = _apply_sdr_workflow_action(
+        previous_analysis,
+        company=company,
+        action=payload.action,
+        reason=payload.reason,
+        actor=user.user_id,
+    )
+    stamped = _stamp_analysis_payload(updated, force=True, previous_analysis=previous_analysis)
+
+    _save_ai_sales_analysis_snapshot(
+        db,
+        workspace_id=workspace.id,
+        user_id=user.user_id,
+        company=company,
+        analysis_payload=stamped,
+    )
+    _store_ai_sales_analysis_metadata(company, stamped)
+
+    lead = db.scalar(select(Lead).where(Lead.id == company.lead_id, Lead.workspace_id == workspace.id)) if company.lead_id else None
+    if lead:
+        _add_lead_activity(
+            db,
+            request,
+            user.user_id,
+            workspace,
+            "ai.sales_workspace.workflow_updated",
+            lead,
+            {
+                "company_id": str(company.id),
+                "workflow_action": payload.action,
+                "reason": payload.reason,
+                "version": stamped.get("version", 1),
+            },
+        )
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="ai.sales_workspace.workflow_updated",
+            metadata_json={
+                "company_id": str(company.id),
+                "workflow_action": payload.action,
+                "reason": payload.reason,
+                "version": stamped.get("version", 1),
+            },
+        )
+    )
+    db.commit()
+
+    available_versions = _available_ai_sales_versions(db, workspace.id, company)
+    return UsageAISalesAnalysisOut(
+        status="success",
+        message="AI SDR workflow updated.",
         company_id=company.id,
         analysis=stamped,
         generated_at=_analysis_visible_timestamp(stamped),

@@ -14,6 +14,7 @@ import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
+import { DEFAULT_AI_SDR_STAGE_ORDER, aiSdrStageCompleted } from "@/lib/ai-sdr-workflow";
 import type { Activity, AISalesEmployee, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
@@ -141,6 +142,11 @@ type WorkspaceAiSalesRecommendationActionIn = {
 type WorkspaceAiSalesActionCenterActionIn = {
   task_id: string;
   action: "complete" | "postpone" | "dismiss";
+  reason?: string;
+};
+
+type WorkspaceAiSalesWorkflowActionIn = {
+  action: "review_recommendations" | "generate_email" | "approve" | "push_to_crm" | "mark_sent" | "schedule_follow_up" | "mark_completed" | "revert_last";
   reason?: string;
 };
 
@@ -1604,6 +1610,7 @@ function OpportunityCard({
   const [salesAnalysisLatestVersion, setSalesAnalysisLatestVersion] = useState<number | null>(null);
   const [salesRecommendationBusyKey, setSalesRecommendationBusyKey] = useState("");
   const [salesActionCenterBusyKey, setSalesActionCenterBusyKey] = useState("");
+  const [salesWorkflowBusyKey, setSalesWorkflowBusyKey] = useState("");
   const [salesRecommendationEditKey, setSalesRecommendationEditKey] = useState("");
   const [salesRecommendationEditValue, setSalesRecommendationEditValue] = useState("");
   const [salesRecommendationEditReason, setSalesRecommendationEditReason] = useState("");
@@ -1818,6 +1825,38 @@ function OpportunityCard({
     }
   }
 
+  async function updateSalesWorkflow(payload: WorkspaceAiSalesWorkflowActionIn) {
+    if (!companyId) return;
+    const busyKey = `${payload.action}`;
+    setSalesWorkflowBusyKey(busyKey);
+    setSalesAnalysisError("");
+    setError("");
+    setStatus(t("Updating AI SDR workflow..."));
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis/workflow`, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }),
+        20000,
+        "AI SDR workflow could not be updated."
+      );
+      applySalesAnalysisResult(result);
+      setStatus(t(result.message || "AI SDR workflow updated."));
+    } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = friendlyErrorMessage(err, "AI SDR workflow could not be updated.");
+      setError(t(reason));
+      setSalesAnalysisError(t(reason));
+      setStatus("");
+    } finally {
+      setSalesWorkflowBusyKey("");
+    }
+  }
+
   function recommendationValueToText(value: unknown): string {
     if (Array.isArray(value)) return value.map((item) => String(item || "")).filter(Boolean).join("\n");
     if (value && typeof value === "object") {
@@ -1893,6 +1932,14 @@ function OpportunityCard({
           if (leftRank > 0 || rightRank > 0) return leftRank - rightRank;
           return Number(right?.priority || 0) - Number(left?.priority || 0);
         })
+    : [];
+  const salesWorkflowStageOrder = Array.isArray(salesAnalysis?.sdr_workflow?.stage_order) && salesAnalysis?.sdr_workflow?.stage_order?.length
+    ? salesAnalysis.sdr_workflow.stage_order
+    : [...DEFAULT_AI_SDR_STAGE_ORDER];
+  const salesWorkflowCurrentStage = String(salesAnalysis?.sdr_workflow?.current_stage || "Analyzed");
+  const salesWorkflowProgress = Number(salesAnalysis?.sdr_workflow?.progress_percent || 0);
+  const salesWorkflowTimeline = Array.isArray(salesAnalysis?.sdr_workflow?.timeline)
+    ? salesAnalysis.sdr_workflow.timeline.slice(0, 8)
     : [];
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
@@ -2552,6 +2599,80 @@ function OpportunityCard({
                 ) : (
                   <p className="mt-4 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">{t("No action plan yet. Generate AI sales analysis to create prioritized tasks.")}</p>
                 )}
+              </div>
+              <div className="mt-4 rounded-2xl border border-white/15 bg-slate-950/45 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wide text-cyan-200">{t("AI SDR Workflow")}</p>
+                    <p className="mt-1 text-sm text-slate-200">{t("One reversible path from New Lead to Completed with full timeline visibility.")}</p>
+                  </div>
+                  <span className="inline-flex items-center rounded-full bg-cyan-500/20 px-3 py-1 text-xs font-black text-cyan-100">{t("Current stage")}: {t(salesWorkflowCurrentStage)}</span>
+                </div>
+                <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3">
+                  <div className="mb-2 flex items-center justify-between text-xs font-black uppercase tracking-wide text-slate-300">
+                    <span>{t("Progress")}</span>
+                    <span>{salesWorkflowProgress}%</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-white/10">
+                    <div className="h-full rounded-full bg-cyan-400 transition-all" style={{ width: `${Math.max(0, Math.min(100, salesWorkflowProgress))}%` }} />
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-4 xl:grid-cols-7">
+                    {salesWorkflowStageOrder.map((stage) => {
+                      const active = stage === salesWorkflowCurrentStage;
+                      const completed = aiSdrStageCompleted(salesWorkflowCurrentStage, stage);
+                      return (
+                        <div key={`sdr-stage-${stage}`} className={`rounded-md border px-2 py-2 text-center text-[11px] font-black uppercase tracking-wide ${active ? "border-cyan-300/60 bg-cyan-500/20 text-cyan-100" : completed ? "border-emerald-300/30 bg-emerald-500/15 text-emerald-100" : "border-white/10 bg-white/5 text-slate-300"}`}>
+                          {t(stage)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    { action: "review_recommendations", label: "Review recommendations" },
+                    { action: "generate_email", label: "Generate personalized email" },
+                    { action: "approve", label: "Approve" },
+                    { action: "push_to_crm", label: "Push to CRM" },
+                    { action: "mark_sent", label: "Mark sent" },
+                    { action: "schedule_follow_up", label: "Schedule follow-up" },
+                    { action: "mark_completed", label: "Mark completed" },
+                  ].map((item) => (
+                    <button
+                      key={`sdr-workflow-action-${item.action}`}
+                      type="button"
+                      onClick={() => void updateSalesWorkflow({ action: item.action as WorkspaceAiSalesWorkflowActionIn["action"] })}
+                      disabled={salesAnalysisLoading || salesWorkflowBusyKey !== ""}
+                      className="inline-flex min-h-10 items-center justify-center rounded-md border border-cyan-300/40 bg-cyan-500/15 px-3 text-xs font-black text-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {salesWorkflowBusyKey === item.action ? <Loader2 className="animate-spin" size={14} /> : null} {t(item.label)}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => void updateSalesWorkflow({ action: "revert_last" })}
+                    disabled={salesAnalysisLoading || salesWorkflowBusyKey !== ""}
+                    className="inline-flex min-h-10 items-center justify-center rounded-md border border-amber-300/40 bg-amber-500/15 px-3 text-xs font-black text-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {salesWorkflowBusyKey === "revert_last" ? <Loader2 className="animate-spin" size={14} /> : null} {t("Revert last action")}
+                  </button>
+                </div>
+                <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3">
+                  <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Workflow timeline")}</p>
+                  {salesWorkflowTimeline.length ? (
+                    <div className="mt-2 space-y-2">
+                      {salesWorkflowTimeline.map((item: any, index: number) => (
+                        <div key={`sdr-workflow-timeline-${index}`} className="rounded-md border border-white/10 bg-slate-950/40 p-2">
+                          <p className="text-xs font-black text-white">{t(String(item.title || item.event || "Workflow event"))}</p>
+                          <p className="mt-1 text-xs text-slate-300">{t(String(item.details || unavailable))}</p>
+                          <p className="mt-1 text-[11px] text-slate-400">{t(String(item.source || "workflow"))} · {item.at ? new Date(String(item.at)).toLocaleString() : unavailable}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-slate-300">{t("Timeline will appear as soon as workflow actions are executed.")}</p>
+                  )}
+                </div>
               </div>
             </div>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">

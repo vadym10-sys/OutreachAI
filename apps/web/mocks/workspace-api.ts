@@ -220,6 +220,25 @@ const qaSalesAnalysisV2 = {
     ]
   },
   action_center_audit_log: [{ event: "action_center_generated", task_id: "all", actor: "ai-system", at: now, reason: "initial generation", previous_status: "", new_status: "pending" }],
+  sdr_workflow: {
+    generated_at: now,
+    updated_at: now,
+    current_stage: "Analyzed",
+    progress_percent: 29,
+    stage_order: ["New Lead", "Analyzed", "Email Generated", "Approved", "Sent", "Follow-up", "Completed"],
+    checkpoints: {
+      new_lead: { label: "New Lead", status: "completed", completed_at: now },
+      analyzed: { label: "Analyzed", status: "completed", completed_at: now },
+      email_generated: { label: "Email Generated", status: "pending", completed_at: "" },
+      approved: { label: "Approved", status: "pending", completed_at: "" },
+      sent: { label: "Sent", status: "pending", completed_at: "" },
+      follow_up: { label: "Follow-up", status: "pending", completed_at: "" },
+      completed: { label: "Completed", status: "pending", completed_at: "" }
+    },
+    crm_sync: { status: "pending", pushed: false, last_pushed_at: "", notes: "" },
+    timeline: [{ source: "workflow", event: "analysis_generated", actor: "ai-system", at: now, title: "AI analysis completed", details: "Lead moved to analyzed stage.", reversible: false }]
+  },
+  sdr_workflow_audit_log: [{ event: "workflow_initialized", action: "analysis_generated", actor: "ai-system", at: now, from_stage: "New Lead", to_stage: "Analyzed", reason: "Initial AI SDR workflow created.", reversible: false, reverted: false }],
   opportunity_score: 81,
   buying_intent_score: 73,
   confidence_score: 84,
@@ -539,6 +558,140 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, {
         status: "success",
         message: "AI action center task updated.",
+        company_id: qaCompany.id,
+        analysis: currentAnalysis,
+        generated_at: currentAnalysis.generated_at,
+        cached: false,
+        requested_version: currentAnalysis.version,
+        latest_version: currentAnalysis.version,
+        available_versions: analysisHistory.map((item) => ({ version: item.version, generated_at: item.generated_at, provider: item.provider, model: item.model, status: "success" }))
+      });
+    }
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis/workflow` && route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as { action: string; reason?: string };
+      const nowIso = new Date().toISOString();
+      const workflow = (currentAnalysis.sdr_workflow && typeof currentAnalysis.sdr_workflow === "object")
+        ? { ...currentAnalysis.sdr_workflow }
+        : { ...qaSalesAnalysisV2.sdr_workflow };
+      const checkpoints = { ...(workflow.checkpoints || {}) } as Record<string, any>;
+      const setCompleted = (key: string, completed: boolean) => {
+        const current = checkpoints[key] && typeof checkpoints[key] === "object"
+          ? { ...checkpoints[key] }
+          : { label: key, status: "pending", completed_at: "" };
+        current.status = completed ? "completed" : "pending";
+        current.completed_at = completed ? nowIso : "";
+        checkpoints[key] = current;
+      };
+      setCompleted("new_lead", true);
+      setCompleted("analyzed", true);
+
+      if (body.action === "generate_email") setCompleted("email_generated", true);
+      if (body.action === "approve") {
+        setCompleted("email_generated", true);
+        setCompleted("approved", true);
+      }
+      if (body.action === "mark_sent") {
+        setCompleted("email_generated", true);
+        setCompleted("approved", true);
+        setCompleted("sent", true);
+      }
+      if (body.action === "schedule_follow_up") {
+        setCompleted("email_generated", true);
+        setCompleted("approved", true);
+        setCompleted("sent", true);
+        setCompleted("follow_up", true);
+      }
+      if (body.action === "mark_completed") {
+        setCompleted("email_generated", true);
+        setCompleted("approved", true);
+        setCompleted("sent", true);
+        setCompleted("follow_up", true);
+        setCompleted("completed", true);
+      }
+
+      if (body.action === "revert_last") {
+        const log = Array.isArray(currentAnalysis.sdr_workflow_audit_log) ? [...currentAnalysis.sdr_workflow_audit_log] : [];
+        const prior = [...log].reverse().find((item) => item?.reversible && !item?.reverted && item?.undo?.workflow);
+        if (prior?.undo?.workflow) {
+          workflow.generated_at = prior.undo.workflow.generated_at;
+          workflow.updated_at = nowIso;
+          workflow.current_stage = prior.undo.workflow.current_stage;
+          workflow.progress_percent = prior.undo.workflow.progress_percent;
+          workflow.stage_order = prior.undo.workflow.stage_order;
+          workflow.checkpoints = prior.undo.workflow.checkpoints;
+          workflow.crm_sync = prior.undo.workflow.crm_sync;
+          prior.reverted = true;
+          prior.reverted_at = nowIso;
+          log.push({ event: "workflow_reverted", action: "revert_last", actor: "qa-user", at: nowIso, from_stage: String(currentAnalysis.sdr_workflow?.current_stage || ""), to_stage: String(workflow.current_stage || ""), reason: body.reason || "Reverted last workflow action.", reversible: false, reverted: false, title: "Workflow action reverted" });
+          currentAnalysis.sdr_workflow_audit_log = log.slice(-120);
+        }
+      } else {
+        let currentStage = "Analyzed";
+        if (String(checkpoints.completed?.status || "") === "completed") currentStage = "Completed";
+        else if (String(checkpoints.follow_up?.status || "") === "completed") currentStage = "Follow-up";
+        else if (String(checkpoints.sent?.status || "") === "completed") currentStage = "Sent";
+        else if (String(checkpoints.approved?.status || "") === "completed") currentStage = "Approved";
+        else if (String(checkpoints.email_generated?.status || "") === "completed") currentStage = "Email Generated";
+        const completedCount = Object.values(checkpoints).filter((item: any) => String(item?.status || "") === "completed").length;
+        const progress = Math.round((completedCount / 7) * 100);
+        workflow.updated_at = nowIso;
+        workflow.current_stage = currentStage;
+        workflow.progress_percent = progress;
+        workflow.checkpoints = checkpoints;
+        if (body.action === "push_to_crm") {
+          workflow.crm_sync = { status: "completed", pushed: true, last_pushed_at: nowIso, notes: body.reason || "" };
+        }
+        const existingLog = Array.isArray(currentAnalysis.sdr_workflow_audit_log) ? [...currentAnalysis.sdr_workflow_audit_log] : [];
+        existingLog.push({
+          event: "workflow_action",
+          action: body.action,
+          actor: "qa-user",
+          at: nowIso,
+          from_stage: String(currentAnalysis.sdr_workflow?.current_stage || "Analyzed"),
+          to_stage: currentStage,
+          reason: body.reason || "",
+          reversible: body.action !== "review_recommendations",
+          reverted: false,
+          title: String(body.action || "workflow_action").replace(/_/g, " "),
+          undo: {
+            workflow: {
+              generated_at: currentAnalysis.sdr_workflow?.generated_at || nowIso,
+              updated_at: currentAnalysis.sdr_workflow?.updated_at || nowIso,
+              current_stage: currentAnalysis.sdr_workflow?.current_stage || "Analyzed",
+              progress_percent: currentAnalysis.sdr_workflow?.progress_percent || 29,
+              stage_order: currentAnalysis.sdr_workflow?.stage_order || ["New Lead", "Analyzed", "Email Generated", "Approved", "Sent", "Follow-up", "Completed"],
+              checkpoints: currentAnalysis.sdr_workflow?.checkpoints || {},
+              crm_sync: currentAnalysis.sdr_workflow?.crm_sync || { status: "pending", pushed: false, last_pushed_at: "", notes: "" }
+            }
+          }
+        });
+        currentAnalysis.sdr_workflow_audit_log = existingLog.slice(-120);
+      }
+
+      const workflowLog = Array.isArray(currentAnalysis.sdr_workflow_audit_log) ? currentAnalysis.sdr_workflow_audit_log : [];
+      const recommendationTimeline = Array.isArray(currentAnalysis.recommendation_audit_log)
+        ? currentAnalysis.recommendation_audit_log.map((item: any) => ({ source: "recommendation", event: item.event, actor: item.actor, at: item.at, title: `Recommendation ${String(item.event || "updated").replace("recommendation_", "")}`, details: item.reason || item.key || "", reversible: true }))
+        : [];
+      const actionCenterTimeline = Array.isArray(currentAnalysis.action_center_audit_log)
+        ? currentAnalysis.action_center_audit_log.map((item: any) => ({ source: "action_center", event: item.event, actor: item.actor, at: item.at, title: `Action Center ${String(item.event || "updated").replace("action_center_", "")}`, details: item.reason || item.title || "", reversible: true }))
+        : [];
+      const workflowTimeline = workflowLog.map((item: any) => ({ source: "workflow", event: item.event, actor: item.actor, at: item.at, title: String(item.title || item.action || "Workflow updated").replace(/_/g, " "), details: item.reason || "", reversible: Boolean(item.reversible) }));
+      workflow.timeline = [...workflowTimeline, ...actionCenterTimeline, ...recommendationTimeline]
+        .sort((left: any, right: any) => String(right.at || "").localeCompare(String(left.at || "")))
+        .slice(0, 120);
+
+      const nextVersion = Number(currentAnalysis.version || 2) + 1;
+      currentAnalysis = {
+        ...currentAnalysis,
+        sdr_workflow: workflow,
+        version: nextVersion,
+        generated_at: nowIso
+      };
+      analysisHistory = [currentAnalysis, ...analysisHistory.filter((item) => item.version !== nextVersion)].slice(0, 10);
+
+      return fulfillJson(route, {
+        status: "success",
+        message: "AI SDR workflow updated.",
         company_id: qaCompany.id,
         analysis: currentAnalysis,
         generated_at: currentAnalysis.generated_at,
