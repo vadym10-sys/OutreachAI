@@ -9,10 +9,11 @@ from typing import Annotated, Optional
 from fastapi import Depends, Header, HTTPException, Request, status
 import httpx
 from jose import JWTError, jwt
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.models.entities import Workspace, WorkspaceMember, WorkspaceRole
 from app.core.reliability import retry_operation
 from app.models.entities import User
 
@@ -253,12 +254,33 @@ def _is_owner_user_id(user_id: str, db) -> bool:
     if not user_id:
         return False
     owner_email = OWNER_EMAIL.strip().lower()
-    return (
+    if (
         db.scalar(
             select(User.id).where(
                 User.clerk_user_id == user_id,
                 func.lower(User.email) == owner_email,
             )
+        )
+        is not None
+    ):
+        return True
+
+    # Fallback for production JWTs without email claims and unavailable Clerk lookup:
+    # trust local workspace ownership only when it is explicitly tied to the configured owner email.
+    return (
+        db.scalar(
+            select(Workspace.id)
+            .join(
+                WorkspaceMember,
+                and_(
+                    WorkspaceMember.workspace_id == Workspace.id,
+                    WorkspaceMember.user_id == Workspace.owner_user_id,
+                    WorkspaceMember.role == WorkspaceRole.owner,
+                    func.lower(WorkspaceMember.email) == owner_email,
+                ),
+            )
+            .where(Workspace.owner_user_id == user_id)
+            .limit(1)
         )
         is not None
     )

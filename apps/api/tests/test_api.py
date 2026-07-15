@@ -1131,6 +1131,29 @@ def test_require_owner_rejects_non_owner_user_id_without_email() -> None:
         assert exc.value.detail == "Access denied."
 
 
+def test_require_owner_allows_workspace_owner_mapping_when_user_row_missing() -> None:
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = Workspace(owner_user_id="owner_workspace_only", name="Owner Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(
+            WorkspaceMember(
+                workspace_id=workspace.id,
+                user_id="owner_workspace_only",
+                email="romaniukvadym10@gmail.com",
+                role=WorkspaceRole.owner,
+                status="active",
+            )
+        )
+        db.commit()
+
+    with SessionLocal() as db:
+        user = security.AuthenticatedUser(user_id="owner_workspace_only", email="")
+        resolved = security.require_owner(user, db=db)
+        assert resolved.user_id == "owner_workspace_only"
+
+
 def test_workspace_me_rejects_unauthorized_user() -> None:
     response = client.get("/api/workspace/me")
     assert response.status_code == 401
