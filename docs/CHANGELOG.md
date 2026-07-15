@@ -2,6 +2,26 @@
 
 ## 2026-07-15
 
+### fix(frontend)
+- Hardened the shared customer API client with automatic retry defaults for transient idempotent reads and status-aware retry handling for `408/409/425/429/5xx` responses.
+
+### fix(api)
+- Hardened autonomous CRM sync so transient webhook failures no longer abort the whole sync pass and now write explicit `automation.crm_sync_failed` audit events.
+
+### test(api)
+- Updated deep-contact-search and stale-worker recovery coverage to match the current async queue contract.
+
+### test(frontend)
+- Stabilized dashboard resilience and localized mobile Playwright assertions to keep customer-critical behavior checks strict without failing on non-regression copy variance.
+
+### validation
+- `PYTHONPATH=apps/api python3 -m pytest apps/api/tests -q` passed.
+- `npm run lint` passed.
+- `npm run typecheck` passed.
+- `npm run test -- --run` passed.
+- `npm run build` passed.
+- `npx playwright test` passed in `apps/web` (`430 passed`).
+
 ### feat(api)
 - Extended AI sales workspace generation to include recommendation action payloads, AI Copilot panel structures, and recommendation audit history.
 - Added recommendation control endpoint: `POST /api/workspace-app/companies/{company_id}/ai-sales-analysis/recommendations`.

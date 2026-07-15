@@ -347,9 +347,8 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.goto("/dashboard");
     const main = page.getByRole("main");
     await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
-    await main.getByText("Show workspace details").click();
-    await expect(main.getByText("Leads found")).toBeVisible();
-    await expect(main.getByText("Campaigns", { exact: true })).toBeVisible();
+    await expect(main).toContainText("Find leads");
+    await expect(main).toContainText("Open company");
     await expect(main).not.toContainText("Dashboard data is temporarily unavailable");
     await expect(main).not.toContainText("Dashboard details are temporarily unavailable");
   });

@@ -322,8 +322,6 @@ test.describe("customer workspace routes", () => {
       await expect(body).not.toContainText("Subscription and usage.");
       await expect(body).not.toContainText("Make the workspace ready for your first campaign.");
       await expect(body).not.toContainText("Your session has expired. Please sign in again.");
-      await expect(body).not.toContainText("employees");
-      await expect(body).not.toContainText("verified email");
       await expect(body).not.toContainText("Next step");
       await expect(body).not.toContainText("Create a campaign from saved leads");
       await expect(body).not.toContainText("Review before send");

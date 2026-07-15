@@ -1,5 +1,12 @@
 # Roadmap
 
+## 2026-07-15 - Deferred Hardening Backlog (Medium and Low)
+- Medium: add richer production health dashboards that correlate queue depth, provider degradation, and customer-visible workflow latency in one operator view.
+- Medium: reduce remaining backend deprecation warnings (`on_event`, Pydantic class config) before the next framework upgrade window.
+- Medium: expand explicit retry and fallback coverage for non-critical secondary integrations beyond the current customer-path API client and CRM sync loop.
+- Low: refine non-blocking localization inconsistencies inside dynamic AI-generated content where English terms intentionally remain evidence-backed raw values.
+- Low: streamline remaining test-only assertion noise and npm CLI warning usage (`npm test -- --run`) in CI scripts.
+
 ## 2026-07-15 - Phase 5 (Autonomous AI SDR) Execution Started
 - Started Phase 5 delivery on the dedicated `phase5` branch from `phase4`.
 - Added recommendation-level control loops (approve, edit, regenerate) backed by versioned analysis updates and audit history.

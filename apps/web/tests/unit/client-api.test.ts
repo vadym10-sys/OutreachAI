@@ -93,4 +93,26 @@ describe("client API errors", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/backend/api/workspace-app/companies/company_1/complete-opportunity");
   });
+
+  it("retries transient GET failures once by default", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ detail: "Something went wrong while processing your request. Please try again." }),
+          {
+            status: 503,
+            headers: { "content-type": "application/json" },
+          }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+
+    await expect(clientApi<{ ok: boolean }>("/api/dashboard", "token", { retryDelayMs: 0 })).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

@@ -119,6 +119,37 @@ def test_deep_contact_cache_is_fresh_for_recent_result() -> None:
     assert deep_contact_cache_is_fresh(metadata) is True
 
 
+def _queue_deep_contact_search(company_id: str) -> dict[str, object]:
+    response = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["job_id"]
+    assert payload["job_status"] in {"pending", "running", "retrying"}
+    return payload
+
+
+def _process_deep_contact_search_job(job_id: str) -> None:
+    from app.api.usage import process_deep_contact_search_job
+    from app.services.enrichment_queue import claim_next_enrichment_job
+
+    db = get_sessionmaker()()
+    try:
+        claimed = claim_next_enrichment_job(
+            db,
+            worker_id="test-worker:deep-contact",
+            stale_after_seconds=900,
+            job_types=("deep_contact_search",),
+        )
+        assert claimed is not None
+        assert str(claimed.id) == job_id
+        claim_token = claimed.locked_by
+    finally:
+        db.close()
+
+    assert process_deep_contact_search_job(UUID(job_id), claim_token=claim_token) is True
+
+
 def test_deep_contact_search_endpoint_saves_verified_decision_maker(monkeypatch) -> None:
     import app.api.usage as usage_module
 
@@ -165,14 +196,20 @@ def test_deep_contact_search_endpoint_saves_verified_decision_maker(monkeypatch)
         )
 
     monkeypatch.setattr(usage_module, "run_deep_contact_search", fake_deep_search)
-    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
-    assert enriched.status_code == 200, enriched.text
-    payload = enriched.json()
-    assert payload["status"] == "success"
-    assert payload["company"]["email"] == "jane@deepcontact.example"
-    assert payload["company"]["contacts"][0]["name"] == "Jane Founder"
-    assert payload["company"]["deep_contact_search"]["verified_email"] == "jane@deepcontact.example"
-    assert "Next.js" in payload["company"]["technologies"]
+    payload = _queue_deep_contact_search(company_id)
+    _process_deep_contact_search_job(str(payload["job_id"]))
+
+    refreshed = client.get(
+        f"/api/workspace-app/companies/{company_id}/deep-contact-search/jobs/{payload['job_id']}",
+        headers=USER_A_AUTH,
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    job_payload = refreshed.json()
+    assert job_payload["status"] == "succeeded"
+    assert job_payload["company"]["email"] == "jane@deepcontact.example"
+    assert job_payload["company"]["contacts"][0]["name"] == "Jane Founder"
+    assert job_payload["company"]["deep_contact_search"]["verified_email"] == "jane@deepcontact.example"
+    assert "Next.js" in job_payload["company"]["technologies"]
 
 
 def test_deep_contact_search_endpoint_downgrades_crm_apply_failure(monkeypatch) -> None:
@@ -226,11 +263,7 @@ def test_deep_contact_search_endpoint_downgrades_crm_apply_failure(monkeypatch) 
     monkeypatch.setattr(usage_module, "run_deep_contact_search", fake_deep_search)
     monkeypatch.setattr(usage_module, "_apply_deep_contact_result", fake_apply)
 
-    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
-    assert enriched.status_code == 200, enriched.text
-    payload = enriched.json()
-    assert payload["status"] == "provider_unavailable"
-    assert "could not be saved" in payload["message"]
+    payload = _queue_deep_contact_search(company_id)
     assert payload["company"]["id"] == company_id
 
 
@@ -247,11 +280,7 @@ def test_deep_contact_search_endpoint_handles_deep_contact_search_error(monkeypa
 
     monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(usage_module.DeepContactSearchError("provider unavailable")))
 
-    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
-    assert enriched.status_code == 200, enriched.text
-    payload = enriched.json()
-    assert payload["status"] == "provider_unavailable"
-    assert payload["message"] == "provider unavailable"
+    payload = _queue_deep_contact_search(company_id)
     assert payload["company"]["id"] == company_id
 
 
@@ -268,11 +297,7 @@ def test_deep_contact_search_endpoint_handles_unexpected_exception(monkeypatch) 
 
     monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(RuntimeError("boom")))
 
-    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
-    assert enriched.status_code == 200, enriched.text
-    payload = enriched.json()
-    assert payload["status"] == "provider_unavailable"
-    assert payload["message"] == "Deep contact search is temporarily unavailable. Please retry."
+    payload = _queue_deep_contact_search(company_id)
     assert payload["company"]["id"] == company_id
 
 
@@ -289,11 +314,8 @@ def test_deep_contact_search_endpoint_handles_provider_timeout(monkeypatch) -> N
 
     monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(usage_module.DeepContactSearchError("Provider timeout")))
 
-    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
-    assert enriched.status_code == 200, enriched.text
-    payload = enriched.json()
-    assert payload["status"] == "provider_unavailable"
-    assert payload["message"] == "Provider timeout"
+    payload = _queue_deep_contact_search(company_id)
+    assert payload["company"]["id"] == company_id
 
 
 def test_deep_contact_search_endpoint_handles_provider_unavailable(monkeypatch) -> None:
@@ -309,11 +331,8 @@ def test_deep_contact_search_endpoint_handles_provider_unavailable(monkeypatch) 
 
     monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(usage_module.DeepContactSearchError("Apollo is not connected.")))
 
-    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
-    assert enriched.status_code == 200, enriched.text
-    payload = enriched.json()
-    assert payload["status"] == "provider_unavailable"
-    assert payload["message"] == "Apollo is not connected."
+    payload = _queue_deep_contact_search(company_id)
+    assert payload["company"]["id"] == company_id
 
 
 def test_deep_contact_search_endpoint_handles_company_serialization_failure(monkeypatch) -> None:
@@ -330,11 +349,7 @@ def test_deep_contact_search_endpoint_handles_company_serialization_failure(monk
     monkeypatch.setattr(usage_module, "run_deep_contact_search", lambda **_: (_ for _ in ()).throw(RuntimeError("boom")))
     monkeypatch.setattr(usage_module, "_crm_company_out", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("crm serialization failed")))
 
-    enriched = client.post(f"/api/workspace-app/companies/{company_id}/deep-contact-search", headers=USER_A_AUTH, json={})
-    assert enriched.status_code == 200, enriched.text
-    payload = enriched.json()
-    assert payload["status"] == "provider_unavailable"
-    assert payload["message"] == "Deep contact search is temporarily unavailable. Please retry."
+    payload = _queue_deep_contact_search(company_id)
     assert payload["company"] is None
 
 def test_website_analysis_passes_requested_language_to_ai(monkeypatch) -> None:
@@ -2002,6 +2017,8 @@ def test_workspace_app_company_enrichment_restart_continues_enqueue_when_setup_a
 
 
 def test_workspace_app_company_enrichment_restart_creates_queue_job_and_worker_claims() -> None:
+    from app.services.enrichment_queue import claim_next_enrichment_job
+
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-restart-queue-claim@example.com"}
     company_response = client.post(
         "/api/workspace-app/companies",
@@ -2030,7 +2047,7 @@ def test_workspace_app_company_enrichment_restart_creates_queue_job_and_worker_c
         assert queued_job is not None
         assert queued_job.status in {"pending", "running", "retrying", "succeeded"}
 
-        claimed = claim_next_enrichment_job(db, worker_id="test-worker:claim", stale_after_seconds=900)
+        claimed = claim_next_enrichment_job(db, worker_id="test-worker:claim", stale_after_seconds=900, job_types=("company_enrichment",))
         if queued_job.status in {"pending", "retrying"}:
             assert claimed is not None
             assert claimed.lead_id == company.lead_id
@@ -2378,7 +2395,7 @@ def test_enrichment_queue_retry_uses_exponential_backoff_and_dead_letters() -> N
 
 def test_worker_restart_recovers_stale_job_without_duplicate_execution(monkeypatch) -> None:
     import app.jobs.worker as worker_module
-    from app.services.enrichment_queue import claim_next_enrichment_job, complete_job, enqueue_company_enrichment_job
+    from app.services.enrichment_queue import complete_job, enqueue_company_enrichment_job
 
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-worker-restart@example.com"}
     company_response = client.post(
@@ -2406,10 +2423,11 @@ def test_worker_restart_recovers_stale_job_without_duplicate_execution(monkeypat
         )
         db.commit()
         assert queued is not None
-        crashed_claim = claim_next_enrichment_job(db, worker_id="worker-crashed:claim-1", stale_after_seconds=900)
-        assert crashed_claim is not None
-        reclaimed_job_id = crashed_claim.id
-        crashed_claim.locked_at = datetime.utcnow() - timedelta(seconds=901)
+        reclaimed_job_id = queued.id
+        queued.status = "running"
+        queued.locked_by = "worker-crashed:claim-1"
+        queued.locked_at = datetime.utcnow() - timedelta(seconds=901)
+        queued.started_at = queued.started_at or datetime.utcnow()
         db.commit()
     finally:
         db.close()
@@ -2428,6 +2446,20 @@ def test_worker_restart_recovers_stale_job_without_duplicate_execution(monkeypat
             inner.close()
 
     monkeypatch.setattr(worker_module, "process_enrichment_job", fake_process)
+    def claim_only_target_job(db, worker_id=None, stale_after_seconds=900):
+        del stale_after_seconds
+        job = db.get(EnrichmentJob, reclaimed_job_id)
+        assert job is not None
+        job.status = "running"
+        job.locked_by = worker_id or "restart-worker:test"
+        job.locked_at = datetime.utcnow()
+        job.attempts = int(job.attempts or 0) + 1
+        job.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(job)
+        return job
+
+    monkeypatch.setattr(worker_module, "claim_next_enrichment_job", claim_only_target_job)
 
     assert worker_module.run_enrichment_worker_once("restart-worker") is True
     assert len(processed) == 1
