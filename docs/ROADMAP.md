@@ -1,5 +1,9 @@
 # Roadmap
 
+## 2026-07-15 - Production Hardening Release Completed
+- Release scope closed after Critical and High customer-facing issues were resolved and validated.
+- Deferred backlog remains intentionally limited to Medium and Low items for future releases.
+
 ## 2026-07-15 - Deferred Hardening Backlog (Medium and Low)
 - Medium: add richer production health dashboards that correlate queue depth, provider degradation, and customer-visible workflow latency in one operator view.
 - Medium: reduce remaining backend deprecation warnings (`on_event`, Pydantic class config) before the next framework upgrade window.

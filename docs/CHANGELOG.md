@@ -2,6 +2,21 @@
 
 ## 2026-07-15
 
+### fix(api)
+- Fixed default AI sales analysis reads to resolve and return the latest persisted version when stale metadata cache versions are present.
+
+### release
+- Completed final production hardening validation gate for `phase5-hardening`.
+- Confirmed no unresolved Critical or High customer-facing issues remain in this release scope.
+
+### validation
+- Final frontend validation gate passed:
+	- `npm run lint`
+	- `npm run typecheck`
+	- `npm run test -- --run`
+	- `npm run build`
+	- `npx playwright test` in `apps/web` (`430 passed`)
+
 ### fix(frontend)
 - Hardened the shared customer API client with automatic retry defaults for transient idempotent reads and status-aware retry handling for `408/409/425/429/5xx` responses.
 

@@ -3578,6 +3578,89 @@ def test_ai_sales_analysis_force_regeneration_updates_snapshot_and_avoids_duplic
         assert snapshots[-1].analysis_json.get("version") == second_payload["analysis"]["version"]
 
 
+def test_ai_sales_analysis_default_read_prefers_latest_version_over_stale_cached_metadata(monkeypatch) -> None:
+    import app.api.usage as usage_module
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-latest-default@example.com"}
+    created = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Analysis Latest Co", "website": "https://analysis-latest.example", "industry": "SaaS", "country": "Germany"},
+    )
+    assert created.status_code == 200
+    company_id = created.json()["company"]["id"]
+
+    payloads = iter(
+        [
+            {
+                "generated_at": "2026-01-02T00:00:00",
+                "provider": "openai",
+                "model": "gpt-test",
+                "summary": "Version one",
+                "opportunity_score": 71,
+                "buying_intent_score": 70,
+                "confidence_score": 69,
+                "decision_maker": {"name": "One", "title": "Founder", "email": "one@example.com"},
+                "outreach_angle": "Angle one",
+                "next_action": "Action one",
+                "risk_to_check": "Risk one",
+                "reasoning": ["first"],
+                "missing_data": [],
+                "evidence": [],
+            },
+            {
+                "generated_at": "2026-01-03T00:00:00",
+                "provider": "openai",
+                "model": "gpt-test",
+                "summary": "Version two",
+                "opportunity_score": 81,
+                "buying_intent_score": 79,
+                "confidence_score": 78,
+                "decision_maker": {"name": "Two", "title": "CEO", "email": "two@example.com"},
+                "outreach_angle": "Angle two",
+                "next_action": "Action two",
+                "risk_to_check": "Risk two",
+                "reasoning": ["second"],
+                "missing_data": [],
+                "evidence": [],
+            },
+        ]
+    )
+
+    monkeypatch.setattr(usage_module, "build_ai_sales_workspace_analysis", lambda **_: next(payloads))
+
+    first = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert first.status_code == 200
+    first_version = first.json()["analysis"]["version"]
+
+    second = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
+    assert second.status_code == 200
+    second_payload = second.json()
+    second_version = second_payload["analysis"]["version"]
+    assert second_version == first_version + 1
+
+    with get_sessionmaker()() as db:
+        company = db.get(Company, UUID(company_id))
+        assert company is not None
+        metadata = dict(company.metadata_json or {})
+        stale = dict(metadata.get("ai_sales_workspace") or {})
+        stale["version"] = first_version
+        stale["summary"] = "Version one"
+        company.metadata_json = {
+            **metadata,
+            "ai_sales_workspace": stale,
+        }
+        db.commit()
+
+    loaded = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers)
+    assert loaded.status_code == 200
+    loaded_payload = loaded.json()
+    assert loaded_payload["latest_version"] == second_version
+    assert loaded_payload["requested_version"] == second_version
+    assert loaded_payload["analysis"]["version"] == second_version
+    assert loaded_payload["analysis"]["summary"] == second_payload["analysis"]["summary"]
+
+
 def test_ai_sales_analysis_recommendation_actions_are_versioned_and_audited(monkeypatch) -> None:
     import app.api.usage as usage_module
 

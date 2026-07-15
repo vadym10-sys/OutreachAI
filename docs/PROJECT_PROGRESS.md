@@ -9,6 +9,7 @@
 - Hardened the web API client so idempotent customer reads automatically retry one transient failure by default, while preserving explicit retry overrides for write actions.
 - Added status-aware retry handling for transient `408/409/425/429/5xx` failures in the shared frontend API client.
 - Hardened autonomous CRM sync so transient webhook failures no longer break the whole sync loop and now emit explicit audit records for failed lead sync attempts.
+- Fixed a stale AI sales analysis read bug so the default company-analysis endpoint now resolves to the latest available version instead of serving an older cached version.
 - Stabilized customer-critical e2e coverage around dashboard resilience and localized mobile flows.
 - Updated backend regression coverage to match the current async deep-contact-search queue contract and explicit stale-job recovery behavior.
 
@@ -19,6 +20,11 @@
 - Frontend unit tests: passed (`npm run test -- --run`).
 - Frontend production build: passed (`npm run build`).
 - Full Playwright suite: passed (`npx playwright test` in `apps/web`, 430 tests).
+
+### Release Status
+- Final production hardening validation completed.
+- No unresolved Critical or High customer-facing issues remain in this release scope.
+- Remaining backlog is Medium and Low only and tracked in `docs/ROADMAP.md`.
 
 ### Notes
 - Critical and High production issues were addressed first; Medium and Low findings were intentionally deferred into the roadmap backlog.

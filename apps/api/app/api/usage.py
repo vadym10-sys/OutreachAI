@@ -7225,8 +7225,10 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, version:
     company = _scoped_company(db, workspace.id, company_id)
 
     cached = _cached_ai_sales_analysis_from_company(company)
-    snapshot = _ai_sales_snapshot_by_version(db, workspace.id, company.id, version) if version else _latest_ai_sales_snapshot(db, workspace.id, company.id)
     available_versions = _available_ai_sales_versions(db, workspace.id, company)
+    latest_version = available_versions[0].version if available_versions else (_version_from_analysis(cached) if cached else None)
+    resolved_version = version or latest_version
+    snapshot = _ai_sales_snapshot_by_version(db, workspace.id, company.id, resolved_version) if resolved_version else _latest_ai_sales_snapshot(db, workspace.id, company.id)
     if version:
         if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json:
             analysis = snapshot.analysis_json
@@ -7235,9 +7237,13 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, version:
         if not analysis:
             raise HTTPException(status_code=404, detail="AI sales analysis version not found.")
     else:
-        analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json else cached
+        if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json:
+            analysis = snapshot.analysis_json
+        elif latest_version:
+            analysis = _metadata_ai_sales_analysis_by_version(company, latest_version)
+        else:
+            analysis = cached
     generated_at = _analysis_visible_timestamp(analysis)
-    latest_version = available_versions[0].version if available_versions else (_version_from_analysis(cached) if cached else None)
     if not analysis:
         return UsageAISalesAnalysisOut(
             status="empty",
@@ -7257,7 +7263,7 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, version:
         analysis=analysis,
         generated_at=generated_at,
         cached=True,
-        requested_version=version or _version_from_analysis(analysis),
+        requested_version=version or latest_version or _version_from_analysis(analysis),
         latest_version=latest_version,
         available_versions=available_versions,
     )
