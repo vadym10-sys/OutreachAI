@@ -6333,6 +6333,57 @@ def _cached_ai_sales_analysis_from_company(company: Company) -> dict[str, Any]:
     return read_cached_analysis(metadata)
 
 
+def _metadata_ai_sales_analysis_history(company: Company) -> list[dict[str, Any]]:
+    metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+    raw_history = metadata.get("ai_sales_workspace_history", [])
+    history = [dict(item) for item in raw_history if isinstance(item, dict)] if isinstance(raw_history, list) else []
+    cached = read_cached_analysis(metadata)
+    if cached:
+        history.append(dict(cached))
+    deduped: dict[int, dict[str, Any]] = {}
+    for item in history:
+        deduped[_version_from_analysis(item)] = item
+    return [deduped[version] for version in sorted(deduped.keys(), reverse=True)]
+
+
+def _metadata_ai_sales_analysis_by_version(company: Company, version: int) -> Optional[dict[str, Any]]:
+    for item in _metadata_ai_sales_analysis_history(company):
+        if _version_from_analysis(item) == version:
+            return item
+    return None
+
+
+def _metadata_ai_sales_analysis_versions(company: Company) -> list[UsageAISalesAnalysisVersionOut]:
+    return [
+        UsageAISalesAnalysisVersionOut(
+            version=_version_from_analysis(item),
+            generated_at=_analysis_visible_timestamp(item),
+            provider=str(item.get("provider") or ""),
+            model=str(item.get("model") or ""),
+            status=str(item.get("status") or "ready"),
+        )
+        for item in _metadata_ai_sales_analysis_history(company)
+    ]
+
+
+def _store_ai_sales_analysis_metadata(company: Company, analysis: dict[str, Any]) -> None:
+    metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+    history = [
+        item
+        for item in _metadata_ai_sales_analysis_history(company)
+        if _version_from_analysis(item) != _version_from_analysis(analysis)
+    ]
+    history.append(dict(analysis))
+    history = sorted(history, key=_version_from_analysis, reverse=True)[:10]
+    company.metadata_json = {
+        **metadata,
+        "ai_sales_workspace": analysis,
+        "ai_sales_workspace_updated_at": _analysis_visible_timestamp(analysis) or datetime.utcnow().isoformat(),
+        "ai_sales_workspace_history": history,
+    }
+    company.updated_at = datetime.utcnow()
+
+
 def _analysis_visible_timestamp(analysis: dict[str, Any]) -> Optional[str]:
     if not isinstance(analysis, dict):
         return None
@@ -6369,6 +6420,11 @@ def _list_ai_sales_snapshot_versions(db: Session, workspace_id: UUID, company_id
         capture_provider_exception(exc, provider="database", endpoint="workspace_app.ai_sales_analysis.snapshot_list")
         return []
     return [_analysis_version_summary(snapshot) for snapshot in snapshots]
+
+
+def _available_ai_sales_versions(db: Session, workspace_id: UUID, company: Company) -> list[UsageAISalesAnalysisVersionOut]:
+    versions = _list_ai_sales_snapshot_versions(db, workspace_id, company.id)
+    return versions or _metadata_ai_sales_analysis_versions(company)
 
 
 def _version_from_analysis(analysis: dict[str, Any] | None) -> int:
@@ -6893,13 +6949,16 @@ def get_ai_sales_analysis(company_id: UUID, user: WorkspaceUserContext, version:
 
     cached = _cached_ai_sales_analysis_from_company(company)
     snapshot = _ai_sales_snapshot_by_version(db, workspace.id, company.id, version) if version else _latest_ai_sales_snapshot(db, workspace.id, company.id)
-    available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
-    analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json else cached
-    if version and not analysis:
-        if cached and _version_from_analysis(cached) == version:
-            analysis = cached
+    available_versions = _available_ai_sales_versions(db, workspace.id, company)
+    if version:
+        if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json:
+            analysis = snapshot.analysis_json
         else:
+            analysis = _metadata_ai_sales_analysis_by_version(company, version)
+        if not analysis:
             raise HTTPException(status_code=404, detail="AI sales analysis version not found.")
+    else:
+        analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) and snapshot.analysis_json else cached
     generated_at = _analysis_visible_timestamp(analysis)
     latest_version = available_versions[0].version if available_versions else (_version_from_analysis(cached) if cached else None)
     if not analysis:
@@ -6945,7 +7004,7 @@ def generate_ai_sales_analysis(
 
     if not payload.force:
         if cached:
-            available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
+            available_versions = _available_ai_sales_versions(db, workspace.id, company)
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="Using cached AI sales analysis.",
@@ -6990,15 +7049,9 @@ def generate_ai_sales_analysis(
                 company=company,
                 analysis_payload=analysis,
             )
-            metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
-            company.metadata_json = {
-                **metadata,
-                "ai_sales_workspace": analysis,
-                "ai_sales_workspace_updated_at": _analysis_visible_timestamp(analysis) or datetime.utcnow().isoformat(),
-            }
-            company.updated_at = datetime.utcnow()
+            _store_ai_sales_analysis_metadata(company, analysis)
             db.commit()
-            available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
+            available_versions = _available_ai_sales_versions(db, workspace.id, company)
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="AI regenerated from latest available analysis snapshot.",
@@ -7010,7 +7063,7 @@ def generate_ai_sales_analysis(
                 latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
                 available_versions=available_versions,
             )
-        available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
+        available_versions = _available_ai_sales_versions(db, workspace.id, company)
         return UsageAISalesAnalysisOut(
             status="provider_unavailable",
             message=_safe_provider_warning(exc),
@@ -7033,15 +7086,9 @@ def generate_ai_sales_analysis(
                 company=company,
                 analysis_payload=analysis,
             )
-            metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
-            company.metadata_json = {
-                **metadata,
-                "ai_sales_workspace": analysis,
-                "ai_sales_workspace_updated_at": _analysis_visible_timestamp(analysis) or datetime.utcnow().isoformat(),
-            }
-            company.updated_at = datetime.utcnow()
+            _store_ai_sales_analysis_metadata(company, analysis)
             db.commit()
-            available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
+            available_versions = _available_ai_sales_versions(db, workspace.id, company)
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="AI regenerated from latest available analysis snapshot.",
@@ -7053,7 +7100,7 @@ def generate_ai_sales_analysis(
                 latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
                 available_versions=available_versions,
             )
-        available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
+        available_versions = _available_ai_sales_versions(db, workspace.id, company)
         return UsageAISalesAnalysisOut(
             status="provider_unavailable",
             message="AI sales analysis is temporarily unavailable. Please try again.",
@@ -7073,13 +7120,7 @@ def generate_ai_sales_analysis(
         company=company,
         analysis_payload=analysis,
     )
-    metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
-    company.metadata_json = {
-        **metadata,
-        "ai_sales_workspace": analysis,
-        "ai_sales_workspace_updated_at": _analysis_visible_timestamp(analysis) or datetime.utcnow().isoformat(),
-    }
-    company.updated_at = datetime.utcnow()
+    _store_ai_sales_analysis_metadata(company, analysis)
     if lead:
         _add_lead_activity(
             db,
@@ -7097,7 +7138,7 @@ def generate_ai_sales_analysis(
     db.commit()
 
     missing_data = analysis.get("missing_data", []) if isinstance(analysis.get("missing_data"), list) else []
-    available_versions = _list_ai_sales_snapshot_versions(db, workspace.id, company.id)
+    available_versions = _available_ai_sales_versions(db, workspace.id, company)
     return UsageAISalesAnalysisOut(
         status="partial_success" if missing_data else "success",
         message="AI sales analysis generated with missing data warnings." if missing_data else "AI sales analysis generated.",

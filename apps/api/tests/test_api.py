@@ -3639,6 +3639,14 @@ def test_ai_sales_analysis_endpoints_do_not_500_when_snapshot_table_unavailable(
     assert generated.status_code == 200
     assert generated.json()["status"] in {"success", "partial_success"}
     assert generated.json()["analysis"]["summary"] == "Generated despite snapshot table outage"
+    assert [item["version"] for item in generated.json()["available_versions"]] == [2, 1]
+
+    historical = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis?version=1", headers=headers)
+    assert historical.status_code == 200
+    assert historical.json()["analysis"]["summary"] == "Metadata fallback summary"
+
+    missing = client.get(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis?version=999", headers=headers)
+    assert missing.status_code == 404
 
     with get_sessionmaker()() as db:
         AISalesWorkspaceAnalysis.__table__.create(bind=db.get_bind(), checkfirst=True)
