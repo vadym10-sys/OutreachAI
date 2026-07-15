@@ -131,6 +131,13 @@ type WorkspaceAiSalesAnalysisResponse = {
   available_versions?: WorkspaceAiSalesAnalysisVersion[];
 };
 
+type WorkspaceAiSalesRecommendationActionIn = {
+  key: "decision_maker" | "first_message" | "follow_up_sequence" | "best_channel" | "reply_probability" | "deal_success_probability" | "priority_score" | "next_best_action";
+  action: "approve" | "edit" | "regenerate";
+  value?: unknown;
+  reason?: string;
+};
+
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
 
 type WorkspaceIntegrationStatus = {
@@ -1583,6 +1590,10 @@ function OpportunityCard({
   const [salesAnalysisVersions, setSalesAnalysisVersions] = useState<WorkspaceAiSalesAnalysisVersion[]>([]);
   const [salesAnalysisRequestedVersion, setSalesAnalysisRequestedVersion] = useState<number | null>(null);
   const [salesAnalysisLatestVersion, setSalesAnalysisLatestVersion] = useState<number | null>(null);
+  const [salesRecommendationBusyKey, setSalesRecommendationBusyKey] = useState("");
+  const [salesRecommendationEditKey, setSalesRecommendationEditKey] = useState("");
+  const [salesRecommendationEditValue, setSalesRecommendationEditValue] = useState("");
+  const [salesRecommendationEditReason, setSalesRecommendationEditReason] = useState("");
   const profile = leadProfile(lead);
   const coverage = opportunityCoverage(lead, copilot, draft, followUps, audit);
   const completed = coverage.filter(([, done]) => done).length;
@@ -1726,6 +1737,62 @@ function OpportunityCard({
     }
   }
 
+  async function updateSalesRecommendation(payload: WorkspaceAiSalesRecommendationActionIn) {
+    if (!companyId) return;
+    const busyKey = `${payload.key}:${payload.action}`;
+    setSalesRecommendationBusyKey(busyKey);
+    setSalesAnalysisError("");
+    setError("");
+    setStatus(t("Updating AI recommendation..."));
+    try {
+      const result = await withTimeout(
+        api<WorkspaceAiSalesAnalysisResponse>(`/api/workspace-app/companies/${companyId}/ai-sales-analysis/recommendations`, {
+          method: "POST",
+          body: JSON.stringify(payload)
+        }),
+        20000,
+        "AI recommendation could not be updated."
+      );
+      applySalesAnalysisResult(result);
+      setStatus(t(result.message || "AI recommendation updated."));
+      setSalesRecommendationEditKey("");
+      setSalesRecommendationEditValue("");
+      setSalesRecommendationEditReason("");
+    } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = friendlyErrorMessage(err, "AI recommendation could not be updated.");
+      setError(t(reason));
+      setSalesAnalysisError(t(reason));
+      setStatus("");
+    } finally {
+      setSalesRecommendationBusyKey("");
+    }
+  }
+
+  function recommendationValueToText(value: unknown): string {
+    if (Array.isArray(value)) return value.map((item) => String(item || "")).filter(Boolean).join("\n");
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      return [String(record.name || ""), String(record.title || record.recommended_role || ""), String(record.email || "")]
+        .filter(Boolean)
+        .join(" | ");
+    }
+    return String(value || "");
+  }
+
+  function recommendationTextToValue(key: WorkspaceAiSalesRecommendationActionIn["key"], value: string): unknown {
+    const raw = value.trim();
+    if (key === "follow_up_sequence") return raw ? raw.split("\n").map((item) => item.trim()).filter(Boolean) : [];
+    if (key === "reply_probability" || key === "deal_success_probability" || key === "priority_score") {
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : 0;
+    }
+    return raw;
+  }
+
   const salesAnalysisUiState = salesAnalysisLoading
     ? t("Generating")
     : salesAnalysis
@@ -1755,6 +1822,22 @@ function OpportunityCard({
   const salesRecommendationNextAction = salesAnalysis?.recommended_next_action || salesAnalysis?.next_action || unavailable;
   const salesRecommendationBestChannel = salesAnalysis?.best_communication_channel || unavailable;
   const salesRecommendationBestTiming = salesAnalysis?.best_timing_to_contact || unavailable;
+  const salesRecommendationActions: Record<string, any> = salesAnalysis?.recommendation_actions && typeof salesAnalysis.recommendation_actions === "object"
+    ? salesAnalysis.recommendation_actions
+    : {};
+  const salesCopilotPanel: Record<string, any> = salesAnalysis?.ai_copilot_panel && typeof salesAnalysis.ai_copilot_panel === "object"
+    ? salesAnalysis.ai_copilot_panel
+    : {};
+  const salesRecommendationRows: Array<{ key: WorkspaceAiSalesRecommendationActionIn["key"]; label: string; value: unknown; helper: string }> = [
+    { key: "decision_maker", label: "Best decision maker", value: salesRecommendationActions.decision_maker?.value ?? salesRecommendationDecisionMaker, helper: "Who should receive the first outreach" },
+    { key: "first_message", label: "Personalized first message", value: salesRecommendationActions.first_message?.value ?? salesRecommendationOpeningMessage, helper: "Opening line adapted to this company" },
+    { key: "follow_up_sequence", label: "Follow-up sequence", value: salesRecommendationActions.follow_up_sequence?.value ?? salesRecommendationFollowUps, helper: "Multi-step cadence after first touch" },
+    { key: "best_channel", label: "Best outreach channel", value: salesRecommendationActions.best_channel?.value ?? salesRecommendationBestChannel, helper: "Channel with strongest expected response" },
+    { key: "reply_probability", label: "Reply probability", value: salesRecommendationActions.reply_probability?.value ?? salesRecommendationReplyProbability, helper: "Estimated chance of getting a response" },
+    { key: "deal_success_probability", label: "Deal success probability", value: salesRecommendationActions.deal_success_probability?.value ?? salesRecommendationBuyingIntent, helper: "Estimated chance to move to deal progress" },
+    { key: "priority_score", label: "Priority score", value: salesRecommendationActions.priority_score?.value ?? salesRecommendationPriorityScore, helper: "Priority for execution order" },
+    { key: "next_best_action", label: "Next best action", value: salesRecommendationActions.next_best_action?.value ?? salesRecommendationNextAction, helper: "Safest immediate step to take" },
+  ];
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
@@ -2236,6 +2319,110 @@ function OpportunityCard({
                     <p className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-sm text-slate-300">{t(unavailable)}</p>
                   )}
                 </article>
+              </div>
+              <div className="mt-4 rounded-2xl border border-white/15 bg-slate-950/45 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-wide text-cyan-200">{t("AI Copilot")}</p>
+                    <p className="mt-1 text-sm text-slate-200">{t(String(salesCopilotPanel.summary || "Every recommendation below includes confidence, reasoning, and evidence."))}</p>
+                  </div>
+                  <span className="inline-flex items-center rounded-full bg-cyan-500/20 px-3 py-1 text-xs font-black text-cyan-100">{t("Confidence")}: {Number(salesCopilotPanel.confidence || salesRecommendationConfidence)}%</span>
+                </div>
+                <div className="mt-4 grid gap-3">
+                  {salesRecommendationRows.map((item) => {
+                    const rowState = salesRecommendationActions[item.key] && typeof salesRecommendationActions[item.key] === "object"
+                      ? salesRecommendationActions[item.key]
+                      : {};
+                    const rowValue = rowState.value ?? item.value;
+                    const rowReasoning = String(rowState.reasoning || salesRecommendationConfidenceExplanation || "");
+                    const rowConfidence = Number(rowState.confidence || salesRecommendationConfidence || 0);
+                    const isEditing = salesRecommendationEditKey === item.key;
+                    return (
+                      <article key={`recommendation-action-${item.key}`} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
+                            <p className="mt-2 text-sm font-semibold text-white whitespace-pre-wrap">{t(recommendationValueToText(rowValue) || unavailable)}</p>
+                            <p className="mt-2 text-xs text-slate-300">{t(item.helper)}</p>
+                            <p className="mt-1 text-xs text-slate-300">{t("Reasoning")}: {t(rowReasoning || unavailable)}</p>
+                            <p className="mt-1 text-xs font-bold text-cyan-100">{t("Confidence")}: {rowConfidence}%</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void updateSalesRecommendation({ key: item.key, action: "approve" })}
+                              disabled={salesAnalysisLoading || salesRecommendationBusyKey !== ""}
+                              className="inline-flex min-h-10 items-center justify-center rounded-md border border-emerald-300/40 bg-emerald-500/20 px-3 text-xs font-black text-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {salesRecommendationBusyKey === `${item.key}:approve` ? <Loader2 className="animate-spin" size={14} /> : null} {t("Approve")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSalesRecommendationEditKey(item.key);
+                                setSalesRecommendationEditValue(recommendationValueToText(rowValue));
+                                setSalesRecommendationEditReason("");
+                              }}
+                              disabled={salesAnalysisLoading || salesRecommendationBusyKey !== ""}
+                              className="inline-flex min-h-10 items-center justify-center rounded-md border border-amber-300/40 bg-amber-500/20 px-3 text-xs font-black text-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {t("Edit")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void updateSalesRecommendation({ key: item.key, action: "regenerate" })}
+                              disabled={salesAnalysisLoading || salesRecommendationBusyKey !== ""}
+                              className="inline-flex min-h-10 items-center justify-center rounded-md border border-sky-300/40 bg-sky-500/20 px-3 text-xs font-black text-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {salesRecommendationBusyKey === `${item.key}:regenerate` ? <Loader2 className="animate-spin" size={14} /> : null} {t("Regenerate")}
+                            </button>
+                          </div>
+                        </div>
+                        {isEditing ? (
+                          <div className="mt-3 grid gap-2">
+                            <textarea
+                              value={salesRecommendationEditValue}
+                              onChange={(event) => setSalesRecommendationEditValue(event.target.value)}
+                              className="min-h-24 w-full rounded-md border border-white/20 bg-slate-900/70 p-2 text-sm text-white"
+                            />
+                            <input
+                              value={salesRecommendationEditReason}
+                              onChange={(event) => setSalesRecommendationEditReason(event.target.value)}
+                              placeholder={t("Why was this edit made?")}
+                              className="min-h-10 w-full rounded-md border border-white/20 bg-slate-900/70 px-3 text-sm text-white placeholder:text-slate-400"
+                            />
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void updateSalesRecommendation({
+                                  key: item.key,
+                                  action: "edit",
+                                  value: recommendationTextToValue(item.key, salesRecommendationEditValue),
+                                  reason: salesRecommendationEditReason,
+                                })}
+                                disabled={salesAnalysisLoading || salesRecommendationBusyKey !== ""}
+                                className="inline-flex min-h-10 items-center justify-center rounded-md bg-white px-3 text-xs font-black text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {salesRecommendationBusyKey === `${item.key}:edit` ? <Loader2 className="animate-spin" size={14} /> : null} {t("Save edit")}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSalesRecommendationEditKey("");
+                                  setSalesRecommendationEditValue("");
+                                  setSalesRecommendationEditReason("");
+                                }}
+                                className="inline-flex min-h-10 items-center justify-center rounded-md border border-white/20 px-3 text-xs font-black text-slate-200"
+                              >
+                                {t("Cancel")}
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
               </div>
             </div>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">

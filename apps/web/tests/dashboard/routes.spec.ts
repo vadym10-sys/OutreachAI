@@ -278,6 +278,11 @@ test.describe("customer workspace routes", () => {
     await expect(page.getByText("Top risks or objections").first()).toBeVisible();
     await expect(page.getByText("Personalized follow-up sequence").first()).toBeVisible();
     await expect(page.getByText("Quick idea for Hill Country Build Co").first()).toBeVisible();
+    await expect(page.getByText("AI Copilot").first()).toBeVisible();
+    await expect(page.getByText("Best decision maker").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit" }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Regenerate" }).first()).toBeVisible();
     await expect(page.getByText("Hot").first()).toBeVisible();
     await expect(page.getByLabel("Analysis version")).toHaveValue("2");
 
