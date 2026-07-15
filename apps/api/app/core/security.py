@@ -9,9 +9,12 @@ from typing import Annotated, Optional
 from fastapi import Depends, Header, HTTPException, Request, status
 import httpx
 from jose import JWTError, jwt
+from sqlalchemy import func, select
 
 from app.core.config import get_settings
+from app.core.database import get_db
 from app.core.reliability import retry_operation
+from app.models.entities import User
 
 OWNER_EMAIL = "romaniukvadym10@gmail.com"
 
@@ -196,8 +199,10 @@ def get_current_user_context(
     if not email:
         try:
             email = _fetch_clerk_user_email(user_id)
-        except (httpx.HTTPError, ValueError) as exc:
-            raise _unauthorized("Unable to verify owner email") from exc
+        except (httpx.HTTPError, ValueError):
+            # Keep authenticated context even when Clerk Management API lookup is unavailable.
+            # Owner-gated endpoints can still authorize via local owner mapping by user_id.
+            email = ""
     return AuthenticatedUser(user_id=user_id, email=email)
 
 
@@ -244,8 +249,23 @@ def is_owner(email: str) -> bool:
     return email.strip().lower() == OWNER_EMAIL
 
 
-def require_owner(user: CurrentUserContext) -> AuthenticatedUser:
-    if not is_owner(user.email):
+def _is_owner_user_id(user_id: str, db) -> bool:
+    if not user_id:
+        return False
+    owner_email = OWNER_EMAIL.strip().lower()
+    return (
+        db.scalar(
+            select(User.id).where(
+                User.clerk_user_id == user_id,
+                func.lower(User.email) == owner_email,
+            )
+        )
+        is not None
+    )
+
+
+def require_owner(user: CurrentUserContext, db=Depends(get_db)) -> AuthenticatedUser:
+    if not is_owner(user.email) and not _is_owner_user_id(user.user_id, db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
     return user
 

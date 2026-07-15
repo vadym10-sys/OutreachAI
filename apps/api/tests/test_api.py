@@ -1090,7 +1090,7 @@ def test_current_user_context_without_email_claim_uses_clerk_lookup(monkeypatch)
     assert user.email == "lookup@example.com"
 
 
-def test_current_user_context_lookup_failure_returns_401(monkeypatch) -> None:
+def test_current_user_context_lookup_failure_returns_authenticated_user(monkeypatch) -> None:
     def fake_verify(_: str) -> dict:
         return {"sub": "user_lookup_fail"}
 
@@ -1100,10 +1100,35 @@ def test_current_user_context_lookup_failure_returns_401(monkeypatch) -> None:
     monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
     monkeypatch.setattr(security, "_fetch_clerk_user_email", failed_lookup)
 
-    with pytest.raises(HTTPException) as exc:
-        security.get_current_user_context(authorization="Bearer token")
-    assert exc.value.status_code == 401
-    assert exc.value.detail == "Unable to verify owner email"
+    user = security.get_current_user_context(authorization="Bearer token")
+    assert user.user_id == "user_lookup_fail"
+    assert user.email == ""
+
+
+def test_require_owner_allows_owner_user_id_when_email_is_unavailable() -> None:
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        db.add(User(clerk_user_id="owner_user_id_only", email="romaniukvadym10@gmail.com", name="Owner", role="owner"))
+        db.commit()
+
+    with SessionLocal() as db:
+        user = security.AuthenticatedUser(user_id="owner_user_id_only", email="")
+        resolved = security.require_owner(user, db=db)
+        assert resolved.user_id == "owner_user_id_only"
+
+
+def test_require_owner_rejects_non_owner_user_id_without_email() -> None:
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        db.add(User(clerk_user_id="not_owner_user_id_only", email="not-owner@example.com", name="Not Owner", role="user"))
+        db.commit()
+
+    with SessionLocal() as db:
+        user = security.AuthenticatedUser(user_id="not_owner_user_id_only", email="")
+        with pytest.raises(HTTPException) as exc:
+            security.require_owner(user, db=db)
+        assert exc.value.status_code == 403
+        assert exc.value.detail == "Access denied."
 
 
 def test_workspace_me_rejects_unauthorized_user() -> None:
