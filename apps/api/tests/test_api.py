@@ -1154,6 +1154,39 @@ def test_require_owner_allows_workspace_owner_mapping_when_user_row_missing() ->
         assert resolved.user_id == "owner_workspace_only"
 
 
+def test_require_queue_health_access_allows_workspace_owner_without_email() -> None:
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = Workspace(owner_user_id="queue_owner_workspace", name="Queue Owner Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(
+            WorkspaceMember(
+                workspace_id=workspace.id,
+                user_id="queue_owner_workspace",
+                email="",
+                role=WorkspaceRole.owner,
+                status="active",
+            )
+        )
+        db.commit()
+
+    with SessionLocal() as db:
+        user = security.AuthenticatedUser(user_id="queue_owner_workspace", email="")
+        resolved = security.require_queue_health_access(user, db=db)
+        assert resolved.user_id == "queue_owner_workspace"
+
+
+def test_require_queue_health_access_rejects_non_workspace_owner() -> None:
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        user = security.AuthenticatedUser(user_id="queue_not_owner", email="")
+        with pytest.raises(HTTPException) as exc:
+            security.require_queue_health_access(user, db=db)
+        assert exc.value.status_code == 403
+        assert exc.value.detail == "Access denied."
+
+
 def test_workspace_me_rejects_unauthorized_user() -> None:
     response = client.get("/api/workspace/me")
     assert response.status_code == 401

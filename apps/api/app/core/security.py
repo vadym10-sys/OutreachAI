@@ -286,6 +286,28 @@ def _is_owner_user_id(user_id: str, db) -> bool:
     )
 
 
+def _is_workspace_owner_user_id(user_id: str, db) -> bool:
+    if not user_id:
+        return False
+    return (
+        db.scalar(
+            select(Workspace.id)
+            .join(
+                WorkspaceMember,
+                and_(
+                    WorkspaceMember.workspace_id == Workspace.id,
+                    WorkspaceMember.user_id == Workspace.owner_user_id,
+                    WorkspaceMember.role == WorkspaceRole.owner,
+                    WorkspaceMember.status == "active",
+                ),
+            )
+            .where(Workspace.owner_user_id == user_id)
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def require_owner(user: CurrentUserContext, db=Depends(get_db)) -> AuthenticatedUser:
     if not is_owner(user.email) and not _is_owner_user_id(user.user_id, db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
@@ -293,3 +315,12 @@ def require_owner(user: CurrentUserContext, db=Depends(get_db)) -> Authenticated
 
 
 OwnerUser = Annotated[AuthenticatedUser, Depends(require_owner)]
+
+
+def require_queue_health_access(user: CurrentUserContext, db=Depends(get_db)) -> AuthenticatedUser:
+    if is_owner(user.email) or _is_owner_user_id(user.user_id, db) or _is_workspace_owner_user_id(user.user_id, db):
+        return user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+
+QueueHealthUser = Annotated[AuthenticatedUser, Depends(require_queue_health_access)]

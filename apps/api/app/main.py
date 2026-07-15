@@ -21,7 +21,7 @@ from app.core.config import get_settings
 from app.core.database import ensure_runtime_schema, get_db, get_engine, get_sessionmaker
 from app.core.observability import init_sentry, sentry_transaction_name, set_request_context
 from app.core.reliability import required_environment_issues, required_environment_status, validate_database_connectivity, validate_required_environment
-from app.core.security import OwnerUser, authenticated_user_id_from_authorization, rate_limit
+from app.core.security import OwnerUser, QueueHealthUser, authenticated_user_id_from_authorization, rate_limit
 from app.models.entities import AuditLog, Workspace
 from app.services.backups import database_backups_operational
 from app.services.enrichment_queue import queue_health_summary
@@ -281,8 +281,8 @@ def api_readiness() -> JSONResponse:
 
 
 @app.get("/api/admin/queue/health")
-def api_queue_health(owner: OwnerUser, db=Depends(get_db)) -> dict:
-    del owner
+def api_queue_health(user: QueueHealthUser, db=Depends(get_db)) -> dict:
+    del user
     summary = queue_health_summary(db, stale_after_seconds=settings.enrichment_worker_claim_timeout_seconds)
     return {
         **summary,
