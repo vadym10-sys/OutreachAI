@@ -33,6 +33,8 @@ const featureFlags = {
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };
 
+const e2eSignedOutKey = "outreachai.e2eSignedOut";
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -70,21 +72,47 @@ function currentE2EUserEmail() {
   }
 }
 
+function currentE2ESignedOut() {
+  try {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(e2eSignedOutKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
 async function getE2EAuthToken() {
   return isClerkE2EBypass ? "dev" : null;
 }
 
 function useDashboardIdentity() {
   const [testEmail, setTestEmail] = useState(e2eUserEmail);
+  const [testSignedOut, setTestSignedOut] = useState(false);
+  const [testAuthChecked, setTestAuthChecked] = useState(!isClerkE2EBypass);
   const { clerkEnabled } = useAuthRuntime();
 
   useEffect(() => {
     if (isClerkE2EBypass || !clerkEnabled) {
-      const timer = window.setTimeout(() => setTestEmail(currentE2EUserEmail()), 0);
+      const timer = window.setTimeout(() => {
+        setTestEmail(currentE2EUserEmail());
+        setTestSignedOut(currentE2ESignedOut());
+        setTestAuthChecked(true);
+      }, 0);
       return () => window.clearTimeout(timer);
     }
     return undefined;
   }, [clerkEnabled]);
+
+  if (isClerkE2EBypass && (!testAuthChecked || testSignedOut)) {
+    return {
+      isOwner: false,
+      userId: testAuthChecked ? "e2e-signed-out" : "e2e-auth-checking",
+      email: "",
+      workspaceId: "e2e-workspace",
+      ready: false,
+      getAuthToken: async () => null
+    };
+  }
 
   if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
     return {
@@ -216,6 +244,18 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
+
+  useEffect(() => {
+    if (isClerkE2EBypass && !ready && userId !== "e2e-auth-checking") {
+      window.location.assign("/sign-in");
+    }
+  }, [ready, userId]);
+
+  function signOutQaUser() {
+    if (!isClerkE2EBypass) return;
+    window.localStorage.setItem(e2eSignedOutKey, "true");
+    window.location.assign("/sign-in");
+  }
 
   const loadWorkspace = useCallback(async () => {
     if (!ready) return null;
@@ -379,6 +419,18 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     }
   }
 
+  if (isClerkE2EBypass && !ready) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-6">
+        <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-soft">
+          <Loader2 className="mx-auto animate-spin text-brand" size={28} />
+          <h1 className="mt-4 text-xl font-bold text-ink">{t("Preparing secure sign in")}</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{t("Redirecting to sign in.")}</p>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
       <CheckoutContinuation />
@@ -465,9 +517,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 }}
               />
             ) : (
-              <div className="grid size-10 place-items-center rounded-full bg-teal-50 text-xs font-black text-brand" aria-label={accountLabel} title={accountLabel}>
+              <button type="button" data-testid="qa-sign-out" onClick={signOutQaUser} className="grid size-10 place-items-center rounded-full bg-teal-50 text-xs font-black text-brand" aria-label={t("Sign out")} title={t("Sign out")}>
                 {accountInitials}
-              </div>
+              </button>
             )}
           </div>
         </header>

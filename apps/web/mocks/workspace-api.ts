@@ -251,6 +251,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
   let currentCampaign: any = qaCampaign;
   let currentAnalysis: any = { ...qaSalesAnalysisV2 };
   let analysisHistory: any[] = [{ ...qaSalesAnalysisV2 }, { ...qaSalesAnalysisV1 }];
+  let currentProfile = { workspace: "QA Private Workspace", company: "QA Private Workspace", avatar_url: null, timezone: "UTC", language: "en" };
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
@@ -574,9 +575,10 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/profile") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();
-        return fulfillJson(route, body);
+        currentProfile = { ...currentProfile, ...body };
+        return fulfillJson(route, currentProfile);
       }
-      return fulfillJson(route, { workspace: "QA Private Workspace", company: "QA Private Workspace", avatar_url: null, timezone: "UTC", language: "en" });
+      return fulfillJson(route, currentProfile);
     }
     if (apiPath === "/api/billing/plans") return fulfillJson(route, []);
     if (apiPath === "/api/billing/status") return fulfillJson(route, { plan: "Starter", price: 0, status: "active", trial_days_remaining: 14, limits: { leads: 100, email_sends: 250, ai_generations: 100 }, usage: { leads: 1, email_sends: 0, ai_generations: 3 }, sales_employees_used: 0, workspaces_used: 1 });
