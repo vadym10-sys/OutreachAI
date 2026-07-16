@@ -2,6 +2,36 @@
 
 ## 2026-07-16
 
+### refactor(frontend)
+- Completed second decision-first frontend rebuild block for Campaigns, Inbox, Settings, Billing and Profile.
+- Campaigns now surfaces campaign readiness, blocked/running counts and the next safe action before the campaign list.
+- Inbox now reads the real `/api/inbox` endpoint and shows reply decision/blocker state without fake reply data.
+- Billing now reads `/api/billing/status`, `/api/billing/usage` and `/api/billing/invoices` for customer-safe plan and usage state.
+- Settings now keeps setup-focused controls and links workspace identity work to the dedicated Profile page.
+- `/dashboard/profile` now renders a real profile editor backed by existing `/api/profile` GET/PUT instead of redirecting to Settings.
+- Preserved existing backend contracts and fixed the focused-company CRM stage selector regression introduced by the new company sort control.
+
+### validation
+- `npm run lint` passed.
+- `npm run test` passed (`28 passed`).
+- `npx next build --webpack` passed in `apps/web`.
+- `npm --prefix apps/web run e2e` passed (`430 passed`).
+- Default Turbopack `npm run build` is blocked in this local sandbox by a Next/Turbopack port-binding panic; webpack build and TypeScript passed.
+
+### refactor(frontend)
+- Implemented core decision-first UX rebuild block in `apps/web/components/outbound-workspace.tsx` for the highest-priority routes:
+	- Dashboard: compact KPI set, priority queue, recommended-now panel.
+	- Leads: explicit Hot/Warm/Cold prioritization and clearer next action.
+	- Companies: operational summary, practical sorting (priority/recent/stage), and explicit retry on unavailable state.
+	- Company Workspace: explicit workspace state (running/error/unavailable/ready), next step now, and blocking reason panel.
+- Kept all existing backend contracts/endpoints and preserved existing functional actions.
+
+### validation
+- `npm run lint` passed.
+- `npm run test` passed.
+- `npx next build --webpack` passed.
+- `npm --prefix apps/web run e2e -- tests/dashboard/routes.spec.ts` passed (`184 passed`).
+
 ### docs(frontend)
 - Added `FRONTEND_BACKEND_AUDIT.md` with contract-first runtime mapping:
 	- screen/action -> endpoint -> backend module -> integration -> status

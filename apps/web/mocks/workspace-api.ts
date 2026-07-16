@@ -570,8 +570,18 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/sales-employees") return fulfillJson(route, []);
     if (apiPath === "/api/activity") return fulfillJson(route, []);
     if (apiPath === "/api/notifications") return fulfillJson(route, []);
+    if (apiPath === "/api/inbox") return fulfillJson(route, []);
+    if (apiPath === "/api/profile") {
+      if (route.request().method() === "PUT") {
+        const body = route.request().postDataJSON();
+        return fulfillJson(route, body);
+      }
+      return fulfillJson(route, { workspace: "QA Private Workspace", company: "QA Private Workspace", avatar_url: null, timezone: "UTC", language: "en" });
+    }
     if (apiPath === "/api/billing/plans") return fulfillJson(route, []);
-    if (apiPath === "/api/billing/status") return fulfillJson(route, { plan: "Starter", status: "active", usage: { leads: 1, email_sends: 0 } });
+    if (apiPath === "/api/billing/status") return fulfillJson(route, { plan: "Starter", price: 0, status: "active", trial_days_remaining: 14, limits: { leads: 100, email_sends: 250, ai_generations: 100 }, usage: { leads: 1, email_sends: 0, ai_generations: 3 }, sales_employees_used: 0, workspaces_used: 1 });
+    if (apiPath === "/api/billing/usage") return fulfillJson(route, { plan: "Starter", period: "2026-07", limits: { leads: 100, email_sends: 250, ai_generations: 100 }, usage: { leads: 1, email_sends: 0, ai_generations: 3 } });
+    if (apiPath === "/api/billing/invoices") return fulfillJson(route, []);
     if (apiPath.includes("/copilot")) return fulfillJson(route, { probability_to_reply: 82, probability_to_buy: 64, best_first_contact: "Jane Doe", best_subject_line: "Quick idea for Hill Country Build Co", best_cta: "Book a growth audit", estimated_revenue: 12000, reasoning: ["Verified owner contact", "Relevant renovation services", "Clear website conversion gap"] });
     if (apiPath.includes("/website-audit")) return fulfillJson(route, { missing_cta: true, missing_contact_form: false, poor_seo: false, weak_trust_signals: true, missing_reviews: false, slow_website: false, outdated_design: false, improvement_report: "The website has service pages but a weak project consultation CTA.", priority_actions: ["Add a consultation CTA", "Improve trust signals"] });
     if (apiPath.includes("/follow-ups")) return fulfillJson(route, { no_open: ["Worth a quick look?"], opened: ["I noticed you opened the idea."], clicked: ["Happy to send the audit outline."], replied: ["Thanks for replying."] });

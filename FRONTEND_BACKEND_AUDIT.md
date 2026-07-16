@@ -4,6 +4,30 @@ Date: 2026-07-16
 Branch: frontend-rebuild
 Scope: apps/web + apps/api contract audit (runtime only, no mock assumptions)
 
+## Implementation Status Update (2026-07-16)
+
+- Completed core UX rebuild blocks without backend contract changes:
+  - Dashboard
+  - Leads
+  - Companies
+  - Company Workspace
+  - Campaigns
+  - Inbox
+  - Settings
+  - Billing
+  - Profile
+- Implemented practical decision-first shaping:
+  - priority queue surfaces over decorative cards
+  - explicit next step and blocker messaging
+  - explicit unavailable/retry patterns on companies list.
+  - real `/api/inbox`, `/api/profile`, `/api/billing/status`, `/api/billing/usage`, and `/api/billing/invoices` frontend reads.
+- Validation after implementation:
+  - `npm run lint` passed
+  - `npm run test` passed
+  - `npx next build --webpack` passed in `apps/web`
+  - `npm --prefix apps/web run e2e` passed (430 passed)
+  - Default Turbopack `npm run build` is blocked in this local sandbox by a Next/Turbopack port-binding panic, not by compile/type errors.
+
 ## Method
 
 - Mapped frontend routes to page components and user actions.

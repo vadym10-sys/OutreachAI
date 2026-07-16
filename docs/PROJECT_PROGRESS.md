@@ -2,6 +2,69 @@
 
 # Project Progress
 
+## 2026-07-16 - Core UX Rebuild Block 2 (Campaigns, Inbox, Settings, Billing, Profile)
+
+### Scope Completed
+- Reworked Campaigns into a decision-first campaign readiness surface:
+  - top-level decision panel
+  - ready/blocked/running campaign counts
+  - preserved create, launch, pause and resume actions on existing `/api/campaigns` contracts.
+- Reworked Inbox around real reply state:
+  - added `/api/inbox` loading
+  - added decision and blocker panels for replies, campaigns and approved emails
+  - preserved fallback guidance when no replies exist.
+- Reworked Settings to keep only setup that changes real outreach:
+  - lead-search setup state
+  - sender setup
+  - collapsed advanced settings
+  - Profile is now a separate account/workspace identity page.
+- Reworked Billing to use real billing endpoints:
+  - `/api/billing/status`
+  - `/api/billing/usage`
+  - `/api/billing/invoices`
+  - no Stripe internals exposed in the customer UI.
+- Replaced `/dashboard/profile` redirect with a real profile editor backed by existing `/api/profile` GET/PUT.
+- Fixed CRM focused-company regression caused by the new company sort selector taking precedence over the CRM stage selector.
+- Preserved backend/API contracts; no backend changes were made.
+
+### Validation Status
+- Frontend lint: passed (`npm run lint`).
+- Frontend unit tests: passed (`npm run test`, 28 passed).
+- Frontend production build: passed via webpack fallback (`npx next build --webpack` in `apps/web`).
+- Full frontend e2e: passed (`npm --prefix apps/web run e2e`, 430 passed).
+- Default Turbopack build through `npm run build` is blocked in this local sandbox by a Next/Turbopack port-binding panic, while webpack build, TypeScript and e2e pass.
+
+## 2026-07-16 - Core UX Rebuild Block 1 (Dashboard, Leads, Companies, Company Workspace)
+
+### Scope Completed
+- Reworked Dashboard surface in `apps/web/components/outbound-workspace.tsx` into decision-first structure:
+  - compact KPI set (hot opportunities, buying signals, need review)
+  - priority queue with explicit Why now + Next action
+  - focused recommended-now card for immediate execution.
+- Reworked Leads page into a contact-priority flow:
+  - explicit Hot/Warm/Cold prioritization summary
+  - reduced secondary filter noise
+  - clear next action line tied to real lead readiness state.
+- Reworked Companies page for operational triage:
+  - added saved/enrichment/analysis status summary
+  - added sorting by priority/recent/stage
+  - improved unavailable state with explicit retry action.
+- Reworked Company Workspace (`CrmCompanyCard`) with explicit state model:
+  - Workspace state (running/error/unavailable/ready)
+  - Next step now
+  - Blocking reason.
+- Preserved backend/API contracts and existing actions (no endpoint changes).
+
+### Validation Status
+- Frontend lint: passed (`npm run lint`).
+- Frontend unit tests: passed (`npm run test`).
+- Frontend production build: passed (`npm run build`).
+- Frontend route e2e: passed (`npm --prefix apps/web run e2e -- tests/dashboard/routes.spec.ts`, 184 passed).
+
+### Notes
+- This block intentionally focused only on the 4 core screens requested by priority.
+- Campaigns/Inbox/Settings cleanup remains a separate follow-up block.
+
 ## 2026-07-16 - Frontend Rebuild Audit and IA Baseline (Branch: frontend-rebuild)
 
 ### Scope Completed

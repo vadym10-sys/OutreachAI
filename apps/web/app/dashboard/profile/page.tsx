@@ -1,5 +1,5 @@
-import { redirect } from 'next/navigation';
+import { ProfilePage as ProfileWorkspacePage } from '@/components/outbound-workspace';
 
 export default function ProfilePage() {
-  redirect('/dashboard/settings');
+  return <ProfileWorkspacePage />;
 }
