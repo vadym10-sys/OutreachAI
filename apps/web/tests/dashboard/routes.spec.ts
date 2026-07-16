@@ -121,7 +121,7 @@ test.describe("customer workspace routes", () => {
     });
 
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "AI Sales Employee for B2B Lead Generation" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Find the right B2B accounts, research them, and ship reviewed outreach from one workspace." })).toBeVisible();
     await expect(page.locator("body")).not.toContainText("Something went wrong");
     await expect(page.locator("body")).not.toContainText("The page failed to render");
     await expectNoHorizontalOverflow(page);

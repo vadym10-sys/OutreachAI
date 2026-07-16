@@ -1160,8 +1160,8 @@ function dashboardNextStep(metrics: DashboardMetrics, leads: Lead[], campaigns: 
       step: metrics.meetings > 0 ? "Meeting" : "Reply Tracking",
       title: metrics.meetings > 0 ? "Work the meetings created by outreach" : "Review replies and move opportunities forward",
       copy: "Keep CRM stages current so the dashboard reflects what needs attention today.",
-      href: "/dashboard/crm",
-      label: "Open CRM"
+      href: "/dashboard/inbox",
+      label: "Open Inbox"
     };
   }
   return {
