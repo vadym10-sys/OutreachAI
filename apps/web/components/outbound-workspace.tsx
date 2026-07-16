@@ -1393,17 +1393,22 @@ function useCrmData() {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    const showInitialLoading = companies.length === 0;
+    if (showInitialLoading) setLoading(true);
     setError("");
     try {
       const suffix = queryString ? `?${queryString}` : "";
       const crmTimeoutMs = 12000;
-      const results = await Promise.allSettled([
-        api<CrmCompany[]>(`/api/workspace-app/companies${suffix}`, { timeoutMs: crmTimeoutMs }),
-        api<CrmContact[]>(`/api/crm/contacts${suffix}`, { timeoutMs: crmTimeoutMs }),
-        api<CrmDeal[]>(`/api/crm/deals${suffix}`, { timeoutMs: crmTimeoutMs }),
-        api<CrmPipeline>("/api/crm/pipeline", { timeoutMs: crmTimeoutMs })
-      ]);
+      const results = await withTimeout(
+        Promise.allSettled([
+          api<CrmCompany[]>(`/api/workspace-app/companies${suffix}`, { timeoutMs: crmTimeoutMs }),
+          api<CrmContact[]>(`/api/crm/contacts${suffix}`, { timeoutMs: crmTimeoutMs }),
+          api<CrmDeal[]>(`/api/crm/deals${suffix}`, { timeoutMs: crmTimeoutMs }),
+          api<CrmPipeline>("/api/crm/pipeline", { timeoutMs: crmTimeoutMs })
+        ]),
+        30000,
+        "CRM request group timed out"
+      );
       const [companyResult, contactResult, dealResult, pipelineResult] = results;
       const workspaceCompanies = companyResult.status === "fulfilled" ? safeArray(companyResult.value).map(normalizeCrmCompany) : null;
       if (workspaceCompanies) setCompanies(workspaceCompanies);
@@ -1433,7 +1438,7 @@ function useCrmData() {
     } finally {
       setLoading(false);
     }
-  }, [api, queryString, ready]);
+  }, [api, companies.length, queryString, ready]);
 
   useEffect(() => {
     // Initial CRM synchronization with the backend; state updates happen asynchronously inside refresh.
