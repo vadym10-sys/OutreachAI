@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
+import { auth } from "@clerk/nextjs/server";
 import { backendApiUrl } from "@/lib/backend-url";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +38,12 @@ function timeoutForPath(parts: string[]) {
   return defaultProxyTimeoutMs;
 }
 
+function requiresWorkspaceAuthorization(parts: string[]) {
+  const endpoint = `/${parts.join("/")}`;
+  if (!endpoint.startsWith("/api/")) return false;
+  return endpoint !== "/api/health" && endpoint !== "/api/live" && endpoint !== "/api/ready";
+}
+
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
   const url = new URL(targetUrl(path || []));
@@ -48,6 +55,21 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   headers.delete("content-length");
   headers.set("accept-encoding", "identity");
   headers.set("x-request-id", requestId);
+
+  // Ensure protected backend requests are never forwarded without a bearer token.
+  if (!headers.has("authorization") && requiresWorkspaceAuthorization(path || [])) {
+    try {
+      const { userId, getToken } = await auth();
+      if (userId) {
+        const token = await getToken();
+        if (token) {
+          headers.set("authorization", `Bearer ${token}`);
+        }
+      }
+    } catch {
+      // Keep existing behavior for anonymous requests; backend will return 401 when needed.
+    }
+  }
 
   const body = ["GET", "HEAD"].includes(request.method) ? undefined : await request.arrayBuffer();
   let response: Response;
