@@ -67,9 +67,15 @@ def _verify_clerk_token(token: str) -> dict:
     settings = get_settings()
     issuer = settings.clerk_jwt_issuer.rstrip("/")
     audience = settings.jwt_audience.strip()
+    token_claims: dict = {}
 
     try:
         header = jwt.get_unverified_header(token)
+    except JWTError as exc:
+        raise _unauthorized() from exc
+
+    try:
+        token_claims = jwt.get_unverified_claims(token)
     except JWTError as exc:
         raise _unauthorized() from exc
 
@@ -94,13 +100,15 @@ def _verify_clerk_token(token: str) -> dict:
     if not key:
         raise _unauthorized()
 
-    decode_options = {"verify_aud": bool(audience)}
+    token_has_audience = bool(token_claims.get("aud"))
+    should_verify_audience = bool(audience) and token_has_audience
+    decode_options = {"verify_aud": should_verify_audience}
     decode_kwargs = {
         "algorithms": ["RS256"],
         "issuer": issuer,
         "options": decode_options,
     }
-    if audience:
+    if should_verify_audience:
         decode_kwargs["audience"] = audience
 
     try:
