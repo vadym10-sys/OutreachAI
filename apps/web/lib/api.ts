@@ -3,9 +3,16 @@ import { backendApiUrl } from "@/lib/backend-url";
 
 const backendUrl = backendApiUrl();
 
+function isProtectedApiPath(path: string) {
+  return path.startsWith('/api/') && path !== '/api/health' && path !== '/api/live' && path !== '/api/ready';
+}
+
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { getToken } = await auth();
   const token = await getToken();
+  if (isProtectedApiPath(path) && !token) {
+    throw new Error('REQUEST_FAILED');
+  }
   const response = await fetch(`${backendUrl.replace(/\/$/, "")}${path}`, {
     ...init,
     headers: {

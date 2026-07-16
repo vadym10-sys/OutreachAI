@@ -95,6 +95,21 @@ export type ClientApiInit = RequestInit & {
   retryDelayMs?: number;
 };
 
+function isProtectedApiPath(path: string) {
+  return path.startsWith('/api/') && path !== '/api/health' && path !== '/api/live' && path !== '/api/ready';
+}
+
+async function resolveBrowserClerkToken() {
+  if (typeof window === 'undefined') return null;
+  const clerk = (window as unknown as { Clerk?: { session?: { getToken?: () => Promise<string | null> } } }).Clerk;
+  if (!clerk?.session?.getToken) return null;
+  try {
+    return await clerk.session.getToken();
+  } catch {
+    return null;
+  }
+}
+
 function requestMethod(init: ClientApiInit) {
   return String(init.method || 'GET').toUpperCase();
 }
@@ -111,11 +126,17 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
   const method = requestMethod(init);
   const retries = typeof init.retries === 'number' ? init.retries : defaultRetriesForMethod(method);
   const retryDelayMs = typeof init.retryDelayMs === 'number' ? init.retryDelayMs : 750;
+  const effectiveToken = token || (isProtectedApiPath(path) ? await resolveBrowserClerkToken() : null);
+  if (isProtectedApiPath(path) && !effectiveToken) {
+    const authError = new Error('REQUEST_FAILED:Your session has expired. Please sign in again.') as Error & { status?: number };
+    authError.status = 401;
+    throw authError;
+  }
   let attempt = 0;
   let lastError: unknown = null;
   while (attempt <= retries) {
     try {
-      return await clientApiOnce<T>(path, token, init, attempt);
+      return await clientApiOnce<T>(path, effectiveToken, init, attempt);
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : '';
