@@ -1388,11 +1388,12 @@ function useCrmData() {
     setError("");
     try {
       const suffix = queryString ? `?${queryString}` : "";
+      const crmTimeoutMs = 12000;
       const results = await Promise.allSettled([
-        api<CrmCompany[]>(`/api/workspace-app/companies${suffix}`),
-        api<CrmContact[]>(`/api/crm/contacts${suffix}`),
-        api<CrmDeal[]>(`/api/crm/deals${suffix}`),
-        api<CrmPipeline>("/api/crm/pipeline")
+        api<CrmCompany[]>(`/api/workspace-app/companies${suffix}`, { timeoutMs: crmTimeoutMs }),
+        api<CrmContact[]>(`/api/crm/contacts${suffix}`, { timeoutMs: crmTimeoutMs }),
+        api<CrmDeal[]>(`/api/crm/deals${suffix}`, { timeoutMs: crmTimeoutMs }),
+        api<CrmPipeline>("/api/crm/pipeline", { timeoutMs: crmTimeoutMs })
       ]);
       const [companyResult, contactResult, dealResult, pipelineResult] = results;
       const workspaceCompanies = companyResult.status === "fulfilled" ? safeArray(companyResult.value).map(normalizeCrmCompany) : null;
