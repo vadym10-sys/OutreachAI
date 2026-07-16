@@ -230,7 +230,19 @@ async function clientApiOnce<T>(path: string, token: string | null, init: Client
     throw requestError;
   }
 
-  return response.json() as Promise<T>;
+  const raw = await response.text();
+  if (!raw.trim()) {
+    // Some upstream providers intermittently return 200 with an empty body.
+    // Treat it as an empty payload so UI can recover instead of getting stuck in loading state.
+    return {} as T;
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    const invalidPayloadError = new Error('REQUEST_FAILED:Received an invalid response from the server. Please try again.') as Error & { status?: number };
+    invalidPayloadError.status = 502;
+    throw invalidPayloadError;
+  }
 }
 
 export function splitList(value: string) {
