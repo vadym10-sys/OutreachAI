@@ -27,7 +27,8 @@ describe("environment safety", () => {
 
   it("keeps the Clerk E2E bypass available for local automated tests", async () => {
     process.env.NEXT_PUBLIC_APP_ENV = "test";
-    process.env.CLERK_E2E_BYPASS = "true";
+    process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS = "true";
+    process.env.NEXT_PUBLIC_API_URL = "http://127.0.0.1:8000";
 
     const env = await loadEnv();
 
@@ -35,16 +36,28 @@ describe("environment safety", () => {
     expect(env.isClerkE2EBypass).toBe(true);
   });
 
-  it("allows the Clerk E2E bypass for production-like Playwright builds only in the test app environment", async () => {
+  it("allows the Clerk E2E bypass for production-like Playwright builds only against a local test API", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.NEXT_PUBLIC_APP_ENV = "test";
-    process.env.CLERK_E2E_BYPASS = "true";
     process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS = "true";
+    process.env.NEXT_PUBLIC_API_URL = "http://localhost:8000";
 
     const env = await loadEnv();
 
     expect(env.isProductionRuntime).toBe(true);
     expect(env.isClerkE2EBypass).toBe(true);
+  });
+
+  it("keeps the Clerk E2E bypass disabled when test flags point at the production API", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.NEXT_PUBLIC_APP_ENV = "test";
+    process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS = "true";
+    process.env.NEXT_PUBLIC_API_URL = "https://outreachai-api-production.up.railway.app";
+
+    const env = await loadEnv();
+
+    expect(env.isProductionRuntime).toBe(true);
+    expect(env.isClerkE2EBypass).toBe(false);
   });
 
   it("does not enable Clerk for placeholder publishable keys", async () => {

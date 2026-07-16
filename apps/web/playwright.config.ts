@@ -31,6 +31,7 @@ export default defineConfig({
       CLERK_E2E_BYPASS: "true",
       NEXT_PUBLIC_APP_ENV: "test",
       NEXT_PUBLIC_CLERK_E2E_BYPASS: "true",
+      NEXT_PUBLIC_E2E_USER_EMAIL: "qa@example.com",
       NEXT_PUBLIC_API_URL: "http://127.0.0.1:8000",
       NEXT_PUBLIC_LOGROCKET_APP_ID: "",
       NEXT_PUBLIC_POSTHOG_KEY: "",

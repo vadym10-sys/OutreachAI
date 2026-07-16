@@ -30,10 +30,12 @@ export const posthogHost = normalizeUrl(process.env.NEXT_PUBLIC_POSTHOG_HOST, "h
 export const logRocketAppId = process.env.NEXT_PUBLIC_LOGROCKET_APP_ID || "";
 export const runtimeEnvironment = process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development";
 export const isProductionRuntime = process.env.NODE_ENV === "production" || runtimeEnvironment === "production";
-const clerkE2EBypassRequested = process.env.CLERK_E2E_BYPASS === "true" || process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true";
-export const isClerkE2EBypass = runtimeEnvironment === "test" && clerkE2EBypassRequested;
+const clerkE2EBypassRequested = process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true";
+const e2eApiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+const isLocalE2ERuntime = runtimeEnvironment === "test" && (e2eApiUrl === "http://127.0.0.1:8000" || e2eApiUrl === "http://localhost:8000");
+export const isClerkE2EBypass = isLocalE2ERuntime && clerkE2EBypassRequested;
 export const ownerEmail = "romaniukvadym10@gmail.com";
-export const e2eUserEmail = process.env.NEXT_PUBLIC_E2E_USER_EMAIL || "qa@example.com";
+export const e2eUserEmail = isClerkE2EBypass ? process.env.NEXT_PUBLIC_E2E_USER_EMAIL || "" : "";
 
 function isUsableClerkPublishableKey(value: string | undefined) {
   if (!value) return false;

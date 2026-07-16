@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Activity, AlertTriangle, BarChart3, CheckCircle2, Crown, Flag, Loader2, Lock, Server, Sparkles, Users, type LucideIcon } from "lucide-react";
-import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey } from "@/lib/env";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import { useI18n } from "@/lib/i18n/provider";
 
@@ -43,10 +43,14 @@ const flagLabels: Array<[keyof OwnerFeatureFlags, string]> = [
   ["ai_marketplace", "AI Marketplace"]
 ];
 
+const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
+  && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
+  && (process.env.NEXT_PUBLIC_API_URL === "http://127.0.0.1:8000" || process.env.NEXT_PUBLIC_API_URL === "http://localhost:8000");
+
 const noClerkOwnerAuth = {
-  getToken: async () => (isClerkE2EBypass ? "dev" : null),
+  getToken: async () => (qaAuthEnabled ? "dev" : null),
   isLoaded: true,
-  isSignedIn: isClerkE2EBypass
+  isSignedIn: qaAuthEnabled
 };
 
 function e2eOwnerEmail() {
@@ -62,7 +66,7 @@ function e2eOwnerEmail() {
 }
 
 function useOwnerAuth() {
-  if (!hasClerkPublishableKey || isClerkE2EBypass) {
+  if (!hasClerkPublishableKey || qaAuthEnabled) {
     return noClerkOwnerAuth;
   }
 
@@ -82,7 +86,7 @@ async function ownerRequest<T>(path: string, token: string | null, init: Request
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(isClerkE2EBypass ? { "X-Test-User-Email": e2eOwnerEmail() } : {}),
+      ...(qaAuthEnabled ? { "X-Test-User-Email": e2eOwnerEmail() } : {}),
       ...init.headers
     }
   });

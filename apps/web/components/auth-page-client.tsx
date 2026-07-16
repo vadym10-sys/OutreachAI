@@ -6,11 +6,14 @@ import { useSearchParams } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { useEffect } from "react";
 import { useI18n } from "@/lib/i18n/provider";
-import { e2eUserEmail, isClerkE2EBypass } from "@/lib/env";
+import { e2eUserEmail } from "@/lib/env";
 
 type AuthMode = "sign-in" | "sign-up";
 const pendingPlanKey = "outreachai.pendingPlan";
 const planNames = ["Starter", "Pro", "Agency"] as const;
+const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
+  && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
+  && (process.env.NEXT_PUBLIC_API_URL === "http://127.0.0.1:8000" || process.env.NEXT_PUBLIC_API_URL === "http://localhost:8000");
 
 function isPlan(value: string | null): value is typeof planNames[number] {
   return Boolean(value && planNames.includes(value as typeof planNames[number]));
@@ -195,7 +198,7 @@ function ClerkAuthPage({ mode }: { mode: AuthMode }) {
 }
 
 export function AuthPageClient({ mode, clerkEnabled }: { mode: AuthMode; clerkEnabled: boolean }) {
-  if (isClerkE2EBypass) {
+  if (qaAuthEnabled) {
     return <QaAuthPage mode={mode} />;
   }
 
