@@ -12,6 +12,11 @@ function isBackgroundRouteFetch(req: NextRequest) {
   return purpose.toLowerCase() === "prefetch" || prefetch === "1" || accept.includes("text/x-component");
 }
 
+function hasClerkSessionCookie(req: NextRequest) {
+  const cookie = req.headers.get("cookie") || "";
+  return cookie.includes("__session=") || cookie.includes("__client_uat=");
+}
+
 function securityHeaders() {
   const res = NextResponse.next();
   res.headers.set("X-Frame-Options", "DENY");
@@ -36,8 +41,7 @@ function missingClerkMiddleware(req: NextRequest) {
 const protectedMiddleware = clerkMiddleware(async (auth, req) => {
   const res = securityHeaders();
   if (isProtectedRoute(req)) {
-    const authState = await auth();
-    if (!authState.userId && isBackgroundRouteFetch(req)) {
+    if (isBackgroundRouteFetch(req) && !hasClerkSessionCookie(req)) {
       return new NextResponse(null, { status: 401, headers: res.headers });
     }
     await auth.protect();
