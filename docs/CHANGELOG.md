@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-07-16
+
+### fix(web)
+- Hardened protected-route middleware behavior for signed-out background requests to avoid cross-origin auth redirect noise and return safe unauthorized responses for prefetch/RSC flows.
+- Added resilient parsing in shared client API wrapper for intermittent `200` responses with empty payloads.
+- Added explicit timeout protection for Companies CRM data loading requests to prevent prolonged loading states during upstream degradation.
+
+### fix(api)
+- Added deterministic fallback AI sales analysis generation when provider calls fail so customer workflows still receive a usable analysis payload.
+
+### test(api)
+- Updated targeted AI sales analysis failure-path regression to assert fallback behavior on unexpected generation errors.
+
+### validation
+- `npm run lint` passed.
+- `npm run test` passed.
+- `npm run build` passed.
+- `python3 -m pytest tests/test_api.py -k "ai_sales_analysis_unexpected_generation_error_returns_fallback or ai_sales_analysis_provider_failure_returns_cached"` passed.
+
 ## 2026-07-15
 
 ### fix(frontend)

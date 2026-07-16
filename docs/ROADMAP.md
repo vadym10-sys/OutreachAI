@@ -1,5 +1,11 @@
 # Roadmap
 
+## 2026-07-16 - Production QA Follow-Up
+- Verify live rollout completion for both web and API fixes from the 2026-07-16 remediation loop in all production regions.
+- Add a focused production smoke check that flags empty-body `200` responses on CRM endpoints before customer sessions degrade.
+- Add explicit health telemetry for AI sales analysis provider availability and fallback usage rate.
+- Expand auth-flow QA automation for signed-out prefetch scenarios to prevent regressions in logout/login transitions.
+
 ## 2026-07-15 - Deferred Hardening Backlog (Medium and Low)
 - Medium: add richer production health dashboards that correlate queue depth, provider degradation, and customer-visible workflow latency in one operator view.
 - Medium: reduce remaining backend deprecation warnings (`on_event`, Pydantic class config) before the next framework upgrade window.

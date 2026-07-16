@@ -2,6 +2,26 @@
 
 # Project Progress
 
+## 2026-07-16 - Production QA Remediation Loop (Auth, CRM loading, AI fallback)
+
+### Scope Completed
+- Performed end-to-end production QA across dashboard, companies, company workflow, lead finder, campaigns, inbox, settings/profile, refresh behavior, logout/login transitions, and mobile layouts.
+- Fixed signed-out protected-route prefetch handling in web middleware to avoid cross-origin redirect noise and keep background requests fail-safe.
+- Hardened web API client parsing for intermittent `200` responses with empty payloads to prevent customer workflows from breaking on JSON parse errors.
+- Added explicit timeout guards to CRM data loading on Companies page so customer UI does not remain in long-running loading states when upstream endpoints degrade.
+- Added backend deterministic fallback generation for AI Sales Analysis when provider calls fail, preserving customer-visible guidance and analysis continuity.
+
+### Validation Status
+- Frontend lint: passed (`npm run lint`).
+- Frontend unit tests: passed (`npm run test`).
+- Frontend production build: passed (`npm run build`).
+- Backend targeted regression: passed (`python3 -m pytest tests/test_api.py -k "ai_sales_analysis_unexpected_generation_error_returns_fallback or ai_sales_analysis_provider_failure_returns_cached"`).
+
+### Notes
+- Logout flow no longer reproduces CORS console failures from cross-origin auth redirects in protected background fetches.
+- Production API intermittently returns empty successful bodies on CRM endpoints; frontend now degrades safely instead of customer-visible crashes.
+- AI sales analysis provider degradation now has a deterministic fallback path at API layer.
+
 ## 2026-07-15 - Phase 5 Hardening (Critical and High Customer Risks)
 
 ### Scope Completed
