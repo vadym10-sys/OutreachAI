@@ -1223,7 +1223,10 @@ function useSalesData() {
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
-    if (!ready) return;
+    if (!ready) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -1283,7 +1286,10 @@ function IntegrationStatusPanel({ api, ready }: { api: ApiFn; ready: boolean }) 
   useEffect(() => {
     let cancelled = false;
     async function loadStatus() {
-      if (!ready) return;
+      if (!ready) {
+        if (!cancelled) setLoading(false);
+        return;
+      }
       setLoading(true);
       setError("");
       try {
@@ -1383,7 +1389,10 @@ function useCrmData() {
   }, [filters]);
 
   const refresh = useCallback(async () => {
-    if (!ready) return;
+    if (!ready) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -6386,7 +6395,10 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
   });
 
   const loadStatus = useCallback(async () => {
-    if (!ready) return;
+    if (!ready) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
