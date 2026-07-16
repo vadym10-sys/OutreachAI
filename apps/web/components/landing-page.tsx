@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   FileSearch,
   Inbox,
+  LogIn,
   MailCheck,
   MessageSquareText,
   Search,
@@ -98,11 +99,13 @@ const previewRows = [
 function AuthNavigationLink({
   href,
   className,
+  ariaLabel,
   testId,
   children
 }: {
   href: string;
   className: string;
+  ariaLabel?: string;
   testId?: string;
   children: ReactNode;
 }) {
@@ -114,6 +117,7 @@ function AuthNavigationLink({
         event.preventDefault();
         window.location.assign(href);
       }}
+      aria-label={ariaLabel}
       data-testid={testId}
       className={className}
     >
@@ -207,6 +211,9 @@ export function LandingPage() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <LanguageSwitcher compact />
+            <AuthNavigationLink href="/sign-in" ariaLabel={t("Sign in")} className="inline-flex size-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 sm:hidden">
+              <LogIn size={18} />
+            </AuthNavigationLink>
             <AuthNavigationLink href="/sign-in" className="hidden min-h-11 items-center rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-slate-100 sm:inline-flex">{t("Sign in")}</AuthNavigationLink>
             <AuthNavigationLink href="/sign-up?plan=Starter" className="inline-flex min-h-11 items-center rounded-xl bg-brand px-4 text-sm font-black text-white shadow-soft hover:bg-teal-700" testId="header-start-finding-leads">{t("Start finding leads")}</AuthNavigationLink>
           </div>
@@ -323,10 +330,10 @@ export function LandingPage() {
         <SectionHeading eyebrow="Pricing" title="Real plan limits from the OutreachAI billing model." copy="Prices and limits are taken from the current backend plan definitions. Upgrade actions continue through existing billing flows." />
         <div className="mt-10 grid gap-5 lg:grid-cols-3">
           {plans.map((plan) => (
-            <SurfaceCard key={plan.name} as="article" className={`p-6 ${plan.featured ? "border-brand bg-teal-50" : ""}`}>
+            <SurfaceCard key={plan.name} as="article" className={`p-6 ${"featured" in plan && plan.featured ? "border-brand bg-teal-50" : ""}`}>
               <div className="flex items-center justify-between gap-3">
                 <h3 className="text-2xl font-black text-ink">{plan.name}</h3>
-                {plan.featured ? <AppBadge tone="brand">{t("Most useful")}</AppBadge> : null}
+                {"featured" in plan && plan.featured ? <AppBadge tone="brand">{t("Most useful")}</AppBadge> : null}
               </div>
               <p className="mt-2 text-sm leading-6 text-slate-600">{t(plan.audience)}</p>
               <p className="mt-6 text-4xl font-black text-ink">€{plan.price}<span className="text-base font-bold text-slate-500">/{t("month")}</span></p>

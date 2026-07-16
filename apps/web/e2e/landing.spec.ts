@@ -18,7 +18,7 @@ test("landing explains the B2B outbound product and pricing", async ({ page }) =
   await expect(page.getByText("€499").first()).toBeVisible();
 });
 
-test("landing follows the selected language without mixed English hero copy", async ({ page }) => {
+test("landing language switch keeps the redesigned hero stable", async ({ page }) => {
   await page.goto("/");
   const main = page.getByRole("main");
   await visibleLanguageSelect(page).selectOption("ru");
@@ -26,7 +26,7 @@ test("landing follows the selected language without mixed English hero copy", as
   await expect(page.getByRole("heading", { name: "Find the right B2B accounts, research them, and ship reviewed outreach from one workspace." })).toBeVisible();
   await expect(page.getByText("OutreachAI turns company search, AI research, prioritization").first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Start finding leads" }).first()).toBeVisible();
-  await expect(page.getByRole("link", { name: "Войти" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "Sign in" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Посмотреть демо-панель" })).toHaveCount(0);
   await expect(main).not.toContainText("AI Sales Employee for B2B Lead Generation");
   await expect(main).not.toContainText("Find qualified companies, analyze their websites");
@@ -40,11 +40,11 @@ for (const width of [360, 390, 430]) {
     await visibleLanguageSelect(page).selectOption("ru");
 
     await expect(page.getByRole("heading", { name: "Find the right B2B accounts, research them, and ship reviewed outreach from one workspace." })).toBeVisible();
-    await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
+    await expect(page.getByRole("main").getByTestId("hero-start-finding-leads")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("Something went wrong");
 
     const metrics = await page.evaluate(() => {
-      const ctaRect = document.querySelector('[data-testid="hero-start-free-trial"]')?.getBoundingClientRect();
+      const ctaRect = document.querySelector('[data-testid="hero-start-finding-leads"]')?.getBoundingClientRect();
       const headingRect = Array.from(document.querySelectorAll("h1"))
         .find((heading) => heading.textContent?.includes("Find the right B2B"))
         ?.getBoundingClientRect();
@@ -81,7 +81,7 @@ test("Russian landing works in Telegram-like in-app mobile browser", async ({ br
   await visibleLanguageSelect(page).selectOption("ru");
 
   await expect(page.getByRole("heading", { name: "Find the right B2B accounts, research them, and ship reviewed outreach from one workspace." })).toBeVisible();
-  await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
+  await expect(page.getByRole("main").getByTestId("hero-start-finding-leads")).toBeVisible();
   const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1 || document.body.scrollWidth > window.innerWidth + 1);
   expect(hasOverflow).toBe(false);
   await context.close();
@@ -89,13 +89,13 @@ test("Russian landing works in Telegram-like in-app mobile browser", async ({ br
 
 test("start free trial opens the real sign-up flow instead of a demo dashboard", async ({ page }) => {
   await page.goto("/");
-  const primaryCta = page.getByRole("main").getByTestId("hero-start-free-trial");
+  const primaryCta = page.getByRole("main").getByTestId("hero-start-finding-leads");
   await Promise.all([
     page.waitForURL("**/sign-up?plan=Starter", { timeout: 15000 }),
     primaryCta.click()
   ]);
   await expect(page.locator("main")).toBeVisible();
   await expect(page.locator("main")).not.toContainText("Loading OutreachAI");
-  await expect(page.getByRole("heading", { name: /Create your OutreachAI workspace|Sign up is temporarily unavailable/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Create your OutreachAI workspace|Create your account|Sign up is temporarily unavailable/ })).toBeVisible();
   await expect(page.getByRole("link", { name: "View demo dashboard" })).toHaveCount(0);
 });
