@@ -65,7 +65,10 @@ def _unauthorized(detail: str = "Invalid token") -> HTTPException:
 
 def _verify_clerk_token(token: str) -> dict:
     settings = get_settings()
-    issuer = settings.clerk_jwt_issuer.rstrip("/")
+    primary_issuer = settings.clerk_jwt_issuer.rstrip("/")
+    issuer_candidates = [primary_issuer]
+    if "outreachaiaiai.com" in settings.public_app_url and "https://clerk.outreachaiaiai.com" not in issuer_candidates:
+        issuer_candidates.append("https://clerk.outreachaiaiai.com")
     audience = settings.jwt_audience.strip()
     token_claims: dict = {}
 
@@ -84,37 +87,45 @@ def _verify_clerk_token(token: str) -> dict:
     if not kid or alg != "RS256":
         raise _unauthorized()
 
-    try:
-        jwks = _fetch_clerk_jwks(issuer)
-    except (httpx.HTTPError, ValueError) as exc:
-        raise _unauthorized("Unable to verify token") from exc
-
-    key = next((item for item in jwks.get("keys", []) if item.get("kid") == kid), None)
-    if not key:
-        _fetch_clerk_jwks.cache_clear()
-        try:
-            jwks = _fetch_clerk_jwks(issuer)
-        except (httpx.HTTPError, ValueError) as exc:
-            raise _unauthorized("Unable to verify token") from exc
-        key = next((item for item in jwks.get("keys", []) if item.get("kid") == kid), None)
-    if not key:
-        raise _unauthorized()
-
     token_has_audience = bool(token_claims.get("aud"))
     should_verify_audience = bool(audience) and token_has_audience
-    decode_options = {"verify_aud": should_verify_audience}
-    decode_kwargs = {
-        "algorithms": ["RS256"],
-        "issuer": issuer,
-        "options": decode_options,
-    }
-    if should_verify_audience:
-        decode_kwargs["audience"] = audience
+    last_decode_error: JWTError | None = None
+    for issuer in issuer_candidates:
+        try:
+            jwks = _fetch_clerk_jwks(issuer)
+        except (httpx.HTTPError, ValueError):
+            continue
 
-    try:
-        claims = jwt.decode(token, key, **decode_kwargs)
-    except JWTError as exc:
-        raise _unauthorized() from exc
+        key = next((item for item in jwks.get("keys", []) if item.get("kid") == kid), None)
+        if not key:
+            _fetch_clerk_jwks.cache_clear()
+            try:
+                jwks = _fetch_clerk_jwks(issuer)
+            except (httpx.HTTPError, ValueError):
+                continue
+            key = next((item for item in jwks.get("keys", []) if item.get("kid") == kid), None)
+        if not key:
+            continue
+
+        decode_options = {"verify_aud": should_verify_audience}
+        decode_kwargs = {
+            "algorithms": ["RS256"],
+            "issuer": issuer,
+            "options": decode_options,
+        }
+        if should_verify_audience:
+            decode_kwargs["audience"] = audience
+
+        try:
+            claims = jwt.decode(token, key, **decode_kwargs)
+            break
+        except JWTError as exc:
+            last_decode_error = exc
+            continue
+    else:
+        if last_decode_error is not None:
+            raise _unauthorized() from last_decode_error
+        raise _unauthorized("Unable to verify token")
 
     if not claims.get("sub"):
         raise _unauthorized()
