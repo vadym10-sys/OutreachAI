@@ -3,8 +3,9 @@
 import { SignIn, SignUp, useAuth, useClerk } from "@clerk/nextjs";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { ArrowRight, CheckCircle2, Loader2, ShieldCheck, Sparkles } from "lucide-react";
 import { useEffect } from "react";
+import { AppBadge } from "@/components/design-system";
 import { useI18n } from "@/lib/i18n/provider";
 import { e2eUserEmail } from "@/lib/env";
 
@@ -72,6 +73,47 @@ function AuthLoadingState() {
   );
 }
 
+function AuthProductPanel({ mode }: { mode: AuthMode }) {
+  const { t } = useI18n();
+  const isSignUp = mode === "sign-up";
+  return (
+    <section className="hidden min-h-[42rem] rounded-[1.5rem] bg-ink p-6 text-white shadow-2xl lg:flex lg:flex-col lg:justify-between">
+      <div>
+        <Link href="/" className="inline-flex min-h-11 items-center gap-2 text-lg font-black">
+          <span className="grid size-9 place-items-center rounded-xl bg-white text-sm text-ink">OA</span>
+          OutreachAI
+        </Link>
+        <div className="mt-12">
+          <AppBadge tone="dark">{t(isSignUp ? "Start review-first outbound" : "Welcome back")}</AppBadge>
+          <h1 className="mt-5 text-4xl font-black leading-tight">
+            {t(isSignUp ? "Create a workspace that turns research into reviewed outreach." : "Return to your AI outbound control room.")}
+          </h1>
+          <p className="mt-4 text-base leading-7 text-slate-300">
+            {t("Find companies, analyze opportunities, generate safe drafts, review campaigns and track replies without switching tools.")}
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-3">
+        {[
+          ["Real workspace data", "Protected routes require authenticated access."],
+          ["Review-first safety", "Generated outreach waits for approval before supported sends."],
+          ["Clear next action", "Dashboard starts with the highest leverage workflow."],
+        ].map(([title, copy]) => (
+          <article key={title} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div className="flex gap-3">
+              <CheckCircle2 size={19} className="mt-1 shrink-0 text-teal-200" />
+              <div>
+                <p className="font-black text-white">{t(title)}</p>
+                <p className="mt-1 text-sm leading-6 text-slate-300">{t(copy)}</p>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function AlreadySignedInState({ mode }: { mode: AuthMode }) {
   const { t } = useI18n();
   const { signOut } = useClerk();
@@ -113,13 +155,13 @@ const clerkAppearance = {
     header: "hidden",
     headerTitle: "hidden",
     headerSubtitle: "hidden",
-    socialButtonsBlockButton: "min-h-11 rounded-md border border-slate-300 text-sm font-semibold text-ink",
+    socialButtonsBlockButton: "min-h-12 rounded-xl border border-slate-300 text-sm font-bold text-ink shadow-sm",
     socialButtonsProviderIcon: "size-5",
     dividerRow: "my-6",
     form: "w-full",
     formField: "w-full",
-    formFieldInput: "min-h-11 w-full rounded-md border-slate-300",
-    formButtonPrimary: "min-h-11 w-full rounded-md bg-ink text-sm font-semibold text-white hover:bg-slate-900",
+    formFieldInput: "min-h-12 w-full rounded-xl border-slate-300 text-sm font-semibold",
+    formButtonPrimary: "min-h-12 w-full rounded-xl bg-brand text-sm font-black text-white hover:bg-teal-700",
     footer: "hidden"
   }
 };
@@ -158,40 +200,58 @@ function ClerkAuthPage({ mode }: { mode: AuthMode }) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center overflow-x-hidden bg-slate-50 px-4 py-6 min-[360px]:px-5">
-      <div className={`${isSignUp ? "signup" : "signin"}-auth-card w-full max-w-[min(100%,28rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-soft sm:p-6`}>
-        <div className="mb-6 text-center">
-          <h1 className="text-2xl font-bold tracking-tight text-ink">{isSignUp ? t("Create your account") : t("Welcome back")}</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-600">
-            {isSignUp ? t("Start with Google, Apple, or your work email.") : t("Continue with Google, Apple, or your work email.")}
-          </p>
-        </div>
-        {isSignUp ? (
-          <SignUp
-            routing="path"
-            path="/sign-up"
-            signInUrl="/sign-in"
-            fallbackRedirectUrl={authCompleteUrl}
-            forceRedirectUrl={authCompleteUrl}
-            appearance={clerkAppearance}
-          />
-        ) : (
-          <>
-            <SignIn
-              routing="path"
-              path="/sign-in"
-              signUpUrl="/sign-up"
-              fallbackRedirectUrl={authCompleteUrl}
-              forceRedirectUrl={authCompleteUrl}
-              appearance={clerkAppearance}
-            />
-            <div className="mt-4 rounded-lg border border-slate-200 bg-white px-4 py-3 text-center text-sm shadow-soft">
-              <Link href="/forgot-password" className="font-semibold text-brand">
-                {t("Forgot password?")}
-              </Link>
+    <main className="min-h-screen overflow-x-hidden bg-slate-50 px-4 py-6 min-[360px]:px-5 lg:py-8">
+      <div className="mx-auto grid min-h-[calc(100dvh-3rem)] w-full max-w-6xl gap-6 lg:grid-cols-[1fr_28rem] lg:items-stretch">
+        <AuthProductPanel mode={mode} />
+        <section className="flex min-h-full items-center justify-center">
+          <div className={`${isSignUp ? "signup" : "signin"}-auth-card w-full max-w-[min(100%,28rem)] overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-soft sm:p-7`}>
+            <Link href="/" className="mb-6 inline-flex min-h-11 items-center gap-2 font-black text-ink lg:hidden">
+              <span className="grid size-9 place-items-center rounded-xl bg-ink text-sm text-white">OA</span>
+              OutreachAI
+            </Link>
+            <div className="mb-6">
+              <AppBadge tone="brand">{isSignUp ? t("Start finding leads") : t("Secure sign in")}</AppBadge>
+              <h1 className="mt-4 text-3xl font-black tracking-tight text-ink">{isSignUp ? t("Create your OutreachAI workspace") : t("Welcome back")}</h1>
+              <p className="mt-3 text-sm leading-6 text-slate-600">
+                {isSignUp ? t("Start with Google, Apple, or your work email. You will review every outreach action before it moves forward.") : t("Continue with Google, Apple, or your work email to open your workspace.")}
+              </p>
             </div>
-          </>
-        )}
+            {isSignUp ? (
+              <SignUp
+                routing="path"
+                path="/sign-up"
+                signInUrl="/sign-in"
+                fallbackRedirectUrl={authCompleteUrl}
+                forceRedirectUrl={authCompleteUrl}
+                appearance={clerkAppearance}
+              />
+            ) : (
+              <>
+                <SignIn
+                  routing="path"
+                  path="/sign-in"
+                  signUpUrl="/sign-up"
+                  fallbackRedirectUrl={authCompleteUrl}
+                  forceRedirectUrl={authCompleteUrl}
+                  appearance={clerkAppearance}
+                />
+                <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                  <Link href="/forgot-password" className="inline-flex min-h-11 items-center justify-between rounded-xl bg-white px-4 font-black text-brand shadow-sm">
+                    {t("Forgot password?")} <ArrowRight size={16} />
+                  </Link>
+                  <div className="flex gap-2 text-slate-600">
+                    <ShieldCheck size={17} className="mt-0.5 shrink-0 text-brand" />
+                    <span>{t("Protected workspace routes require an active authenticated session.")}</span>
+                  </div>
+                </div>
+              </>
+            )}
+            <div className="mt-6 flex gap-2 rounded-2xl border border-teal-100 bg-teal-50 p-4 text-sm leading-6 text-teal-950">
+              <Sparkles size={18} className="mt-0.5 shrink-0 text-brand" />
+              <p>{t("OutreachAI keeps AI generation, campaign review and sending controls explicit so customer-facing actions stay intentional.")}</p>
+            </div>
+          </div>
+        </section>
       </div>
     </main>
   );

@@ -2353,7 +2353,7 @@ function OpportunityCard({
                 ) : null}
               </div>
             ) : null}
-            <div className="mt-4 rounded-[1.5rem] border border-slate-900/10 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-4 text-white shadow-[0_24px_70px_rgba(15,23,42,0.28)]">
+            <div className="mt-4 rounded-[1.5rem] border border-slate-800 bg-slate-950 p-4 text-white shadow-[0_24px_70px_rgba(15,23,42,0.22)]">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">{t("AI Recommendations")}</p>
@@ -3071,18 +3071,16 @@ export function DashboardHome() {
   };
 
   return (
-    <div className="space-y-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
-      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f4f7ff] to-[#eef6ff] p-5 shadow-sm sm:p-7">
-        <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-[#b7e3ff] opacity-40 blur-3xl" />
-        <div className="pointer-events-none absolute -left-10 bottom-0 h-44 w-44 rounded-full bg-[#dff5eb] opacity-50 blur-3xl" />
-        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+    <div className="space-y-6">
+      <section className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#0f4f77]">{t("Executive Dashboard")}</p>
-            <h1 className="mt-2 text-3xl font-bold leading-tight text-slate-900 sm:text-4xl">{t("What should I do now?")}</h1>
+            <p className="ui-eyebrow">{t("Executive Dashboard")}</p>
+            <h1 className="mt-2 text-3xl font-black leading-tight text-ink sm:text-4xl">{t("What should I do now?")}</h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-700">{t("AI-first control center. Every card explains who to target, why this matters now, and what next action creates the most momentum.")}</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
-            <Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={16} /></Link>
+            <Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t(nextStep.label)} <ArrowRight size={16} /></Link>
             <Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Building2 size={16} /> {t("Open Companies")}</Link>
             <Link href="/dashboard/inbox" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Inbox size={16} /> {t("Open Inbox")}</Link>
           </div>
@@ -3099,7 +3097,7 @@ export function DashboardHome() {
 
       {!hasAnyData && (
         <WidgetBoundary name="Private workspace onboarding">
-          <section className="rounded-3xl border border-teal-100 bg-gradient-to-br from-white to-teal-50/70 p-5 shadow-sm sm:p-6">
+          <section className="rounded-[1.5rem] border border-teal-100 bg-white p-5 shadow-sm sm:p-6">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="min-w-0">
                 <p className="text-sm font-bold uppercase text-brand">{t("Private workspace")}</p>
@@ -5282,9 +5280,8 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
 
   return <CompanyCardShell id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden bg-slate-50 ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
     <div className="border-b border-slate-200 bg-white p-5 sm:p-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
-      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f7fbff] to-[#edf6ff] p-5 shadow-sm sm:p-6">
-        <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-[#b7e3ff] opacity-40 blur-3xl" />
-        <div className="relative flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+      <section className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="flex min-w-0 gap-4">
             <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-xl font-black text-white shadow-sm">
               {current.name.slice(0, 2).toUpperCase()}

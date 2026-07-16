@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, Building2, CheckCircle2, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, User } from "lucide-react";
+import { ArrowRight, Building2, CheckCircle2, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, PanelLeftClose, PanelLeftOpen, Search, Settings, Shield, User } from "lucide-react";
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -240,8 +240,16 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const { clerkEnabled } = useAuthRuntime();
   const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
   const visibleNav = nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner));
-  const primaryMobileNav = visibleNav.slice(0, 4);
+  const primaryMobileNav = visibleNav.filter((item) => ["/dashboard", "/dashboard/companies", "/dashboard/campaigns", "/dashboard/inbox"].includes(item.href));
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem("outreachai.sidebarCollapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [workspaceLoadFailed, setWorkspaceLoadFailed] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
@@ -253,6 +261,18 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       window.location.assign("/sign-in");
     }
   }, [ready, userId]);
+
+  function toggleSidebar() {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem("outreachai.sidebarCollapsed", String(next));
+      } catch {
+        // Collapsing is only a UI preference.
+      }
+      return next;
+    });
+  }
 
   function signOutQaUser() {
     if (!qaAuthEnabled) return;
@@ -437,24 +457,48 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
       <CheckoutContinuation />
-      <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white px-4 py-5 lg:block">
-        <Link href="/dashboard" className="mb-8 block text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
-        <nav className="space-y-1">
+      <aside className={`fixed inset-y-0 left-0 hidden border-r border-slate-200 bg-white px-3 py-4 shadow-[8px_0_30px_rgba(17,24,39,0.04)] transition-[width] duration-200 lg:block ${sidebarCollapsed ? "w-20" : "w-72"}`}>
+        <div className="flex min-h-12 items-center justify-between gap-2">
+          <Link href="/dashboard" className="flex min-w-0 items-center gap-2 text-lg font-black tracking-tight text-ink">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-ink text-sm text-white">OA</span>
+            {!sidebarCollapsed ? <span className="truncate">OutreachAI</span> : null}
+          </Link>
+          {!sidebarCollapsed ? (
+            <button type="button" onClick={toggleSidebar} className="focus-ring grid size-10 place-items-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50" aria-label={t("Collapse sidebar")}>
+              <PanelLeftClose size={18} />
+            </button>
+          ) : null}
+        </div>
+        {sidebarCollapsed ? (
+          <button type="button" onClick={toggleSidebar} className="focus-ring mt-3 grid size-10 place-items-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50" aria-label={t("Expand sidebar")}>
+            <PanelLeftOpen size={18} />
+          </button>
+        ) : (
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <p className="truncate text-sm font-black text-ink">{workspaceLabel}</p>
+            <p className="mt-1 truncate text-xs font-semibold text-slate-500">{workspaceOwnerEmail || email || t("shell.privateWorkspace")}</p>
+            <div className="mt-3 flex items-center gap-2 text-xs font-bold text-brand">
+              <span className="size-2 rounded-full bg-brand" />
+              {workspaceLoadFailed ? t("Needs attention") : t("Workspace active")}
+            </div>
+          </div>
+        )}
+        <nav className="mt-5 space-y-1" aria-label={t("Main navigation")}>
           {visibleNav.map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
             const label = t(item.labelKey);
             return (
-              <Link key={item.href} href={item.href} className={`flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
+              <Link key={item.href} href={item.href} title={sidebarCollapsed ? label : undefined} className={`flex min-h-11 items-center gap-3 rounded-xl px-3 py-2 text-sm font-black ${active ? "bg-ink text-white shadow-sm" : "text-slate-600 hover:bg-slate-100 hover:text-ink"} ${sidebarCollapsed ? "justify-center" : ""}`}>
                 <Icon size={18} aria-hidden="true" />
-                {label}
+                {!sidebarCollapsed ? <span className="truncate">{label}</span> : null}
               </Link>
             );
           })}
         </nav>
       </aside>
-      <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-64">
-        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
+      <div className={`min-w-0 max-w-[100vw] overflow-x-clip transition-[padding] duration-200 ${sidebarCollapsed ? "lg:pl-20" : "lg:pl-72"}`}>
+        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-slate-200 bg-white/90 px-4 backdrop-blur min-[360px]:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="group relative lg:hidden">
               <button
@@ -497,8 +541,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <div className="min-w-0">
-              <span className="block truncate text-sm font-semibold text-slate-700">{workspaceLabel}</span>
-              <span className="block max-w-[58vw] truncate text-xs font-medium text-slate-500 sm:max-w-none">{accountLabel}</span>
+              <span className="block truncate text-sm font-black text-ink">{workspaceLabel}</span>
+              <span className="block max-w-[58vw] truncate text-xs font-semibold text-slate-500 sm:max-w-none">{accountLabel}</span>
             </div>
           </div>
           <div className="hidden shrink-0 md:block">
@@ -582,13 +626,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-6px_20px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-6px_20px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden" aria-label={t("Primary mobile navigation")}>
         {primaryMobileNav.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href;
           const label = t(item.labelKey);
           return (
-            <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1 text-[11px] font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-600"}`}>
+            <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-black ${active ? "bg-ink text-white" : "text-slate-600"}`}>
               <Icon size={18} aria-hidden="true" />
               <span className="max-w-full truncate">{item.href === "/dashboard/leads" ? t("nav.leadsShort") : label}</span>
             </Link>

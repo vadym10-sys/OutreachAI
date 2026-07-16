@@ -71,9 +71,6 @@ body {
   min-width: 0;
   max-width: 100%;
   overflow-x: hidden;
-  background:
-    radial-gradient(circle at top left, rgba(8, 124, 112, 0.08), transparent 28rem),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0));
   background-color: var(--ui-bg);
   color: var(--ui-text);
   transition: background-color 180ms ease, color 180ms ease;
@@ -310,9 +307,7 @@ a[aria-label="Clerk logo"] {
 }
 
 .ui-ai-panel {
-  background:
-    linear-gradient(180deg, rgba(15, 123, 108, 0.08), rgba(15, 123, 108, 0.02)),
-    var(--ui-surface);
+  background: var(--ui-surface-accent);
 }
 
 .ui-button {
