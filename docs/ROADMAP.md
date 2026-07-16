@@ -1,5 +1,12 @@
 # Roadmap
 
+## 2026-07-16 - Frontend Rebuild Program (Started)
+- Completed contract-first audit baseline in `FRONTEND_BACKEND_AUDIT.md`.
+- Next execution block: remove non-core primary navigation surfaces and route-level duplication that does not add backend capability.
+- Rebuild dashboard/leads/companies/campaigns/inbox around explicit next action UX with strict loading/success/empty/partial/provider-unavailable/retry/error/session states.
+- Expose backend-supported capabilities missing in primary workflow where they provide direct user value, without adding mock or speculative features.
+- Validate on preview only, then run full real-user journey before merge consideration.
+
 ## 2026-07-16 - Production QA Follow-Up
 - Verify live rollout completion for both web and API fixes from the 2026-07-16 remediation loop in all production regions.
 - Add a focused production smoke check that flags empty-body `200` responses on CRM endpoints before customer sessions degrade.

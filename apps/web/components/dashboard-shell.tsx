@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, BarChart3, Bot, Building2, CheckCircle2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
+import { ArrowRight, Building2, CheckCircle2, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, User } from "lucide-react";
 import { e2eUserEmail, isClerkE2EBypass, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -21,21 +21,15 @@ const nav = [
   { href: "/dashboard/leads", labelKey: "nav.leads", icon: Search },
   { href: "/dashboard/companies", labelKey: "nav.companies", icon: Building2 },
   { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
-  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Users, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/deals", labelKey: "nav.deals", icon: Handshake, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/website-analyzer", labelKey: "nav.websiteAnalyzer", icon: Globe2, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/contacts", labelKey: "nav.contacts", icon: UserRoundSearch, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/sales-employees", labelKey: "nav.aiEmployees", icon: Bot, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
+  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
+  { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
+  { href: "/dashboard/profile", labelKey: "nav.profile", icon: User },
+  { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
   { href: "/dashboard/owner", labelKey: "nav.owner", icon: Crown, ownerOnly: true },
   { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
 ];
 
 const featureFlags = {
-  NEXT_PUBLIC_SHOW_ADVANCED_NAV: process.env.NEXT_PUBLIC_SHOW_ADVANCED_NAV === "true",
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };
 

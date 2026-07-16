@@ -2,6 +2,15 @@
 
 ## 2026-07-16
 
+### docs(frontend)
+- Added `FRONTEND_BACKEND_AUDIT.md` with contract-first runtime mapping:
+	- screen/action -> endpoint -> backend module -> integration -> status
+	- keep/improve/add/remove decisions for each core workflow surface.
+
+### refactor(frontend)
+- Simplified `DashboardShell` primary navigation to the core backend-backed workflow and account essentials.
+- Removed low-value top-level advanced links from primary nav (analytics/crm/deals/contacts/website-analyzer/sales-employees) to reduce decision noise and route duplication in the rebuild baseline.
+
 ### fix(web)
 - Hardened protected-route middleware behavior for signed-out background requests to avoid cross-origin auth redirect noise and return safe unauthorized responses for prefetch/RSC flows.
 - Added resilient parsing in shared client API wrapper for intermittent `200` responses with empty payloads.

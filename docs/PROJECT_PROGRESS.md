@@ -2,6 +2,27 @@
 
 # Project Progress
 
+## 2026-07-16 - Frontend Rebuild Audit and IA Baseline (Branch: frontend-rebuild)
+
+### Scope Completed
+- Created dedicated rebuild branch `frontend-rebuild` (no work on `main`).
+- Completed full frontend-backend contract audit for runtime workflows and created `FRONTEND_BACKEND_AUDIT.md` with explicit mapping: screen/action -> endpoint -> backend module -> integration -> status.
+- Verified dual-router backend topology and frontend contract reality:
+  - `/api/*` from `apps/api/app/api/routes.py`
+  - `/api/workspace-app/*` from `apps/api/app/api/usage.py`
+- Defined target information architecture focused on core user decisions and real backend-powered actions only.
+- Started implementation of IA simplification by reducing primary navigation to core workflow pages plus account essentials:
+  - dashboard, leads, companies, campaigns, inbox, billing, profile, settings
+  - owner/admin remain gated and separate.
+
+### Validation Status
+- Audit document created: `FRONTEND_BACKEND_AUDIT.md`.
+- Runtime contract mapping validated against backend routers and frontend API usage.
+
+### Notes
+- This phase intentionally avoids backend contract changes and production deployment.
+- Next phase will remove duplicated UI surfaces and rebuild page structures around verified backend actions.
+
 ## 2026-07-16 - Production QA Remediation Loop (Auth, CRM loading, AI fallback)
 
 ### Scope Completed
