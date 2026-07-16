@@ -6496,6 +6496,69 @@ def _analysis_content_key(analysis_payload: dict[str, Any]) -> dict[str, Any]:
     return comparable
 
 
+def _fallback_ai_sales_analysis(
+        *,
+        company: Company,
+        lead: Lead | None,
+        contacts: list[Contact],
+        website_analysis: WebsiteAnalysis | None,
+        language: str,
+) -> dict[str, Any]:
+        summary = (
+                (company.ai_summary or "").strip()
+                or (website_analysis.summary if website_analysis and getattr(website_analysis, "summary", None) else "")
+                or f"{company.name} is saved in your workspace. AI provider is unavailable, so this fallback uses verified CRM and website data only."
+        )
+        top_contact = contacts[0] if contacts else None
+        decision_maker = {
+                "name": (top_contact.name if top_contact and top_contact.name else "").strip(),
+                "title": (top_contact.title if top_contact and top_contact.title else "").strip(),
+                "email": (top_contact.email if top_contact and top_contact.email else (company.email or "")).strip(),
+        }
+        opportunity_score = 65 if (company.website or company.domain) else 50
+        buying_intent_score = 60 if company.industry else 45
+        confidence_score = 58
+        evidence: list[dict[str, Any]] = []
+        if company.website:
+            evidence.append({"source_field": "website", "value": company.website})
+        if company.industry:
+            evidence.append({"source_field": "industry", "value": company.industry})
+        if decision_maker["email"]:
+            evidence.append({"source_field": "decision_maker_email", "value": decision_maker["email"]})
+
+        missing_data: list[str] = []
+        if not decision_maker["title"]:
+            missing_data.append("decision_maker")
+        if not decision_maker["email"]:
+            missing_data.append("decision_maker_email")
+
+        return {
+                "generated_at": datetime.utcnow().isoformat(),
+                "provider": "fallback",
+                "model": "deterministic-workspace-fallback",
+                "summary": summary,
+                "company_summary": summary,
+                "business_model": (company.industry or "").strip() or "Business model needs additional enrichment.",
+                "target_customers": (lead.company if lead and lead.company else company.industry or "").strip(),
+                "opportunity_score": opportunity_score,
+                "buying_intent_score": buying_intent_score,
+                "confidence_score": confidence_score,
+                "decision_maker": decision_maker,
+                "recommended_decision_maker_role": decision_maker["title"] or "Founder or revenue owner",
+                "outreach_angle": (company.sales_angle or "").strip() or "Start with a short intro tied to one measurable business outcome.",
+                "next_action": "Verify the decision maker and send a personalized first outreach.",
+                "recommended_next_action": "Verify the decision maker and send a personalized first outreach.",
+                "risk_to_check": "Confirm contact ownership and timing before sending.",
+                "reasoning": [
+                        "This analysis is generated from workspace CRM data because the AI provider is temporarily unavailable.",
+                        f"Language context: {language}",
+                ],
+                "missing_data": missing_data,
+                "evidence": evidence,
+                "version": 1,
+        }
+
+
 def _analysis_recommendation_defaults(analysis: dict[str, Any]) -> dict[str, Any]:
     decision_maker = analysis.get("decision_maker") if isinstance(analysis.get("decision_maker"), dict) else {}
     confidence = max(1, min(100, int(analysis.get("confidence_score") or 70)))
@@ -7340,6 +7403,39 @@ def generate_ai_sales_analysis(
                 latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
                 available_versions=available_versions,
             )
+        if payload.force:
+            analysis = _stamp_analysis_payload(
+                _fallback_ai_sales_analysis(
+                    company=company,
+                    lead=lead,
+                    contacts=contacts,
+                    website_analysis=website_analysis,
+                    language=language,
+                ),
+                force=bool(previous_analysis),
+                previous_analysis=previous_analysis,
+            )
+            _save_ai_sales_analysis_snapshot(
+                db,
+                workspace_id=workspace.id,
+                user_id=user.user_id,
+                company=company,
+                analysis_payload=analysis,
+            )
+            _store_ai_sales_analysis_metadata(company, analysis)
+            db.commit()
+            available_versions = _available_ai_sales_versions(db, workspace.id, company)
+            return UsageAISalesAnalysisOut(
+                status="partial_success",
+                message="AI provider is unavailable. Generated deterministic fallback analysis from workspace data.",
+                company_id=company.id,
+                analysis=analysis,
+                generated_at=_analysis_visible_timestamp(analysis),
+                cached=False,
+                requested_version=_version_from_analysis(analysis),
+                latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
+                available_versions=available_versions,
+            )
         available_versions = _available_ai_sales_versions(db, workspace.id, company)
         return UsageAISalesAnalysisOut(
             status="provider_unavailable",
@@ -7369,6 +7465,39 @@ def generate_ai_sales_analysis(
             return UsageAISalesAnalysisOut(
                 status="success",
                 message="AI regenerated from latest available analysis snapshot.",
+                company_id=company.id,
+                analysis=analysis,
+                generated_at=_analysis_visible_timestamp(analysis),
+                cached=False,
+                requested_version=_version_from_analysis(analysis),
+                latest_version=available_versions[0].version if available_versions else _version_from_analysis(analysis),
+                available_versions=available_versions,
+            )
+        if payload.force:
+            analysis = _stamp_analysis_payload(
+                _fallback_ai_sales_analysis(
+                    company=company,
+                    lead=lead,
+                    contacts=contacts,
+                    website_analysis=website_analysis,
+                    language=language,
+                ),
+                force=bool(previous_analysis),
+                previous_analysis=previous_analysis,
+            )
+            _save_ai_sales_analysis_snapshot(
+                db,
+                workspace_id=workspace.id,
+                user_id=user.user_id,
+                company=company,
+                analysis_payload=analysis,
+            )
+            _store_ai_sales_analysis_metadata(company, analysis)
+            db.commit()
+            available_versions = _available_ai_sales_versions(db, workspace.id, company)
+            return UsageAISalesAnalysisOut(
+                status="partial_success",
+                message="AI provider is unavailable. Generated deterministic fallback analysis from workspace data.",
                 company_id=company.id,
                 analysis=analysis,
                 generated_at=_analysis_visible_timestamp(analysis),

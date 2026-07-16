@@ -3927,7 +3927,7 @@ def test_ai_sales_analysis_endpoints_do_not_500_when_snapshot_table_unavailable(
         AISalesWorkspaceAnalysis.__table__.create(bind=db.get_bind(), checkfirst=True)
 
 
-def test_ai_sales_analysis_unexpected_generation_error_returns_provider_unavailable(monkeypatch) -> None:
+def test_ai_sales_analysis_unexpected_generation_error_returns_fallback(monkeypatch) -> None:
     import app.api.usage as usage_module
 
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "analysis-unexpected-error@example.com"}
@@ -3944,8 +3944,10 @@ def test_ai_sales_analysis_unexpected_generation_error_returns_provider_unavaila
     response = client.post(f"/api/workspace-app/companies/{company_id}/ai-sales-analysis", headers=headers, json={"force": True})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "provider_unavailable"
-    assert "temporarily unavailable" in payload["message"].lower()
+    assert payload["status"] == "partial_success"
+    assert "fallback" in payload["message"].lower()
+    assert payload["analysis"]["provider"] == "fallback"
+    assert payload["analysis"]["summary"]
 
 
 def test_legacy_null_workspace_records_are_not_returned_to_authenticated_workspace() -> None:
