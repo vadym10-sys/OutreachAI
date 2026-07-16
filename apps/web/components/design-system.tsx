@@ -1,5 +1,5 @@
-import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, Sparkles } from "lucide-react";
+import type { ButtonHTMLAttributes, DialogHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from "react";
+import { AlertTriangle, CheckCircle2, Loader2, Search, Sparkles, X } from "lucide-react";
 
 function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -103,6 +103,117 @@ export function AppButton({
       className={cx(buttonVariantClass[variant], buttonSizeClass[size], className)}
       {...props}
     >
+      {children}
+    </button>
+  );
+}
+
+type FieldProps = {
+  label: ReactNode;
+  hint?: ReactNode;
+  error?: ReactNode;
+};
+
+export function AppInput({
+  label,
+  hint,
+  error,
+  className,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement> & FieldProps) {
+  return (
+    <label className="block text-sm font-bold text-slate-700 dark:text-slate-200">
+      <span>{label}</span>
+      <input
+        className={cx("ui-field mt-2", error ? "ui-field-error" : "", className)}
+        aria-invalid={Boolean(error)}
+        {...props}
+      />
+      {hint ? <span className="mt-1 block text-xs font-medium leading-5 text-slate-500 dark:text-slate-400">{hint}</span> : null}
+      {error ? <span className="mt-1 block text-xs font-bold leading-5 text-red-700 dark:text-red-300">{error}</span> : null}
+    </label>
+  );
+}
+
+export function AppTextarea({
+  label,
+  hint,
+  error,
+  className,
+  ...props
+}: TextareaHTMLAttributes<HTMLTextAreaElement> & FieldProps) {
+  return (
+    <label className="block text-sm font-bold text-slate-700 dark:text-slate-200">
+      <span>{label}</span>
+      <textarea
+        className={cx("ui-field mt-2 min-h-28 resize-y py-3", error ? "ui-field-error" : "", className)}
+        aria-invalid={Boolean(error)}
+        {...props}
+      />
+      {hint ? <span className="mt-1 block text-xs font-medium leading-5 text-slate-500 dark:text-slate-400">{hint}</span> : null}
+      {error ? <span className="mt-1 block text-xs font-bold leading-5 text-red-700 dark:text-red-300">{error}</span> : null}
+    </label>
+  );
+}
+
+export function AppSelect({
+  label,
+  hint,
+  error,
+  className,
+  children,
+  ...props
+}: SelectHTMLAttributes<HTMLSelectElement> & FieldProps & { children: ReactNode }) {
+  return (
+    <label className="block text-sm font-bold text-slate-700 dark:text-slate-200">
+      <span>{label}</span>
+      <select
+        className={cx("ui-field mt-2 appearance-none", error ? "ui-field-error" : "", className)}
+        aria-invalid={Boolean(error)}
+        {...props}
+      >
+        {children}
+      </select>
+      {hint ? <span className="mt-1 block text-xs font-medium leading-5 text-slate-500 dark:text-slate-400">{hint}</span> : null}
+      {error ? <span className="mt-1 block text-xs font-bold leading-5 text-red-700 dark:text-red-300">{error}</span> : null}
+    </label>
+  );
+}
+
+export function SearchField({
+  label = "Search",
+  className,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement> & { label?: string }) {
+  return (
+    <label className={cx("relative block", className)}>
+      <span className="sr-only">{label}</span>
+      <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+      <input className="ui-field pl-10" type="search" {...props} />
+    </label>
+  );
+}
+
+export function FilterBar({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <SurfaceCard className={cx("rounded-[1.5rem]", className)} padding="sm">
+      <div className="grid gap-3 md:grid-cols-[minmax(16rem,1fr)_auto] md:items-end">{children}</div>
+    </SurfaceCard>
+  );
+}
+
+export function Tabs({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cx("ui-tabs", className)} role="tablist">{children}</div>;
+}
+
+export function TabButton({
+  active,
+  children,
+  className,
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean; children: ReactNode }) {
+  return (
+    <button type="button" className={cx("ui-tab", active ? "ui-tab-active" : "", className)} role="tab" aria-selected={Boolean(active)} {...props}>
       {children}
     </button>
   );
@@ -366,6 +477,128 @@ export function DataTable({
         </table>
       </div>
     </div>
+  );
+}
+
+export function ToastNotice({
+  tone = "success",
+  title,
+  copy,
+  onDismiss,
+}: {
+  tone?: "success" | "warning" | "danger" | "neutral";
+  title: ReactNode;
+  copy?: ReactNode;
+  onDismiss?: () => void;
+}) {
+  const toneClass = {
+    success: "border-emerald-200 bg-emerald-50 text-emerald-950",
+    warning: "border-amber-200 bg-amber-50 text-amber-950",
+    danger: "border-red-200 bg-red-50 text-red-950",
+    neutral: "border-slate-200 bg-white text-slate-950",
+  }[tone];
+
+  return (
+    <div className={cx("flex items-start gap-3 rounded-2xl border p-4 shadow-soft", toneClass)} role="status">
+      <CheckCircle2 className="mt-0.5 shrink-0" size={18} />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-black">{title}</p>
+        {copy ? <p className="mt-1 text-sm leading-6 opacity-80">{copy}</p> : null}
+      </div>
+      {onDismiss ? (
+        <button type="button" className="grid size-8 shrink-0 place-items-center rounded-full hover:bg-black/5" onClick={onDismiss} aria-label="Dismiss">
+          <X size={16} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+export function ModalFrame({
+  title,
+  copy,
+  children,
+  actions,
+  className,
+  ...props
+}: DialogHTMLAttributes<HTMLDialogElement> & {
+  title: ReactNode;
+  copy?: ReactNode;
+  children?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <dialog className={cx("ui-modal", className)} {...props}>
+      <div>
+        <h2 className="ui-title text-2xl">{title}</h2>
+        {copy ? <p className="ui-copy mt-2">{copy}</p> : null}
+      </div>
+      {children ? <div className="mt-5">{children}</div> : null}
+      {actions ? <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">{actions}</div> : null}
+    </dialog>
+  );
+}
+
+export function DrawerPanel({
+  title,
+  children,
+  className,
+}: {
+  title: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <aside className={cx("ui-drawer", className)} aria-label={typeof title === "string" ? title : undefined}>
+      <h2 className="ui-title text-xl">{title}</h2>
+      <div className="mt-4">{children}</div>
+    </aside>
+  );
+}
+
+export function DropdownPanel({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cx("ui-dropdown", className)}>{children}</div>;
+}
+
+export function CommandMenu({
+  placeholder = "Search actions",
+  children,
+}: {
+  placeholder?: string;
+  children: ReactNode;
+}) {
+  return (
+    <SurfaceCard className="rounded-[1.5rem]" padding="sm">
+      <SearchField placeholder={placeholder} />
+      <div className="mt-3 grid gap-1">{children}</div>
+    </SurfaceCard>
+  );
+}
+
+export function ConfirmationDialog({
+  title,
+  copy,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  onConfirm,
+  onCancel,
+}: {
+  title: ReactNode;
+  copy: ReactNode;
+  confirmLabel?: ReactNode;
+  cancelLabel?: ReactNode;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <SurfaceCard tone="warning" className="rounded-[1.5rem]">
+      <h2 className="ui-title text-xl">{title}</h2>
+      <p className="ui-copy mt-2">{copy}</p>
+      <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+        <AppButton variant="secondary" size="md" onClick={onCancel}>{cancelLabel}</AppButton>
+        <AppButton variant="primary" size="md" onClick={onConfirm}>{confirmLabel}</AppButton>
+      </div>
+    </SurfaceCard>
   );
 }
 
