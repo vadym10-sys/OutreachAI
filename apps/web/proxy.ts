@@ -32,6 +32,12 @@ function signInRedirect(req: NextRequest) {
   return NextResponse.redirect(signInUrl);
 }
 
+function signedOutBackgroundResponse(headers: Headers) {
+  const response = new NextResponse(null, { status: 204, headers });
+  response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
+  return response;
+}
+
 function securityHeaders() {
   const res = NextResponse.next();
   res.headers.set("X-Frame-Options", "DENY");
@@ -58,14 +64,14 @@ const protectedMiddleware = clerkMiddleware(async (auth, req) => {
   if (isProtectedRoute(req)) {
     if (!hasClerkSessionCookie(req)) {
       if (isBackgroundRouteFetch(req) || !isDocumentNavigation(req)) {
-        return new NextResponse(null, { status: 401, headers: res.headers });
+        return signedOutBackgroundResponse(res.headers);
       }
       return signInRedirect(req);
     }
 
     const authState = await auth();
     if (!authState.userId && (isBackgroundRouteFetch(req) || !isDocumentNavigation(req))) {
-      return new NextResponse(null, { status: 401, headers: res.headers });
+      return signedOutBackgroundResponse(res.headers);
     }
 
     await auth.protect();
