@@ -25,6 +25,13 @@ function isDocumentNavigation(req: NextRequest) {
   return false;
 }
 
+function signInRedirect(req: NextRequest) {
+  const redirectUrl = `${req.nextUrl.pathname}${req.nextUrl.search}`;
+  const signInUrl = new URL("/sign-in", req.url);
+  signInUrl.searchParams.set("redirect_url", redirectUrl);
+  return NextResponse.redirect(signInUrl);
+}
+
 function securityHeaders() {
   const res = NextResponse.next();
   res.headers.set("X-Frame-Options", "DENY");
@@ -49,10 +56,18 @@ function missingClerkMiddleware(req: NextRequest) {
 const protectedMiddleware = clerkMiddleware(async (auth, req) => {
   const res = securityHeaders();
   if (isProtectedRoute(req)) {
+    if (!hasClerkSessionCookie(req)) {
+      if (isBackgroundRouteFetch(req) || !isDocumentNavigation(req)) {
+        return new NextResponse(null, { status: 401, headers: res.headers });
+      }
+      return signInRedirect(req);
+    }
+
     const authState = await auth();
-    if (!authState.userId && (isBackgroundRouteFetch(req) || !isDocumentNavigation(req) || !hasClerkSessionCookie(req))) {
+    if (!authState.userId && (isBackgroundRouteFetch(req) || !isDocumentNavigation(req))) {
       return new NextResponse(null, { status: 401, headers: res.headers });
     }
+
     await auth.protect();
   }
 
