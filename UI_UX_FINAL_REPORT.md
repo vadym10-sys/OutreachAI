@@ -2,7 +2,7 @@
 
 Branch: `design-system-v2`
 Base branch: `main`
-Status: ready for preview review after final branch commit and preview deployment.
+Status: local implementation and verification complete; remote preview deployment is blocked by missing/invalid deploy credentials in this Codex environment.
 
 ## What Changed
 
@@ -128,4 +128,17 @@ Performance coverage is still represented by production build success and the ex
 2. Deploy a preview build only.
 3. Verify the preview URL against public landing, auth pages and the authenticated SaaS flow before approving merge.
 
-Final commit SHA: recorded in the final Codex response after commit creation.
+## Preview Deployment Attempt
+
+Preview deployment was attempted without `--prod`.
+
+- `npx vercel --yes` from `apps/web`: blocked by Vercel CLI writing to `~/Library/Caches/com.vercel.cli`.
+- Re-run with `/tmp` cache and temporary HOME: reached Vercel, but token was invalid.
+- Re-run with normal HOME, `NO_UPDATE_NOTIFIER=1`, and `/tmp` cache: Vercel CLI failed during project retrieval with an internal `err` range error.
+- `git push -u origin design-system-v2`: blocked because local HTTPS GitHub credentials are unavailable.
+- GitHub connector fallback: blocked because the connector cannot access `vadym10-sys/OutreachAI`.
+
+No production deploy was executed.
+
+Verified local commit SHA before deployment attempts: `c273e8c679698e6ba01a03f2da2e4189540c8162`.
+Final branch-tip SHA is recorded in the final Codex response after this report update commit.
