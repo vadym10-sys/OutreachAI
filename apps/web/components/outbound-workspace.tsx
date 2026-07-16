@@ -14,7 +14,7 @@ import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
-import type { Activity, AISalesEmployee, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, SalesCopilot, WebsiteAudit } from "@/lib/types";
+import type { Activity, AISalesEmployee, BillingStatus, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, Profile, SalesCopilot, Usage, WebsiteAudit } from "@/lib/types";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
 
@@ -948,6 +948,13 @@ function leadRecommendedActionForWorkspace(lead: Lead) {
   return "Review email and approve next step.";
 }
 
+function leadPriorityBucket(lead: Lead): "Hot" | "Warm" | "Cold" {
+  const score = leadOpportunityScoreForWorkspace(lead);
+  if (score >= 75) return "Hot";
+  if (score >= 55) return "Warm";
+  return "Cold";
+}
+
 function leadMissingDataForWorkspace(lead: Lead) {
   return !lead.website || !lead.ai_summary || !lead.contact || !lead.email;
 }
@@ -1275,6 +1282,133 @@ function useSalesData() {
   }, [refresh]);
 
   return { api, ready, leads, setLeads, campaigns, setCampaigns, metrics, loading, error, refresh };
+}
+
+function useInboxData() {
+  const { api, ready } = useTokenApi();
+  const [messages, setMessages] = useState<Email[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const refresh = useCallback(async () => {
+    if (!ready) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      setMessages(safeArray(await api<Email[]>("/api/inbox")));
+    } catch (err) {
+      reportWidgetFailure(err, "inbox-loader", { endpoint: "/api/inbox" });
+      setError(friendlyErrorMessage(err, "Inbox replies are temporarily unavailable."));
+    } finally {
+      setLoading(false);
+    }
+  }, [api, ready]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refresh]);
+
+  return { messages, loading, error, refresh };
+}
+
+function useBillingData() {
+  const { api, ready } = useTokenApi();
+  const [status, setStatus] = useState<BillingStatus | null>(null);
+  const [usage, setUsage] = useState<Usage | null>(null);
+  const [invoices, setInvoices] = useState<Array<Record<string, unknown>>>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const refresh = useCallback(async () => {
+    if (!ready) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const [statusResult, usageResult, invoiceResult] = await Promise.allSettled([
+        api<BillingStatus>("/api/billing/status"),
+        api<Usage>("/api/billing/usage"),
+        api<Array<Record<string, unknown>>>("/api/billing/invoices")
+      ]);
+      if (statusResult.status === "fulfilled") setStatus(statusResult.value);
+      if (usageResult.status === "fulfilled") setUsage(usageResult.value);
+      if (invoiceResult.status === "fulfilled") setInvoices(safeArray(invoiceResult.value));
+      if (statusResult.status === "rejected" && usageResult.status === "rejected") throw statusResult.reason;
+    } catch (err) {
+      reportWidgetFailure(err, "billing-loader", { endpoint_group: "billing-status-usage-invoices" });
+      setError(friendlyErrorMessage(err, "Billing status is temporarily unavailable."));
+    } finally {
+      setLoading(false);
+    }
+  }, [api, ready]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refresh]);
+
+  return { status, usage, invoices, loading, error, refresh };
+}
+
+function useProfileData() {
+  const { api, ready } = useTokenApi();
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const refresh = useCallback(async () => {
+    if (!ready) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      setProfile(await api<Profile>("/api/profile"));
+    } catch (err) {
+      reportWidgetFailure(err, "profile-loader", { endpoint: "/api/profile" });
+      setError(friendlyErrorMessage(err, "Profile settings are temporarily unavailable."));
+    } finally {
+      setLoading(false);
+    }
+  }, [api, ready]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refresh]);
+
+  const saveProfile = useCallback(async (payload: Profile) => {
+    setSaving(true);
+    setNotice("");
+    setError("");
+    try {
+      const updated = await api<Profile>("/api/profile", { method: "PUT", body: JSON.stringify(payload) });
+      setProfile(updated);
+      setNotice("Profile saved. Future outreach uses this workspace identity.");
+    } catch (err) {
+      reportWidgetFailure(err, "profile-save", { endpoint: "/api/profile" });
+      setError(friendlyErrorMessage(err, "Profile could not be saved."));
+    } finally {
+      setSaving(false);
+    }
+  }, [api]);
+
+  return { profile, loading, saving, error, notice, saveProfile };
 }
 
 function IntegrationStatusPanel({ api, ready }: { api: ApiFn; ready: boolean }) {
@@ -2889,12 +3023,12 @@ export function DashboardHome() {
 
   const summaryCards = [
     {
-      label: t("Hot Opportunities"),
+      label: t("Hot opportunities"),
       value: opportunities.filter((item) => Number(item.ai_crm?.priority?.score || item.overall_score || 0) >= 70).length,
       helper: t("High-priority accounts")
     },
     {
-      label: t("New Buying Signals"),
+      label: t("Buying signals"),
       value: allBuyingChanges.length,
       helper: t("Recent signal changes")
     },
@@ -2904,12 +3038,7 @@ export function DashboardHome() {
       helper: t("Draft or approved")
     },
     {
-      label: t("Active Pipeline"),
-      value: metrics.revenue_forecast.toLocaleString(),
-      helper: t("Current pipeline value")
-    },
-    {
-      label: t("Companies Needing Review"),
+      label: t("Need review"),
       value: needsReviewCount,
       helper: t("Awaiting manual review")
     }
@@ -3017,125 +3146,55 @@ export function DashboardHome() {
       <section className="grid gap-4 xl:grid-cols-3">
         <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-bold text-slate-900">{t("Today's Best Opportunities")}</h2>
+            <h2 className="text-lg font-bold text-slate-900">{t("Priority queue")}</h2>
             <Link href="/dashboard/companies" className="text-sm font-bold text-[#0f4f77]">{t("View all")}</Link>
           </div>
           <div className="mt-4 grid gap-3">
-            {opportunities.length ? opportunities.map((company) => {
+            {opportunities.length ? opportunities.slice(0, 4).map((company) => {
               const score = Number(company.ai_crm?.priority?.score || company.overall_score || 0);
-              const urgency = String(company.ai_crm?.buying_intent?.urgency || "");
-              const buyingScore = Number(company.ai_crm?.buying_intent?.score || company.buying_signal_score || 0);
-              const decisionMaker = company.decision_maker_intelligence?.profiles?.[0] || null;
-              const whoLine = decisionMaker?.name
-                ? `${decisionMaker.name}${decisionMaker.title ? ` · ${decisionMaker.title}` : ""}`
-                : (company.contacts?.[0]?.name || company.email || t("Decision maker pending"));
-              const whyLine = String(company.ai_crm?.buying_intent?.reasoning || company.ai_revenue_engine_report?.recommended_outreach_strategy?.why_contact_now || company.reasoning || t("Signals still loading."));
-              const nextLine = String(company.ai_crm?.next_action || company.recommended_next_action || t("Open company card and continue workflow."));
+              const reason = String(company.ai_crm?.buying_intent?.reasoning || company.reasoning || t("Signals are still being collected."));
+              const next = String(company.ai_crm?.next_action || company.recommended_next_action || t("Open company workspace."));
               return (
                 <article key={company.id} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-base font-bold text-slate-900">{company.name}</p>
                     <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-slate-700">{t("Priority")} {score}</span>
                   </div>
-                  <div className="mt-3 grid gap-2 text-sm">
-                    <p><span className="font-bold text-slate-900">{t("Opportunity score")}</span> <span className="text-slate-700">{score}</span></p>
-                    <p><span className="font-bold text-slate-900">{t("Buying intent")}</span> <span className="text-slate-700">{buyingScore}{urgency ? ` · ${urgency}` : ""}</span></p>
-                    <p><span className="font-bold text-slate-900">{t("Decision maker")}</span> <span className="text-slate-700">{whoLine}</span></p>
-                    <p><span className="font-bold text-slate-900">{t("Top reason to contact")}</span> <span className="text-slate-700">{whyLine}</span></p>
-                    <p><span className="font-bold text-slate-900">{t("Recommended next action")}</span> <span className="text-slate-700">{nextLine}</span></p>
-                  </div>
+                  <p className="mt-2 text-sm text-slate-700"><span className="font-bold text-slate-900">{t("Why now")}: </span>{reason}</p>
+                  <p className="mt-1 text-sm text-slate-700"><span className="font-bold text-slate-900">{t("Next")}: </span>{next}</p>
+                  <Link href={`/dashboard/companies?company=${company.id}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-slate-900 px-3 text-xs font-bold text-white">{t("Open company")}</Link>
                 </article>
               );
             }) : (
               <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-600">
-                {t("No opportunity cards yet. Add a company or run lead search to let AI prioritize accounts.")}
+                {t("No prioritized companies yet. Run lead search or save one company to start.")}
               </div>
             )}
           </div>
         </article>
 
         <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">{t("AI Recommendation")}</h2>
+          <h2 className="text-lg font-bold text-slate-900">{t("Recommended now")}</h2>
           <div className="mt-4 space-y-3 text-sm">
             <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Best company to contact today")}</p>
+              <p className="font-bold text-slate-900">{t("Company")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.bestCompany}</p>
             </div>
             <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Why now")}</p>
-              <p className="mt-1 text-slate-700">{aiRecommendation.whyNow}</p>
-            </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Who to contact")}</p>
+              <p className="font-bold text-slate-900">{t("Who")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.whoToContact}</p>
             </div>
             <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Recommended outreach angle")}</p>
+              <p className="font-bold text-slate-900">{t("Why")}</p>
+              <p className="mt-1 text-slate-700">{aiRecommendation.whyNow}</p>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-3">
+              <p className="font-bold text-slate-900">{t("First move")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.outreachAngle}</p>
             </div>
           </div>
           <Link href={aiRecommendation.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#0f4f77] px-4 text-sm font-bold text-white">{t("Open company")} <ArrowRight size={16} /></Link>
         </article>
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-3">
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">{t("Recent Buying Signals")}</h2>
-          <div className="mt-4 space-y-2">
-            {[
-              { key: "hiring", label: t("Hiring"), items: buyingSignalBuckets.hiring },
-              { key: "technology", label: t("Technology changes"), items: buyingSignalBuckets.technology },
-              { key: "expansion", label: t("Expansion"), items: buyingSignalBuckets.expansion },
-              { key: "funding", label: t("Funding"), items: buyingSignalBuckets.funding },
-              { key: "product", label: t("Product launches"), items: buyingSignalBuckets.product }
-            ].map((bucket) => (
-              <div key={bucket.key} className="rounded-xl bg-slate-50 p-3 text-sm">
-                <p className="font-bold text-slate-900">{bucket.label}</p>
-                <p className="mt-1 text-slate-700">{bucket.items.length ? safeArray(bucket.items[0]?.added).slice(0, 2).join(", ") || t("Updated") : t("No new signal")}</p>
-                <p className="mt-1 text-xs text-slate-500">{t("Count")}: {bucket.items.length}</p>
-              </div>
-            ))}
-          </div>
-        </article>
-
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">{t("Ready-to-Send Emails")}</h2>
-          <div className="mt-4 space-y-2">
-            {readyToSendEmails.length ? readyToSendEmails.map(({ company, email }) => {
-              const contact = company.contacts?.[0];
-              const confidence = Number(company.ai_outreach_strategy?.estimated_reply_probability || company.ai_revenue_engine_report?.confidence || 0);
-              return (
-                <div key={company.id} className="rounded-xl border border-slate-200 p-3 text-sm">
-                  <p className="font-bold text-slate-900">{company.name}</p>
-                  <p className="mt-1 text-slate-700">{t("Contact")}: {contact?.name || contact?.email || company.email || t("Not available")}</p>
-                  <p className="mt-1 text-slate-700">{t("Subject")}: {email?.subject || t("No subject yet")}</p>
-                  <p className="mt-1 text-slate-700">{t("Confidence")}: {confidence}%</p>
-                  <Link href={`/dashboard/companies?company=${company.id}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-slate-900 px-3 text-xs font-bold text-white">{t("Review")}</Link>
-                </div>
-              );
-            }) : <p className="text-sm text-slate-600">{t("No emails ready yet.")}</p>}
-          </div>
-        </article>
-
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">{t("AI Timeline")}</h2>
-          <div className="mt-4 space-y-2">
-            {primaryCompany?.ai_live_buying_signals?.change_timeline?.length ? safeArray(primaryCompany.ai_live_buying_signals.change_timeline).slice(0, 5).map((item, index) => (
-              <div key={`${item.change_type || "timeline"}-${index}`} className="rounded-xl border border-slate-200 p-3 text-sm">
-                <p className="font-bold text-slate-900">{item.change_type || t("Timeline event")}</p>
-                <p className="mt-1 text-slate-700">{Array.isArray(item.added) ? item.added.join(", ") : ""}</p>
-              </div>
-            )) : <p className="text-sm text-slate-600">{t("Timeline fills automatically after company monitoring runs.")}</p>}
-          </div>
-        </article>
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-bold text-slate-900">{t("Daily Summary")}</h2>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-700">{t("Auto-generated")}</span>
-        </div>
-        <p className="mt-3 text-sm leading-6 text-slate-700">{primaryCompany?.ai_ceo_dashboard?.daily_summary || t("AI summary appears once opportunities are enriched. Continue with lead search or company review.")}</p>
       </section>
 
       <WidgetBoundary name="Main customer actions">
@@ -3170,7 +3229,7 @@ export function LeadFinderPage() {
   const automaticSearchReady = leadSearchStatus === "connected";
   const firstSavedLead = searchResults.find((lead) => lead.crm_company_id || lead.id) || null;
   const nextCompanyHref = firstSavedLead?.crm_company_id ? `/dashboard/companies?company=${firstSavedLead.crm_company_id}` : "/dashboard/companies";
-  const [aiFilters, setAiFilters] = useState<LeadAiFilterKey[]>([]);
+  const [aiFilters] = useState<LeadAiFilterKey[]>([]);
   const baseLeads = hasSearched ? searchResults : leads;
   const visibleLeads = useMemo(
     () => aiFilters.length ? baseLeads.filter((lead) => aiFilters.every((filter) => leadMatchesAiFilter(lead, filter))) : baseLeads,
@@ -3199,6 +3258,16 @@ export function LeadFinderPage() {
       meetingsPotential: list.length ? Math.round(meetingsPotential / Math.max(1, list.length)) : 0
     };
   }, [visibleLeads]);
+  const prioritySummary = useMemo(() => {
+    const counts = { hot: 0, warm: 0, cold: 0 };
+    rankedLeads.forEach((lead) => {
+      const bucket = leadPriorityBucket(lead);
+      if (bucket === "Hot") counts.hot += 1;
+      else if (bucket === "Warm") counts.warm += 1;
+      else counts.cold += 1;
+    });
+    return counts;
+  }, [rankedLeads]);
 
   const syncWorkflowCompanies = useCallback(async () => {
     if (!ready) return;
@@ -3592,48 +3661,29 @@ export function LeadFinderPage() {
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search one focused market. OutreachAI saves real companies to CRM and prepares the best next action." />
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        {[
-          ["Total Leads", summaryMetrics.totalLeads],
-          ["Hot Leads", summaryMetrics.hotLeads],
-          ["Buying Signals", summaryMetrics.buyingSignals],
-          ["Ready Emails", summaryMetrics.readyEmails],
-          ["Meetings Potential", `${summaryMetrics.meetingsPotential}%`]
-        ].map(([label, value]) => (
-          <article key={String(label)} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
-            <p className="mt-2 text-2xl font-black tracking-tight text-ink">{value}</p>
-          </article>
-        ))}
-      </section>
-
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-black text-ink">{t("AI Filters")}</h2>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("Rank by what matters now")}</p>
+          <h2 className="text-lg font-black text-ink">{t("Lead priority now")}</h2>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("Who to contact first")}</p>
         </div>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           {[
-            ["high_opportunity", "🔥 High Opportunity"],
-            ["buying_intent", "📈 Buying Intent"],
-            ["ready_to_contact", "📬 Ready to Contact"],
-            ["needs_review", "⚠ Needs Review"],
-            ["high_confidence", "🟢 High Confidence"],
-            ["missing_data", "⚪ Missing Data"]
-          ].map(([key, label]) => {
-            const active = aiFilters.includes(key as LeadAiFilterKey);
-            return (
-              <button
-                key={String(key)}
-                type="button"
-                onClick={() => setAiFilters((current) => current.includes(key as LeadAiFilterKey) ? current.filter((item) => item !== key) : [...current, key as LeadAiFilterKey])}
-                className={`inline-flex min-h-10 items-center justify-center rounded-full border px-4 text-sm font-bold transition ${active ? "border-brand bg-teal-50 text-brand" : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"}`}
-              >
-                {t(String(label))}
-              </button>
-            );
-          })}
+            ["Total leads", summaryMetrics.totalLeads],
+            ["Hot", prioritySummary.hot],
+            ["Warm", prioritySummary.warm],
+            ["Cold", prioritySummary.cold],
+            ["Ready emails", summaryMetrics.readyEmails]
+          ].map(([label, value]) => (
+            <article key={String(label)} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
+              <p className="mt-2 text-2xl font-black tracking-tight text-ink">{value}</p>
+            </article>
+          ))}
         </div>
+        <p className="mt-4 text-sm text-slate-700">
+          <span className="font-bold text-slate-900">{t("Next action")}: </span>
+          {todaysBestLead ? t(leadRecommendedActionForWorkspace(todaysBestLead)) : t("Run a focused search and save the first company.")}
+        </p>
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -4849,6 +4899,24 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     { label: "Schedule Follow-up", status: currentSentAt ? (current.notes.length || current.replied_at ? "completed" as const : "active" as const) : "pending" as const },
     { label: "Next Lead", status: onOpenNextLead ? ((currentSentAt || current.replied_at || current.crm_stage === "Meeting Scheduled" || current.crm_stage === "Won" || current.crm_stage === "Lost") ? "active" as const : "pending" as const) : "pending" as const }
   ];
+  const workspaceState = actionBusy
+    ? { label: t("Running"), tone: "border-amber-200 bg-amber-50 text-amber-900", detail: actionCurrentStep || actionNotice || t("Processing your request...") }
+    : actionError
+      ? { label: t("Error"), tone: "border-red-200 bg-red-50 text-red-800", detail: actionError }
+      : !current.lead_id
+        ? { label: t("Unavailable"), tone: "border-slate-200 bg-slate-100 text-slate-700", detail: t("This company is not connected to a lead yet. Reconnect it before AI actions.") }
+        : { label: t("Ready"), tone: "border-teal-200 bg-teal-50 text-brand", detail: t("Workspace is ready for the next step.") };
+  const nextActionText = String(
+    nextAction
+    || displayCurrent.ai_crm?.next_action
+    || displayCurrent.recommended_next_action
+    || t("Open outreach review and approve the next email.")
+  );
+  const blockingReason = actionError
+    || (!hasVerifiedEmail ? t("No verified recipient email yet.") : "")
+    || (!current.generated_emails.length ? t("No outreach draft generated yet.") : "")
+    || (currentDraft?.delivery_status !== "approved" && currentDraft?.delivery_status !== "sent" ? t("Draft is not approved yet.") : "")
+    || t("No blocker detected.");
 
   function applyCompanyUpdate(updatedCompany: CrmCompany) {
     setCurrent(updatedCompany);
@@ -5257,6 +5325,24 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
         </div>
 
         <div className="mt-5 grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+          <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-2">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className={`rounded-xl border p-3 ${workspaceState.tone}`}>
+                <p className="text-xs font-black uppercase tracking-wide">{t("Workspace state")}</p>
+                <p className="mt-1 text-base font-black">{workspaceState.label}</p>
+                <p className="mt-1 text-sm font-semibold leading-6">{workspaceState.detail}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Next step now")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-900">{nextActionText}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Blocking reason")}</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-slate-900">{blockingReason}</p>
+              </div>
+            </div>
+          </article>
+
           <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-4 flex flex-wrap gap-2">
               {workspaceFlow.map((step) => (
@@ -6010,13 +6096,57 @@ export function CompaniesPage() {
   const { api, companies, loading, error, filters, setFilters } = useCrmData();
   const { t } = useI18n();
   const searchParams = useSearchParams();
+  const [sortBy, setSortBy] = useState<"priority" | "recent" | "stage">("priority");
   const focusedCompanyId = searchParams.get("company") || "";
-  const focusedCompany = companies.find((company) => company.id === focusedCompanyId);
-  const primaryCompanies = companies.slice(0, 3);
-  const secondaryCompanies = companies.slice(3);
+  const sortedCompanies = useMemo(() => {
+    const list = [...companies];
+    list.sort((left, right) => {
+      if (sortBy === "recent") {
+        return Date.parse(right.last_activity_at || right.updated_at || "") - Date.parse(left.last_activity_at || left.updated_at || "");
+      }
+      if (sortBy === "stage") {
+        return String(left.crm_stage || "").localeCompare(String(right.crm_stage || ""));
+      }
+      const leftPriority = Number(left.ai_crm?.priority?.score || left.priority_score || left.overall_score || companyHealthScore(left));
+      const rightPriority = Number(right.ai_crm?.priority?.score || right.priority_score || right.overall_score || companyHealthScore(right));
+      return rightPriority - leftPriority;
+    });
+    return list;
+  }, [companies, sortBy]);
+  const focusedCompany = sortedCompanies.find((company) => company.id === focusedCompanyId);
+  const primaryCompanies = sortedCompanies.slice(0, 3);
+  const secondaryCompanies = sortedCompanies.slice(3);
+  const enrichmentRunning = sortedCompanies.filter((company) => hasRunningWorkflow(company)).length;
+  const analysisReady = sortedCompanies.filter((company) => Boolean(company.ai_summary || company.ai_revenue_engine_report?.executive_summary)).length;
 
   return <div className="space-y-6">
     <PageHeader eyebrow="Companies" title="Open the next company to finish the opportunity." copy="Keep this screen focused: review the best saved companies, fill missing data, prepare the email, then approve." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")} <ArrowRight size={17} /></Link>} />
+    {!focusedCompany && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-black uppercase text-slate-500">{t("Saved companies")}</p>
+            <p className="mt-1 text-xl font-black text-ink">{sortedCompanies.length}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-black uppercase text-slate-500">{t("Enrichment running")}</p>
+            <p className="mt-1 text-xl font-black text-ink">{enrichmentRunning}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-3">
+            <p className="text-xs font-black uppercase text-slate-500">{t("AI analysis ready")}</p>
+            <p className="mt-1 text-xl font-black text-ink">{analysisReady}</p>
+          </div>
+        </div>
+        <label className="text-sm font-semibold text-slate-700">
+          {t("Sort by")}
+          <select value={sortBy} onChange={(event) => setSortBy(event.target.value as "priority" | "recent" | "stage")} className="mt-2 min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
+            <option value="priority">{t("Priority")}</option>
+            <option value="recent">{t("Recent activity")}</option>
+            <option value="stage">{t("CRM stage")}</option>
+          </select>
+        </label>
+      </div>
+    </section>}
     {focusedCompany && <section className="rounded-2xl border border-teal-200 bg-teal-50 p-4 text-sm text-slate-700">
       <p className="font-bold text-brand">{t("Opened from CRM pipeline")}</p>
       <p className="mt-1">{t("Continue with the highlighted company, or clear the focus to view the full CRM list.")}</p>
@@ -6026,7 +6156,7 @@ export function CompaniesPage() {
       <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Search and filters")}</summary>
       <div className="mt-4"><CrmFilters filters={filters} setFilters={setFilters} /></div>
     </details>
-    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <WidgetErrorCard title="Companies could not update" copy={error} /> : focusedCompany ? <WidgetBoundary name={`Company workspace: ${focusedCompany.name}`}><CrmCompanyCard company={focusedCompany} api={api} highlighted /></WidgetBoundary> : companies.length ? <div className="grid gap-4">
+    {loading ? <EmptyState title="Loading CRM companies" copy="Loading saved companies." /> : error ? <EmptyState title="Companies unavailable" copy={error} action={<button type="button" onClick={() => window.location.reload()} className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Retry")}</button>} /> : focusedCompany ? <WidgetBoundary name={`Company workspace: ${focusedCompany.name}`}><CrmCompanyCard company={focusedCompany} api={api} highlighted /></WidgetBoundary> : sortedCompanies.length ? <div className="grid gap-4">
       {primaryCompanies.map((company) => <WidgetBoundary key={company.id} name={`Company summary: ${company.name}`}><CompactCompanyCard company={company} api={api} /></WidgetBoundary>)}
       {secondaryCompanies.length > 0 && <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Show more companies")} · {secondaryCompanies.length}</summary>
@@ -6141,6 +6271,14 @@ export function CampaignsPage() {
   const [notice, setNotice] = useState("");
   const [actionBusy, setActionBusy] = useState("");
   const { t } = useI18n();
+  const campaignSummary = useMemo(() => {
+    const ready = campaigns.filter((campaign) => campaignReadiness(campaign).variant === "ready").length;
+    const blocked = campaigns.length - ready;
+    const running = campaigns.filter((campaign) => ["running", "scheduled"].includes(text(campaign.status).toLowerCase())).length;
+    const next = campaigns.find((campaign) => campaignReadiness(campaign).variant !== "ready") || campaigns[0] || null;
+    const nextReadiness = next ? campaignReadiness(next) : null;
+    return { ready, blocked, running, next, nextReadiness };
+  }, [campaigns]);
 
   async function createCampaign(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -6213,6 +6351,29 @@ export function CampaignsPage() {
   return <div className="space-y-6">
     <PageHeader eyebrow="Campaigns" title="Review real outreach before anything is sent." copy="Create a simple sequence from saved opportunities. OutreachAI keeps generated emails in review mode until you approve a send." />
     {notice && <p role="status" className="rounded-2xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-700 shadow-sm">{notice}</p>}
+    {!loading && !error && <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="grid gap-3 md:grid-cols-[1.3fr_0.7fr]">
+        <div className="rounded-xl border border-teal-100 bg-teal-50 p-4">
+          <p className="text-xs font-black uppercase text-brand">{t("Decision now")}</p>
+          <h2 className="mt-2 text-xl font-black text-ink">{campaignSummary.next ? t(campaignSummary.nextReadiness?.action || "Review campaigns") : t(leads.length ? "Create campaign" : "Find leads")}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-700">
+            {campaignSummary.next ? t(campaignSummary.nextReadiness?.copy || "Review campaign readiness before launch.") : t(leads.length ? "Use the first saved opportunity to create one reviewed campaign." : "Find or add one real company before creating a campaign.")}
+          </p>
+          <div className="mt-4">
+            {campaignSummary.next && campaignSummary.nextReadiness?.href
+              ? <Link href={campaignSummary.nextReadiness.href} className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t(campaignSummary.nextReadiness.action)}</Link>
+              : !campaignSummary.next && !leads.length
+                ? <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>
+                : null}
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-3 text-sm md:grid-cols-1">
+          <p className="rounded-xl bg-slate-50 p-3"><span className="text-xl font-black text-ink">{campaigns.length}</span><br />{t("Campaigns")}</p>
+          <p className="rounded-xl bg-slate-50 p-3"><span className="text-xl font-black text-ink">{campaignSummary.blocked}</span><br />{t("Need review")}</p>
+          <p className="rounded-xl bg-slate-50 p-3"><span className="text-xl font-black text-ink">{campaignSummary.running}</span><br />{t("Running")}</p>
+        </div>
+      </div>
+    </section>}
     {!loading && !error && leads.length > 0 && <form onSubmit={createCampaign} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
@@ -6268,11 +6429,22 @@ export function CampaignsPage() {
 
 export function InboxPage() {
   const { metrics, leads, campaigns, loading, error } = useSalesData();
+  const inbox = useInboxData();
   const { t } = useI18n();
   const approvedOrSent = leads.filter((lead) => lead.email_approved_at || lead.email_sent_at);
   const repliedLeads = leads.filter((lead) => lead.replied_at);
   const activeCampaigns = campaigns.filter((campaign) => ["running", "active", "sent"].includes(String(campaign.status || "").toLowerCase()));
-  const hasReplyData = metrics.replies > 0 || repliedLeads.length > 0;
+  const inboundMessages = inbox.messages.filter((message) => String(message.delivery_status || "").toLowerCase() !== "draft");
+  const hasReplyData = metrics.replies > 0 || repliedLeads.length > 0 || inboundMessages.length > 0;
+  const loadingInbox = loading || inbox.loading;
+  const inboxError = error || inbox.error;
+  const nextReplyAction = inboundMessages.length
+    ? "Open the newest reply, classify intent, and update the company stage."
+    : activeCampaigns.length
+      ? "Wait for replies, then turn each response into a CRM next step."
+      : approvedOrSent.length
+        ? "Review campaigns and launch only approved outreach."
+        : "Prepare and approve one email before expecting replies.";
 
   return <div className="space-y-6">
     <PageHeader
@@ -6281,13 +6453,32 @@ export function InboxPage() {
       copy="This is where OutreachAI keeps follow-up work simple: watch replies, classify intent and move the company to the next CRM step."
       action={<Link href={approvedOrSent.length ? "/dashboard/campaigns" : "/dashboard/companies"} className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t(approvedOrSent.length ? "Review campaigns" : "Prepare email")}</Link>}
     />
-    {loading ? <EmptyState title="Loading reply workspace" copy="Reading campaigns and reply events." /> : error ? <WidgetErrorCard title="Reply workspace unavailable" copy={error} /> : <>
+    {loadingInbox ? <EmptyState title="Loading reply workspace" copy="Reading campaigns and reply events." /> : inboxError ? <WidgetErrorCard title="Reply workspace unavailable" copy={inboxError} onRetry={inbox.refresh} /> : <>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="grid gap-3 md:grid-cols-[1.4fr_0.6fr]">
+          <div className="rounded-xl border border-teal-100 bg-teal-50 p-4">
+            <p className="text-xs font-black uppercase text-brand">{t("Decision now")}</p>
+            <h2 className="mt-2 text-xl font-black text-ink">{t(inboundMessages.length ? "Handle newest reply" : approvedOrSent.length ? "Keep campaign ready" : "Prepare first email")}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{t(nextReplyAction)}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 p-4">
+            <p className="text-xs font-black uppercase text-slate-500">{t("Blocker")}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-slate-800">{t(inboundMessages.length ? "No blocker detected." : approvedOrSent.length ? "No reply captured yet." : "No approved or sent email yet.")}</p>
+          </div>
+        </div>
+      </section>
       <section className="grid gap-4 sm:grid-cols-3">
         <MetricCard label="Approved emails" value={String(approvedOrSent.length)} help="Ready for reply tracking" />
-        <MetricCard label="Replies" value={String(metrics.replies || repliedLeads.length)} help="Real replies captured" />
+        <MetricCard label="Replies" value={String(metrics.replies || repliedLeads.length || inboundMessages.length)} help="Real replies captured" />
         <MetricCard label="Reply rate" value={`${metrics.reply_rate || 0}%`} help="From tracked campaigns" />
       </section>
       {hasReplyData ? <section className="grid gap-4 lg:grid-cols-2">
+        {inboundMessages.slice(0, 6).map((message) => <article key={message.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase text-brand">{t("Inbound reply")}</p>
+          <h2 className="mt-2 text-lg font-black text-ink">{message.subject || t("Reply captured")}</h2>
+          <p className="mt-2 line-clamp-3 text-sm leading-6 text-slate-600">{message.preview || message.body || t("Open the related company and decide the next CRM step.")}</p>
+          <Link href="/dashboard/companies" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Open companies")}</Link>
+        </article>)}
         {repliedLeads.slice(0, 6).map((lead) => <article key={lead.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <p className="text-xs font-bold uppercase text-brand">{t("Reply received")}</p>
           <h2 className="mt-2 text-lg font-black text-ink">{lead.company}</h2>
@@ -6624,13 +6815,158 @@ export function SettingsPage() {
   }, [api, ready]);
 
   const leadSearchReady = leadSearchStatus === "connected";
-  return <div className="space-y-6"><PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} /><section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(copy)}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t(status)}</p></article>)}</section><section id="lead-search-key" className={`scroll-mt-24 rounded-2xl border p-5 shadow-sm ${leadSearchReady ? "border-teal-200 bg-teal-50" : "border-amber-200 bg-amber-50"}`}><p className={`text-sm font-bold uppercase ${leadSearchReady ? "text-brand" : "text-amber-800"}`}>{t("Lead search key")}</p>{leadSearchStatusLoading ? <div className="mt-3 h-20 animate-pulse rounded-xl bg-white/70" /> : leadSearchReady ? <><h2 className="mt-2 text-xl font-black text-ink">{t("Ready to find companies")}</h2><p className="mt-2 text-sm leading-6 text-slate-700">{t("Your company search is connected. Start with one narrow market and save results to CRM.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Search market")}</Link><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md border border-teal-300 bg-white px-4 text-sm font-bold text-brand">{t("Add company manually")}</Link></div></> : <><h2 className="mt-2 text-xl font-black text-ink">{t("Automatic company search needs one setup step")}</h2><p className="mt-2 text-sm leading-6 text-amber-900">{t("Ask the workspace owner to connect automatic company search. Until then, add companies manually and continue with CRM, research and outreach review.")}</p><div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Add company manually")}</Link><Link href="/dashboard/billing" className="inline-flex min-h-11 items-center justify-center rounded-md border border-amber-300 bg-white px-4 text-sm font-bold text-amber-900">{t("Check plan")}</Link></div></>}</section><OutreachSenderSettingsPanel api={api} ready={ready} /><details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary><p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.")}</p><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["Billing", "Security", "Team access", "Sending preferences"].map((item) => <Link key={item} href={item === "Billing" ? "/dashboard/billing" : "/dashboard/settings"} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t(item)}</Link>)}</div></details></div>;
+  const setupDecision = leadSearchReady ? "Search one focused market." : "Use manual company entry until automatic search is connected.";
+  return <div className="space-y-6">
+    <PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="grid gap-3 md:grid-cols-[1.3fr_0.7fr]">
+        <div className="rounded-xl border border-teal-100 bg-teal-50 p-4">
+          <p className="text-xs font-black uppercase text-brand">{t("Decision now")}</p>
+          <h2 className="mt-2 text-xl font-black text-ink">{t(setupDecision)}</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-700">{t("Only setup that changes real outreach stays on this page.")}</p>
+        </div>
+        <div className="rounded-xl bg-slate-50 p-4">
+          <p className="text-xs font-black uppercase text-slate-500">{t("Workspace identity")}</p>
+          <p className="mt-2 text-sm font-semibold leading-6 text-slate-800">{t("Company, timezone and language live in Profile.")}</p>
+          <Link href="/dashboard/profile" className="mt-3 inline-flex min-h-10 items-center rounded-md border border-slate-300 bg-white px-3 text-sm font-bold text-ink">{t("Open profile")}</Link>
+        </div>
+      </div>
+    </section>
+    <section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(copy)}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t(status)}</p></article>)}</section>
+    <section id="lead-search-key" className={`scroll-mt-24 rounded-2xl border p-5 shadow-sm ${leadSearchReady ? "border-teal-200 bg-teal-50" : "border-amber-200 bg-amber-50"}`}>
+      <p className={`text-sm font-bold uppercase ${leadSearchReady ? "text-brand" : "text-amber-800"}`}>{t("Lead search key")}</p>
+      {leadSearchStatusLoading ? <div className="mt-3 h-20 animate-pulse rounded-xl bg-white/70" /> : leadSearchReady ? <>
+        <h2 className="mt-2 text-xl font-black text-ink">{t("Ready to find companies")}</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-700">{t("Your company search is connected. Start with one narrow market and save results to CRM.")}</p>
+        <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Search market")}</Link><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md border border-teal-300 bg-white px-4 text-sm font-bold text-brand">{t("Add company manually")}</Link></div>
+      </> : <>
+        <h2 className="mt-2 text-xl font-black text-ink">{t("Automatic company search needs one setup step")}</h2>
+        <p className="mt-2 text-sm leading-6 text-amber-900">{t("Ask the workspace owner to connect automatic company search. Until then, add companies manually and continue with CRM, research and outreach review.")}</p>
+        <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Add company manually")}</Link><Link href="/dashboard/billing" className="inline-flex min-h-11 items-center justify-center rounded-md border border-amber-300 bg-white px-4 text-sm font-bold text-amber-900">{t("Check plan")}</Link></div>
+      </>}
+    </section>
+    <OutreachSenderSettingsPanel api={api} ready={ready} />
+    <details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary>
+      <p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.")}</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{["Billing", "Profile", "Security", "Sending preferences"].map((item) => <Link key={item} href={item === "Billing" ? "/dashboard/billing" : item === "Profile" ? "/dashboard/profile" : "/dashboard/settings"} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t(item)}</Link>)}</div>
+    </details>
+  </div>;
 }
 
 export function BillingPage() {
-  const { metrics, loading, error } = useSalesData();
+  const { metrics } = useSalesData();
+  const billing = useBillingData();
   const { t } = useI18n();
-  return <div className="space-y-6"><PageHeader eyebrow="Billing" title="Subscription and usage." copy="Plan, usage and limits come from billing state. No fake usage is displayed." action={<Link href="/pricing" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Manage plan")}</Link>} />{loading ? <EmptyState title="Loading billing" copy="Reading subscription usage." /> : error ? <EmptyState title="Billing unavailable" copy={error} /> : <section className="grid gap-4 lg:grid-cols-3"><MetricCard label="Current plan" value={t(metrics.plan || "Unavailable")} help="From billing status" /><MetricCard label="Leads" value={String((metrics.usage?.leads as number | undefined) || metrics.leads || 0)} help="Current period usage" /><MetricCard label="Emails sent" value={String(metrics.emails_sent)} help="Approved sends" /></section>}</div>;
+  const status = billing.status;
+  const usage = billing.usage?.usage || status?.usage || metrics.usage || {};
+  const limits = billing.usage?.limits || status?.limits || {};
+  const leadsUsed = Number(usage.leads || metrics.leads || 0);
+  const emailsUsed = Number(usage.email_sends || metrics.emails_sent || 0);
+  const aiUsed = Number(usage.ai_generations || 0);
+  const leadLimit = Number(limits.leads || 0);
+  const emailLimit = Number(limits.email_sends || 0);
+  const aiLimit = Number(limits.ai_generations || 0);
+  const billingNeedsAttention = Boolean(status?.last_payment_error || status?.last_failure_message || ["inactive", "past_due", "unpaid", "expired"].includes(String(status?.status || "").toLowerCase()));
+  const nextBillingAction = billingNeedsAttention ? "Resolve billing before launching more outreach." : leadLimit && leadsUsed >= leadLimit ? "Upgrade before adding more leads." : emailLimit && emailsUsed >= emailLimit ? "Reduce sends or upgrade before the next campaign." : "Keep using the current plan.";
+
+  return <div className="space-y-6">
+    <PageHeader eyebrow="Billing" title="Subscription and usage." copy="Plan, usage and limits come from billing state. No fake usage is displayed." action={<Link href="/pricing" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Manage plan")}</Link>} />
+    {billing.loading ? <EmptyState title="Loading billing" copy="Reading subscription usage." /> : billing.error ? <EmptyState title="Billing unavailable" copy={billing.error} action={<button type="button" onClick={billing.refresh} className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Retry")}</button>} /> : <>
+      <section className={`rounded-2xl border p-5 shadow-sm ${billingNeedsAttention ? "border-amber-200 bg-amber-50" : "border-teal-200 bg-teal-50"}`}>
+        <p className={`text-xs font-black uppercase ${billingNeedsAttention ? "text-amber-800" : "text-brand"}`}>{t("Decision now")}</p>
+        <h2 className="mt-2 text-xl font-black text-ink">{t(nextBillingAction)}</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-700">{t(billingNeedsAttention ? (status?.last_failure_message || status?.last_payment_error || "Billing needs attention.") : "Current plan is available for the next customer workflow.")}</p>
+      </section>
+      <section className="grid gap-4 lg:grid-cols-4">
+        <MetricCard label="Current plan" value={t(status?.plan || metrics.plan || "Unavailable")} help="From billing status" />
+        <MetricCard label="Billing status" value={t(status?.status || "Unavailable")} help="Current subscription state" />
+        <MetricCard label="Trial days" value={String(status?.trial_days_remaining || 0)} help="Remaining trial time" />
+        <MetricCard label="Invoices" value={String(billing.invoices.length)} help="Billing history items" />
+      </section>
+      <section className="grid gap-4 lg:grid-cols-3">
+        {[
+          ["Leads", leadsUsed, leadLimit],
+          ["Emails sent", emailsUsed, emailLimit],
+          ["AI generations", aiUsed, aiLimit]
+        ].map(([label, used, limit]) => <article key={String(label)} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-black uppercase text-slate-500">{t(String(label))}</p>
+          <p className="mt-2 text-2xl font-black text-ink">{String(used)}{Number(limit) ? ` / ${String(limit)}` : ""}</p>
+          <p className="mt-2 text-sm text-slate-600">{t(Number(limit) ? "Current period usage" : "Limit not returned by billing status")}</p>
+        </article>)}
+      </section>
+    </>}
+  </div>;
+}
+
+export function ProfilePage() {
+  const { profile, loading, saving, error, notice, saveProfile } = useProfileData();
+  const { t } = useI18n();
+  const [form, setForm] = useState<Profile | null>(null);
+
+  useEffect(() => {
+    if (!profile) return;
+    const timer = window.setTimeout(() => setForm(profile), 0);
+    return () => window.clearTimeout(timer);
+  }, [profile]);
+
+  function updateField(key: keyof Profile, value: string) {
+    setForm((current) => ({ ...(current || { workspace: "", company: "", timezone: "UTC", language: "en" }), [key]: value }));
+  }
+
+  async function submitProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!form) return;
+    await saveProfile(form);
+  }
+
+  const missing = [
+    !form?.workspace ? "Workspace name" : "",
+    !form?.company ? "Company name" : "",
+    !form?.timezone ? "Timezone" : "",
+    !form?.language ? "Language" : ""
+  ].filter(Boolean);
+
+  return <div className="space-y-6">
+    <PageHeader eyebrow="Profile" title="Set the workspace identity AI should use." copy="Profile fields are saved to the existing account profile and workspace. They shape timezone, language and company context for outreach." action={<Link href="/dashboard/settings" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Open settings")}</Link>} />
+    {loading ? <EmptyState title="Loading profile" copy="Reading workspace identity." /> : error && !form ? <WidgetErrorCard title="Profile unavailable" copy={error} /> : form ? <>
+      <section className={`rounded-2xl border p-5 shadow-sm ${missing.length ? "border-amber-200 bg-amber-50" : "border-teal-200 bg-teal-50"}`}>
+        <p className={`text-xs font-black uppercase ${missing.length ? "text-amber-800" : "text-brand"}`}>{t("Decision now")}</p>
+        <h2 className="mt-2 text-xl font-black text-ink">{t(missing.length ? "Complete workspace identity" : "Workspace identity is ready")}</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-700">{missing.length ? `${t("Missing")}: ${missing.map((item) => t(item)).join(", ")}` : t("AI can use this company context for customer-facing outreach.")}</p>
+      </section>
+      <form onSubmit={submitProfile} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="text-sm font-bold text-ink">{t("Workspace name")}
+            <input value={form.workspace || ""} onChange={(event) => updateField("workspace", event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" />
+          </label>
+          <label className="text-sm font-bold text-ink">{t("Company name")}
+            <input value={form.company || ""} onChange={(event) => updateField("company", event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" />
+          </label>
+          <label className="text-sm font-bold text-ink">{t("Timezone")}
+            <input value={form.timezone || ""} onChange={(event) => updateField("timezone", event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" placeholder="UTC" />
+          </label>
+          <label className="text-sm font-bold text-ink">{t("Language")}
+            <select value={form.language || "en"} onChange={(event) => updateField("language", event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+              <option value="en">English</option>
+              <option value="en-US">American English</option>
+              <option value="ru">Русский</option>
+              <option value="pl">Polski</option>
+              <option value="es">Español</option>
+              <option value="fr">Français</option>
+              <option value="it">Italiano</option>
+            </select>
+          </label>
+        </div>
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <PrimaryButton type="submit" disabled={saving}>{saving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {t("Save profile")}</PrimaryButton>
+          <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Find leads")}</Link>
+        </div>
+        {notice && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t(notice)}</p>}
+        {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{t(error)}</p>}
+      </form>
+    </> : <EmptyState title="Profile unavailable" copy="Profile data was not returned." />}
+  </div>;
 }
 
 export function AiEmployeesPage() {

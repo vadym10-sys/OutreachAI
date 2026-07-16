@@ -3,14 +3,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { AlertTriangle, CheckCircle2, ClipboardList, Loader2, ShieldAlert, Stethoscope, Wrench } from "lucide-react";
-import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey, isClerkE2EBypass, ownerEmail } from "@/lib/env";
+import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey, ownerEmail } from "@/lib/env";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import type { QualityCheck, QualityDashboard, QualityIssue, QualityRepairTask } from "@/lib/types";
 
+const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
+  && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
+  && (process.env.NEXT_PUBLIC_API_URL === "http://127.0.0.1:8000" || process.env.NEXT_PUBLIC_API_URL === "http://localhost:8000");
+
 const noClerkAuth = {
-  getToken: async () => (isClerkE2EBypass ? "dev" : null),
+  getToken: async () => (qaAuthEnabled ? "dev" : null),
   isLoaded: true,
-  isSignedIn: isClerkE2EBypass
+  isSignedIn: qaAuthEnabled
 };
 
 function e2eOwnerEmail() {
@@ -23,7 +27,7 @@ function e2eOwnerEmail() {
 }
 
 function useQualityAuth() {
-  if (!hasClerkPublishableKey || isClerkE2EBypass) return noClerkAuth;
+  if (!hasClerkPublishableKey || qaAuthEnabled) return noClerkAuth;
   // The no-Clerk branch is required for local/E2E builds where ClerkProvider is intentionally not mounted.
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return useAuth();
@@ -35,7 +39,7 @@ async function qualityRequest<T>(path: string, token: string | null, init: Reque
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(isClerkE2EBypass ? { "X-Test-User-Email": e2eOwnerEmail() } : {}),
+      ...(qaAuthEnabled ? { "X-Test-User-Email": e2eOwnerEmail() } : {}),
       ...init.headers
     }
   });

@@ -5,8 +5,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, BarChart3, Bot, Building2, CheckCircle2, CreditCard, Crown, Globe2, Handshake, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, UserRoundSearch, Users } from "lucide-react";
-import { e2eUserEmail, isClerkE2EBypass, isProductionRuntime, ownerEmail } from "@/lib/env";
+import { ArrowRight, Building2, CheckCircle2, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, User } from "lucide-react";
+import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useAuthRuntime } from "@/components/app-providers";
@@ -21,23 +21,22 @@ const nav = [
   { href: "/dashboard/leads", labelKey: "nav.leads", icon: Search },
   { href: "/dashboard/companies", labelKey: "nav.companies", icon: Building2 },
   { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
-  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/analytics", labelKey: "nav.analytics", icon: BarChart3, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Users, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/deals", labelKey: "nav.deals", icon: Handshake, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/website-analyzer", labelKey: "nav.websiteAnalyzer", icon: Globe2, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/contacts", labelKey: "nav.contacts", icon: UserRoundSearch, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
-  { href: "/dashboard/sales-employees", labelKey: "nav.aiEmployees", icon: Bot, featureFlag: "NEXT_PUBLIC_SHOW_ADVANCED_NAV" },
+  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
+  { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
+  { href: "/dashboard/profile", labelKey: "nav.profile", icon: User },
+  { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
   { href: "/dashboard/owner", labelKey: "nav.owner", icon: Crown, ownerOnly: true },
   { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
 ];
 
 const featureFlags = {
-  NEXT_PUBLIC_SHOW_ADVANCED_NAV: process.env.NEXT_PUBLIC_SHOW_ADVANCED_NAV === "true",
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };
+
+const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
+  && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
+  && (process.env.NEXT_PUBLIC_API_URL === "http://127.0.0.1:8000" || process.env.NEXT_PUBLIC_API_URL === "http://localhost:8000");
+const e2eSignedOutKey = qaAuthEnabled ? "outreachai.e2eSignedOut" : "";
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,7 +54,7 @@ async function resolveWorkspaceToken(getAuthToken: () => Promise<string | null>,
 }
 
 function redirectToSignIn() {
-  if (typeof window === "undefined" || isClerkE2EBypass) return;
+  if (typeof window === "undefined" || qaAuthEnabled) return;
   const redirectUrl = encodeURIComponent(`${window.location.pathname}${window.location.search}`);
   window.location.assign(`/sign-in?redirect_url=${redirectUrl}`);
 }
@@ -76,23 +75,49 @@ function currentE2EUserEmail() {
   }
 }
 
+function currentE2ESignedOut() {
+  try {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(e2eSignedOutKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
 async function getE2EAuthToken() {
-  return isClerkE2EBypass ? "dev" : null;
+  return qaAuthEnabled ? "dev" : null;
 }
 
 function useDashboardIdentity() {
   const [testEmail, setTestEmail] = useState(e2eUserEmail);
+  const [testSignedOut, setTestSignedOut] = useState(false);
+  const [testAuthChecked, setTestAuthChecked] = useState(!qaAuthEnabled);
   const { clerkEnabled } = useAuthRuntime();
 
   useEffect(() => {
-    if (isClerkE2EBypass || !clerkEnabled) {
-      const timer = window.setTimeout(() => setTestEmail(currentE2EUserEmail()), 0);
+    if (qaAuthEnabled || !clerkEnabled) {
+      const timer = window.setTimeout(() => {
+        setTestEmail(currentE2EUserEmail());
+        setTestSignedOut(currentE2ESignedOut());
+        setTestAuthChecked(true);
+      }, 0);
       return () => window.clearTimeout(timer);
     }
     return undefined;
   }, [clerkEnabled]);
 
-  if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
+  if (qaAuthEnabled && (!testAuthChecked || testSignedOut)) {
+    return {
+      isOwner: false,
+      userId: testAuthChecked ? "e2e-signed-out" : "e2e-auth-checking",
+      email: "",
+      workspaceId: "e2e-workspace",
+      ready: false,
+      getAuthToken: async () => null
+    };
+  }
+
+  if ((!clerkEnabled && !isProductionRuntime) || qaAuthEnabled) {
     return {
       isOwner: testEmail.trim().toLowerCase() === ownerEmail,
       userId: testEmail ? `e2e:${testEmail}` : "e2e-user",
@@ -223,6 +248,18 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [workspaceNotice, setWorkspaceNotice] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
 
+  useEffect(() => {
+    if (qaAuthEnabled && !ready && userId !== "e2e-auth-checking") {
+      window.location.assign("/sign-in");
+    }
+  }, [ready, userId]);
+
+  function signOutQaUser() {
+    if (!qaAuthEnabled) return;
+    window.localStorage.setItem(e2eSignedOutKey, "true");
+    window.location.assign("/sign-in");
+  }
+
   const loadWorkspace = useCallback(async () => {
     if (!ready) return null;
     try {
@@ -285,7 +322,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const rawWorkspaceName = workspace?.name?.trim() || "";
   const isGenericWorkspaceName = !rawWorkspaceName || ["outreach workspace", "private workspace"].includes(rawWorkspaceName.toLowerCase());
   const rawWorkspaceLabel = !isGenericWorkspaceName ? rawWorkspaceName : workspace?.company?.trim();
-  const fallbackWorkspaceLabel = isClerkE2EBypass ? "QA Private Workspace" : t("shell.privateWorkspace");
+  const fallbackWorkspaceLabel = qaAuthEnabled ? "QA Private Workspace" : t("shell.privateWorkspace");
   const workspaceLabel = rawWorkspaceLabel
     ? rawWorkspaceLabel
     : workspace
@@ -385,6 +422,18 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     }
   }
 
+  if (qaAuthEnabled && !ready) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-6">
+        <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-soft">
+          <Loader2 className="mx-auto animate-spin text-brand" size={28} />
+          <h1 className="mt-4 text-xl font-bold text-ink">{t("Preparing secure sign in")}</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{t("Redirecting to sign in.")}</p>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
       <CheckoutContinuation />
@@ -460,7 +509,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <p className="max-w-52 truncate text-sm font-semibold text-slate-700">{workspaceOwnerEmail || email || t("shell.account")}</p>
           </div>
           <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full ring-2 ring-teal-100" aria-label={t("shell.account")}>
-            {clerkEnabled && !isClerkE2EBypass ? (
+            {clerkEnabled ? (
               <UserButton
                 appearance={{
                   elements: {
@@ -470,10 +519,14 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   }
                 }}
               />
-            ) : (
-              <div className="grid size-10 place-items-center rounded-full bg-teal-50 text-xs font-black text-brand" aria-label={accountLabel} title={accountLabel}>
+            ) : qaAuthEnabled ? (
+              <button type="button" data-testid="qa-sign-out" onClick={signOutQaUser} className="grid size-10 place-items-center rounded-full bg-teal-50 text-xs font-black text-brand" aria-label={t("Sign out")} title={t("Sign out")}>
                 {accountInitials}
-              </div>
+              </button>
+            ) : (
+              <span className="grid size-10 place-items-center rounded-full bg-teal-50 text-xs font-black text-brand" aria-hidden="true">
+                {accountInitials}
+              </span>
             )}
           </div>
         </header>

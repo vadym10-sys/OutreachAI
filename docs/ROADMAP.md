@@ -1,5 +1,22 @@
 # Roadmap
 
+## 2026-07-16 - Frontend Rebuild Program (Started)
+- Completed contract-first audit baseline in `FRONTEND_BACKEND_AUDIT.md`.
+- Completed execution block 1 for core surfaces:
+  - dashboard decision-first queue and recommendation panel
+  - leads Hot/Warm/Cold prioritization flow
+  - companies triage with operational sorting/status
+  - company workspace explicit state/next-step/blocker panel.
+- Completed execution block 2 for account and outreach continuation surfaces:
+  - campaigns readiness and safe launch/pause/resume decision panel
+  - inbox real reply loading from `/api/inbox`
+  - settings setup cleanup with profile identity separated
+  - billing status/usage/invoice state from existing billing endpoints
+  - profile editor backed by existing `/api/profile`.
+- Next execution block: product-owner review on preview, then decide whether Analytics/CRM/Deals/Contacts should remain secondary routes or be removed from primary customer workflow.
+- Expose backend-supported capabilities missing in primary workflow where they provide direct user value, without adding mock or speculative features.
+- Validate on preview only, then run full real-user journey before merge consideration.
+
 ## 2026-07-16 - Production QA Follow-Up
 - Verify live rollout completion for both web and API fixes from the 2026-07-16 remediation loop in all production regions.
 - Add a focused production smoke check that flags empty-body `200` responses on CRM endpoints before customer sessions degrade.
