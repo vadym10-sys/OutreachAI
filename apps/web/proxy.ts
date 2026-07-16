@@ -4,6 +4,14 @@ import { hasClerkRuntimeConfig, isClerkE2EBypass } from "@/lib/env";
 
 const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/admin(.*)", "/onboarding(.*)"]);
 
+function isBackgroundRouteFetch(req: NextRequest) {
+  if (req.nextUrl.searchParams.has("_rsc")) return true;
+  const purpose = req.headers.get("purpose") || "";
+  const prefetch = req.headers.get("next-router-prefetch") || "";
+  const accept = req.headers.get("accept") || "";
+  return purpose.toLowerCase() === "prefetch" || prefetch === "1" || accept.includes("text/x-component");
+}
+
 function securityHeaders() {
   const res = NextResponse.next();
   res.headers.set("X-Frame-Options", "DENY");
@@ -28,6 +36,10 @@ function missingClerkMiddleware(req: NextRequest) {
 const protectedMiddleware = clerkMiddleware(async (auth, req) => {
   const res = securityHeaders();
   if (isProtectedRoute(req)) {
+    const authState = await auth();
+    if (!authState.userId && isBackgroundRouteFetch(req)) {
+      return new NextResponse(null, { status: 401, headers: res.headers });
+    }
     await auth.protect();
   }
 
