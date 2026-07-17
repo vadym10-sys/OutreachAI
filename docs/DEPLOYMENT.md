@@ -138,3 +138,23 @@ RESEND_WEBHOOK_SECRET=...
 7. Keep `NEXT_PUBLIC_CLERK_FRONTEND_API_PROXY=false` for localhost and `*.vercel.app` previews. Only enable it for a custom-domain production/staging Frontend API proxy that has been configured on the Clerk Domains page.
 8. In Clerk Dashboard, keep `https://outreachaiaiai.com`, `http://localhost:3000`, and `https://*.vercel.app` available as allowed redirect origins / authorized origins for preview review.
 9. Set the backend JWT issuer to the Clerk issuer used by production. The API also accepts the custom Clerk issuer fallback for `https://clerk.outreachaiaiai.com`.
+
+### Vercel Preview Clerk Variables
+
+Preview deployments on Vercel's generated `*.vercel.app` domains must use the Clerk Development instance. Do not reuse the production `pk_live` / `sk_live` pair for Preview.
+
+| Variable | Vercel environment | Required value |
+|---|---|---|
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Preview | Clerk Development publishable key, prefixed `pk_test_` |
+| `CLERK_SECRET_KEY` | Preview | Clerk Development secret key, prefixed `sk_test_` |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Preview | `/sign-in` |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Preview | `/sign-up` |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | Preview | `/dashboard` |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | Preview | `/onboarding` |
+| `NEXT_PUBLIC_CLERK_FRONTEND_API_PROXY` | Preview | `false` |
+
+Current automation status:
+
+- The non-secret Preview URL and proxy variables are configured in Vercel Preview.
+- The two Clerk key variables still need Clerk Dashboard access because Vercel does not reveal existing sensitive values and Clerk Dashboard is the source of the Development instance keys.
+- Production values for `outreachaiaiai.com` must remain unchanged.
