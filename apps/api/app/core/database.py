@@ -113,6 +113,9 @@ def _applied_migration_versions(engine: Engine) -> set[str]:
 
 
 def initialize_database_schema(engine: Engine) -> None:
+    # Import models before metadata creation so local/test SQLite schemas include every mapped table.
+    import app.models.entities  # noqa: F401
+
     if engine.dialect.name != "postgresql":
         Base.metadata.create_all(bind=engine)
         return

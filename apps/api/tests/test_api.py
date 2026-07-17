@@ -48,7 +48,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -117,6 +117,53 @@ def test_deep_contact_selects_revenue_decision_maker() -> None:
 def test_deep_contact_cache_is_fresh_for_recent_result() -> None:
     metadata = {"deep_contact_search": {"last_enriched_at": datetime.utcnow().isoformat(), "status": "partial_success"}}
     assert deep_contact_cache_is_fresh(metadata) is True
+
+
+def test_ai_customer_finder_scoring_and_dedupe_require_public_evidence() -> None:
+    from app.services.ai_customer_finder.dedupe import company_dedupe_key, signal_fingerprint
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates manual outbound research and CRM workflows",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="10-200",
+        max_results=5,
+    )
+    score = score_candidate(
+        criteria,
+        text="We are hiring sales operations roles and replacing manual spreadsheet CRM workflows for outbound teams in Germany.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+    )
+    assert 0 <= score.relevance_score <= 100
+    assert score.relevance_score >= 50
+    assert score.confidence_score >= 60
+    assert score.factors["source_quality"] == 40
+    assert company_dedupe_key(website="https://www.Example.com/about", company_name="Example", country="Germany") == "domain:example.com"
+    assert signal_fingerprint(source_url="https://example.com", signal_type="manual_workaround", evidence="Manual spreadsheet workflow", company_name="Example")
+
+
+def test_ai_customer_finder_rejects_result_without_source_url() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderResultOut
+
+    with pytest.raises(Exception):
+        CustomerFinderResultOut(
+            id="result_1",
+            company_name="Missing Source Co",
+            official_website="",
+            signal_type="manual_workaround",
+            signal_description="No source should fail validation.",
+            source_url="",
+            ai_relevance_score=80,
+            confidence_score=80,
+            verified_status="verified",
+            checked_at=datetime.utcnow(),
+            source_provider="test",
+        )
 
 
 def _queue_deep_contact_search(company_id: str) -> dict[str, object]:
@@ -210,6 +257,147 @@ def test_deep_contact_search_endpoint_saves_verified_decision_maker(monkeypatch)
     assert job_payload["company"]["contacts"][0]["name"] == "Jane Founder"
     assert job_payload["company"]["deep_contact_search"]["verified_email"] == "jane@deepcontact.example"
     assert "Next.js" in job_payload["company"]["technologies"]
+
+
+def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch) -> None:
+    import app.services.ai_customer_finder.service as finder_service
+    from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "customer-finder@example.com"}
+
+    class FakeProvider:
+        key = "test_provider"
+
+        def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            return [
+                PublicCustomerCandidate(
+                    company_name="Verified Finder Co",
+                    website="https://verified-finder.example",
+                    industry=criteria.target_industry,
+                    country=criteria.target_country,
+                    source_provider=self.key,
+                )
+            ]
+
+    def fake_collect_website(url: str) -> WebsiteSnapshot:
+        return WebsiteSnapshot(
+            url=url,
+            title="Verified Finder Co sales operations",
+            meta_description="B2B SaaS company hiring sales operations and replacing manual spreadsheet workflows.",
+            text="Verified Finder Co is a B2B SaaS company in Germany. We are hiring sales operations roles and replacing manual spreadsheet workflows for outbound CRM teams.",
+            technologies=["CRM", "Automation"],
+        )
+
+    monkeypatch.setattr(finder_service, "provider_for_key", lambda _: FakeProvider())
+    monkeypatch.setattr(finder_service, "collect_website", fake_collect_website)
+
+    created = client.post(
+        "/api/workspace-app/ai-customer-finder/searches",
+        headers=headers,
+        json={
+            "company_description": "AI sales operating system",
+            "product_or_service": "Automates outbound research and CRM workflows",
+            "target_country": "Germany",
+            "target_industry": "B2B SaaS",
+            "company_size": "10-200",
+            "contact_titles": ["Founder", "Head of Sales"],
+            "max_results": 3,
+            "keywords": ["CRM", "sales operations"],
+        },
+    )
+    assert created.status_code == 202, created.text
+    job_id = created.json()["id"]
+
+    from app.services.ai_customer_finder.service import claim_next_ai_customer_finder_job, process_ai_customer_finder_job
+
+    db = get_sessionmaker()()
+    try:
+        claimed = claim_next_ai_customer_finder_job(db, worker_id="test-worker:customer-finder")
+        assert claimed is not None
+        assert str(claimed.id) == job_id
+        claim_token = claimed.locked_by
+    finally:
+        db.close()
+
+    assert process_ai_customer_finder_job(UUID(job_id), claim_token=claim_token) is True
+
+    refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
+    assert refreshed.status_code == 200, refreshed.text
+    payload = refreshed.json()
+    assert payload["status"] == "completed"
+    assert payload["results"][0]["company_name"] == "Verified Finder Co"
+    assert payload["results"][0]["source_url"] == "https://verified-finder.example"
+    assert payload["results"][0]["verified_status"] == "verified"
+    assert payload["results"][0]["company_id"]
+
+    crm = client.get("/api/workspace-app/companies?search=Verified%20Finder", headers=headers)
+    assert crm.status_code == 200, crm.text
+    companies = crm.json()
+    assert len(companies) == 1
+    assert companies[0]["source"] == "ai_customer_finder"
+    assert companies[0]["buying_signal_evidence"][0]["source_url"] == "https://verified-finder.example"
+
+
+def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monkeypatch) -> None:
+    import app.services.ai_customer_finder.service as finder_service
+    from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "customer-finder-partial@example.com"}
+
+    class FakeProvider:
+        key = "test_provider"
+
+        def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            return [
+                PublicCustomerCandidate(company_name="Partial Good Co", website="https://partial-good.example", industry=criteria.target_industry, country=criteria.target_country, source_provider=self.key),
+                PublicCustomerCandidate(company_name="Partial Broken Co", website="https://partial-broken.example", industry=criteria.target_industry, country=criteria.target_country, source_provider=self.key),
+            ]
+
+    def fake_collect_website(url: str) -> WebsiteSnapshot:
+        if "broken" in url:
+            raise WebsiteFetchError("Website could not be reached.")
+        return WebsiteSnapshot(
+            url=url,
+            title="Partial Good Co",
+            meta_description="Manual CRM workflow",
+            text="Partial Good Co is hiring sales operations and replacing manual spreadsheet CRM workflows.",
+            technologies=["CRM"],
+        )
+
+    monkeypatch.setattr(finder_service, "provider_for_key", lambda _: FakeProvider())
+    monkeypatch.setattr(finder_service, "collect_website", fake_collect_website)
+
+    created = client.post(
+        "/api/workspace-app/ai-customer-finder/searches",
+        headers=headers,
+        json={
+            "company_description": "AI sales operating system",
+            "product_or_service": "Automates outbound research",
+            "target_country": "Germany",
+            "target_industry": "B2B SaaS",
+            "max_results": 5,
+        },
+    )
+    assert created.status_code == 202, created.text
+    job_id = created.json()["id"]
+
+    from app.services.ai_customer_finder.service import claim_next_ai_customer_finder_job, process_ai_customer_finder_job
+
+    db = get_sessionmaker()()
+    try:
+        claimed = claim_next_ai_customer_finder_job(db, worker_id="test-worker:customer-finder-partial")
+        assert claimed is not None
+        claim_token = claimed.locked_by
+    finally:
+        db.close()
+
+    assert process_ai_customer_finder_job(UUID(job_id), claim_token=claim_token) is True
+    refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
+    assert refreshed.status_code == 200, refreshed.text
+    payload = refreshed.json()
+    assert payload["status"] == "partially_completed"
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["company_name"] == "Partial Good Co"
 
 
 def test_deep_contact_search_endpoint_downgrades_crm_apply_failure(monkeypatch) -> None:

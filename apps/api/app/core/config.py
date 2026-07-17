@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     enrichment_worker_claim_timeout_seconds: int = 900
     enrichment_max_retries: int = 2
     enrichment_cache_hours: int = 24
+    ai_customer_finder_provider: str = "google_places"
+    ai_customer_finder_max_results_per_job: int = 10
+    ai_customer_finder_max_candidates_per_job: int = 25
+    ai_customer_finder_ai_classification_enabled: bool = False
     debug: bool = False
     encryption_key: str = "replace-with-32-byte-url-safe-key"
     auto_create_tables: bool = True

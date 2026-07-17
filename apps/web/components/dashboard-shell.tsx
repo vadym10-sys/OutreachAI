@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, Sparkles, User } from "lucide-react";
+import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, Sparkles, User, UserRoundSearch } from "lucide-react";
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -21,6 +21,7 @@ import { Breadcrumbs, CommandDialog, CommandItem, Kbd } from "@/components/desig
 const nav = [
   { href: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
   { href: "/dashboard/leads", labelKey: "nav.leads", icon: Search },
+  { href: "/dashboard/ai-customer-finder", labelKey: "nav.aiCustomerFinder", icon: UserRoundSearch },
   { href: "/dashboard/companies", labelKey: "nav.companies", icon: Building2 },
   { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
   { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
@@ -38,6 +39,7 @@ const featureFlags = {
 const navDescriptions: Record<string, string> = {
   "/dashboard": "Executive AI command center",
   "/dashboard/leads": "Find and prioritize real companies",
+  "/dashboard/ai-customer-finder": "Find customers from verified public signals",
   "/dashboard/companies": "Research accounts and run AI analysis",
   "/dashboard/campaigns": "Review and launch outreach",
   "/dashboard/inbox": "Turn replies into meetings",
@@ -47,6 +49,8 @@ const navDescriptions: Record<string, string> = {
   "/dashboard/owner": "Owner controls",
   "/admin": "Administration"
 };
+
+const primaryMobileHrefs = new Set(["/dashboard", "/dashboard/leads", "/dashboard/companies", "/dashboard/campaigns"]);
 
 const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
   && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
@@ -258,7 +262,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     () => nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner)),
     [isOwner]
   );
-  const primaryMobileNav = visibleNav.slice(0, 4);
+  const primaryMobileNav = visibleNav.filter((item) => primaryMobileHrefs.has(item.href));
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
