@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Activity, AlertTriangle, BarChart3, CheckCircle2, Crown, Flag, Loader2, Lock, Server, Sparkles, Users, type LucideIcon } from "lucide-react";
-import { apiProxyUrl, e2eUserEmail, hasClerkPublishableKey } from "@/lib/env";
-import { friendlyErrorMessage } from "@/lib/client-api";
+import { e2eUserEmail, hasClerkPublishableKey } from "@/lib/env";
+import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
 import { useI18n } from "@/lib/i18n/provider";
 
 type OwnerFeatureFlags = {
@@ -81,36 +81,26 @@ function useClerkOwnerAuth() {
 }
 
 async function ownerRequest<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiProxyUrl}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(qaAuthEnabled ? { "X-Test-User-Email": e2eOwnerEmail() } : {}),
-      ...init.headers
+  try {
+    return await clientApi<T>(path, token, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(qaAuthEnabled ? { "X-Test-User-Email": e2eOwnerEmail() } : {}),
+        ...init.headers
+      }
+    });
+  } catch (error) {
+    const status = typeof (error as { status?: unknown }).status === "number"
+      ? Number((error as { status?: unknown }).status)
+      : undefined;
+    if (status !== 403) {
+      throw error;
     }
-  });
-
-  if (response.status === 403) {
-    const error = new Error("ACCESS_DENIED");
-    error.name = "AccessDeniedError";
-    throw error;
+    const accessError = new Error("ACCESS_DENIED");
+    accessError.name = "AccessDeniedError";
+    throw accessError;
   }
-
-  if (!response.ok) {
-    let detail = "";
-    try {
-      detail = await response.text();
-    } catch {
-      detail = "Response body could not be read.";
-    }
-    if (process.env.NODE_ENV !== "production") {
-      console.error("Owner Console API request failed", { path, status: response.status, detail });
-    }
-    throw new Error("REQUEST_FAILED");
-  }
-
-  return response.json() as Promise<T>;
 }
 
 function StatCard({ label, value, icon: Icon }: { label: string; value: string | number; icon: LucideIcon }) {

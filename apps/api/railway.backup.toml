@@ -1,0 +1,18 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = [
+	"/apps/api/Dockerfile",
+	"/apps/api/requirements.txt",
+	"/apps/api/railway.backup.toml",
+	"/apps/api/app/jobs/run_database_backup.py",
+	"/apps/api/app/core/**",
+	"/apps/api/app/models/**",
+	"/apps/api/app/services/backups.py"
+]
+
+[deploy]
+startCommand = "python -m app.jobs.run_database_backup"
+cronSchedule = "0 2 * * *"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

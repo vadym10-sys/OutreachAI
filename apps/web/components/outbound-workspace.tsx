@@ -7,200 +7,20 @@ import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRe
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Rocket, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
-import { AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
+import { AiLiveCard, AiTimeline, AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, MiniBarChart, OperatingPanel, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
 import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
+import { companyGrowthSignals, companyHiringSignals, companyNewsSignals, executiveTimelineV2, leadScoreV2, nextBestActionV2, outreachCopilotAssetsV2, researchInputsV2 } from "@/lib/ai-sales-operating-system";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
 import type { Activity, AISalesEmployee, BillingStatus, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, Profile, SalesCopilot, Usage, WebsiteAudit } from "@/lib/types";
+import type { AnalysisResult, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadCommandResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
 
-type PaginatedLeads = {
-  items: Lead[];
-  total: number;
-  page: number;
-  page_size: number;
-};
-
-type AnalysisResult = {
-  company: string;
-  website: string;
-  description: string;
-  industry?: string | null;
-  location?: string | null;
-  niche: string;
-  products_services: string[];
-  services: string[];
-  technologies: string[];
-  strengths: string[];
-  weaknesses: string[];
-  icp_score: number;
-  summary: string;
-  company_summary: string;
-  suggested_offer: string;
-  outreach_strategy: string;
-  sales_angle: string;
-  expected_reply_rate: string;
-  recommended_cta: string;
-};
-
-type LeadSearchPayload = {
-  country: string;
-  city: string;
-  industry: string;
-  category: string;
-  keyword: string;
-  company_size: string;
-  keywords: string[];
-  technologies: string[];
-  radius: number;
-  limit: number;
-};
-
-type WorkspaceAppLeadSearchResponse = {
-  status: "success" | "partial_success" | "empty" | "provider_unavailable" | "timeout" | "error";
-  request_id: string;
-  message: string;
-  companies_saved: number;
-  saved_count?: number;
-  duplicates_skipped: number;
-  companies: CrmCompany[];
-  warnings: string[];
-};
-
-type WorkspaceAppLeadCommandResponse = WorkspaceAppLeadSearchResponse & {
-  filters?: LeadSearchPayload | null;
-  interpreted_query?: string;
-};
-
-type WorkspaceAppCompanyCreateResponse = {
-  status: "created" | "reused";
-  message: string;
-  company: CrmCompany;
-};
-
-type WorkspaceAppActionResponse = {
-  status: WorkspaceAppLeadSearchResponse["status"];
-  message: string;
-  company?: CrmCompany | null;
-  email?: Email | null;
-  warnings?: string[];
-  completed_steps?: string[];
-  workflow_stages?: Record<string, string>;
-  missing_fields?: string[];
-  recommended_actions?: string[];
-  next_action?: string;
-  job_id?: string;
-  job_status?: string;
-};
-
-type WorkspaceDeepContactJobStatusResponse = {
-  job_id: string;
-  job_type: string;
-  status: string;
-  progress?: {
-    stage?: string;
-    message?: string;
-    percent?: number;
-  };
-  company?: CrmCompany | null;
-};
-
-type WorkspaceAiSalesAnalysis = NonNullable<CrmCompany["ai_sales_workspace"]>;
-
-type WorkspaceAiSalesAnalysisVersion = {
-  version: number;
-  generated_at?: string | null;
-  provider?: string;
-  model?: string;
-  status?: string;
-};
-
-type WorkspaceAiSalesAnalysisResponse = {
-  status: "success" | "partial_success" | "empty" | "provider_unavailable" | "timeout" | "error";
-  message: string;
-  company_id: string;
-  analysis: WorkspaceAiSalesAnalysis | Record<string, never>;
-  generated_at?: string | null;
-  cached: boolean;
-  requested_version?: number | null;
-  latest_version?: number | null;
-  available_versions?: WorkspaceAiSalesAnalysisVersion[];
-};
-
-type WorkspaceAiSalesRecommendationActionIn = {
-  key: "decision_maker" | "first_message" | "follow_up_sequence" | "best_channel" | "reply_probability" | "deal_success_probability" | "priority_score" | "next_best_action";
-  action: "approve" | "edit" | "regenerate";
-  value?: unknown;
-  reason?: string;
-};
-
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
-
-type WorkspaceIntegrationStatus = {
-  key: string;
-  label: string;
-  status: "connected" | "missing_key" | "needs_setup" | "error";
-  message: string;
-};
-
-type WorkspaceIntegrationStatusResponse = {
-  integrations: WorkspaceIntegrationStatus[];
-};
-
-type OutreachSenderStatus = {
-  provider: string;
-  connected: boolean;
-  status: "connected" | "missing_key" | "needs_setup" | "error";
-  sender_name: string;
-  sender_email?: string | null;
-  reply_to?: string | null;
-  daily_send_limit: number;
-  sent_today: number;
-  remaining_today: number;
-  spf_status: string;
-  dkim_status: string;
-  dmarc_status: string;
-  next_action: string;
-  reason?: string;
-  smtp_host: string;
-  smtp_port: number;
-  smtp_username: string;
-  smtp_configured: boolean;
-  smtp_verified_at?: string;
-};
-
-type WorkspaceAppBootstrapResponse = {
-  workspace: {
-    id: string;
-    name: string;
-    company?: string | null;
-    industry?: string | null;
-    target_country?: string | null;
-    target_customer?: string | null;
-  };
-  counts: {
-    leads: number;
-    companies: number;
-    campaigns: number;
-    emails: number;
-    deals: number;
-  };
-  metrics?: Partial<DashboardMetrics> & {
-    leads?: number;
-    companies?: number;
-    contacts?: number;
-    campaigns?: number;
-    emails?: number;
-    deals?: number;
-  };
-  next_action: string;
-  recent_companies: CrmCompany[];
-  recent_activity: Array<{ action: string; created_at: string; company?: string; message?: string }>;
-};
 
 type OpportunityReadiness = {
   total: number;
@@ -946,6 +766,37 @@ function leadRecommendedActionForWorkspace(lead: Lead) {
   if (latest?.delivery_status === "approved") return "Contact now with approved email.";
   if (latest?.delivery_status === "sent") return "Open company and schedule follow-up.";
   return "Review email and approve next step.";
+}
+
+function leadScoreReasonsForWorkspace(lead: Lead) {
+  return uniqueStrings([
+    lead.email ? "Reachable contact is available." : "Contact path still needs review.",
+    lead.ai_summary ? "Company research is available." : "Company research is not complete yet.",
+    lead.sales_angle || lead.outreach_strategy ? "Personalized outreach angle is ready." : "Personalized angle needs AI research.",
+    safeArray(lead.generated_emails).length ? "Outreach draft exists for review." : "Outreach draft has not been generated yet.",
+    lead.expected_reply_rate ? `Expected reply rate: ${lead.expected_reply_rate}.` : "",
+    lead.hunter_verified ? "Email is verified." : ""
+  ].filter(Boolean)).slice(0, 4);
+}
+
+function leadInteractionHistoryForWorkspace(lead: Lead) {
+  return [
+    { label: "Found", value: lead.found_at || lead.created_at || lead.saved_to_crm_at },
+    { label: "Research", value: lead.website_analyzed_at },
+    { label: "Contact", value: lead.contact_found_at },
+    { label: "Generated", value: lead.email_generated_at },
+    { label: "Approved", value: lead.email_approved_at },
+    { label: "Sent", value: lead.email_sent_at },
+    { label: "Opened", value: lead.opened_at },
+    { label: "Replied", value: lead.replied_at }
+  ];
+}
+
+function recentDate(value?: string | null) {
+  if (!value) return false;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return false;
+  return Date.now() - timestamp <= 24 * 60 * 60 * 1000;
 }
 
 function leadPriorityBucket(lead: Lead): "Hot" | "Warm" | "Cold" {
@@ -1776,6 +1627,8 @@ function OpportunityCard({
   const contactNowHref = recipientEmail ? `mailto:${recipientEmail}` : (companyId ? `#contacts-${companyId}` : "#manual-company");
   const reviewEmailHref = companyId ? `#outreach-${companyId}` : "#lead-search-form";
   const openCompanyHref = companyId ? `/dashboard/companies?company=${companyId}` : "/dashboard/companies";
+  const leadScoreReasons = leadScoreReasonsForWorkspace(lead);
+  const leadHistory = leadInteractionHistoryForWorkspace(lead);
 
   function applySalesAnalysisResult(result: WorkspaceAiSalesAnalysisResponse) {
     const next = result.analysis && Object.keys(result.analysis).length ? (result.analysis as WorkspaceAiSalesAnalysis) : null;
@@ -1987,6 +1840,37 @@ function OpportunityCard({
     { key: "priority_score", label: "Priority score", value: salesRecommendationActions.priority_score?.value ?? salesRecommendationPriorityScore, helper: "Priority for execution order" },
     { key: "next_best_action", label: "Next best action", value: salesRecommendationActions.next_best_action?.value ?? salesRecommendationNextAction, helper: "Safest immediate step to take" },
   ];
+  const salesAnalysisRecord = salesAnalysis as (Record<string, any> | null);
+  const personalizationAssets = [
+    {
+      label: "Email",
+      value: cleanGeneratedText(draft?.body || salesAnalysisRecord?.recommended_first_message || salesRecommendationOpeningMessage || ""),
+      action: "Review email"
+    },
+    {
+      label: "LinkedIn message",
+      value: cleanGeneratedText(salesAnalysisRecord?.linkedin_message || salesAnalysisRecord?.personalized_linkedin_message || salesAnalysisRecord?.personalized_opening_line || ""),
+      action: "Use as social touch"
+    },
+    {
+      label: "Follow-up",
+      value: cleanGeneratedText(draft?.follow_up_1 || salesRecommendationFollowUps[0] || ""),
+      action: "Schedule follow-up"
+    },
+    {
+      label: "Subject line",
+      value: cleanGeneratedText(draft?.subject || salesAnalysisRecord?.best_subject_line || salesAnalysisRecord?.recommended_subject_line || ""),
+      action: "Test subject"
+    },
+    {
+      label: "Call opener",
+      value: cleanGeneratedText(salesAnalysisRecord?.call_opener || salesAnalysisRecord?.recommended_call_opener || salesAnalysisRecord?.personalized_opening_line || salesRecommendationOpeningMessage || ""),
+      action: "Use on call"
+    }
+  ].map((item) => ({
+    ...item,
+    value: item.value || unavailable
+  }));
 
   async function loadSenderStatusForSend(): Promise<OutreachSenderStatus | null> {
     setSenderLoading(true);
@@ -2302,6 +2186,74 @@ function OpportunityCard({
             <Link href={openCompanyHref} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Open Company")}</Link>
           )}
           <Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Add to Campaign")}</Link>
+        </div>
+      </section>
+
+      <section className="mt-5 rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("AI Lead Workspace")}</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-ink">{t("Score, reason, personalize, then act.")}</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("This lead workspace shows why the lead is prioritized and which outreach asset should be used next.")}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-center sm:min-w-56">
+            <div className="rounded-2xl bg-slate-950 p-3 text-white">
+              <p className="text-xs font-black uppercase text-white/60">{t("Lead Score")}</p>
+              <p className="mt-1 text-3xl font-black">{opportunityScore}</p>
+            </div>
+            <div className="rounded-2xl bg-teal-50 p-3 text-brand">
+              <p className="text-xs font-black uppercase">{t("Reply probability")}</p>
+              <p className="mt-1 text-3xl font-black">{leadReplyProbabilityForWorkspace(lead)}%</p>
+            </div>
+          </div>
+        </div>
+        <div className="mt-5 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm font-black text-ink">{t("Reasons behind the score")}</p>
+            <div className="mt-3 grid gap-2">
+              {leadScoreReasons.map((reason) => (
+                <p key={reason} className="rounded-xl bg-white p-3 text-sm font-semibold leading-6 text-slate-700">{t(reason)}</p>
+              ))}
+            </div>
+            <div className="mt-4 rounded-xl bg-white p-3">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Recommended next action")}</p>
+              <p className="mt-1 text-sm font-semibold leading-6 text-slate-900">{t(recommendedAction)}</p>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm font-black text-ink">{t("Interaction history")}</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {leadHistory.map((item) => (
+                <div key={item.label} className={`rounded-xl p-3 text-sm ${item.value ? "bg-teal-50 text-brand" : "bg-white text-slate-500"}`}>
+                  <p className="text-xs font-black uppercase tracking-wide">{t(item.label)}</p>
+                  <p className="mt-1 font-semibold">{item.value ? t(formatDateTime(item.value)) : t("Not yet")}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-5 rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("AI Personalization")}</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-ink">{t("Outreach assets for every channel.")}</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Email, LinkedIn, follow-up, subject and call opener are shown only from existing AI analysis or saved draft data.")}</p>
+          </div>
+          <button type="button" onClick={() => void runSalesAnalysis(false)} disabled={salesAnalysisLoading || !companyId} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">
+            {salesAnalysisLoading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+            {t("Generate assets")}
+          </button>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {personalizationAssets.map((item) => (
+            <article key={item.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{t(item.label)}</p>
+              <p className="mt-3 line-clamp-6 text-sm font-semibold leading-6 text-slate-800">{t(item.value)}</p>
+              <p className="mt-3 rounded-full bg-white px-3 py-1 text-xs font-black text-slate-600">{t(item.action)}</p>
+            </article>
+          ))}
         </div>
       </section>
 
@@ -3069,23 +3021,138 @@ export function DashboardHome() {
     outreachAngle: String(primaryCompany?.ai_outreach_strategy?.strongest_value_proposition || primaryCompany?.ai_competitor_intelligence?.opportunity_to_sell || t("Use the strongest value proposition from the company card.")),
     href: primaryCompany ? `/dashboard/companies?company=${primaryCompany.id}` : "/dashboard/companies"
   };
+  const aiTimeline = [
+    {
+      label: t("Market scan"),
+      detail: companies.length ? t("Recent companies are ranked by current fit, urgency and workflow readiness.") : t("Run lead search or add one company to create the first market signal."),
+      status: companies.length ? "done" as const : "active" as const
+    },
+    {
+      label: t("AI research"),
+      detail: opportunities.length ? t("AI has enough account context to recommend who to contact and why now.") : t("Company research will appear here after the first enrichment run."),
+      status: opportunities.length ? "done" as const : "waiting" as const
+    },
+    {
+      label: t("Outreach decision"),
+      detail: readyToSendEmails.length ? t("Drafts are ready for human review before launch.") : t("Generate or approve an outreach draft when the account is ready."),
+      status: readyToSendEmails.length ? "active" as const : "waiting" as const
+    }
+  ];
+  const chartValues = [
+    Math.max(0, summaryCards[0]?.value || 0),
+    Math.max(0, summaryCards[1]?.value || 0),
+    Math.max(0, summaryCards[2]?.value || 0),
+    Math.max(0, summaryCards[3]?.value || 0)
+  ];
+  const todayBrief = [
+    {
+      label: "Focus",
+      value: primaryCompany ? primaryCompany.name : t("Start with one market"),
+      detail: primaryCompany ? whatNext : t("Find or add one real company to activate the AI workspace.")
+    },
+    {
+      label: "Risk",
+      value: needsReviewCount ? t("Review needed") : t("No blocker detected"),
+      detail: needsReviewCount ? t("Some opportunities need a human decision before outreach.") : t("The workspace has no urgent review blocker right now.")
+    },
+    {
+      label: "Momentum",
+      value: readyToSendEmails.length ? t("Draft ready") : t("Research first"),
+      detail: readyToSendEmails.length ? t("At least one message can be reviewed before sending.") : t("Generate company research before approving outreach.")
+    }
+  ];
+  const executiveKpis = [
+    ["Leads", metrics.leads || leads.length],
+    ["Campaigns", metrics.campaigns || campaigns.length],
+    ["Replies", metrics.replies],
+    ["Meetings", metrics.meetings],
+    ["Reply rate", `${Math.round(metrics.reply_rate || 0)}%`],
+    ["Emails sent", metrics.emails_sent]
+  ] as const;
+  const dashboardInsights = uniqueStrings([
+    primaryCompany ? `${primaryCompany.name}: ${why}` : "",
+    allBuyingChanges.length ? t("Buying signals changed. Review the highest-priority accounts first.") : "",
+    readyToSendEmails.length ? t("Some drafts are ready. Review before launching any campaign.") : "",
+    needsReviewCount ? t("Manual review is the current bottleneck.") : "",
+    !hasAnyData ? t("Activation starts with one focused lead search or one manually saved company.") : ""
+  ].filter(Boolean)).slice(0, 4);
+  const activityItems = [
+    ...activity.map((item) => {
+      const metadata = item.metadata_json || {};
+      const activityCompany = String(metadata.company || metadata.company_name || metadata.lead_company || "").trim();
+      const activityMessage = String(metadata.message || metadata.detail || metadata.status || "").trim();
+      return {
+        label: activityCompany || item.action,
+        detail: activityMessage || item.action,
+        time: item.created_at
+      };
+    }),
+    ...companies.flatMap((company) => [
+      company.email_generated_at ? { label: company.name, detail: t("Email draft generated"), time: company.email_generated_at } : null,
+      company.website_analyzed_at ? { label: company.name, detail: t("Company research completed"), time: company.website_analyzed_at } : null,
+      company.replied_at ? { label: company.name, detail: t("Reply received"), time: company.replied_at } : null
+    ].filter(Boolean) as Array<{ label: string; detail: string; time: string }>)
+  ].sort((left, right) => new Date(right.time || 0).getTime() - new Date(left.time || 0).getTime()).slice(0, 6);
+  const recentCompanies24h = companies.filter((company) => recentDate(company.created_at) || recentDate(company.found_at) || recentDate(company.saved_to_crm_at));
+  const hotLeads24h = companies.filter((company) => {
+    const score = Number(company.ai_crm?.priority?.score || company.ai_lead_prioritization?.score || company.overall_score || 0);
+    return score >= 70 && (recentDate(company.updated_at) || recentDate(company.last_activity_at) || recentDate(company.website_analyzed_at));
+  });
+  const newSignalCount24h = allBuyingChanges.filter((change) => recentDate(change?.detected_at)).length || allBuyingChanges.length;
+  const dailyBriefItems = [
+    {
+      label: "New companies",
+      value: recentCompanies24h.length,
+      detail: recentCompanies24h[0]?.name || t("No new company detected in the last 24 hours.")
+    },
+    {
+      label: "Hot leads",
+      value: hotLeads24h.length,
+      detail: hotLeads24h[0]?.name || primaryCompany?.name || t("No hot lead change in the last 24 hours.")
+    },
+    {
+      label: "Buying signals",
+      value: newSignalCount24h,
+      detail: allBuyingChanges[0]?.change_type ? String(allBuyingChanges[0].change_type).replaceAll("_", " ") : t("No fresh buying signal yet.")
+    },
+    {
+      label: "Best action",
+      value: primaryCompany ? t("Ready") : t("Start"),
+      detail: whatNext
+    },
+    {
+      label: "24h changes",
+      value: activityItems.filter((item) => recentDate(item.time)).length,
+      detail: activityItems[0]?.detail || t("No recent activity yet.")
+    }
+  ];
 
   return (
     <div className="space-y-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
-      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f4f7ff] to-[#eef6ff] p-5 shadow-sm sm:p-7">
-        <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-[#b7e3ff] opacity-40 blur-3xl" />
-        <div className="pointer-events-none absolute -left-10 bottom-0 h-44 w-44 rounded-full bg-[#dff5eb] opacity-50 blur-3xl" />
+      <section className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-[#0b0d13] p-5 text-white shadow-2xl sm:p-7">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-72 w-72 rounded-full bg-indigo-500/30 blur-3xl" />
+        <div className="pointer-events-none absolute -left-10 bottom-0 h-56 w-56 rounded-full bg-sky-400/20 blur-3xl" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.55),transparent)]" />
         <div className="relative flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#0f4f77]">{t("Executive Dashboard")}</p>
-            <h1 className="mt-2 text-3xl font-bold leading-tight text-slate-900 sm:text-4xl">{t("What should I do now?")}</h1>
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-700">{t("AI-first control center. Every card explains who to target, why this matters now, and what next action creates the most momentum.")}</p>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-sky-200">{t("Executive Dashboard")}</p>
+            <h1 className="mt-3 text-4xl font-black leading-[0.94] tracking-[-0.04em] text-white sm:text-5xl">{t("What should I do now?")}</h1>
+            <p className="mt-4 max-w-3xl text-sm font-semibold leading-7 text-white/60">{t("AI-first control center. Every card explains who to target, why this matters now, and what next action creates the most momentum.")}</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
-            <Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={16} /></Link>
-            <Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Building2 size={16} /> {t("Open Companies")}</Link>
-            <Link href="/dashboard/inbox" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Inbox size={16} /> {t("Open Inbox")}</Link>
+            <Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white px-4 text-sm font-black text-[#101114] shadow-glow">{t(nextStep.label)} <ArrowRight size={16} /></Link>
+            <Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 text-sm font-black text-white backdrop-blur"><Building2 size={16} /> {t("Open Companies")}</Link>
+            <Link href="/dashboard/inbox" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 text-sm font-black text-white backdrop-blur"><Inbox size={16} /> {t("Open Inbox")}</Link>
           </div>
+        </div>
+        <div className="relative mt-6 grid gap-3 md:grid-cols-4">
+          {summaryCards.map((card) => (
+            <article key={card.label} className="rounded-2xl border border-white/10 bg-white/[0.07] p-4 backdrop-blur">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-white/50">{card.label}</p>
+              <p className="mt-2 text-3xl font-black text-white">{card.value}</p>
+              <p className="mt-1 text-sm font-semibold text-white/60">{card.helper}</p>
+            </article>
+          ))}
         </div>
       </section>
 
@@ -3096,6 +3163,99 @@ export function DashboardHome() {
           {cachedAt ? ` ${t("Showing last successful refresh.")}` : ""}
         </section>
       )}
+
+      <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <OperatingPanel>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="ui-eyebrow">{t("Today Brief")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t("Your AI sales briefing for today.")}</h2>
+            </div>
+            <Link href={nextStep.href} className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">
+              {t(nextStep.label)} <ArrowRight size={16} />
+            </Link>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {todayBrief.map((item) => (
+              <article key={item.label} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-brand">{t(item.label)}</p>
+                <h3 className="mt-2 text-lg font-black text-[var(--ui-text)]">{item.value}</h3>
+                <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{item.detail}</p>
+              </article>
+            ))}
+          </div>
+        </OperatingPanel>
+
+        <OperatingPanel>
+          <p className="ui-eyebrow">{t("KPI Cards")}</p>
+          <h2 className="ui-title mt-1 text-2xl">{t("Only metrics that change the next decision.")}</h2>
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            {executiveKpis.map(([label, value]) => (
+              <article key={label} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-3">
+                <p className="text-xs font-black uppercase tracking-[0.12em] text-[var(--ui-text-soft)]">{t(label)}</p>
+                <p className="mt-2 text-2xl font-black text-[var(--ui-text)]">{value}</p>
+              </article>
+            ))}
+          </div>
+        </OperatingPanel>
+      </section>
+
+      <OperatingPanel>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="ui-eyebrow">{t("AI Daily Brief")}</p>
+            <h2 className="ui-title mt-1 text-2xl">{t("What changed in the last 24 hours.")}</h2>
+          </div>
+          <Link href="/dashboard/companies" className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-full border border-[var(--ui-border)] bg-white/70 px-4 text-sm font-black text-[var(--ui-text)]">
+            {t("Review changes")} <ArrowRight size={16} />
+          </Link>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-5">
+          {dailyBriefItems.map((item) => (
+            <article key={item.label} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t(item.label)}</p>
+              <p className="mt-2 text-3xl font-black text-[var(--ui-text)]">{item.value}</p>
+              <p className="mt-2 line-clamp-3 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{t(String(item.detail))}</p>
+            </article>
+          ))}
+        </div>
+      </OperatingPanel>
+
+      <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+        <OperatingPanel>
+          <p className="ui-eyebrow">{t("AI Insights")}</p>
+          <h2 className="ui-title mt-1 text-2xl">{t("What the system noticed.")}</h2>
+          <div className="mt-5 grid gap-3">
+            {(dashboardInsights.length ? dashboardInsights : [t("No insight yet. Add one company or run lead search to generate the first briefing.")]).map((insight) => (
+              <p key={insight} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4 text-sm font-semibold leading-6 text-[var(--ui-text)]">
+                {insight}
+              </p>
+            ))}
+          </div>
+        </OperatingPanel>
+
+        <OperatingPanel>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="ui-eyebrow">{t("Activity Timeline")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t("What changed recently.")}</h2>
+            </div>
+            <Link href="/dashboard/companies" className="text-sm font-black text-brand">{t("Open workspace")}</Link>
+          </div>
+          <div className="mt-5 grid gap-3">
+            {(activityItems.length ? activityItems : [{ label: t("No activity yet"), detail: t("Run lead search or save one company to create the first timeline event."), time: "" }]).map((item, index) => (
+              <div key={`${item.label}-${item.time}-${index}`} className="grid grid-cols-[2rem_1fr] gap-3">
+                <span className="mt-1 grid size-8 place-items-center rounded-full border border-[var(--ui-border)] bg-white text-xs font-black text-brand">{index + 1}</span>
+                <div className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-3">
+                  <p className="text-sm font-black text-[var(--ui-text)]">{item.label}</p>
+                  <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]">{item.detail}</p>
+                  {item.time ? <p className="mt-1 text-xs font-bold text-[var(--ui-muted)]">{formatDateTime(item.time)}</p> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </OperatingPanel>
+      </section>
 
       {!hasAnyData && (
         <WidgetBoundary name="Private workspace onboarding">
@@ -3116,38 +3276,46 @@ export function DashboardHome() {
         </WidgetBoundary>
       )}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        {summaryCards.map((card) => (
-          <article key={card.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">{card.label}</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">{card.value}</p>
-            <p className="mt-1 text-sm text-slate-600">{card.helper}</p>
-          </article>
-        ))}
+      <section className="grid gap-4 lg:grid-cols-3">
+        <AiLiveCard label={t("Who?")} title={who} copy={primaryCompany?.name || t("No prioritized account yet. Run lead search to create opportunities.")} metric={primaryCompany ? t("Priority") : t("Waiting")} />
+        <AiLiveCard label={t("Why?")} title={t("Reason to act")} copy={why} metric={allBuyingChanges.length ? `${allBuyingChanges.length} ${t("signals")}` : t("No signal")} />
+        <AiLiveCard
+          label={t("What next?")}
+          title={t("Next best action")}
+          copy={whatNext}
+          metric={t("Recommended")}
+          action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">{t("Do next action")} <ArrowRight size={16} /></Link>}
+        />
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-3">
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("Who?")}</p>
-          <p className="mt-3 text-lg font-bold text-slate-900">{who}</p>
-          <p className="mt-2 text-sm text-slate-600">{primaryCompany?.name || t("No prioritized account yet. Run lead search to create opportunities.")}</p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("Why?")}</p>
-          <p className="mt-3 text-sm leading-6 text-slate-800">{why}</p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("What next?")}</p>
-          <p className="mt-3 text-sm leading-6 text-slate-800">{whatNext}</p>
-          <Link href={nextStep.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#0f4f77] px-4 text-sm font-bold text-white">{t("Do next action")} <ArrowRight size={16} /></Link>
-        </article>
+      <section className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+        <OperatingPanel>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="ui-eyebrow">{t("AI timeline")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t("From signal to approved outreach.")}</h2>
+            </div>
+            <span className="w-fit rounded-full border border-[var(--ui-border)] bg-white/70 px-3 py-1 text-xs font-black text-[var(--ui-text-soft)]">{cachedAt ? t("Cached context") : t("Live context")}</span>
+          </div>
+          <div className="mt-5">
+            <AiTimeline items={aiTimeline} />
+          </div>
+        </OperatingPanel>
+        <OperatingPanel>
+          <p className="ui-eyebrow">{t("Opportunity shape")}</p>
+          <h2 className="ui-title mt-1 text-2xl">{t("Where the workspace has momentum.")}</h2>
+          <div className="mt-5">
+            <MiniBarChart values={chartValues} labels={[t("Hot"), t("Signals"), t("Emails"), t("Review")]} />
+          </div>
+          <p className="ui-copy mt-4">{t("The chart uses only the current workspace data. No sample account activity is injected.")}</p>
+        </OperatingPanel>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-3">
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+        <OperatingPanel as="article" className="xl:col-span-2">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-bold text-slate-900">{t("Priority queue")}</h2>
-            <Link href="/dashboard/companies" className="text-sm font-bold text-[#0f4f77]">{t("View all")}</Link>
+            <h2 className="text-lg font-black text-[var(--ui-text)]">{t("Priority queue")}</h2>
+            <Link href="/dashboard/companies" className="text-sm font-black text-brand">{t("View all")}</Link>
           </div>
           <div className="mt-4 grid gap-3">
             {opportunities.length ? opportunities.slice(0, 4).map((company) => {
@@ -3155,14 +3323,14 @@ export function DashboardHome() {
               const reason = String(company.ai_crm?.buying_intent?.reasoning || company.reasoning || t("Signals are still being collected."));
               const next = String(company.ai_crm?.next_action || company.recommended_next_action || t("Open company workspace."));
               return (
-                <article key={company.id} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                <article key={company.id} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4 shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-base font-bold text-slate-900">{company.name}</p>
-                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-slate-700">{t("Priority")} {score}</span>
+                    <p className="text-base font-black text-[var(--ui-text)]">{company.name}</p>
+                    <span className="rounded-full bg-[#101114] px-2.5 py-1 text-xs font-black text-white">{t("Priority")} {score}</span>
                   </div>
-                  <p className="mt-2 text-sm text-slate-700"><span className="font-bold text-slate-900">{t("Why now")}: </span>{reason}</p>
-                  <p className="mt-1 text-sm text-slate-700"><span className="font-bold text-slate-900">{t("Next")}: </span>{next}</p>
-                  <Link href={`/dashboard/companies?company=${company.id}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-slate-900 px-3 text-xs font-bold text-white">{t("Open company")}</Link>
+                  <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]"><span className="font-black text-[var(--ui-text)]">{t("Why now")}: </span>{reason}</p>
+                  <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]"><span className="font-black text-[var(--ui-text)]">{t("Next")}: </span>{next}</p>
+                  <Link href={`/dashboard/companies?company=${company.id}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-full bg-[#101114] px-3 text-xs font-black text-white">{t("Open company")}</Link>
                 </article>
               );
             }) : (
@@ -3171,31 +3339,59 @@ export function DashboardHome() {
               </div>
             )}
           </div>
-        </article>
+        </OperatingPanel>
 
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">{t("Recommended now")}</h2>
+        <OperatingPanel as="article">
+          <h2 className="text-lg font-black text-[var(--ui-text)]">{t("Recommended now")}</h2>
           <div className="mt-4 space-y-3 text-sm">
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Company")}</p>
+            <div className="rounded-2xl bg-white/60 p-3">
+              <p className="font-black text-[var(--ui-text)]">{t("Company")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.bestCompany}</p>
             </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Who")}</p>
+            <div className="rounded-2xl bg-white/60 p-3">
+              <p className="font-black text-[var(--ui-text)]">{t("Who")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.whoToContact}</p>
             </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Why")}</p>
+            <div className="rounded-2xl bg-white/60 p-3">
+              <p className="font-black text-[var(--ui-text)]">{t("Why")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.whyNow}</p>
             </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("First move")}</p>
+            <div className="rounded-2xl bg-white/60 p-3">
+              <p className="font-black text-[var(--ui-text)]">{t("First move")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.outreachAngle}</p>
             </div>
           </div>
-          <Link href={aiRecommendation.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#0f4f77] px-4 text-sm font-bold text-white">{t("Open company")} <ArrowRight size={16} /></Link>
-        </article>
+          <Link href={aiRecommendation.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">{t("Open company")} <ArrowRight size={16} /></Link>
+        </OperatingPanel>
       </section>
+
+      <OperatingPanel>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-3xl">
+            <p className="ui-eyebrow">{t("Customer Activation")}</p>
+            <h2 className="ui-title mt-1 text-2xl">{t("From signup to first AI outreach in under 10 minutes.")}</h2>
+            <p className="ui-copy mt-2">{t("The fastest path is intentionally small: define a market, save one real company, run AI research, generate one message, then review it before sending.")}</p>
+          </div>
+          <Link href="/dashboard/leads" className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">
+            {t("Start activation")} <ArrowRight size={16} />
+          </Link>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-5">
+          {[
+            ["1", "Define ICP", "Country, city, industry or one manual company."],
+            ["2", "Find companies", "Save only real accounts into the workspace."],
+            ["3", "AI research", "Prepare company profile, signals and next action."],
+            ["4", "Generate outreach", "Create the first email from existing data."],
+            ["5", "Review and send", "Approve before anything leaves the system."]
+          ].map(([step, title, copy]) => (
+            <article key={step} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4">
+              <span className="grid size-8 place-items-center rounded-full bg-[#101114] text-xs font-black text-white">{step}</span>
+              <p className="mt-3 text-sm font-black text-[var(--ui-text)]">{t(title)}</p>
+              <p className="mt-2 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{t(copy)}</p>
+            </article>
+          ))}
+        </div>
+      </OperatingPanel>
 
       <WidgetBoundary name="Main customer actions">
         <CoreActionGrid activeHref={nextStep.href} />
@@ -4808,6 +5004,57 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     { label: t("Website"), items: uniqueStrings([...safeArray(displayCurrent.ai_live_buying_signals?.snapshot?.website_changes).map(String), ...safeArray(displayCurrent.ai_company_timeline?.website_changes).map((item) => String((item as { title?: string; details?: string }).title || (item as { details?: string }).details || ""))]).filter(Boolean) },
     { label: t("Expansion"), items: uniqueStrings([...safeArray(displayCurrent.ai_live_buying_signals?.snapshot?.market_expansion).map(String), ...safeArray(displayCurrent.ai_company_timeline?.new_locations).map((item) => String((item as { title?: string; details?: string }).title || (item as { details?: string }).details || ""))]).filter(Boolean) }
   ];
+  const companyAiProfile = String(
+    intelligenceFields.ai_summary?.value
+    || intelligence?.report?.company_summary?.value
+    || displayCurrent.ai_summary
+    || executiveSummary
+    || salesBrief.whatTheyDo
+  );
+  const companyGrowth = companyGrowthSignals(displayCurrent);
+  const companyHiring = companyHiringSignals(displayCurrent);
+  const companyNews = companyNewsSignals(displayCurrent);
+  const companyTechStack = uniqueStrings([
+    ...intelligenceTechnologies,
+    ...deepTechnologies,
+    ...salesBrief.technologies,
+    ...safeArray(displayCurrent.technologies).map(String),
+    ...safeArray(displayCurrent.ai_competitor_intelligence?.technologies).map(String)
+  ]).filter(Boolean).slice(0, 8);
+  const companyRecommendation = String(
+    displayCurrent.ai_revenue_engine_report?.recommended_outreach_strategy?.strongest_value_proposition
+    || displayCurrent.ai_outreach_strategy?.strongest_value_proposition
+    || displayCurrent.ai_outreach_strategy?.why_contact_now
+    || displayCurrent.recommended_next_action
+    || t("Open outreach review and approve the next email.")
+  );
+  const companyIntelligenceTiles = [
+    {
+      label: "Growth signals",
+      items: companyGrowth,
+      empty: "No growth signal detected yet."
+    },
+    {
+      label: "Technologies",
+      items: companyTechStack,
+      empty: "Technology profile will appear after company research."
+    },
+    {
+      label: "News",
+      items: companyNews,
+      empty: "No recent company news captured yet."
+    },
+    {
+      label: "Vacancies",
+      items: companyHiring,
+      empty: "No hiring signal detected yet."
+    }
+  ];
+  const leadScoreV2Summary = leadScoreV2(displayCurrent, opportunityScore);
+  const nextBestActionRecommendation = nextBestActionV2(displayCurrent, leadScoreV2Summary.score);
+  const researchInputs = researchInputsV2(displayCurrent);
+  const outreachCopilotAssets = outreachCopilotAssetsV2(displayCurrent, currentDraft);
+  const executiveTimelineItems = executiveTimelineV2(displayCurrent, `${nextBestActionRecommendation.action}: ${nextBestActionRecommendation.reason}`, formatDateTime);
   const aiRisksDetailed = uniqueStrings([
     ...safeArray(displayCurrent.ai_revenue_engine_report?.top_risks).map(String),
     ...safeArray(displayCurrent.ai_crm?.risk?.top_reasons).map(String),
@@ -5533,6 +5780,190 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             <p className="mt-4 text-sm leading-6 text-slate-700">{t("Confidence is calculated from available evidence, verified contact data, and opportunity signals. Lower values indicate missing or weak evidence.")}</p>
           </article>
         </div>
+      </section>
+
+      <section className="mt-5 rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div className="max-w-4xl">
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("AI Company Intelligence")}</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{t("A sales-ready company profile, not a CRM record.")}</h3>
+            <p className="mt-3 text-sm font-semibold leading-7 text-slate-700">{t(companyAiProfile)}</p>
+          </div>
+          <div className="grid min-w-0 gap-2 sm:grid-cols-3 xl:w-[28rem]">
+            <div className="rounded-2xl bg-slate-950 p-4 text-white">
+              <p className="text-xs font-black uppercase tracking-wide text-white/60">{t("Fit")}</p>
+              <p className="mt-1 text-3xl font-black">{opportunityScore}</p>
+            </div>
+            <div className="rounded-2xl bg-teal-50 p-4 text-brand">
+              <p className="text-xs font-black uppercase tracking-wide">{t("Intent")}</p>
+              <p className="mt-1 text-3xl font-black">{buyingIntentScore}</p>
+            </div>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-24 items-center justify-center rounded-2xl bg-slate-100 px-4 text-center text-sm font-black text-slate-900 hover:bg-slate-200">
+              {t("Generate outreach")}
+            </a>
+          </div>
+        </div>
+        <div className="mt-5 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">{t("AI Recommendation")}</p>
+            <p className="mt-3 text-lg font-black leading-7 text-slate-950">{t(companyRecommendation)}</p>
+            <p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this recommendation as the next sales decision. It is derived from saved company research, buying signals and outreach strategy.")}</p>
+          </article>
+          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">{t("AI Summary")}</p>
+            <p className="mt-3 text-sm font-semibold leading-7 text-slate-800">{t(executiveSummary)}</p>
+          </article>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {companyIntelligenceTiles.map((tile) => (
+            <article key={tile.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{t(tile.label)}</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(tile.items.length ? tile.items.slice(0, 5) : [t(tile.empty)]).map((item) => (
+                  <span key={item} className="rounded-full bg-white px-3 py-1 text-xs font-black leading-5 text-slate-700 shadow-sm">{t(item)}</span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-[1fr_0.9fr]">
+        <article className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("AI Research Engine V2")}</p>
+              <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{t("Unified company research graph.")}</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{t("OutreachAI combines company profile, ICP, hiring, news, technology, funding and why-now signals into one executive summary.")}</p>
+            </div>
+            <button
+              type="button"
+              onClick={prepareCompanyOpportunity}
+              disabled={actionBusy === "prepare-company" || !current.lead_id}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+              {t("Refresh research")}
+            </button>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {researchInputs.map((item) => (
+              <div key={item.label} className={`rounded-2xl border p-3 ${item.value ? "border-teal-100 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
+                <p className={`text-xs font-black uppercase tracking-[0.14em] ${item.value ? "text-brand" : "text-slate-500"}`}>{t(item.label)}</p>
+                <p className="mt-2 line-clamp-3 text-sm font-semibold leading-6 text-slate-800">{item.value ? t(String(item.value)) : t("Not detected yet")}</p>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("AI Lead Score V2")}</p>
+          <div className="mt-3 flex items-end justify-between gap-4">
+            <div>
+              <p className="text-6xl font-black tracking-[-0.06em] text-slate-950">{leadScoreV2Summary.score}</p>
+              <p className="mt-1 text-sm font-bold text-slate-500">{t("Reply probability")}: {leadScoreV2Summary.replyProbability}%</p>
+            </div>
+            <div className="rounded-2xl bg-slate-950 px-4 py-3 text-right text-white">
+              <p className="text-xs font-black uppercase text-white/60">{t("Signals impact")}</p>
+              <p className="mt-1 text-2xl font-black">+{Math.min(36, leadScoreV2Summary.signals.reduce((sum, signal) => sum + signal.weight, 0))}</p>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-2">
+            {leadScoreV2Summary.reasons.map((reason) => (
+              <p key={reason} className="rounded-xl bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-800">{t(reason)}</p>
+            ))}
+          </div>
+          <div className="mt-4 rounded-2xl border border-amber-100 bg-amber-50 p-4">
+            <p className="text-xs font-black uppercase tracking-wide text-amber-800">{t("What improves the score")}</p>
+            <div className="mt-2 space-y-1 text-sm font-semibold leading-6 text-amber-900">
+              {(leadScoreV2Summary.improvements.length ? leadScoreV2Summary.improvements : [t("No critical improvement required before the next action.")]).map((item) => <p key={item}>{t(item)}</p>)}
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <article className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("Buying Signal Engine")}</p>
+              <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{t("Signals that change priority.")}</h3>
+            </div>
+            <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-black text-white">{leadScoreV2Summary.signals.length} {t("active")}</span>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-2">
+            {(leadScoreV2Summary.signals.length ? leadScoreV2Summary.signals : [{ label: "No strong buying signal yet", category: "Research", evidence: "Run AI research or collect fresher company data.", weight: 0 }]).map((signal) => (
+              <article key={`${signal.label}-${signal.evidence}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{t(signal.category)}</p>
+                    <h4 className="mt-1 text-base font-black text-slate-950">{signal.weight >= 12 ? "★★★★★ " : signal.weight >= 8 ? "★★★★☆ " : signal.weight > 0 ? "★★★☆☆ " : ""}{t(signal.label)}</h4>
+                  </div>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-brand">+{signal.weight}</span>
+                </div>
+                <p className="mt-3 text-sm font-semibold leading-6 text-slate-700">{t(signal.evidence)}</p>
+              </article>
+            ))}
+          </div>
+        </article>
+
+        <article className="rounded-[1.75rem] border border-slate-200 bg-slate-950 p-5 text-white shadow-sm">
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-teal-200">{t("Next Best Action")}</p>
+          <h3 className="mt-3 text-4xl font-black tracking-[-0.05em]">{t(nextBestActionRecommendation.action)}</h3>
+          <p className="mt-2 text-sm font-bold text-white/60">{t(nextBestActionRecommendation.channel)}</p>
+          <p className="mt-5 text-sm font-semibold leading-7 text-white/80">{t(nextBestActionRecommendation.reason)}</p>
+          <a href={nextBestActionRecommendation.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white px-4 text-sm font-black text-slate-950">
+            {t("Do this now")} <ArrowRight size={16} />
+          </a>
+        </article>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-[1fr_1fr]">
+        <article className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("Outreach Copilot")}</p>
+              <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{t("Generate every sales asset from one research graph.")}</h3>
+            </div>
+            <button
+              type="button"
+              onClick={generateEmailDraftForReview}
+              disabled={actionBusy === "generate-email-draft" || !current.lead_id}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {actionBusy === "generate-email-draft" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
+              {t("Generate assets")}
+            </button>
+          </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            {outreachCopilotAssets.map((asset) => (
+              <article key={asset.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{t(asset.label)}</p>
+                <p className="mt-3 line-clamp-4 text-sm font-semibold leading-6 text-slate-800">{t(asset.value)}</p>
+                <p className="mt-3 rounded-full bg-white px-3 py-1 text-xs font-black text-slate-600">{t(asset.action)}</p>
+              </article>
+            ))}
+          </div>
+        </article>
+
+        <article className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("Executive Timeline")}</p>
+          <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{t("What happened, what AI found, what to do next.")}</h3>
+          <div className="mt-5 space-y-3">
+            {executiveTimelineItems.map((item, index) => (
+              <div key={`${item.label}-${index}`} className="grid grid-cols-[2rem_1fr] gap-3">
+                <span className={`mt-1 grid size-8 place-items-center rounded-full text-xs font-black ${item.status === "Next" ? "bg-slate-950 text-white" : "bg-teal-50 text-brand"}`}>{index + 1}</span>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-black text-slate-950">{t(item.label)}</p>
+                    <span className="rounded-full bg-white px-2 py-1 text-[11px] font-black uppercase tracking-wide text-slate-500">{t(item.status)}</span>
+                  </div>
+                  <p className="mt-1 text-sm font-semibold leading-6 text-slate-700">{t(item.detail)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </article>
       </section>
     </div>
 

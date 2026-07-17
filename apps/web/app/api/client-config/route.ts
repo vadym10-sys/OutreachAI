@@ -16,9 +16,11 @@ function safeOrigin(value: string, fallback: string) {
 }
 
 export function GET() {
-  const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY || '';
+  const analyticsEnabled = process.env.NEXT_PUBLIC_ANALYTICS_ENABLED === 'true';
+  const sessionReplayEnabled = process.env.NEXT_PUBLIC_SESSION_REPLAY_ENABLED === 'true';
+  const posthogKey = analyticsEnabled ? process.env.NEXT_PUBLIC_POSTHOG_KEY || '' : '';
   const posthogHost = safeOrigin(process.env.NEXT_PUBLIC_POSTHOG_HOST || '', 'https://app.posthog.com');
-  const logRocketAppId = process.env.NEXT_PUBLIC_LOGROCKET_APP_ID || '';
+  const logRocketAppId = sessionReplayEnabled ? process.env.NEXT_PUBLIC_LOGROCKET_APP_ID || '' : '';
 
   return NextResponse.json({
     app: {
@@ -26,12 +28,12 @@ export function GET() {
       release: process.env.NEXT_PUBLIC_RELEASE || 'outreachai-web@1.0.0'
     },
     analytics: {
-      enabled: Boolean(posthogKey),
+      enabled: Boolean(analyticsEnabled && posthogKey),
       key: posthogKey,
       host: posthogHost
     },
     session_replay: {
-      enabled: Boolean(logRocketAppId),
+      enabled: Boolean(sessionReplayEnabled && logRocketAppId),
       app_id: logRocketAppId
     }
   });

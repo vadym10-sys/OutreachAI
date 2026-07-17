@@ -547,6 +547,29 @@ def test_readiness_returns_503_when_required_environment_is_missing_in_productio
     assert any("CLERK_SECRET_KEY" in failure for failure in payload["critical_failures"])
 
 
+def test_readiness_returns_503_when_database_backups_are_missing_in_production(monkeypatch) -> None:
+    import app.main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        Settings(app_env="production", strict_startup_env_validation=False, required_runtime_envs="DATABASE_URL,CLERK_SECRET_KEY", database_url="postgresql+psycopg://db.example/outreachai"),
+    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://db.example/outreachai")
+    monkeypatch.setenv("CLERK_SECRET_KEY", "sk_live_example_secret")
+    monkeypatch.setattr(main_module, "validate_database_connectivity", lambda settings: None)
+    monkeypatch.setattr(main_module, "database_backups_operational", lambda db, settings: False)
+
+    response = client.get("/api/ready")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["status"] == "degraded"
+    assert payload["database_backups_configured"] is False
+    assert "database_backups_not_confirmed" in payload["warnings"]
+    assert any("backups" in failure.lower() for failure in payload["critical_failures"])
+
+
 def test_database_backup_readiness_requires_strict_true() -> None:
     assert database_backup_configured(Settings(database_backups_enabled="true")) is True
     assert database_backup_configured(Settings(database_backups_enabled="TRUE")) is True

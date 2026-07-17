@@ -261,11 +261,14 @@ def api_readiness() -> JSONResponse:
     if env_issues:
         critical_failures.append(f"Missing or invalid required environment: {', '.join(env_issues)}")
 
-    ready = database_ready and not env_issues
+    production_runtime = (settings.app_env or "").strip().lower() == "production"
     if not database_backups_configured:
         warnings.append("database_backups_not_confirmed")
+        if production_runtime:
+            critical_failures.append("Production database backups are not configured or restore-verified.")
     if critical_failures:
         warnings.extend(critical_failures)
+    ready = database_ready and not env_issues and not critical_failures
     status_code = 200 if ready else 503
     return JSONResponse(
         status_code=status_code,

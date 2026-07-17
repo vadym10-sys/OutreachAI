@@ -17,4 +17,6 @@ postgres_data
 outreachai.db
 startup-check.db
 .vercel
+.vercel-auth
+.vercel-device-auth
 .env*

@@ -79,4 +79,30 @@ describe("environment safety", () => {
     expect(env.hasClerkPublishableKey).toBe(true);
     expect(env.hasClerkRuntimeConfig).toBe(true);
   });
+
+  it("keeps product analytics and session replay disabled unless explicit flags are enabled", async () => {
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_valid_public_key";
+    process.env.NEXT_PUBLIC_LOGROCKET_APP_ID = "workspace/app";
+
+    const env = await loadEnv();
+
+    expect(env.hasPostHog).toBe(false);
+    expect(env.hasLogRocket).toBe(false);
+    expect(env.posthogKey).toBe("");
+    expect(env.logRocketAppId).toBe("");
+  });
+
+  it("enables product analytics and session replay only with explicit production flags", async () => {
+    process.env.NEXT_PUBLIC_ANALYTICS_ENABLED = "true";
+    process.env.NEXT_PUBLIC_SESSION_REPLAY_ENABLED = "true";
+    process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_valid_public_key";
+    process.env.NEXT_PUBLIC_LOGROCKET_APP_ID = "workspace/app";
+
+    const env = await loadEnv();
+
+    expect(env.hasPostHog).toBe(true);
+    expect(env.hasLogRocket).toBe(true);
+    expect(env.posthogKey).toBe("phc_valid_public_key");
+    expect(env.logRocketAppId).toBe("workspace/app");
+  });
 });

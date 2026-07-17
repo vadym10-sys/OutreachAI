@@ -5,16 +5,18 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, Building2, CheckCircle2, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, User } from "lucide-react";
+import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, Sparkles, User } from "lucide-react";
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
+import { NetworkStatusBanner } from "@/components/network-status-banner";
 import { useAuthRuntime } from "@/components/app-providers";
 import { useI18n } from "@/lib/i18n/provider";
 import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
 import type { Workspace } from "@/lib/types";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
+import { Breadcrumbs, CommandDialog, CommandItem, Kbd } from "@/components/design-system";
 
 const nav = [
   { href: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
@@ -31,6 +33,19 @@ const nav = [
 
 const featureFlags = {
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
+};
+
+const navDescriptions: Record<string, string> = {
+  "/dashboard": "Executive AI command center",
+  "/dashboard/leads": "Find and prioritize real companies",
+  "/dashboard/companies": "Research accounts and run AI analysis",
+  "/dashboard/campaigns": "Review and launch outreach",
+  "/dashboard/inbox": "Turn replies into meetings",
+  "/dashboard/billing": "Plan, usage and invoices",
+  "/dashboard/profile": "Workspace identity",
+  "/dashboard/settings": "Integrations and readiness",
+  "/dashboard/owner": "Owner controls",
+  "/admin": "Administration"
 };
 
 const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
@@ -239,9 +254,14 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
   const { clerkEnabled } = useAuthRuntime();
   const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
-  const visibleNav = nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner));
+  const visibleNav = useMemo(
+    () => nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner)),
+    [isOwner]
+  );
   const primaryMobileNav = visibleNav.slice(0, 4);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [workspaceLoadFailed, setWorkspaceLoadFailed] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
@@ -331,6 +351,39 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
   const accountInitials = profileInitials(workspaceOwnerEmail || email, workspaceLabel);
+  const activeNavItem = visibleNav.find((item) => pathname === item.href) || visibleNav.find((item) => pathname.startsWith(`${item.href}/`));
+  const activeLabel = activeNavItem ? t(activeNavItem.labelKey) : t("Workspace");
+  const commandItems = useMemo(() => {
+    const normalized = commandQuery.trim().toLowerCase();
+    return visibleNav.filter((item) => {
+      if (!normalized) return true;
+      const label = t(item.labelKey).toLowerCase();
+      const detail = (navDescriptions[item.href] || "").toLowerCase();
+      return label.includes(normalized) || detail.includes(normalized);
+    });
+  }, [commandQuery, t, visibleNav]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const isTyping = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen(true);
+      }
+      if (event.key === "Escape") {
+        setCommandOpen(false);
+      }
+      if (commandOpen && !isTyping && /^[1-9]$/.test(event.key)) {
+        const item = commandItems[Number(event.key) - 1];
+        if (item) {
+          window.location.assign(item.href);
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [commandItems, commandOpen]);
 
   useEffect(() => {
     const label = t("shell.account");
@@ -435,26 +488,53 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="dashboard-safe min-h-screen min-w-0 max-w-[100vw] overflow-x-clip bg-slate-50">
+    <div className="dashboard-safe ai-os-bg min-h-screen min-w-0 max-w-[100vw] overflow-x-clip">
       <CheckoutContinuation />
-      <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white px-4 py-5 lg:block">
-        <Link href="/dashboard" className="mb-8 block text-xl font-bold tracking-tight text-ink">OutreachAI</Link>
+      <aside className="fixed inset-y-0 left-0 hidden w-72 border-r border-[var(--ui-border)] bg-white/75 px-4 py-5 shadow-[12px_0_44px_rgba(16,17,20,0.05)] backdrop-blur-2xl lg:block">
+        <Link href="/dashboard" className="mb-6 flex min-h-12 items-center gap-3 rounded-2xl px-2 text-xl font-black tracking-tight text-ink">
+          <span className="grid size-10 place-items-center rounded-2xl bg-[linear-gradient(135deg,#111114,var(--ui-brand),var(--ui-accent))] text-sm text-white shadow-glow">OA</span>
+          <span>
+            OutreachAI
+            <span className="block text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">AI Operating System</span>
+          </span>
+        </Link>
+        <div className="mb-4 rounded-[1.4rem] border border-[var(--ui-border)] bg-white/70 p-3 shadow-sm">
+          <p className="truncate text-sm font-black text-[var(--ui-text)]">{workspaceLabel}</p>
+          <p className="mt-1 truncate text-xs font-semibold text-[var(--ui-text-soft)]">{workspaceOwnerEmail || email || t("shell.account")}</p>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[11px] font-black text-[var(--ui-text-soft)]">
+            <span className="rounded-xl bg-[var(--ui-surface-subtle)] px-2 py-2">{workspace ? "Live" : "Sync"}</span>
+            <span className="rounded-xl bg-[var(--ui-surface-subtle)] px-2 py-2">AI</span>
+            <span className="rounded-xl bg-[var(--ui-surface-subtle)] px-2 py-2">Secure</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCommandOpen(true)}
+          className="mb-4 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-white/75 px-3 text-left text-sm font-bold text-[var(--ui-text-soft)] shadow-sm"
+        >
+          <Search size={16} />
+          <span className="min-w-0 flex-1 truncate">Search workspace</span>
+          <Kbd>⌘K</Kbd>
+        </button>
         <nav className="space-y-1">
           {visibleNav.map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
             const label = t(item.labelKey);
             return (
-              <Link key={item.href} href={item.href} className={`flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
-                <Icon size={18} aria-hidden="true" />
-                {label}
+              <Link key={item.href} href={item.href} className={`group flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white shadow-glow" : "text-[var(--ui-text-soft)] hover:bg-white/80 hover:text-[var(--ui-text)]"}`}>
+                <span className={`grid size-8 place-items-center rounded-xl ${active ? "bg-white/15 text-white" : "bg-[var(--ui-surface-subtle)] text-[var(--ui-text-soft)] group-hover:text-[var(--ui-text)]"}`}>
+                  <Icon size={17} aria-hidden="true" />
+                </span>
+                <span className="min-w-0 flex-1 truncate">{label}</span>
               </Link>
             );
           })}
         </nav>
       </aside>
-      <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-64">
-        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-slate-200 bg-white/95 px-4 backdrop-blur min-[360px]:px-5">
+      <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-72">
+        <NetworkStatusBanner />
+        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-[var(--ui-border)] bg-[rgba(var(--ui-bg-rgb),0.76)] px-4 backdrop-blur-2xl min-[360px]:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="group relative lg:hidden">
               <button
@@ -464,7 +544,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 onPointerDown={() => setMobileMenuOpen(true)}
                 onTouchStart={() => setMobileMenuOpen(true)}
                 onClick={() => setMobileMenuOpen(true)}
-                className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300 bg-white text-slate-700"
+                className="focus-ring grid size-11 place-items-center rounded-2xl border border-[var(--ui-border)] bg-white/75 text-[var(--ui-text)] shadow-sm"
                 aria-label={t("nav.open")}
                 aria-expanded={mobileMenuOpen}
               >
@@ -472,8 +552,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               </button>
               <div className={`${mobileMenuOpen ? "block" : "hidden"} fixed inset-0 z-50 lg:hidden`}>
                 <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-950/20" onClick={closeMobileMenu} />
-                <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),20rem)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
-                  <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),22rem)] overflow-y-auto rounded-[1.6rem] border border-[var(--ui-border)] bg-white/95 p-3 shadow-2xl backdrop-blur-2xl">
+                  <div className="mb-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-3">
                     <p className="truncate text-sm font-bold text-ink">{workspaceLabel}</p>
                     <p className="mt-1 truncate text-xs font-semibold text-slate-500">{accountLabel}</p>
                     <div className="mt-3 min-[430px]:hidden">
@@ -486,7 +566,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                       const active = pathname === item.href;
                       const label = t(item.labelKey);
                       return (
-                        <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-2 text-sm font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-700 hover:bg-slate-100"}`}>
+                        <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white" : "text-[var(--ui-text-soft)] hover:bg-white"}`}>
                           <Icon size={18} aria-hidden="true" />
                           {label}
                         </Link>
@@ -497,10 +577,19 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <div className="min-w-0">
-              <span className="block truncate text-sm font-semibold text-slate-700">{workspaceLabel}</span>
-              <span className="block max-w-[58vw] truncate text-xs font-medium text-slate-500 sm:max-w-none">{accountLabel}</span>
+              <Breadcrumbs items={[{ label: "OutreachAI", href: "/dashboard" }, { label: activeLabel }]} />
+              <span className="mt-1 block max-w-[58vw] truncate text-xs font-semibold text-[var(--ui-text-soft)] sm:max-w-none">{workspaceLabel}</span>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => setCommandOpen(true)}
+            className="hidden min-h-11 min-w-[16rem] items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-white/70 px-3 text-left text-sm font-bold text-[var(--ui-text-soft)] shadow-sm md:flex"
+          >
+            <Command size={16} />
+            <span className="min-w-0 flex-1 truncate">Ask, search, navigate</span>
+            <Kbd>⌘K</Kbd>
+          </button>
           <div className="hidden shrink-0 md:block">
             <LanguageSwitcher compact />
           </div>
@@ -508,7 +597,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <p className="truncate text-xs font-bold uppercase text-brand">{t("workspace.privateAccount")}</p>
             <p className="max-w-52 truncate text-sm font-semibold text-slate-700">{workspaceOwnerEmail || email || t("shell.account")}</p>
           </div>
-          <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full ring-2 ring-teal-100" aria-label={t("shell.account")}>
+          <button type="button" onClick={() => setCommandOpen(true)} className="grid size-10 shrink-0 place-items-center rounded-2xl border border-[var(--ui-border)] bg-white/70 text-[var(--ui-text)] shadow-sm md:hidden" aria-label="Open command menu">
+            <Sparkles size={18} />
+          </button>
+          <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full ring-2 ring-indigo-100" aria-label={t("shell.account")}>
             {clerkEnabled ? (
               <UserButton
                 appearance={{
@@ -582,19 +674,37 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-6px_20px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden">
+      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-4 rounded-[1.6rem] border border-[var(--ui-border)] bg-white/90 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] backdrop-blur-2xl lg:hidden">
         {primaryMobileNav.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href;
           const label = t(item.labelKey);
           return (
-            <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-md px-1 text-[11px] font-semibold ${active ? "bg-teal-50 text-brand" : "text-slate-600"}`}>
+            <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-[11px] font-black ${active ? "bg-[#101114] text-white shadow-sm" : "text-[var(--ui-text-soft)]"}`}>
               <Icon size={18} aria-hidden="true" />
               <span className="max-w-full truncate">{item.href === "/dashboard/leads" ? t("nav.leadsShort") : label}</span>
             </Link>
           );
         })}
       </nav>
+      <CommandDialog open={commandOpen} query={commandQuery} onQueryChange={setCommandQuery} onClose={() => setCommandOpen(false)}>
+        {commandItems.length ? commandItems.map((item, index) => {
+          const Icon = item.icon;
+          return (
+            <CommandItem
+              key={item.href}
+              href={item.href}
+              icon={<Icon size={17} />}
+              title={t(item.labelKey)}
+              detail={navDescriptions[item.href]}
+              shortcut={index < 9 ? <Kbd>{index + 1}</Kbd> : undefined}
+              onSelect={() => setCommandOpen(false)}
+            />
+          );
+        }) : (
+          <div className="rounded-2xl px-3 py-8 text-center text-sm font-semibold text-white/55">No matching workspace action.</div>
+        )}
+      </CommandDialog>
     </div>
   );
 }

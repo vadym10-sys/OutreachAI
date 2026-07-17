@@ -133,3 +133,74 @@ RESEND_WEBHOOK_SECRET=...
 2. Enable Google OAuth.
 3. Configure allowed redirect URLs for Vercel domains.
 4. Set JWT issuer and frontend publishable key.
+
+## Production Infrastructure Release Checklist
+
+Use this checklist before approving a production deployment. Do not mark the release ready until every item is verified from production runtime or the provider dashboard.
+
+### Database Backups
+
+- Provider: Railway managed PostgreSQL backups, or the external `pg_dump` backup service defined by `apps/api/railway.backup.toml`.
+- Schedule: daily at 02:00 UTC minimum.
+- Retention: at least 30 days and at least 30 retained successful backups.
+- Restore: verify one restore into a staging/sandbox database before enabling the production readiness flag.
+- Runtime gate: `GET https://outreachai-api-production.up.railway.app/api/ready` must return `database_backups_configured=true`.
+
+Required Railway production variables for the API service and backup cron service:
+
+```env
+DATABASE_BACKUPS_ENABLED=true
+BACKUP_PROVIDER=aws_s3|cloudflare_r2|backblaze_b2|gcs
+BACKUP_BUCKET=...
+BACKUP_PREFIX=outreachai/postgres
+BACKUP_RETENTION_DAYS=30
+BACKUP_RETENTION_COUNT=30
+BACKUP_RESTORE_TEST_DATABASE_URL=...
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_REGION=...
+S3_ENDPOINT_URL=...
+GOOGLE_APPLICATION_CREDENTIALS=...
+```
+
+Only set provider-specific credentials required for the chosen provider. Keep `DATABASE_BACKUPS_ENABLED=false` until a backup run succeeds and restore verification passes.
+
+### CSP Deployment
+
+- Deploy the web commit that includes the production `Content-Security-Policy` header.
+- Verify production headers on `https://outreachaiaiai.com/`:
+  - `Content-Security-Policy`
+  - `Strict-Transport-Security`
+  - `X-Content-Type-Options`
+  - `Referrer-Policy`
+  - `Permissions-Policy`
+  - `X-Frame-Options`
+- Confirm Clerk sign-in loads.
+- Confirm Stripe checkout and billing routes are not blocked.
+- Confirm Google Fonts, Vercel assets, PostHog and LogRocket remain allowed only through approved domains.
+
+### Production Deployment
+
+- Confirm branch and commit SHA before deployment.
+- Confirm Vercel project and production domain are correct.
+- Confirm Railway project is `respectful-presence` and environment is `production`.
+- Confirm Railway services are online:
+  - `@outreachai/web`
+  - `outreachai-api`
+  - `outreachai-enrichment-worker`
+  - `Postgres`
+- Run production health checks:
+  - Web `/api/health`
+  - API `/api/health`
+  - API `/api/live`
+  - API `/api/ready`
+- Verify sign-in, dashboard, companies, campaigns, inbox, billing, settings and profile.
+- Check browser console and network for 4xx/5xx or CSP violations.
+
+### Rollback
+
+- Vercel: promote the previous successful production deployment back to the production alias.
+- Railway API: redeploy the previous stable deployment or revert with a new Git commit and redeploy.
+- Railway worker: redeploy the previous stable worker deployment if the worker is impacted.
+- Database: restore only from a verified backup after incident approval.
+- After rollback, rerun web/API health checks and the authenticated smoke path.

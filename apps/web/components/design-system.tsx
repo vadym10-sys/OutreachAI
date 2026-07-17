@@ -1,5 +1,6 @@
+import Link from "next/link";
 import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, Loader2, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, Command, Loader2, Search, Sparkles, Wand2 } from "lucide-react";
 
 function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -42,6 +43,22 @@ export function SurfaceCard({
       className={cx(surfaceToneClass[tone], surfacePaddingClass[padding], className)}
       {...props}
     >
+      {children}
+    </Component>
+  );
+}
+
+export function OperatingPanel({
+  children,
+  className,
+  as: Component = "section",
+  ...props
+}: HTMLAttributes<HTMLElement> & {
+  as?: "article" | "section" | "div" | "header";
+  children: ReactNode;
+}) {
+  return (
+    <Component className={cx("ui-card ui-orbit-card rounded-[2rem] p-5 sm:p-6", className)} {...props}>
       {children}
     </Component>
   );
@@ -120,7 +137,7 @@ export function PageHero({
   action?: ReactNode;
 }) {
   return (
-    <SurfaceCard as="header" padding="lg" className="overflow-hidden rounded-[2rem] lg:flex lg:items-end lg:justify-between lg:gap-6">
+    <SurfaceCard as="header" padding="lg" className="ui-orbit-card overflow-hidden rounded-[2rem] lg:flex lg:items-end lg:justify-between lg:gap-6">
       <div className="min-w-0 max-w-3xl">
         <p className="ui-eyebrow">{eyebrow}</p>
         <h1 className="ui-display mt-2">{title}</h1>
@@ -186,7 +203,7 @@ export function AiPanel({
   badge?: ReactNode;
 }) {
   return (
-    <SurfaceCard className="ui-ai-panel">
+    <SurfaceCard className="ui-ai-panel rounded-[2rem]">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="ui-title text-xl">{title}</h3>
@@ -196,6 +213,35 @@ export function AiPanel({
       </div>
       <div className="mt-4">{children}</div>
     </SurfaceCard>
+  );
+}
+
+export function AiLiveCard({
+  label,
+  title,
+  copy,
+  metric,
+  action,
+}: {
+  label: ReactNode;
+  title: ReactNode;
+  copy: ReactNode;
+  metric?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <OperatingPanel as="article" className="min-h-[13rem]">
+      <div className="flex items-start justify-between gap-4">
+        <div className="grid size-10 shrink-0 place-items-center rounded-2xl bg-[linear-gradient(135deg,rgba(79,70,229,0.14),rgba(0,163,255,0.12))] text-brand">
+          <Wand2 size={20} />
+        </div>
+        {metric ? <div className="rounded-full border border-[var(--ui-border)] bg-white/60 px-3 py-1 text-xs font-black text-[var(--ui-text)]">{metric}</div> : null}
+      </div>
+      <p className="ui-eyebrow mt-5">{label}</p>
+      <h3 className="ui-title mt-2 text-xl">{title}</h3>
+      <p className="ui-copy mt-3">{copy}</p>
+      {action ? <div className="mt-5">{action}</div> : null}
+    </OperatingPanel>
   );
 }
 
@@ -209,8 +255,8 @@ export function EmptyStateView({
   action?: ReactNode;
 }) {
   return (
-    <SurfaceCard tone="dashed" padding="lg" className="text-center">
-      <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-teal-50 text-brand dark:bg-slate-800 dark:text-teal-300">
+    <SurfaceCard tone="dashed" padding="lg" className="ui-orbit-card rounded-[2rem] text-center">
+      <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-[linear-gradient(135deg,rgba(79,70,229,0.14),rgba(0,163,255,0.12))] text-brand dark:bg-slate-800 dark:text-teal-300">
         <Sparkles size={22} />
       </div>
       <h2 className="ui-title mt-4 text-xl">{title}</h2>
@@ -306,7 +352,7 @@ export function TimelineRail({
               className={cx(
                 "rounded-xl border p-3 text-sm",
                 active
-                  ? "border-teal-300 bg-teal-50 text-brand dark:border-teal-500 dark:bg-slate-800"
+                  ? "border-indigo-300 bg-[linear-gradient(135deg,rgba(79,70,229,0.14),rgba(0,163,255,0.12))] text-brand dark:border-indigo-500 dark:bg-slate-800"
                   : done
                     ? "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                     : "border-slate-200 bg-white text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
@@ -321,6 +367,158 @@ export function TimelineRail({
         })}
       </div>
     </SurfaceCard>
+  );
+}
+
+export function AiTimeline({
+  items,
+}: {
+  items: Array<{ label: ReactNode; detail: ReactNode; status?: "done" | "active" | "waiting" | "error" }>;
+}) {
+  return (
+    <div className="grid gap-3">
+      {items.map((item, index) => {
+        const active = item.status === "active";
+        const error = item.status === "error";
+        return (
+          <div key={index} className="grid grid-cols-[2rem_1fr] gap-3">
+            <div className="flex flex-col items-center">
+              <span className={cx(
+                "grid size-8 place-items-center rounded-full border text-xs font-black",
+                error ? "border-red-300 bg-red-50 text-red-700" : active ? "border-indigo-300 bg-white text-brand shadow-glow" : "border-[var(--ui-border)] bg-white/70 text-[var(--ui-text-soft)]"
+              )}>
+                {index + 1}
+              </span>
+              {index < items.length - 1 ? <span className="mt-2 h-full min-h-6 w-px bg-[var(--ui-border)]" /> : null}
+            </div>
+            <div className={cx("rounded-2xl border p-3", active ? "border-indigo-200 bg-white shadow-sm" : "border-[var(--ui-border)] bg-white/50")}>
+              <p className="text-sm font-black text-[var(--ui-text)]">{item.label}</p>
+              <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]">{item.detail}</p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function MiniBarChart({
+  values,
+  labels,
+}: {
+  values: number[];
+  labels?: string[];
+}) {
+  const max = Math.max(1, ...values.map((value) => Math.max(0, value)));
+  return (
+    <div className="flex h-28 items-end gap-2 rounded-2xl border border-[var(--ui-border)] bg-white/50 p-3">
+      {values.map((value, index) => (
+        <div key={`${value}-${index}`} className="flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-2">
+          <div
+            className="w-full rounded-t-xl bg-[linear-gradient(180deg,var(--ui-brand),var(--ui-accent))] shadow-sm"
+            style={{ height: `${Math.max(12, Math.round((Math.max(0, value) / max) * 72))}px` }}
+            aria-label={`${labels?.[index] || "Value"}: ${value}`}
+          />
+          {labels?.[index] ? <span className="max-w-full truncate text-[10px] font-bold text-[var(--ui-text-soft)]">{labels[index]}</span> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function Breadcrumbs({
+  items,
+}: {
+  items: Array<{ label: ReactNode; href?: string }>;
+}) {
+  return (
+    <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 text-xs font-bold text-[var(--ui-text-soft)]">
+      {items.map((item, index) => (
+        <span key={index} className="flex min-w-0 items-center gap-1">
+          {item.href ? <Link href={item.href} className="truncate hover:text-[var(--ui-text)]">{item.label}</Link> : <span className="truncate text-[var(--ui-text)]">{item.label}</span>}
+          {index < items.length - 1 ? <ChevronRight size={13} aria-hidden="true" /> : null}
+        </span>
+      ))}
+    </nav>
+  );
+}
+
+export function Kbd({ children }: { children: ReactNode }) {
+  return (
+    <kbd className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-md border border-[var(--ui-border)] bg-white/70 px-1.5 text-[11px] font-black text-[var(--ui-text-soft)] shadow-sm">
+      {children}
+    </kbd>
+  );
+}
+
+export function CommandDialog({
+  open,
+  query,
+  onQueryChange,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  query: string;
+  onQueryChange: (value: string) => void;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[80] flex items-start justify-center px-4 pt-[12vh] ui-command-overlay" role="presentation" onMouseDown={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command menu"
+        className="w-full max-w-2xl overflow-hidden rounded-[1.6rem] border border-white/20 bg-[#11131c]/95 text-white shadow-2xl backdrop-blur-2xl"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
+          <Search size={18} className="text-white/55" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder="Search routes, actions and workspace context..."
+            className="min-h-11 flex-1 border-0 bg-transparent text-sm font-semibold text-white outline-none placeholder:text-white/40"
+          />
+          <Kbd>Esc</Kbd>
+        </div>
+        <div className="max-h-[24rem] overflow-y-auto p-2">{children}</div>
+      </section>
+    </div>
+  );
+}
+
+export function CommandItem({
+  href,
+  icon,
+  title,
+  detail,
+  shortcut,
+  onSelect,
+}: {
+  href: string;
+  icon?: ReactNode;
+  title: ReactNode;
+  detail?: ReactNode;
+  shortcut?: ReactNode;
+  onSelect?: () => void;
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onSelect}
+      className="flex min-h-14 items-center gap-3 rounded-2xl px-3 py-2 text-left text-white/90 hover:bg-white/10"
+    >
+      <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-white/10 text-white">{icon || <Command size={17} />}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-black">{title}</span>
+        {detail ? <span className="block truncate text-xs font-semibold text-white/50">{detail}</span> : null}
+      </span>
+      {shortcut ? <span className="shrink-0">{shortcut}</span> : null}
+    </Link>
   );
 }
 
