@@ -4,46 +4,70 @@
 
 :root {
   color-scheme: light;
-  --ui-bg: #f4f7fb;
+  --ui-bg: #f7f5ef;
+  --ui-bg-rgb: 247, 245, 239;
   --ui-surface: #ffffff;
-  --ui-surface-subtle: #f8fbff;
-  --ui-surface-accent: #ecf8f7;
-  --ui-surface-warning: #fff7e8;
-  --ui-surface-dark: #102033;
-  --ui-border: #d9e2ec;
-  --ui-border-strong: #b9c8d8;
-  --ui-text: #102033;
-  --ui-text-soft: #526173;
-  --ui-brand: #0f7b6c;
-  --ui-brand-strong: #0a5c52;
-  --ui-brand-ink: #123a62;
-  --ui-success: #0f9f6e;
-  --ui-warning: #b97712;
-  --ui-danger: #c2410c;
-  --ui-shadow: 0 16px 38px rgba(15, 35, 54, 0.08);
+  --ui-surface-rgb: 255, 255, 255;
+  --ui-surface-subtle: #f5f1e8;
+  --ui-surface-accent: #eef7ff;
+  --ui-surface-warning: #fff5dc;
+  --ui-surface-dark: #08090d;
+  --ui-elevated: rgba(255, 255, 255, 0.78);
+  --ui-glass: rgba(255, 255, 255, 0.58);
+  --ui-border: rgba(25, 28, 36, 0.11);
+  --ui-border-strong: rgba(25, 28, 36, 0.2);
+  --ui-text: #101114;
+  --ui-text-soft: #666b78;
+  --ui-muted: #8f948f;
+  --ui-brand: #4f46e5;
+  --ui-brand-strong: #271fc2;
+  --ui-brand-ink: #26205e;
+  --ui-accent: #00a3ff;
+  --ui-accent-2: #f5a524;
+  --ui-success: #11a36a;
+  --ui-warning: #bd7a00;
+  --ui-danger: #cc3a2f;
+  --ui-radius-sm: 0.75rem;
+  --ui-radius-md: 1rem;
+  --ui-radius-lg: 1.5rem;
+  --ui-radius-xl: 2rem;
+  --ui-shadow: 0 24px 70px rgba(17, 19, 24, 0.1);
+  --ui-shadow-sm: 0 10px 32px rgba(17, 19, 24, 0.08);
+  --ui-shadow-glow: 0 22px 70px rgba(79, 70, 229, 0.2);
+  --ui-ring: 0 0 0 4px rgba(79, 70, 229, 0.18);
   background: var(--ui-bg);
   color: var(--ui-text);
 }
 
 :root.dark {
   color-scheme: dark;
-  --ui-bg: #09111d;
-  --ui-surface: #0f1724;
-  --ui-surface-subtle: #132033;
-  --ui-surface-accent: #0f2730;
-  --ui-surface-warning: #2e2415;
-  --ui-surface-dark: #08111d;
-  --ui-border: #243244;
-  --ui-border-strong: #37506a;
-  --ui-text: #e6eef8;
-  --ui-text-soft: #a9bacd;
-  --ui-brand: #33b0a3;
-  --ui-brand-strong: #209486;
-  --ui-brand-ink: #9ad6ff;
-  --ui-success: #4ade80;
-  --ui-warning: #f5b84f;
-  --ui-danger: #fb923c;
-  --ui-shadow: 0 20px 46px rgba(0, 0, 0, 0.28);
+  --ui-bg: #07080d;
+  --ui-bg-rgb: 7, 8, 13;
+  --ui-surface: #10131c;
+  --ui-surface-rgb: 16, 19, 28;
+  --ui-surface-subtle: #151a25;
+  --ui-surface-accent: #11182c;
+  --ui-surface-warning: #251e10;
+  --ui-surface-dark: #05060a;
+  --ui-elevated: rgba(18, 21, 31, 0.82);
+  --ui-glass: rgba(18, 21, 31, 0.62);
+  --ui-border: rgba(255, 255, 255, 0.1);
+  --ui-border-strong: rgba(255, 255, 255, 0.18);
+  --ui-text: #f6f2ea;
+  --ui-text-soft: #a9aebd;
+  --ui-muted: #747989;
+  --ui-brand: #8b7cff;
+  --ui-brand-strong: #5d50f0;
+  --ui-brand-ink: #dcd7ff;
+  --ui-accent: #65d9ff;
+  --ui-accent-2: #f5c16c;
+  --ui-success: #58d68d;
+  --ui-warning: #f4bf5f;
+  --ui-danger: #ff7a6e;
+  --ui-shadow: 0 24px 70px rgba(0, 0, 0, 0.36);
+  --ui-shadow-sm: 0 10px 34px rgba(0, 0, 0, 0.28);
+  --ui-shadow-glow: 0 22px 70px rgba(139, 124, 255, 0.22);
+  --ui-ring: 0 0 0 4px rgba(139, 124, 255, 0.24);
   background: var(--ui-bg);
   color: var(--ui-text);
 }
@@ -66,8 +90,9 @@ body {
   max-width: 100%;
   overflow-x: hidden;
   background:
-    radial-gradient(circle at top left, rgba(15, 123, 108, 0.09), transparent 28rem),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0));
+    radial-gradient(circle at 14% -10%, rgba(79, 70, 229, 0.16), transparent 28rem),
+    radial-gradient(circle at 84% 2%, rgba(0, 163, 255, 0.12), transparent 24rem),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(247, 245, 239, 0));
   background-color: var(--ui-bg);
   color: var(--ui-text);
   transition: background-color 180ms ease, color 180ms ease;
@@ -80,7 +105,12 @@ h4,
 h5,
 h6 {
   font-family: "Space Grotesk", "Avenir Next", "Inter", ui-sans-serif, system-ui, sans-serif;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.015em;
+}
+
+::selection {
+  background: rgba(79, 70, 229, 0.18);
+  color: var(--ui-text);
 }
 
 a {
@@ -240,42 +270,71 @@ a[aria-label="Clerk logo"] {
 }
 
 .focus-ring {
-  @apply focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2;
+  @apply focus:outline-none;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ui-ring);
+}
+
+.ai-os-bg {
+  background:
+    radial-gradient(circle at 20% -8%, rgba(139, 124, 255, 0.18), transparent 30rem),
+    radial-gradient(circle at 92% 6%, rgba(0, 163, 255, 0.14), transparent 26rem),
+    linear-gradient(180deg, rgba(var(--ui-bg-rgb), 1), rgba(var(--ui-bg-rgb), 0.94));
+}
+
+.ai-os-dark {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(139, 124, 255, 0.28), transparent 28rem),
+    radial-gradient(circle at 88% 8%, rgba(0, 163, 255, 0.2), transparent 24rem),
+    linear-gradient(180deg, #08090d 0%, #0f1118 52%, #f7f5ef 100%);
+}
+
+.ui-glass {
+  border: 1px solid var(--ui-border);
+  background: var(--ui-glass);
+  box-shadow: var(--ui-shadow-sm);
+  backdrop-filter: blur(24px) saturate(1.35);
 }
 
 .ui-display {
   color: var(--ui-text);
-  font-size: clamp(2rem, 7vw, 3.5rem);
-  font-weight: 800;
-  line-height: 0.98;
-  letter-spacing: -0.04em;
+  font-size: clamp(2.5rem, 8vw, 5.5rem);
+  font-weight: 850;
+  line-height: 0.92;
+  letter-spacing: -0.035em;
 }
 
 .ui-title {
   color: var(--ui-text);
-  font-weight: 800;
-  line-height: 1.05;
-  letter-spacing: -0.03em;
+  font-weight: 820;
+  line-height: 1.02;
+  letter-spacing: -0.02em;
 }
 
 .ui-copy {
   color: var(--ui-text-soft);
   font-size: 0.95rem;
-  line-height: 1.65;
+  line-height: 1.72;
 }
 
 .ui-eyebrow {
-  color: var(--ui-brand);
+  color: var(--ui-brand-ink);
   font-size: 0.8rem;
   font-weight: 800;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .ui-card {
   border: 1px solid var(--ui-border);
-  background: var(--ui-surface);
+  background:
+    linear-gradient(180deg, rgba(var(--ui-surface-rgb), 0.96), rgba(var(--ui-surface-rgb), 0.86)),
+    var(--ui-surface);
   box-shadow: var(--ui-shadow);
+  backdrop-filter: blur(18px);
 }
 
 .ui-card-subtle {
@@ -298,19 +357,22 @@ a[aria-label="Clerk logo"] {
 
 .ui-card-dark {
   border-color: transparent;
-  background: var(--ui-surface-dark);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(139, 124, 255, 0.28), transparent 18rem),
+    linear-gradient(145deg, #090a0f, #141823 62%, #090a0f);
   color: #f8fbff;
 }
 
 .ui-ai-panel {
   background:
-    linear-gradient(180deg, rgba(15, 123, 108, 0.08), rgba(15, 123, 108, 0.02)),
+    radial-gradient(circle at top left, rgba(139, 124, 255, 0.18), transparent 18rem),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.78)),
     var(--ui-surface);
 }
 
 .ui-button {
   align-items: center;
-  border-radius: 0.9rem;
+  border-radius: 999px;
   display: inline-flex;
   font-weight: 800;
   gap: 0.5rem;
@@ -335,17 +397,17 @@ a[aria-label="Clerk logo"] {
 }
 
 .ui-button-primary {
-  background: linear-gradient(135deg, var(--ui-brand), var(--ui-brand-strong));
-  box-shadow: 0 12px 24px rgba(15, 123, 108, 0.18);
+  background: linear-gradient(135deg, #111114 0%, var(--ui-brand-strong) 52%, var(--ui-accent) 145%);
+  box-shadow: var(--ui-shadow-glow);
   color: white;
 }
 
 .ui-button-primary:hover:not(:disabled) {
-  box-shadow: 0 16px 28px rgba(15, 123, 108, 0.24);
+  box-shadow: 0 24px 60px rgba(79, 70, 229, 0.28);
 }
 
 .ui-button-secondary {
-  background: var(--ui-surface);
+  background: var(--ui-elevated);
   border: 1px solid var(--ui-border-strong);
   color: var(--ui-text);
 }
@@ -366,7 +428,7 @@ a[aria-label="Clerk logo"] {
   border: 1px solid transparent;
   display: inline-flex;
   font-size: 0.75rem;
-  font-weight: 800;
+  font-weight: 760;
   line-height: 1;
   min-height: 2rem;
   padding: 0.45rem 0.75rem;
@@ -379,8 +441,8 @@ a[aria-label="Clerk logo"] {
 }
 
 .ui-badge-brand {
-  background: color-mix(in srgb, var(--ui-brand) 12%, white);
-  border-color: color-mix(in srgb, var(--ui-brand) 26%, white);
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(0, 163, 255, 0.1));
+  border-color: color-mix(in srgb, var(--ui-brand) 24%, white);
   color: var(--ui-brand-strong);
 }
 
@@ -409,8 +471,38 @@ a[aria-label="Clerk logo"] {
 
 .ui-skeleton {
   animation: ui-pulse 1.6s ease-in-out infinite;
-  background: linear-gradient(90deg, rgba(203, 213, 225, 0.7), rgba(241, 245, 249, 0.95), rgba(203, 213, 225, 0.7));
+  background: linear-gradient(90deg, rgba(226, 220, 210, 0.75), rgba(255, 255, 255, 0.95), rgba(226, 220, 210, 0.75));
   background-size: 200% 100%;
+}
+
+.ui-command-overlay {
+  background: rgba(5, 6, 10, 0.45);
+  backdrop-filter: blur(14px);
+}
+
+.ui-orbit-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.ui-orbit-card::before {
+  background: conic-gradient(from 180deg, transparent, rgba(139, 124, 255, 0.18), rgba(0, 163, 255, 0.14), transparent);
+  content: "";
+  inset: -1px;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 180ms ease;
+  z-index: 0;
+}
+
+.ui-orbit-card:hover::before {
+  opacity: 1;
+}
+
+.ui-orbit-card > * {
+  position: relative;
+  z-index: 1;
 }
 
 .ui-animate-enter {
@@ -444,6 +536,14 @@ a[aria-label="Clerk logo"] {
 :root.dark .bg-slate-50 {
   background: var(--ui-bg);
   color: var(--ui-text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) body {
+    background:
+      radial-gradient(circle at 14% -10%, rgba(139, 124, 255, 0.16), transparent 28rem),
+      linear-gradient(180deg, #07080d, #10131c);
+  }
 }
 
 :root.dark .bg-white,

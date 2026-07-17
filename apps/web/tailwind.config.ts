@@ -5,14 +5,15 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#111827",
-        muted: "#64748b",
-        brand: "#0f766e",
-        coral: "#f97316",
-        sky: "#0284c7"
+        ink: "var(--ui-text)",
+        muted: "var(--ui-text-soft)",
+        brand: "var(--ui-brand)",
+        coral: "var(--ui-accent-2)",
+        sky: "var(--ui-accent)"
       },
       boxShadow: {
-        soft: "0 18px 60px rgba(15, 23, 42, 0.12)"
+        soft: "var(--ui-shadow)",
+        glow: "var(--ui-shadow-glow)"
       }
     }
   },

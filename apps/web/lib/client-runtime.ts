@@ -16,6 +16,7 @@ export function isRestrictedWebView() {
 
 export function shouldUseHeavyClientTelemetry() {
   if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+  if (process.env.NEXT_PUBLIC_APP_ENV === "test") return false;
   if (isRestrictedWebView()) return false;
 
   const nav = navigator as Navigator & {

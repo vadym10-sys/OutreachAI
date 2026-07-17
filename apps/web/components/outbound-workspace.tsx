@@ -7,7 +7,7 @@ import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRe
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Rocket, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
-import { AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
+import { AiLiveCard, AiTimeline, AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, MiniBarChart, OperatingPanel, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
 import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
@@ -3069,23 +3069,56 @@ export function DashboardHome() {
     outreachAngle: String(primaryCompany?.ai_outreach_strategy?.strongest_value_proposition || primaryCompany?.ai_competitor_intelligence?.opportunity_to_sell || t("Use the strongest value proposition from the company card.")),
     href: primaryCompany ? `/dashboard/companies?company=${primaryCompany.id}` : "/dashboard/companies"
   };
+  const aiTimeline = [
+    {
+      label: t("Market scan"),
+      detail: companies.length ? t("Recent companies are ranked by current fit, urgency and workflow readiness.") : t("Run lead search or add one company to create the first market signal."),
+      status: companies.length ? "done" as const : "active" as const
+    },
+    {
+      label: t("AI research"),
+      detail: opportunities.length ? t("AI has enough account context to recommend who to contact and why now.") : t("Company research will appear here after the first enrichment run."),
+      status: opportunities.length ? "done" as const : "waiting" as const
+    },
+    {
+      label: t("Outreach decision"),
+      detail: readyToSendEmails.length ? t("Drafts are ready for human review before launch.") : t("Generate or approve an outreach draft when the account is ready."),
+      status: readyToSendEmails.length ? "active" as const : "waiting" as const
+    }
+  ];
+  const chartValues = [
+    Math.max(0, summaryCards[0]?.value || 0),
+    Math.max(0, summaryCards[1]?.value || 0),
+    Math.max(0, summaryCards[2]?.value || 0),
+    Math.max(0, summaryCards[3]?.value || 0)
+  ];
 
   return (
     <div className="space-y-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
-      <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f4f7ff] to-[#eef6ff] p-5 shadow-sm sm:p-7">
-        <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-[#b7e3ff] opacity-40 blur-3xl" />
-        <div className="pointer-events-none absolute -left-10 bottom-0 h-44 w-44 rounded-full bg-[#dff5eb] opacity-50 blur-3xl" />
+      <section className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-[#0b0d13] p-5 text-white shadow-2xl sm:p-7">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-72 w-72 rounded-full bg-indigo-500/30 blur-3xl" />
+        <div className="pointer-events-none absolute -left-10 bottom-0 h-56 w-56 rounded-full bg-sky-400/20 blur-3xl" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.55),transparent)]" />
         <div className="relative flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#0f4f77]">{t("Executive Dashboard")}</p>
-            <h1 className="mt-2 text-3xl font-bold leading-tight text-slate-900 sm:text-4xl">{t("What should I do now?")}</h1>
-            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-700">{t("AI-first control center. Every card explains who to target, why this matters now, and what next action creates the most momentum.")}</p>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-sky-200">{t("Executive Dashboard")}</p>
+            <h1 className="mt-3 text-4xl font-black leading-[0.94] tracking-[-0.04em] text-white sm:text-5xl">{t("What should I do now?")}</h1>
+            <p className="mt-4 max-w-3xl text-sm font-semibold leading-7 text-white/60">{t("AI-first control center. Every card explains who to target, why this matters now, and what next action creates the most momentum.")}</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-3">
-            <Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={16} /></Link>
-            <Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Building2 size={16} /> {t("Open Companies")}</Link>
-            <Link href="/dashboard/inbox" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Inbox size={16} /> {t("Open Inbox")}</Link>
+            <Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white px-4 text-sm font-black text-[#101114] shadow-glow">{t(nextStep.label)} <ArrowRight size={16} /></Link>
+            <Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 text-sm font-black text-white backdrop-blur"><Building2 size={16} /> {t("Open Companies")}</Link>
+            <Link href="/dashboard/inbox" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 text-sm font-black text-white backdrop-blur"><Inbox size={16} /> {t("Open Inbox")}</Link>
           </div>
+        </div>
+        <div className="relative mt-6 grid gap-3 md:grid-cols-4">
+          {summaryCards.map((card) => (
+            <article key={card.label} className="rounded-2xl border border-white/10 bg-white/[0.07] p-4 backdrop-blur">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-white/50">{card.label}</p>
+              <p className="mt-2 text-3xl font-black text-white">{card.value}</p>
+              <p className="mt-1 text-sm font-semibold text-white/60">{card.helper}</p>
+            </article>
+          ))}
         </div>
       </section>
 
@@ -3116,38 +3149,46 @@ export function DashboardHome() {
         </WidgetBoundary>
       )}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        {summaryCards.map((card) => (
-          <article key={card.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">{card.label}</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">{card.value}</p>
-            <p className="mt-1 text-sm text-slate-600">{card.helper}</p>
-          </article>
-        ))}
+      <section className="grid gap-4 lg:grid-cols-3">
+        <AiLiveCard label={t("Who?")} title={who} copy={primaryCompany?.name || t("No prioritized account yet. Run lead search to create opportunities.")} metric={primaryCompany ? t("Priority") : t("Waiting")} />
+        <AiLiveCard label={t("Why?")} title={t("Reason to act")} copy={why} metric={allBuyingChanges.length ? `${allBuyingChanges.length} ${t("signals")}` : t("No signal")} />
+        <AiLiveCard
+          label={t("What next?")}
+          title={t("Next best action")}
+          copy={whatNext}
+          metric={t("Recommended")}
+          action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">{t("Do next action")} <ArrowRight size={16} /></Link>}
+        />
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-3">
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("Who?")}</p>
-          <p className="mt-3 text-lg font-bold text-slate-900">{who}</p>
-          <p className="mt-2 text-sm text-slate-600">{primaryCompany?.name || t("No prioritized account yet. Run lead search to create opportunities.")}</p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("Why?")}</p>
-          <p className="mt-3 text-sm leading-6 text-slate-800">{why}</p>
-        </article>
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("What next?")}</p>
-          <p className="mt-3 text-sm leading-6 text-slate-800">{whatNext}</p>
-          <Link href={nextStep.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#0f4f77] px-4 text-sm font-bold text-white">{t("Do next action")} <ArrowRight size={16} /></Link>
-        </article>
+      <section className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+        <OperatingPanel>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="ui-eyebrow">{t("AI timeline")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t("From signal to approved outreach.")}</h2>
+            </div>
+            <span className="w-fit rounded-full border border-[var(--ui-border)] bg-white/70 px-3 py-1 text-xs font-black text-[var(--ui-text-soft)]">{cachedAt ? t("Cached context") : t("Live context")}</span>
+          </div>
+          <div className="mt-5">
+            <AiTimeline items={aiTimeline} />
+          </div>
+        </OperatingPanel>
+        <OperatingPanel>
+          <p className="ui-eyebrow">{t("Opportunity shape")}</p>
+          <h2 className="ui-title mt-1 text-2xl">{t("Where the workspace has momentum.")}</h2>
+          <div className="mt-5">
+            <MiniBarChart values={chartValues} labels={[t("Hot"), t("Signals"), t("Emails"), t("Review")]} />
+          </div>
+          <p className="ui-copy mt-4">{t("The chart uses only the current workspace data. No sample account activity is injected.")}</p>
+        </OperatingPanel>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-3">
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+        <OperatingPanel as="article" className="xl:col-span-2">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-bold text-slate-900">{t("Priority queue")}</h2>
-            <Link href="/dashboard/companies" className="text-sm font-bold text-[#0f4f77]">{t("View all")}</Link>
+            <h2 className="text-lg font-black text-[var(--ui-text)]">{t("Priority queue")}</h2>
+            <Link href="/dashboard/companies" className="text-sm font-black text-brand">{t("View all")}</Link>
           </div>
           <div className="mt-4 grid gap-3">
             {opportunities.length ? opportunities.slice(0, 4).map((company) => {
@@ -3155,14 +3196,14 @@ export function DashboardHome() {
               const reason = String(company.ai_crm?.buying_intent?.reasoning || company.reasoning || t("Signals are still being collected."));
               const next = String(company.ai_crm?.next_action || company.recommended_next_action || t("Open company workspace."));
               return (
-                <article key={company.id} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                <article key={company.id} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4 shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-base font-bold text-slate-900">{company.name}</p>
-                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-slate-700">{t("Priority")} {score}</span>
+                    <p className="text-base font-black text-[var(--ui-text)]">{company.name}</p>
+                    <span className="rounded-full bg-[#101114] px-2.5 py-1 text-xs font-black text-white">{t("Priority")} {score}</span>
                   </div>
-                  <p className="mt-2 text-sm text-slate-700"><span className="font-bold text-slate-900">{t("Why now")}: </span>{reason}</p>
-                  <p className="mt-1 text-sm text-slate-700"><span className="font-bold text-slate-900">{t("Next")}: </span>{next}</p>
-                  <Link href={`/dashboard/companies?company=${company.id}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-lg bg-slate-900 px-3 text-xs font-bold text-white">{t("Open company")}</Link>
+                  <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]"><span className="font-black text-[var(--ui-text)]">{t("Why now")}: </span>{reason}</p>
+                  <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]"><span className="font-black text-[var(--ui-text)]">{t("Next")}: </span>{next}</p>
+                  <Link href={`/dashboard/companies?company=${company.id}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-full bg-[#101114] px-3 text-xs font-black text-white">{t("Open company")}</Link>
                 </article>
               );
             }) : (
@@ -3171,30 +3212,30 @@ export function DashboardHome() {
               </div>
             )}
           </div>
-        </article>
+        </OperatingPanel>
 
-        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-900">{t("Recommended now")}</h2>
+        <OperatingPanel as="article">
+          <h2 className="text-lg font-black text-[var(--ui-text)]">{t("Recommended now")}</h2>
           <div className="mt-4 space-y-3 text-sm">
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Company")}</p>
+            <div className="rounded-2xl bg-white/60 p-3">
+              <p className="font-black text-[var(--ui-text)]">{t("Company")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.bestCompany}</p>
             </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Who")}</p>
+            <div className="rounded-2xl bg-white/60 p-3">
+              <p className="font-black text-[var(--ui-text)]">{t("Who")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.whoToContact}</p>
             </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("Why")}</p>
+            <div className="rounded-2xl bg-white/60 p-3">
+              <p className="font-black text-[var(--ui-text)]">{t("Why")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.whyNow}</p>
             </div>
-            <div className="rounded-xl bg-slate-50 p-3">
-              <p className="font-bold text-slate-900">{t("First move")}</p>
+            <div className="rounded-2xl bg-white/60 p-3">
+              <p className="font-black text-[var(--ui-text)]">{t("First move")}</p>
               <p className="mt-1 text-slate-700">{aiRecommendation.outreachAngle}</p>
             </div>
           </div>
-          <Link href={aiRecommendation.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#0f4f77] px-4 text-sm font-bold text-white">{t("Open company")} <ArrowRight size={16} /></Link>
-        </article>
+          <Link href={aiRecommendation.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">{t("Open company")} <ArrowRight size={16} /></Link>
+        </OperatingPanel>
       </section>
 
       <WidgetBoundary name="Main customer actions">
