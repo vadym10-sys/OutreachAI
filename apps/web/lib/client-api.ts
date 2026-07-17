@@ -1,6 +1,4 @@
 import * as Sentry from '@sentry/nextjs';
-import { captureLogRocketException, trackLogRocketApiFailure } from '@/lib/logrocket';
-import { trackEvent } from '@/lib/posthog';
 import { apiProxyUrl } from '@/lib/env';
 import { sanitizeUserMessage } from '@/lib/safe-errors';
 
@@ -33,7 +31,19 @@ function currentLocaleHeader() {
   }
 }
 
-async function logApiFailure(path: string, response: Response, requestId: string) {
+function trackApiEvent(name: string, properties: Record<string, string | number | boolean>) {
+  void import('@/lib/posthog').then(({ trackEvent }) => trackEvent(name, properties)).catch(() => undefined);
+}
+
+function trackApiLogRocketFailure(path: string, status: number, detail: string) {
+  void import('@/lib/logrocket').then(({ trackLogRocketApiFailure }) => trackLogRocketApiFailure(path, status, detail)).catch(() => undefined);
+}
+
+function captureApiLogRocketException(error: unknown, properties: Record<string, string | number | boolean>) {
+  void import('@/lib/logrocket').then(({ captureLogRocketException }) => captureLogRocketException(error, properties)).catch(() => undefined);
+}
+
+async function logApiFailure(path: string, response: Response, requestId: string, telemetry: boolean) {
   let detail = '';
   try {
     detail = await response.text();
@@ -43,32 +53,34 @@ async function logApiFailure(path: string, response: Response, requestId: string
   if (!isProduction && debugApiLogging) {
     console.info('OutreachAI API request failed', { path, status: response.status, request_id: requestId });
   }
-  Sentry.addBreadcrumb({
-    category: 'api',
-    level: 'error',
-    message: 'OutreachAI API request failed',
-    data: {
-      path,
-      status: response.status,
-      request_id: requestId
-    }
-  });
-  Sentry.captureException(new Error(`API request failed: ${response.status} ${path}`), {
-    tags: {
-      area: 'api-client',
-      api_status: String(response.status),
-      request_id: requestId
-    },
-    extra: {
-      path,
-      status: response.status,
-      request_id: requestId,
-      response_request_id: response.headers.get('x-request-id') || '',
-      response_detail: detail.slice(0, 1000)
-    }
-  });
-  trackLogRocketApiFailure(path, response.status, `${detail}\nrequest_id=${requestId}`);
-  trackEvent('api_request_failed', { area: 'customer_action', request_id: requestId, status: response.status });
+  if (telemetry) {
+    Sentry.addBreadcrumb({
+      category: 'api',
+      level: 'error',
+      message: 'OutreachAI API request failed',
+      data: {
+        path,
+        status: response.status,
+        request_id: requestId
+      }
+    });
+    Sentry.captureException(new Error(`API request failed: ${response.status} ${path}`), {
+      tags: {
+        area: 'api-client',
+        api_status: String(response.status),
+        request_id: requestId
+      },
+      extra: {
+        path,
+        status: response.status,
+        request_id: requestId,
+        response_request_id: response.headers.get('x-request-id') || '',
+        response_detail: detail.slice(0, 1000)
+      }
+    });
+    trackApiLogRocketFailure(path, response.status, `${detail}\nrequest_id=${requestId}`);
+    trackApiEvent('api_request_failed', { area: 'customer_action', request_id: requestId, status: response.status });
+  }
   return detail;
 }
 
@@ -93,6 +105,7 @@ export type ClientApiInit = RequestInit & {
   direct?: boolean;
   retries?: number;
   retryDelayMs?: number;
+  telemetry?: boolean;
 };
 
 function isProtectedApiPath(path: string) {
@@ -166,9 +179,51 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
     : new Error('REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
 }
 
-async function clientApiOnce<T>(path: string, token: string | null, init: ClientApiInit = {}, attempt = 0): Promise<T> {
+export async function clientApiBlob(path: string, token: string | null, init: ClientApiInit = {}): Promise<Blob> {
+  const method = requestMethod(init);
+  const retries = typeof init.retries === 'number' ? init.retries : defaultRetriesForMethod(method);
+  const retryDelayMs = typeof init.retryDelayMs === 'number' ? init.retryDelayMs : 750;
+  const effectiveToken = token || (isProtectedApiPath(path) ? await resolveBrowserClerkToken() : null);
+  if (isProtectedApiPath(path) && !effectiveToken) {
+    const authError = new Error('REQUEST_FAILED:Your session has expired. Please sign in again.') as Error & { status?: number };
+    authError.status = 401;
+    throw authError;
+  }
+  let attempt = 0;
+  let lastError: unknown = null;
+  while (attempt <= retries) {
+    try {
+      const response = await clientApiResponse(path, effectiveToken, init, attempt);
+      return await response.blob();
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : '';
+      const status = typeof (error as { status?: unknown })?.status === 'number'
+        ? Number((error as { status?: unknown }).status)
+        : undefined;
+      const retryable =
+        attempt < retries
+        && !init.signal?.aborted
+        && (
+          transientStatus(status)
+          ||
+          message.includes('REQUEST_FAILED:This request took too long')
+          || message.includes('REQUEST_FAILED:Something went wrong while processing your request')
+          || message.includes('REQUEST_FAILED:This action is temporarily limited')
+        );
+      if (!retryable) break;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelayMs * (attempt + 1)));
+      attempt += 1;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
+}
+
+async function clientApiResponse(path: string, token: string | null, init: ClientApiInit = {}, attempt = 0): Promise<Response> {
   let response: Response;
-  const { timeoutMs = 30000, signal, direct = false, retries: _retries, retryDelayMs: _retryDelayMs, ...requestInit } = init;
+  const { timeoutMs = 30000, signal, direct = false, retries: _retries, retryDelayMs: _retryDelayMs, telemetry = true, ...requestInit } = init;
   const requestPath = direct ? path : `${apiProxyUrl}${path}`;
   const requestId = createRequestId();
   const headers = new Headers(requestInit.headers);
@@ -203,20 +258,22 @@ async function clientApiOnce<T>(path: string, token: string | null, init: Client
     });
   } catch (error) {
     const timedOut = didTimeout;
-    Sentry.captureException(error, {
-      tags: { area: 'api-client', api_status: timedOut ? 'timeout' : (abortedByCaller ? 'caller-abort' : 'network-error'), request_id: requestId },
-      extra: { path: requestPath, timeout_ms: timeoutMs, request_id: requestId, attempt }
-    });
-    captureLogRocketException(error, {
-      area: 'api-client',
-      endpoint: requestPath,
-      api_status: timedOut ? 'timeout' : (abortedByCaller ? 'caller-abort' : 'network-error'),
-      request_id: requestId
-    });
-    trackEvent(timedOut ? 'api_request_timeout' : (abortedByCaller ? 'api_request_aborted' : 'api_network_error'), {
-      area: 'customer_action',
-      request_id: requestId
-    });
+    if (telemetry) {
+      Sentry.captureException(error, {
+        tags: { area: 'api-client', api_status: timedOut ? 'timeout' : (abortedByCaller ? 'caller-abort' : 'network-error'), request_id: requestId },
+        extra: { path: requestPath, timeout_ms: timeoutMs, request_id: requestId, attempt }
+      });
+      captureApiLogRocketException(error, {
+        area: 'api-client',
+        endpoint: requestPath,
+        api_status: timedOut ? 'timeout' : (abortedByCaller ? 'caller-abort' : 'network-error'),
+        request_id: requestId
+      });
+      trackApiEvent(timedOut ? 'api_request_timeout' : (abortedByCaller ? 'api_request_aborted' : 'api_network_error'), {
+        area: 'customer_action',
+        request_id: requestId
+      });
+    }
     throw new Error(timedOut ? 'REQUEST_FAILED:This request took too long. Please try again in a moment.' : 'REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
   } finally {
     globalThis.clearTimeout(timeoutId);
@@ -224,12 +281,17 @@ async function clientApiOnce<T>(path: string, token: string | null, init: Client
   }
 
   if (!response.ok) {
-    const detail = await logApiFailure(requestPath, response, requestId);
+    const detail = await logApiFailure(requestPath, response, requestId, telemetry);
     const requestError = new Error(`REQUEST_FAILED:${safeApiMessage(response.status, detail)}`) as Error & { status?: number };
     requestError.status = response.status;
     throw requestError;
   }
 
+  return response;
+}
+
+async function clientApiOnce<T>(path: string, token: string | null, init: ClientApiInit = {}, attempt = 0): Promise<T> {
+  const response = await clientApiResponse(path, token, init, attempt);
   const raw = await response.text();
   if (!raw.trim()) {
     // Some upstream providers intermittently return 200 with an empty body.

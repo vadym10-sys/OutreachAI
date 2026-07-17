@@ -1,6 +1,7 @@
 "use client";
 
 import LogRocket from "logrocket";
+import { clientApi } from "@/lib/client-api";
 import { shouldUseHeavyClientTelemetry } from "@/lib/client-runtime";
 import { logRocketAppId } from "@/lib/env";
 
@@ -74,12 +75,12 @@ async function loadRuntimeConfig() {
   }
 
   try {
-    const response = await fetch("/api/client-config", {
+    const config = await clientApi<RuntimeConfig>("/api/client-config", null, {
       cache: "no-store",
-      headers: { Accept: "application/json" }
+      direct: true,
+      headers: { Accept: "application/json" },
+      telemetry: false
     });
-    if (!response.ok) return false;
-    const config = (await response.json()) as RuntimeConfig;
     const sessionReplay = config.session_replay || config.logrocket;
     if (sessionReplay?.enabled && sessionReplay.app_id) {
       runtimeAppId = sessionReplay.app_id;

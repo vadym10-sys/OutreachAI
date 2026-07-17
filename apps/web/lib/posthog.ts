@@ -1,6 +1,7 @@
 "use client";
 
 import posthog, { type Properties } from "posthog-js";
+import { clientApi } from "@/lib/client-api";
 import { shouldUseHeavyClientTelemetry } from "@/lib/client-runtime";
 import { posthogHost, posthogKey } from "@/lib/env";
 
@@ -76,17 +77,12 @@ async function loadRuntimeConfig() {
   }
 
   try {
-    const response = await fetch("/api/client-config", {
+    const config = await clientApi<ClientConfig>("/api/client-config", null, {
       cache: "no-store",
-      headers: {
-        Accept: "application/json"
-      }
+      direct: true,
+      headers: { Accept: "application/json" },
+      telemetry: false
     });
-    if (!response.ok) {
-      return false;
-    }
-
-    const config = (await response.json()) as ClientConfig;
     const analytics = config.analytics || config.posthog;
     if (analytics?.enabled && analytics.key) {
       runtimePostHogKey = analytics.key;
