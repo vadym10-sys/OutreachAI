@@ -9,6 +9,7 @@ import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox,
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
+import { NetworkStatusBanner } from "@/components/network-status-banner";
 import { useAuthRuntime } from "@/components/app-providers";
 import { useI18n } from "@/lib/i18n/provider";
 import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
@@ -532,6 +533,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         </nav>
       </aside>
       <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-72">
+        <NetworkStatusBanner />
         <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-[var(--ui-border)] bg-[rgba(var(--ui-bg-rgb),0.76)] px-4 backdrop-blur-2xl min-[360px]:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="group relative lg:hidden">

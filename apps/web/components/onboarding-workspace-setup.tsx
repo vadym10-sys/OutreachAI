@@ -7,6 +7,7 @@ import { ArrowRight, CheckCircle2, Loader2, ShieldCheck } from "lucide-react";
 import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { useI18n } from "@/lib/i18n/provider";
+import { NetworkStatusBanner } from "@/components/network-status-banner";
 import type { Workspace } from "@/lib/types";
 
 type WorkspaceSetupForm = {
@@ -189,12 +190,14 @@ export function OnboardingWorkspaceSetup() {
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-4xl px-4 py-8 sm:px-6">
-      <p className="text-sm font-semibold text-brand">{t("Setup")}</p>
-      <h1 className="mt-2 text-3xl font-black tracking-tight text-ink">{t("Set up OutreachAI")}</h1>
-      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-        {t("Create your private workspace once. OutreachAI then uses your company and market context for lead search, CRM, and reviewed outreach.")}
-      </p>
+    <>
+      <NetworkStatusBanner />
+      <main className="mx-auto min-h-screen max-w-4xl px-4 py-8 sm:px-6">
+        <p className="text-sm font-semibold text-brand">{t("Setup")}</p>
+        <h1 className="mt-2 text-3xl font-black tracking-tight text-ink">{t("Set up OutreachAI")}</h1>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+          {t("Create your private workspace once. OutreachAI then uses your company and market context for lead search, CRM, and reviewed outreach.")}
+        </p>
 
       <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="grid gap-5 lg:grid-cols-[1fr_1.35fr] lg:items-start">
@@ -330,6 +333,7 @@ export function OnboardingWorkspaceSetup() {
           </article>
         </div>
       </section>
-    </main>
+      </main>
+    </>
   );
 }

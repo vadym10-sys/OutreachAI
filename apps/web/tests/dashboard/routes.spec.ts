@@ -179,6 +179,38 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("offline state gives users a clear recovery message on dashboard and onboarding", async ({ page }, testInfo) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(window.navigator, "onLine", {
+        configurable: true,
+        get: () => false
+      });
+    });
+    const guards = installQaGuards(page, testInfo);
+
+    await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("status")).toContainText("You are offline");
+    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+
+    await page.goto("/onboarding", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("status")).toContainText("You are offline");
+    await expect(page.getByRole("heading", { name: "Set up OutreachAI" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
+  test("customer launch surface does not expose internal QA, diagnostics, or legacy UI copy", async ({ page }) => {
+    for (const [route] of customerRoutes) {
+      await page.goto(route, { waitUntil: "domcontentloaded" });
+      await page.getByRole("main").waitFor({ state: "visible" });
+      const body = await page.locator("body").innerText();
+      expect(body).not.toMatch(/QA authentication|test-only flow|Runtime diagnostics|Sentry Test|AI Quality & Self-Healing|Owner billing health/i);
+      await expectNoSensitiveCustomerText(page);
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+
   test("lead search shows saved CRM summary and keeps the result actionable", async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const guards = installQaGuards(page, testInfo);

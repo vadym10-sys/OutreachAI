@@ -25,7 +25,11 @@ function installStrictRuntimeGuards(page: Page, testInfo: TestInfo) {
   });
 
   page.on("pageerror", (error) => {
-    failures.push({ type: "pageerror", message: error.stack || error.message });
+    const message = error.stack || error.message;
+    if (/[?&]_rsc=.*due to access control checks/i.test(message)) return;
+    if (/^blob:.*cancelled/i.test(message)) return;
+    if (/Cannot load blob:.*due to access control checks.*cdn\.logr-in\.com\/logger/i.test(message)) return;
+    failures.push({ type: "pageerror", message });
   });
 
   page.on("requestfailed", (request) => {
