@@ -1,6 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { hasClerkRuntimeConfig, isClerkE2EBypass } from "@/lib/env";
+import { clerkProxyPath, hasClerkRuntimeConfig, isClerkE2EBypass, shouldUseClerkProxyForHostname } from "@/lib/env";
 
 const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/admin(.*)", "/onboarding(.*)"]);
 
@@ -78,6 +78,13 @@ const protectedMiddleware = clerkMiddleware(async (auth, req) => {
   }
 
   return res;
+}, {
+  frontendApiProxy: {
+    enabled: (url) => shouldUseClerkProxyForHostname(url.hostname),
+    path: clerkProxyPath
+  },
+  signInUrl: "/sign-in",
+  signUpUrl: "/sign-up"
 });
 
 export default isClerkE2EBypass
@@ -87,5 +94,5 @@ export default isClerkE2EBypass
     : missingClerkMiddleware;
 
 export const config = {
-  matcher: ["/((?!.*\\..*|_next).*)", "/", "/(api|trpc)(.*)"]
+  matcher: ["/((?!.*\\..*|_next).*)", "/", "/(api|trpc)(.*)", "/__clerk/(.*)"]
 };

@@ -79,4 +79,15 @@ describe("environment safety", () => {
     expect(env.hasClerkPublishableKey).toBe(true);
     expect(env.hasClerkRuntimeConfig).toBe(true);
   });
+
+  it("uses the Clerk frontend API proxy for Vercel previews and localhost only", async () => {
+    const env = await loadEnv();
+
+    expect(env.clerkProxyUrlForRequest(new URL("https://outreach-ai-preview-vadym10-ai-1.vercel.app/sign-in"))).toBe("/__clerk");
+    expect(env.clerkProxyUrlForRequest(new URL("http://localhost:3000/sign-in"))).toBe("/__clerk");
+    expect(env.clerkProxyUrlForRequest(new URL("http://127.0.0.1:3000/sign-in"))).toBe("/__clerk");
+    expect(env.clerkProxyUrlForRequest(new URL("http://[::1]:3000/sign-in"))).toBe("/__clerk");
+    expect(env.clerkProxyUrlForRequest(new URL("https://outreachaiaiai.com/sign-in"))).toBe("");
+    expect(env.clerkProxyUrlForRequest(new URL("https://www.outreachaiaiai.com/sign-in"))).toBe("");
+  });
 });

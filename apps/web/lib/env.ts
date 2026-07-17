@@ -30,6 +30,7 @@ export const posthogHost = normalizeUrl(process.env.NEXT_PUBLIC_POSTHOG_HOST, "h
 export const logRocketAppId = process.env.NEXT_PUBLIC_LOGROCKET_APP_ID || "";
 export const runtimeEnvironment = process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development";
 export const isProductionRuntime = process.env.NODE_ENV === "production" || runtimeEnvironment === "production";
+export const clerkProxyPath = "/__clerk";
 const clerkE2EBypassRequested = process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true";
 const e2eApiUrl = process.env.NEXT_PUBLIC_API_URL || "";
 const isLocalE2ERuntime = runtimeEnvironment === "test" && (e2eApiUrl === "http://127.0.0.1:8000" || e2eApiUrl === "http://localhost:8000");
@@ -47,3 +48,24 @@ export const hasClerkPublishableKey = isUsableClerkPublishableKey(clerkPublishab
 export const hasClerkRuntimeConfig = Boolean(hasClerkPublishableKey && clerkSecretKey);
 export const hasPostHog = Boolean(posthogKey);
 export const hasLogRocket = Boolean(logRocketAppId);
+
+export function shouldUseClerkProxyForHostname(hostname: string | undefined) {
+  if (!hostname) return false;
+  const rawHostname = hostname.toLowerCase();
+  const normalized = rawHostname.startsWith("[")
+    ? rawHostname.slice(1, rawHostname.indexOf("]"))
+    : rawHostname.split(":")[0];
+
+  if (normalized === "outreachaiaiai.com" || normalized === "www.outreachaiaiai.com") {
+    return false;
+  }
+
+  return normalized === "localhost"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized.endsWith(".vercel.app");
+}
+
+export function clerkProxyUrlForRequest(url: URL) {
+  return shouldUseClerkProxyForHostname(url.hostname) ? clerkProxyPath : "";
+}

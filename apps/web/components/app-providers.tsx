@@ -8,6 +8,7 @@ import { usePathname } from "next/navigation";
 import { getClerkLocalization } from "@/lib/i18n/clerk";
 import { I18nProvider, useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
+import { clerkProxyUrlForRequest } from "@/lib/env";
 import { bootLogRocket, captureLogRocketException, identifyLogRocketUser, trackLogRocketEvent, trackLogRocketPage } from "@/lib/logrocket";
 import { bootPostHog, capturePostHogException, identifyPostHogUser, trackPageView } from "@/lib/posthog";
 
@@ -439,7 +440,19 @@ function LocaleAwareClerkProvider({
   const { locale } = useI18n();
 
   return (
-    <ClerkProvider publishableKey={clerkPublishableKey} localization={getClerkLocalization(locale)}>
+    <ClerkProvider
+      publishableKey={clerkPublishableKey}
+      localization={getClerkLocalization(locale)}
+      proxyUrl={clerkProxyUrlForRequest}
+      signInUrl="/sign-in"
+      signUpUrl="/sign-up"
+      allowedRedirectOrigins={[
+        "https://outreachaiaiai.com",
+        "https://www.outreachaiaiai.com",
+        "http://localhost:3000",
+        /^https:\/\/.*\.vercel\.app$/
+      ]}
+    >
       <SilentIntegrationBoundary area="sentry-page-context">
         <SentryPageContext />
       </SilentIntegrationBoundary>
