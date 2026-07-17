@@ -112,6 +112,10 @@ async function loadRuntimeConfig() {
 }
 
 export function bootPostHog() {
+  if (typeof window === "undefined" || !shouldUseHeavyClientTelemetry()) {
+    return Promise.resolve(false);
+  }
+
   if (initializePostHog()) {
     return Promise.resolve(true);
   }

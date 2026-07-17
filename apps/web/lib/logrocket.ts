@@ -103,6 +103,10 @@ async function loadRuntimeConfig() {
 }
 
 export function bootLogRocket() {
+  if (typeof window === "undefined" || !shouldUseHeavyClientTelemetry()) {
+    return Promise.resolve(false);
+  }
+
   if (initializeLogRocket()) {
     return Promise.resolve(true);
   }

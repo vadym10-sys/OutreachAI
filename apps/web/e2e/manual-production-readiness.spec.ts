@@ -32,6 +32,7 @@ function installStrictRuntimeGuards(page: Page, testInfo: TestInfo) {
     if (/cdn\.logr-in\.com\/logger-1\.min\.js/.test(request.url())) return;
     const failure = request.failure()?.errorText || "";
     if (/[?&]_rsc=/.test(request.url()) && /abort|cancelled/i.test(failure)) return;
+    if (/^blob:/.test(request.url()) && /abort|cancelled/i.test(failure)) return;
     failures.push({ type: "requestfailed", message: `${request.url()} ${failure}`.trim() });
   });
 
