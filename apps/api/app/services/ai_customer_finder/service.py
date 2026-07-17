@@ -477,7 +477,7 @@ def _record_intent_score_movement(db: Session, job: AICustomerFinderJob, company
     if is_new_event:
         timeline = [*timeline, event][-20:]
     latest_changes = [event] if is_new_event else []
-    intent_alert = bool(is_new_event and previous_score is not None and ((current_score >= 80 and score_delta >= 8) or score_delta >= 15))
+    intent_alert = bool(is_new_event and ((previous_score is not None and ((current_score >= 80 and score_delta >= 8) or score_delta >= 15)) or (previous_score is None and current_score >= 85 and result.confidence_score >= 70)))
     merged_signals = _dedupe_strings([*(metadata.get("buying_signals") if isinstance(metadata.get("buying_signals"), list) else []), result.signal_description])[:10]
     merged_evidence = [item for item in metadata.get("buying_signal_evidence", []) if isinstance(item, dict)] if isinstance(metadata.get("buying_signal_evidence"), list) else []
     evidence_entry = {"source_url": result.source_url, "value": result.evidence_summary, "source_field": "ai_customer_finder.source"}
@@ -508,6 +508,9 @@ def _record_intent_score_movement(db: Session, job: AICustomerFinderJob, company
         "confidence_score": result.confidence_score,
         "ai_live_buying_signals": live_update,
     }
+    from app.services.revenue_intelligence import build_and_store_revenue_intelligence
+
+    build_and_store_revenue_intelligence(db, company=company)
     result.metadata_json = {
         **(result.metadata_json or {}),
         "previous_score": previous_score,

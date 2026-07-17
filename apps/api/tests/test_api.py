@@ -481,6 +481,87 @@ def test_ai_customer_finder_intent_score_growth_creates_timeline_and_notificatio
     assert any("Microsoft" in item["title"] and "86" in item["title"] for item in notifications.json())
 
 
+def test_revenue_intelligence_feed_scores_watchlist_and_tenant_isolation() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "revenue-intelligence@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Revenue Intel Co", "website": "https://revenue-intel.example", "country": "United States", "industry": "B2B SaaS"},
+    )
+    assert company_response.status_code == 200
+    company_id = UUID(company_response.json()["company"]["id"])
+    peer_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Revenue Peer Co", "website": "https://revenue-peer.example", "country": "United States", "industry": "B2B SaaS"},
+    )
+    assert peer_response.status_code == 200
+
+    db = get_sessionmaker()()
+    try:
+        company = db.get(Company, company_id)
+        assert company is not None
+        company.metadata_json = {
+            **(company.metadata_json or {}),
+            "buying_signals": ["Hiring SDRs", "Funding announced"],
+            "buying_signal_score": 86,
+            "buying_signal_confidence": 88,
+            "buying_signal_evidence": [
+                {"source_url": "https://news.example/revenue-intel-funding", "value": "Funding announced"},
+                {"source_url": "https://jobs.example/revenue-intel-sdr", "value": "Hiring SDRs"},
+            ],
+            "confidence_score": 88,
+            "priority_score": 82,
+            "icp_score": 76,
+            "technologies": ["CRM", "Sales automation"],
+            "value_proposition": "Automated revenue workflow.",
+            "recommended_cta": "Worth a quick fit review?",
+            "ai_live_buying_signals": {
+                "generated_at": datetime.utcnow().isoformat(),
+                "current_score": 86,
+                "previous_score": 62,
+                "score_delta": 24,
+                "latest_changes": [{"change_type": "new_funding", "detected_at": datetime.utcnow().isoformat(), "added": ["Funding announced"]}],
+                "change_timeline": [
+                    {"change_type": "new_hiring", "detected_at": (datetime.utcnow() - timedelta(days=2)).isoformat(), "added": ["Hiring SDRs"], "source_url": "https://jobs.example/revenue-intel-sdr", "previous_score": 62, "current_score": 74, "score_delta": 12, "confidence": 84},
+                    {"change_type": "new_funding", "detected_at": datetime.utcnow().isoformat(), "added": ["Funding announced"], "source_url": "https://news.example/revenue-intel-funding", "previous_score": 74, "current_score": 86, "score_delta": 12, "confidence": 88},
+                ],
+            },
+        }
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/workspace-app/revenue-intelligence", headers=headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["pipeline_health"]["companies"] >= 2
+    assert payload["categories"]["Hot Today"]
+    assert payload["categories"]["Intent Increased"]
+    assert payload["categories"]["New Buying Signals"]
+    top = next(item for item in payload["top_opportunities"] if item["company_id"] == str(company_id))
+    assert top["buying_intent"]["score"] >= 80
+    assert top["revenue_opportunity"]["score"] >= 65
+    assert top["recommended_action"]["action"] == "Contact now"
+    assert top["intent_history"]["delta"] == 24
+    assert top["intent_history"]["trend"] == "up"
+    assert len(top["signal_timeline"]) == 2
+    assert top["verification"]["verification_count"] == 2
+    assert top["verification"]["source_diversity"] == 2
+    assert top["verification"]["verification_level"] in {"multi_source", "strong"}
+    assert top["similar_companies_count"] >= 1
+    assert top["icp_fit"]["factors"]["Industry"] == 20
+    assert top["sales_brief"]["why_now"]
+
+    watch = client.post(f"/api/workspace-app/revenue-intelligence/companies/{company_id}/watchlist", headers=headers, json={"watchlisted": True})
+    assert watch.status_code == 200, watch.text
+    assert watch.json()["watchlisted"] is True
+
+    isolated = client.get("/api/workspace-app/revenue-intelligence", headers=USER_B_AUTH)
+    assert isolated.status_code == 200
+    assert all(item["company"] != "Revenue Intel Co" for item in isolated.json()["top_opportunities"])
+
+
 def test_deep_contact_search_endpoint_downgrades_crm_apply_failure(monkeypatch) -> None:
     import app.api.usage as usage_module
 
@@ -2453,6 +2534,16 @@ def test_workspace_app_monitoring_returns_only_changes_and_regenerates_report(mo
     assert change["change_type"] == "new_competitors"
     assert change["added"] == ["New Rival Inc"]
     assert called["count"] >= 1
+    db = get_sessionmaker()()
+    try:
+        refreshed_company = db.get(Company, company_id)
+        assert refreshed_company is not None
+        revenue_snapshot = (refreshed_company.metadata_json or {}).get("ai_revenue_intelligence")
+        assert isinstance(revenue_snapshot, dict)
+        assert revenue_snapshot["company"] == "Usage Monitor Co"
+        assert "recommended_action" in revenue_snapshot
+    finally:
+        db.close()
 
 
 def test_workspace_app_enrichment_queue_persists_and_cancels_job() -> None:

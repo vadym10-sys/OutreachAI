@@ -16,6 +16,7 @@ from sqlalchemy import select, text
 
 from app.api.routes import router as api_router
 from app.api.ai_customer_finder import router as ai_customer_finder_router
+from app.api.revenue_intelligence import router as revenue_intelligence_router
 from app.api.usage import router as usage_router
 from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
@@ -305,6 +306,7 @@ def sentry_error_probe() -> dict[str, str]:
 app.include_router(api_router, prefix="/api", tags=["api"])
 app.include_router(usage_router, prefix="/api/workspace-app", tags=["workspace-app"])
 app.include_router(ai_customer_finder_router, prefix="/api/workspace-app/ai-customer-finder", tags=["ai-customer-finder"])
+app.include_router(revenue_intelligence_router, prefix="/api/workspace-app/revenue-intelligence", tags=["revenue-intelligence"])
 app.include_router(webhook_router)
 
 

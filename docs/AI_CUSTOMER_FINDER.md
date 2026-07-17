@@ -160,11 +160,14 @@ The score movement is stored in `Company.metadata_json.ai_live_buying_signals`:
 
 A notification is created only when the score movement is meaningful. The current rule is:
 
-- previous score exists;
 - the signal is new;
-- score reaches at least `80` with a delta of at least `8`, or the delta is at least `15`.
+- previous score exists and score reaches at least `80` with a delta of at least `8`;
+- or previous score is missing, but the first verified signal reaches at least `85` confidence-backed intent;
+- or the delta is at least `15`.
 
 This prevents small repeated source changes from becoming noisy alerts.
+
+The broader Dashboard read model is documented in [AI_REVENUE_INTELLIGENCE.md](AI_REVENUE_INTELLIGENCE.md). It turns saved signal changes into Opportunity Feed categories, explainable ICP/Intent/Revenue scores, watchlist updates, and next-best-action recommendations.
 
 ## Deduplication
 

@@ -5911,6 +5911,18 @@ def run_continuous_company_monitoring_once(*, workspace_id: UUID | None = None) 
                     "ai_live_buying_signals": monitoring,
                 }
                 company.updated_at = datetime.utcnow()
+            from app.services.revenue_intelligence import build_and_store_revenue_intelligence, create_revenue_notification_if_needed
+
+            workspace_companies = [item for item in companies if item.workspace_id == company.workspace_id]
+            revenue_snapshot = build_and_store_revenue_intelligence(db, company=company, companies=workspace_companies)
+            if company.workspace_id is not None:
+                create_revenue_notification_if_needed(
+                    db,
+                    company=company,
+                    user_id=str(company.user_id or (lead.user_id if lead else "")),
+                    workspace_id=company.workspace_id,
+                    intelligence=revenue_snapshot,
+                )
 
             changed.append(
                 {

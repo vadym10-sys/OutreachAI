@@ -15,7 +15,7 @@ import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
-import type { Activity, AISalesEmployee, BillingStatus, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, Profile, SalesCopilot, Usage, WebsiteAudit } from "@/lib/types";
+import type { Activity, AISalesEmployee, BillingStatus, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, Profile, RevenueCompany, RevenueIntelligenceFeed, SalesCopilot, Usage, WebsiteAudit } from "@/lib/types";
 import type { AnalysisResult, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadCommandResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
@@ -311,6 +311,29 @@ function normalizeCrmCompany(value: Partial<CrmCompany>): CrmCompany {
     ai_sales_workspace: value.ai_sales_workspace || null,
     ai_sales_workspace_updated_at: value.ai_sales_workspace_updated_at || null,
     deep_contact_search: value.deep_contact_search || null,
+    decision_maker_intelligence: value.decision_maker_intelligence || null,
+    opportunity_ranking: value.opportunity_ranking || null,
+    ai_outreach_strategy: value.ai_outreach_strategy || null,
+    ai_competitor_intelligence: value.ai_competitor_intelligence || null,
+    ai_company_timeline: value.ai_company_timeline || null,
+    ai_company_predictions: value.ai_company_predictions || null,
+    ai_sales_timeline: value.ai_sales_timeline || null,
+    ai_risk_analyzer: value.ai_risk_analyzer || null,
+    ai_sales_coach: value.ai_sales_coach || null,
+    ai_specialized_agents: value.ai_specialized_agents || null,
+    ai_agent_intermediate_reasoning: value.ai_agent_intermediate_reasoning || null,
+    ai_final_orchestrator: value.ai_final_orchestrator || null,
+    ai_executive_dashboard: value.ai_executive_dashboard || null,
+    ai_revenue_engine_report: value.ai_revenue_engine_report || null,
+    ai_crm: value.ai_crm || null,
+    ai_ceo_dashboard: value.ai_ceo_dashboard || null,
+    ai_sales_os: value.ai_sales_os || null,
+    ai_live_buying_signals: value.ai_live_buying_signals || null,
+    ai_lead_prioritization: value.ai_lead_prioritization || null,
+    ai_sales_inbox_latest: value.ai_sales_inbox_latest || null,
+    ai_sales_inbox_history: safeArray(value.ai_sales_inbox_history),
+    ai_evidence_engine: value.ai_evidence_engine || null,
+    ai_revenue_intelligence: value.ai_revenue_intelligence,
     intelligence_quality: value.intelligence_quality || null,
     company_intelligence: value.company_intelligence || null,
     technologies: safeArray(value.technologies).map(String),
@@ -370,6 +393,7 @@ type CachedDashboardData = {
   metrics: DashboardMetrics;
   leads: Lead[];
   recentCompanies?: CrmCompany[];
+  revenueFeed?: RevenueIntelligenceFeed | null;
   campaigns: Campaign[];
   employees: AISalesEmployee[];
   activity: Activity[];
@@ -393,6 +417,7 @@ function readCachedDashboardData() {
       metrics?: Partial<DashboardMetrics>;
       leads?: Lead[];
       recentCompanies?: CrmCompany[];
+      revenueFeed?: RevenueIntelligenceFeed | null;
       campaigns?: Campaign[];
       employees?: AISalesEmployee[];
       activity?: Activity[];
@@ -402,6 +427,7 @@ function readCachedDashboardData() {
       metrics: safeDashboardMetrics(parsed.metrics),
       leads: safeArray(parsed.leads),
       recentCompanies: safeArray(parsed.recentCompanies).map(normalizeCrmCompany),
+      revenueFeed: parsed.revenueFeed || null,
       campaigns: safeArray(parsed.campaigns).map(safeCampaign),
       employees: safeArray(parsed.employees),
       activity: safeArray(parsed.activity),
@@ -1447,6 +1473,7 @@ function useDashboardData() {
   const [metrics, setMetrics] = useState<DashboardMetrics>(emptyMetrics);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [recentCompanies, setRecentCompanies] = useState<CrmCompany[]>([]);
+  const [revenueFeed, setRevenueFeed] = useState<RevenueIntelligenceFeed | null>(null);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [employees, setEmployees] = useState<AISalesEmployee[]>([]);
   const [activity, setActivity] = useState<Activity[]>([]);
@@ -1472,6 +1499,7 @@ function useDashboardData() {
         setMetrics(cached.metrics);
         setLeads(cached.leads);
         setRecentCompanies(safeArray(cached.recentCompanies));
+        setRevenueFeed(cached.revenueFeed || null);
         setCampaigns(cached.campaigns);
         setEmployees(cached.employees);
         setActivity(cached.activity);
@@ -1495,23 +1523,27 @@ function useDashboardData() {
           api<DashboardMetrics>("/api/dashboard"),
           api<Campaign[]>("/api/campaigns"),
           api<AISalesEmployee[]>("/api/sales-employees"),
-          api<Activity[]>("/api/activity")
+          api<Activity[]>("/api/activity"),
+          api<RevenueIntelligenceFeed>("/api/workspace-app/revenue-intelligence")
         ]);
         if (cancelled) return;
-        const [dashboardResult, campaignResult, employeeResult, activityResult] = results;
+        const [dashboardResult, campaignResult, employeeResult, activityResult, revenueResult] = results;
         const refreshedMetrics = dashboardResult.status === "fulfilled" ? metricsFromWorkspaceBootstrap(bootstrap, dashboardResult.value) : nextMetrics;
         const nextCampaigns = campaignResult.status === "fulfilled" ? safeArray(campaignResult.value).map(safeCampaign) : null;
         const nextEmployees = employeeResult.status === "fulfilled" ? safeArray(employeeResult.value) : null;
         const nextActivity = activityResult.status === "fulfilled" ? safeArray(activityResult.value) : null;
+        const nextRevenueFeed = revenueResult.status === "fulfilled" ? revenueResult.value : null;
         setMetrics(refreshedMetrics);
         if (nextCampaigns) setCampaigns(nextCampaigns);
         if (nextEmployees) setEmployees(nextEmployees);
         if (nextActivity) setActivity(nextActivity);
+        if (nextRevenueFeed) setRevenueFeed(nextRevenueFeed);
         if (nextCampaigns && nextEmployees && nextActivity) {
           cacheDashboardData({
             metrics: refreshedMetrics,
             leads: bootstrapLeads,
             recentCompanies: bootstrapCompanies,
+            revenueFeed: nextRevenueFeed,
             campaigns: nextCampaigns,
             employees: nextEmployees,
             activity: nextActivity
@@ -1520,7 +1552,7 @@ function useDashboardData() {
 
         const failed = results.filter((result) => result.status === "rejected") as PromiseRejectedResult[];
         if (failed.length) {
-          failed.forEach((result) => reportWidgetFailure(result.reason, "dashboard-supporting-data", { endpoint_group: "dashboard-campaigns-employees-activity" }));
+          failed.forEach((result) => reportWidgetFailure(result.reason, "dashboard-supporting-data", { endpoint_group: "dashboard-campaigns-employees-activity-revenue-intelligence" }));
           const firstFailure = failed[0]?.reason;
           setSupportingError(friendlyErrorMessage(firstFailure, "Some dashboard details are temporarily unavailable. Your core workspace is still loaded."));
         } else {
@@ -1546,7 +1578,7 @@ function useDashboardData() {
     };
   }, [api, ready]);
 
-  return { metrics, leads, recentCompanies, campaigns, employees, activity, loading, error, supportingError, cachedAt };
+  return { metrics, leads, recentCompanies, revenueFeed, campaigns, employees, activity, loading, error, supportingError, cachedAt };
 }
 
 function OpportunityCard({
@@ -2931,11 +2963,29 @@ function OpportunityCard({
 }
 
 export function DashboardHome() {
-  const { metrics, leads, recentCompanies, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
+  const { metrics, leads, recentCompanies, revenueFeed, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
   const { t } = useI18n();
   const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
   const nextStep = dashboardNextStep(metrics, leads, campaigns);
   const companies = recentCompanies.length ? recentCompanies : [];
+  const revenueItems = revenueFeed?.top_opportunities?.length ? revenueFeed.top_opportunities : companies.map(revenueCompanyFromCrm);
+  const revenueCategories = revenueFeed?.categories || {
+    "Hot Today": revenueItems.filter((item) => item.feed_categories.includes("Hot Today")),
+    "Intent Increased": revenueItems.filter((item) => item.feed_categories.includes("Intent Increased")),
+    "New Buying Signals": revenueItems.filter((item) => item.feed_categories.includes("New Buying Signals")),
+    "Intent Dropped": revenueItems.filter((item) => item.feed_categories.includes("Intent Dropped")),
+    "Recommended Now": revenueItems.filter((item) => item.feed_categories.includes("Recommended Now"))
+  };
+  const recommendedRevenue = revenueFeed?.recommended_today?.length ? revenueFeed.recommended_today : revenueItems.filter((item) => item.recommended_action.action === "Contact now");
+  const intentTrend = revenueFeed?.intent_trend?.length ? revenueFeed.intent_trend : revenueItems.map((item) => ({
+    company_id: item.company_id,
+    company: item.company,
+    current_score: item.intent_history.current_score,
+    previous_score: item.intent_history.previous_score,
+    delta: item.intent_history.delta,
+    trend: item.intent_history.trend,
+    last_updated: item.intent_history.last_updated
+  }));
 
   const opportunities = [...companies]
     .sort((left, right) => {
@@ -2976,23 +3026,23 @@ export function DashboardHome() {
   const summaryCards = [
     {
       label: t("Hot opportunities"),
-      value: opportunities.filter((item) => Number(item.ai_crm?.priority?.score || item.overall_score || 0) >= 70).length,
+      value: revenueCategories["Hot Today"]?.length || opportunities.filter((item) => Number(item.ai_crm?.priority?.score || item.overall_score || 0) >= 70).length,
       helper: t("High-priority accounts")
     },
     {
       label: t("Buying signals"),
-      value: allBuyingChanges.length,
+      value: revenueCategories["New Buying Signals"]?.length || allBuyingChanges.length,
       helper: t("Recent signal changes")
     },
     {
-      label: t("Emails Ready"),
-      value: readyToSendEmails.length,
-      helper: t("Draft or approved")
+      label: t("Intent increased"),
+      value: revenueCategories["Intent Increased"]?.length || 0,
+      helper: t("Accounts gaining urgency")
     },
     {
-      label: t("Need review"),
-      value: needsReviewCount,
-      helper: t("Awaiting manual review")
+      label: t("Recommended now"),
+      value: recommendedRevenue.length,
+      helper: t("AI says contact now")
     }
   ];
 
@@ -3039,11 +3089,10 @@ export function DashboardHome() {
     }
   ];
   const chartValues = [
+    ...intentTrend.slice(0, 4).map((item) => Math.max(0, Number(item.current_score || 0))),
     Math.max(0, summaryCards[0]?.value || 0),
-    Math.max(0, summaryCards[1]?.value || 0),
-    Math.max(0, summaryCards[2]?.value || 0),
-    Math.max(0, summaryCards[3]?.value || 0)
-  ];
+    Math.max(0, summaryCards[1]?.value || 0)
+  ].slice(0, 4);
   const todayBrief = [
     {
       label: "Focus",
@@ -3218,6 +3267,46 @@ export function DashboardHome() {
               <p className="mt-2 line-clamp-3 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{t(String(item.detail))}</p>
             </article>
           ))}
+        </div>
+      </OperatingPanel>
+
+      <OperatingPanel>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="ui-eyebrow">{t("Opportunity Feed")}</p>
+            <h2 className="ui-title mt-1 text-2xl">{t("Who to contact, why now, and what changed.")}</h2>
+          </div>
+          <span className="w-fit rounded-full border border-[var(--ui-border)] bg-white/70 px-3 py-1 text-xs font-black text-[var(--ui-text-soft)]">
+            {t("Revenue Intelligence")} · {revenueItems.length}
+          </span>
+        </div>
+        <div className="mt-5 grid gap-3 xl:grid-cols-5">
+          {Object.entries(revenueCategories).map(([category, items]) => {
+            const item = safeArray(items)[0];
+            return (
+              <article key={category} className="rounded-2xl border border-[var(--ui-border)] bg-white/70 p-4 shadow-sm">
+                <p className="text-xs font-black uppercase tracking-[0.13em] text-brand">{t(category)}</p>
+                {item ? (
+                  <>
+                    <div className="mt-3 flex items-start justify-between gap-3">
+                      <h3 className="min-w-0 text-base font-black text-[var(--ui-text)]">{item.company}</h3>
+                      <span className="shrink-0 rounded-full bg-[#101114] px-2.5 py-1 text-xs font-black text-white">{item.buying_intent.score}</span>
+                    </div>
+                    <p className="mt-2 line-clamp-3 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{item.signal_summary}</p>
+                    <div className="mt-3 grid grid-cols-3 gap-1 text-center text-[11px] font-black">
+                      <span className="rounded-lg bg-slate-50 p-2">{t("ICP")}<br />{item.icp_fit.score}</span>
+                      <span className="rounded-lg bg-slate-50 p-2">{t("Intent")}<br />{item.buying_intent.score}</span>
+                      <span className="rounded-lg bg-slate-50 p-2">{t("Revenue")}<br />{item.revenue_opportunity.score}</span>
+                    </div>
+                    <p className="mt-3 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{item.recommended_action.action}: {item.recommended_action.reason}</p>
+                    <Link href={`/dashboard/companies?company=${encodeURIComponent(item.company_id)}`} className="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-full bg-[#101114] px-3 text-xs font-black text-white">{t("Open company")}</Link>
+                  </>
+                ) : (
+                  <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{t("No company in this category yet.")}</p>
+                )}
+              </article>
+            );
+          })}
         </div>
       </OperatingPanel>
 
@@ -4243,6 +4332,8 @@ function companyHealthScore(company: CrmCompany) {
 }
 
 function companyNextAction(company: CrmCompany) {
+  const revenueAction = company.ai_revenue_intelligence?.recommended_action?.action;
+  if (revenueAction) return company.ai_revenue_intelligence?.recommended_action?.reason || revenueAction;
   const sentAt = currentEmailSentAt(company);
   const hasContact = Boolean(company.email || company.contacts.some((contact) => contact.email));
   const hasDraft = Boolean(company.generated_emails.length);
@@ -4257,6 +4348,79 @@ function companyNextAction(company: CrmCompany) {
   if (!company.replied_at) return "Watch for replies and follow up from the inbox.";
   if (company.crm_stage !== "Meeting Scheduled" && company.crm_stage !== "Won") return "Move the opportunity to the next CRM stage.";
   return "Keep notes updated and close the outcome.";
+}
+
+function revenueCompanyFromCrm(company: CrmCompany): RevenueCompany {
+  if (company.ai_revenue_intelligence) return company.ai_revenue_intelligence;
+  const currentScore = Number(company.ai_live_buying_signals?.current_score || company.buying_signal_score || company.priority_score || company.overall_score || companyHealthScore(company) || 0);
+  const previousScore = typeof company.ai_live_buying_signals?.previous_score === "number" ? company.ai_live_buying_signals.previous_score : null;
+  const delta = Number(company.ai_live_buying_signals?.score_delta || (previousScore === null ? 0 : currentScore - previousScore));
+  const timeline = safeArray(company.ai_live_buying_signals?.change_timeline).map((item) => ({
+    timestamp: String(item.detected_at || company.updated_at),
+    signal_type: String(item.change_type || "intent_signal"),
+    category: String(item.change_type || "General Intent").replaceAll("_", " "),
+    source_url: "",
+    evidence: safeArray(item.added).join(", ") || safeArray(company.buying_signals).join(", ") || company.reasoning || "",
+    previous_score: null,
+    current_score: currentScore,
+    score_delta: delta,
+    confidence: Number(company.buying_signal_confidence || company.confidence_score || company.confidence || 50)
+  }));
+  const confidence = Number(company.confidence_score || company.buying_signal_confidence || company.confidence || 50);
+  const action = currentScore >= 75 && confidence >= 50 ? "Contact now" : delta < 0 ? "Wait" : company.ai_summary ? "Monitor" : "Research more";
+  const factors = {
+    "Industry": company.industry ? 20 : 8,
+    "Country": company.country ? 10 : 4,
+    "Evidence": Math.min(20, safeArray(company.buying_signal_evidence).length * 8),
+    "Use Case": company.ai_summary || company.opportunity_analysis ? 24 : 10
+  };
+  const score = Math.max(0, Math.min(100, currentScore));
+  return {
+    company_id: company.id,
+    company: company.name,
+    industry: company.industry || "",
+    country: company.country || "",
+    website: company.website || "",
+    icp_fit: { score: Number(company.icp_score || score), factors, weights: factors, explanation: "Fallback ICP score uses available company profile, country, evidence and use-case data." },
+    buying_intent: { score, factors: { "Current Intent": score, "Delta": delta }, weights: { "Current Intent": 80, "Delta": 20 }, explanation: "Fallback intent score uses the latest CRM buying signal score." },
+    revenue_opportunity: { score: Number(company.priority_score || company.overall_score || score), factors: { "Intent": score, "Confidence": confidence }, weights: { "Intent": 60, "Confidence": 40 }, explanation: "Fallback revenue score uses current intent, priority and confidence." },
+    confidence,
+    signal_summary: safeArray(company.buying_signals)[0] || company.buying_signal_explanation || company.reasoning || "No verified buying signal yet.",
+    last_change: String(company.ai_live_buying_signals?.generated_at || company.updated_at),
+    recommended_action: { action, reason: company.recommended_next_action || companyNextAction({ ...company, ai_revenue_intelligence: undefined }), confidence },
+    signal_timeline: timeline,
+    intent_history: {
+      current_score: score,
+      previous_score: previousScore,
+      delta,
+      trend: delta > 0 ? "up" : delta < 0 ? "down" : "flat",
+      last_updated: String(company.ai_live_buying_signals?.generated_at || company.updated_at),
+      points: timeline.length ? timeline.map((item) => ({ timestamp: item.timestamp, score: item.current_score, delta: item.score_delta, signal_type: item.signal_type })) : [{ timestamp: company.updated_at, score, delta: 0, signal_type: "current" }]
+    },
+    sales_brief: {
+      why_now: company.buying_signal_explanation || company.reasoning || "Review the latest verified account context before outreach.",
+      business_changes: timeline.map((item) => item.evidence || item.signal_type).filter(Boolean).slice(-5),
+      buying_signals: safeArray(company.buying_signals).map(String),
+      icp_explanation: "Uses CRM company profile and available enrichment.",
+      risks: safeArray(company.risks).map(String),
+      suggested_positioning: company.sales_angle || company.suggested_offer || "Lead with the strongest verified business change.",
+      suggested_cta: company.recommended_cta || "Ask for a quick fit review."
+    },
+    verification: {
+      verification_count: safeArray(company.buying_signal_evidence).length,
+      source_diversity: safeArray(company.buying_signal_evidence).length,
+      verification_level: safeArray(company.buying_signal_evidence).length > 1 ? "multi_source" : safeArray(company.buying_signal_evidence).length === 1 ? "single_source" : "none"
+    },
+    similar_companies_count: 0,
+    watchlisted: false,
+    feed_categories: [
+      score >= 80 ? "Hot Today" : "",
+      delta > 0 ? "Intent Increased" : "",
+      timeline.length ? "New Buying Signals" : "",
+      delta < 0 ? "Intent Dropped" : "",
+      action === "Contact now" ? "Recommended Now" : ""
+    ].filter(Boolean)
+  };
 }
 
 function companySalesBrief(company: CrmCompany, healthScore: number) {
@@ -4813,6 +4977,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
   const contactFormRef = useRef<HTMLFormElement | null>(null);
   const deepContactPollTimerRef = useRef<number | null>(null);
   const displayCurrent = useMemo(() => localizeLegacyCompanySalesFallbacks(current, locale), [current, locale]);
+  const revenueIntel = useMemo(() => revenueCompanyFromCrm(displayCurrent), [displayCurrent]);
   const lead = leadFromCrmCompany(displayCurrent);
   const currentDraft = latestCompanyEmail(displayCurrent);
   const currentSentAt = currentEmailSentAt(displayCurrent);
@@ -5168,6 +5333,24 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
   function applyCompanyUpdate(updatedCompany: CrmCompany) {
     setCurrent(updatedCompany);
     setStageValue(updatedCompany.crm_stage);
+  }
+
+  async function toggleWatchlist() {
+    setActionBusy("watchlist");
+    setActionError("");
+    setActionNotice("");
+    try {
+      const updated = await api<RevenueCompany>(`/api/workspace-app/revenue-intelligence/companies/${current.id}/watchlist`, {
+        method: "POST",
+        body: JSON.stringify({ watchlisted: !revenueIntel.watchlisted }),
+      });
+      setCurrent((previous) => ({ ...previous, ai_revenue_intelligence: updated }));
+      setActionNotice(t(updated.watchlisted ? "Company added to AI Watchlist." : "Company removed from AI Watchlist."));
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, t("Watchlist could not be updated. Try again.")));
+    } finally {
+      setActionBusy("");
+    }
   }
 
   function stopDeepContactPolling() {
@@ -5568,6 +5751,15 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               </a>
             )}
             <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Mail size={16} />{t("Review outreach")}</a>
+            <button
+              type="button"
+              onClick={toggleWatchlist}
+              disabled={actionBusy === "watchlist"}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {actionBusy === "watchlist" ? <Loader2 className="animate-spin" size={16} /> : <Target size={16} />}
+              {t(revenueIntel.watchlisted ? "Watching" : "Add to Watchlist")}
+            </button>
           </div>
         </div>
 
@@ -5632,6 +5824,86 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             <p className="mt-4 text-sm leading-6 text-slate-700">{opportunityReason}</p>
           </article>
         </div>
+
+        <section className="mt-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("AI Sales Brief")}</p>
+              <h3 className="mt-2 text-2xl font-black text-slate-900">{t(revenueIntel.recommended_action.action)}</h3>
+              <p className="mt-2 max-w-3xl text-sm leading-7 text-slate-700">{revenueIntel.sales_brief.why_now}</p>
+            </div>
+            <div className="grid min-w-0 grid-cols-3 gap-2 text-center text-xs font-black sm:min-w-80">
+              {[
+                ["ICP", revenueIntel.icp_fit.score],
+                ["Intent", revenueIntel.buying_intent.score],
+                ["Revenue", revenueIntel.revenue_opportunity.score],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-slate-500">{t(String(label))}</p>
+                  <p className="mt-1 text-2xl text-slate-900">{value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-3">
+            {[
+              ["Why now", revenueIntel.sales_brief.why_now],
+              ["Suggested positioning", revenueIntel.sales_brief.suggested_positioning],
+              ["Suggested CTA", revenueIntel.sales_brief.suggested_cta],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl bg-slate-50 p-3 text-sm">
+                <p className="font-black text-slate-900">{t(String(label))}</p>
+                <p className="mt-1 leading-6 text-slate-700">{t(String(value || "Not available"))}</p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 grid gap-3 xl:grid-cols-[1.1fr_0.9fr]">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Signal Timeline")}</p>
+              <div className="mt-3 grid gap-2">
+                {(revenueIntel.signal_timeline.length ? revenueIntel.signal_timeline.slice(-5) : [{ timestamp: revenueIntel.intent_history.last_updated, category: "Current", evidence: revenueIntel.signal_summary, score_delta: 0, current_score: revenueIntel.buying_intent.score, source_url: "" }]).map((item, index) => (
+                  <div key={`${item.timestamp}-${index}`} className="rounded-lg bg-white p-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-black text-slate-900">{t(String(item.category))}</p>
+                      <span className={`rounded-full px-2 py-1 text-xs font-black ${Number(item.score_delta || 0) >= 0 ? "bg-teal-50 text-brand" : "bg-red-50 text-red-700"}`}>{Number(item.score_delta || 0) >= 0 ? "+" : ""}{item.score_delta}</span>
+                    </div>
+                    <p className="mt-1 leading-6 text-slate-700">{String(item.evidence || revenueIntel.signal_summary)}</p>
+                    <p className="mt-1 text-xs text-slate-500">{formatDateTime(String(item.timestamp || ""))} · {t("Intent")} {item.current_score}</p>
+                    {item.source_url ? <a href={item.source_url} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-black text-brand">{t("Source")} <ExternalLink size={12} /></a> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Explainability")}</p>
+              <div className="mt-3 grid gap-2">
+                {[
+                  ["ICP formula", revenueIntel.icp_fit],
+                  ["Intent formula", revenueIntel.buying_intent],
+                  ["Revenue formula", revenueIntel.revenue_opportunity],
+                ].map(([label, score]) => {
+                  const breakdown = score as RevenueCompany["icp_fit"];
+                  return (
+                    <details key={String(label)} className="rounded-lg bg-white p-3 text-sm">
+                      <summary className="cursor-pointer font-black text-slate-900">{t(String(label))} · {breakdown.score}</summary>
+                      <div className="mt-2 grid gap-1">
+                        {Object.entries(breakdown.factors || {}).map(([factor, value]) => (
+                          <p key={factor} className="flex justify-between gap-3 text-xs font-semibold text-slate-700"><span>{t(factor)}</span><span>{value > 0 ? "+" : ""}{value}</span></p>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-slate-500">{breakdown.explanation}</p>
+                    </details>
+                  );
+                })}
+              </div>
+              <div className="mt-3 rounded-lg bg-white p-3 text-sm">
+                <p className="font-black text-slate-900">{t("Multi-source verification")}</p>
+                <p className="mt-1 text-slate-700">{revenueIntel.verification.verification_level} · {revenueIntel.verification.verification_count} {t("sources")} · {revenueIntel.verification.source_diversity} {t("domains")}</p>
+                <p className="mt-1 text-slate-700">{t("Similar companies")}: {revenueIntel.similar_companies_count}</p>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {autonomousDecisionCards.map((card) => {
@@ -6288,11 +6560,11 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           <p className="text-sm font-bold text-ink">{t("Company Actions")}</p>
           <p className="mt-1 text-xs leading-5 text-slate-500">{t("Choose one action and move this company forward now.")}</p>
           <div className="mt-4 grid gap-2">
-            <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Phone size={17} /> {t("Contact Now")}</a>
-            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> {t("Review Email")}</a>
-            <button type="button" onClick={scheduleFollowUp} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><CalendarDays size={17} /> {t("Schedule Follow-up")}</button>
-            <Link href="/dashboard/campaigns" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Rocket size={17} /> {t("Add to Campaign")}</Link>
-            {onOpenNextLead ? <button type="button" onClick={onOpenNextLead} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-slate-900 px-4 text-sm font-bold text-white"><ArrowRight size={17} /> {t(nextLeadName ? `Open Next Lead: ${nextLeadName}` : "Open Next Lead")}</button> : null}
+            <a href={`#contacts-${current.id}`} className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Phone size={17} /> {t("Contact Now")}</a>
+            <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> {t("Review Email")}</a>
+            <button type="button" onClick={scheduleFollowUp} className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><CalendarDays size={17} /> {t("Schedule Follow-up")}</button>
+            <Link href="/dashboard/campaigns" className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Rocket size={17} /> {t("Add to Campaign")}</Link>
+            {onOpenNextLead ? <button type="button" onClick={onOpenNextLead} className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md bg-slate-900 px-4 text-sm font-bold text-white"><ArrowRight size={17} /> {t(nextLeadName ? `Open Next Lead: ${nextLeadName}` : "Open Next Lead")}</button> : null}
           </div>
         </section>
 
