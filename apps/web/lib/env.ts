@@ -31,6 +31,7 @@ export const logRocketAppId = process.env.NEXT_PUBLIC_LOGROCKET_APP_ID || "";
 export const runtimeEnvironment = process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development";
 export const isProductionRuntime = process.env.NODE_ENV === "production" || runtimeEnvironment === "production";
 export const clerkProxyPath = "/__clerk";
+const clerkFrontendApiProxyRequested = process.env.NEXT_PUBLIC_CLERK_FRONTEND_API_PROXY === "true";
 const clerkE2EBypassRequested = process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true";
 const e2eApiUrl = process.env.NEXT_PUBLIC_API_URL || "";
 const isLocalE2ERuntime = runtimeEnvironment === "test" && (e2eApiUrl === "http://127.0.0.1:8000" || e2eApiUrl === "http://localhost:8000");
@@ -48,8 +49,12 @@ export const hasClerkPublishableKey = isUsableClerkPublishableKey(clerkPublishab
 export const hasClerkRuntimeConfig = Boolean(hasClerkPublishableKey && clerkSecretKey);
 export const hasPostHog = Boolean(posthogKey);
 export const hasLogRocket = Boolean(logRocketAppId);
+export const isClerkDevelopmentKey = Boolean(clerkPublishableKey?.startsWith("pk_test_"));
+export const isClerkProductionKey = Boolean(clerkPublishableKey?.startsWith("pk_live_"));
+export const isClerkFrontendApiProxyEnabled = Boolean(clerkFrontendApiProxyRequested && isClerkProductionKey);
 
 export function shouldUseClerkProxyForHostname(hostname: string | undefined) {
+  if (!isClerkFrontendApiProxyEnabled) return false;
   if (!hostname) return false;
   const rawHostname = hostname.toLowerCase();
   const normalized = rawHostname.startsWith("[")

@@ -132,8 +132,9 @@ RESEND_WEBHOOK_SECRET=...
 1. Enable email/password login.
 2. Enable Google OAuth.
 3. Set the production frontend API domain to `clerk.outreachaiaiai.com`.
-4. Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in both Production and Preview Vercel environments.
-5. Keep `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in` and `NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up`.
-6. Vercel preview deployments and localhost use Clerk's official Frontend API proxy through the app at `/__clerk`; production custom domains continue to use the Clerk frontend API directly.
-7. In Clerk Dashboard, keep `https://outreachaiaiai.com`, `http://localhost:3000`, and `https://*.vercel.app` available as allowed redirect origins / authorized origins for preview review.
-8. Set the backend JWT issuer to the Clerk issuer used by production. The API also accepts the custom Clerk issuer fallback for `https://clerk.outreachaiaiai.com`.
+4. Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_...` and `CLERK_SECRET_KEY=sk_live_...` only in the Production Vercel environment.
+5. Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...` and `CLERK_SECRET_KEY=sk_test_...` from the Clerk Development instance in the Preview Vercel environment. Clerk does not support production keys on provider-owned preview domains such as `*.vercel.app`.
+6. Keep `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in` and `NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up`.
+7. Keep `NEXT_PUBLIC_CLERK_FRONTEND_API_PROXY=false` for localhost and `*.vercel.app` previews. Only enable it for a custom-domain production/staging Frontend API proxy that has been configured on the Clerk Domains page.
+8. In Clerk Dashboard, keep `https://outreachaiaiai.com`, `http://localhost:3000`, and `https://*.vercel.app` available as allowed redirect origins / authorized origins for preview review.
+9. Set the backend JWT issuer to the Clerk issuer used by production. The API also accepts the custom Clerk issuer fallback for `https://clerk.outreachaiaiai.com`.

@@ -81,6 +81,8 @@ describe("environment safety", () => {
   });
 
   it("uses the Clerk frontend API proxy for Vercel previews and localhost only", async () => {
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsuZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk";
+    process.env.NEXT_PUBLIC_CLERK_FRONTEND_API_PROXY = "true";
     const env = await loadEnv();
 
     expect(env.clerkProxyUrlForRequest(new URL("https://outreach-ai-preview-vadym10-ai-1.vercel.app/sign-in"))).toBe("/__clerk");
@@ -89,5 +91,16 @@ describe("environment safety", () => {
     expect(env.clerkProxyUrlForRequest(new URL("http://[::1]:3000/sign-in"))).toBe("/__clerk");
     expect(env.clerkProxyUrlForRequest(new URL("https://outreachaiaiai.com/sign-in"))).toBe("");
     expect(env.clerkProxyUrlForRequest(new URL("https://www.outreachaiaiai.com/sign-in"))).toBe("");
+  });
+
+  it("keeps the Clerk frontend API proxy disabled for development keys on Vercel previews", async () => {
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_Y2xlcmsuZGV2LmFjY291bnRzLmRldiQ";
+    process.env.NEXT_PUBLIC_CLERK_FRONTEND_API_PROXY = "true";
+
+    const env = await loadEnv();
+
+    expect(env.isClerkDevelopmentKey).toBe(true);
+    expect(env.isClerkFrontendApiProxyEnabled).toBe(false);
+    expect(env.clerkProxyUrlForRequest(new URL("https://outreach-ai-preview-vadym10-ai-1.vercel.app/sign-in"))).toBe("");
   });
 });
