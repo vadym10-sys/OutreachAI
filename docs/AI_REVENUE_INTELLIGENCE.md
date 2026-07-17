@@ -110,7 +110,15 @@ The deterministic recommendation engine returns one of:
 - Research more
 - Low priority
 
-The recommendation includes a reason and confidence. Outreach is never sent automatically.
+The recommendation includes:
+
+- reason
+- supporting signals
+- blockers
+- confidence
+- recommended timing
+
+`Contact now` is not allowed from ICP Fit alone. It requires a meaningful buying signal, enough confidence, and no major blocker. Outreach is never sent automatically.
 
 ## Multi-source Verification
 
@@ -142,6 +150,12 @@ The system creates in-app notifications when:
 - monitoring produces a high-confidence “Contact now” recommendation.
 
 Emails and campaigns are never started automatically.
+
+Notification spam protection:
+
+- repeated same-company alerts use a 24-hour cooldown;
+- unknown or rejected signal changes do not create notifications;
+- minor score changes update history and the Opportunity Feed without interrupting the user.
 
 ## Pipeline
 

@@ -119,7 +119,79 @@ A result is accepted only when it has:
 - signal type and explanation
 - relevance and confidence scores
 
-If a field cannot be confirmed, it is left empty or marked as `unverified`. AI output is not treated as a source of facts.
+Each result is classified as one of:
+
+- `verified`: a working public source confirms a meaningful buying or timing signal.
+- `partially_verified`: the source opens and supports part of the finding, but confidence or intent is not strong enough for a verified result.
+- `unknown`: the source or publication date could not be confirmed.
+- `rejected`: the candidate has no meaningful signal, weak source quality, duplicate evidence, or contradictory data.
+
+If a field cannot be confirmed, it is left empty or marked as `Unknown`. AI output is not treated as a source of facts. Search snippets are not final evidence when the original public page is unavailable.
+
+For every important claim the API keeps a source ledger:
+
+- source URL and canonical URL
+- source title and source type
+- publication date or `Unknown`
+- retrieval date
+- evidence summary
+- observed fact
+- model inference
+- confidence
+- verification status
+
+Industry fit alone is never enough to create a high-intent lead.
+
+## Quality Gates and Scoring
+
+Scoring version: `intent-signals-quality-v2`.
+
+The backend calculates three deterministic scores:
+
+- `ICP Fit Score`: industry, country, use-case match, and disqualifiers.
+- `Buying Intent Score`: signal strength, explicitness, recency, source quality, source diversity, independent source count, product relevance, and negative evidence.
+- `Revenue Opportunity Score`: ICP Fit, Buying Intent, and source quality.
+
+Every score stores:
+
+- final score
+- previous score where available
+- factor values
+- factor weights
+- penalties
+- explanation
+- scoring version
+
+Buying Intent is capped when no meaningful public signal exists. Stale or unknown publication dates receive a penalty, and negative evidence such as layoffs, hiring freezes, or no-budget language reduces the score. A verified company with only generic industry match is rejected instead of being promoted as high intent.
+
+## Partial Results and User Flow
+
+The product flow is optimized for a 5-10 minute first success path:
+
+```text
+Product and ICP input
+  -> Search created
+  -> First partial results
+  -> Verified company evidence
+  -> ICP, Intent, and Revenue scores
+  -> AI Sales Brief
+  -> Next Best Action
+  -> Draft email
+  -> Save to CRM
+```
+
+The UI polls the existing job API and shows current stage, progress percentage, saved count, verified count, partially verified count, unknown count, rejected count, partial results, filters, sorting, retry, cancel, and CRM status. It does not expose provider names, raw prompts, JSON, stack traces, internal job names, or infrastructure details.
+
+Demo/test fixture:
+
+```text
+User product: AI sales research and outreach platform
+ICP: B2B SaaS companies with 20-200 employees expanding their sales team in Europe
+Result: EuroScale CRM Co
+Evidence: verified public careers/source page shows SDR hiring and CRM workflow expansion
+Scores: ICP, Buying Intent, Revenue Opportunity, Confidence
+Output: AI Sales Brief, Next Best Action, first-line opener, draft-only email, saved CRM status
+```
 
 ## CRM Persistence
 
@@ -166,6 +238,8 @@ A notification is created only when the score movement is meaningful. The curren
 - or the delta is at least `15`.
 
 This prevents small repeated source changes from becoming noisy alerts.
+
+The backend also applies a 24-hour notification cooldown for repeated alerts with the same company/title pair. Notifications are created only for verified or partially verified signals that materially change intent; unknown, rejected, or insignificant changes update history without notifying the user.
 
 The broader Dashboard read model is documented in [AI_REVENUE_INTELLIGENCE.md](AI_REVENUE_INTELLIGENCE.md). It turns saved signal changes into Opportunity Feed categories, explainable ICP/Intent/Revenue scores, watchlist updates, and next-best-action recommendations.
 

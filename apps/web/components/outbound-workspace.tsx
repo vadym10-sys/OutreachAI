@@ -5850,6 +5850,9 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               ["Why now", revenueIntel.sales_brief.why_now],
               ["Suggested positioning", revenueIntel.sales_brief.suggested_positioning],
               ["Suggested CTA", revenueIntel.sales_brief.suggested_cta],
+              ["Recommended timing", revenueIntel.recommended_action.recommended_timing || "Not available"],
+              ["Supporting signals", revenueIntel.recommended_action.supporting_signals?.join(", ") || "No supporting signal yet"],
+              ["Blockers", revenueIntel.recommended_action.blockers?.join(", ") || "No blocker surfaced"],
             ].map(([label, value]) => (
               <div key={label} className="rounded-xl bg-slate-50 p-3 text-sm">
                 <p className="font-black text-slate-900">{t(String(label))}</p>

@@ -234,6 +234,36 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("AI Customer Finder shows partial results, evidence, scores, brief and draft-only CRM save", async ({ page }, testInfo) => {
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/dashboard/ai-customer-finder");
+
+    await page.getByLabel("Your company").fill("AI sales research and outreach platform");
+    await page.getByLabel("Product or service").fill("AI sales research and outreach");
+    await page.getByLabel("Target country").fill("Germany");
+    await page.getByLabel("Target industry").fill("B2B SaaS");
+    await page.getByLabel("Company size").fill("20-200");
+    await page.getByLabel("Keywords").fill("SDR hiring, CRM");
+    await page.getByText("Start verified search").click();
+
+    await expect(page.getByText("First verified result is ready while the search continues.")).toBeVisible();
+    await expect(page.getByText("Verified").first()).toBeVisible();
+    await expect(page.getByText("Rejected")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+    await expect(page.getByText("Verified fact")).toBeVisible();
+    await expect(page.getByText("AI inference")).toBeVisible();
+    await expect(page.getByText("Publication: Unknown")).toBeVisible();
+    await expect(page.locator("span", { hasText: "Saved to CRM" })).toBeVisible();
+    await expect(page.getByText("AI Sales Brief")).toBeVisible();
+    await expect(page.getByText("Draft only. Nothing is sent or added to a campaign automatically.")).toBeVisible();
+    await expect(page.getByText("Intent").first()).toBeVisible();
+    await expect(page.locator("p", { hasText: /^Revenue$/ })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("google_places");
+    await expect(page.locator("body")).not.toContainText("source_provider");
+    await expect(page.locator("body")).not.toContainText("raw prompt");
+    await guards.assertClean();
+  });
+
   test("missing lead search key points users to the exact setup section", async ({ page }, testInfo) => {
     await mockWorkspaceApi(page, {
       "/api/workspace-app/integrations/status": {

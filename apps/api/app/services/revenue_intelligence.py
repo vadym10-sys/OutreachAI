@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal, Optional
 from uuid import UUID
 
@@ -66,6 +66,9 @@ class NextBestActionOut(BaseModel):
     action: Recommendation
     reason: str
     confidence: int
+    supporting_signals: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    recommended_timing: str = ""
 
 
 class SalesBriefOut(BaseModel):
@@ -236,12 +239,26 @@ def create_revenue_notification_if_needed(db: Session, *, company: Company, user
     should_notify = current >= 80 and delta >= 8 and action.get("action") == "Contact now"
     if not should_notify:
         return
+    title = f"{company.name} is recommended now"
+    since = datetime.utcnow() - timedelta(hours=24)
+    recent = db.scalar(
+        select(Notification.id)
+        .where(
+            Notification.workspace_id == workspace_id,
+            Notification.user_id == user_id,
+            Notification.title == title,
+            Notification.created_at >= since,
+        )
+        .limit(1)
+    )
+    if recent is not None:
+        return
     db.add(
         Notification(
             user_id=user_id,
             workspace_id=workspace_id,
             kind=NotificationKind.success,
-            title=f"{company.name} is recommended now",
+            title=title,
             message=f"Buying intent increased by {delta} points. Review the verified signal before outreach.",
         )
     )
@@ -417,17 +434,26 @@ def _revenue_score(company: Company, metadata: dict[str, Any], *, intent: int, i
 
 
 def _next_best_action(*, intent_score: int, revenue_score: int, confidence: int, delta: int, has_recent_signal: bool) -> NextBestActionOut:
-    if confidence < 40:
-        return NextBestActionOut(action="Research more", reason="Evidence confidence is too low for outreach. Collect another public source first.", confidence=confidence)
-    if intent_score >= 75 and revenue_score >= 65 and delta >= 0:
-        return NextBestActionOut(action="Contact now", reason="Intent and revenue fit are both strong, with enough evidence to review outreach now.", confidence=confidence)
-    if delta <= -10:
-        return NextBestActionOut(action="Wait", reason="Intent dropped recently. Avoid outreach until a stronger signal appears.", confidence=confidence)
+    supporting = []
+    if intent_score >= 75:
+        supporting.append("Strong buying intent")
+    if revenue_score >= 65:
+        supporting.append("Strong revenue fit")
+    if delta > 0:
+        supporting.append(f"Intent increased by {delta}")
     if has_recent_signal:
-        return NextBestActionOut(action="Monitor", reason="A new signal appeared, but score or confidence is not strong enough yet.", confidence=confidence)
+        supporting.append("Recent verified signal")
+    if confidence < 40:
+        return NextBestActionOut(action="Research more", reason="Evidence confidence is too low for outreach. Collect another public source first.", confidence=confidence, supporting_signals=supporting, blockers=["Low evidence confidence"], recommended_timing="After another verified source is found")
+    if intent_score >= 75 and revenue_score >= 65 and delta >= 0:
+        return NextBestActionOut(action="Contact now", reason="Intent and revenue fit are both strong, with enough evidence to review outreach now.", confidence=confidence, supporting_signals=supporting, recommended_timing="Today")
+    if delta <= -10:
+        return NextBestActionOut(action="Wait", reason="Intent dropped recently. Avoid outreach until a stronger signal appears.", confidence=confidence, supporting_signals=supporting, blockers=["Intent dropped"], recommended_timing="Wait for a new verified signal")
+    if has_recent_signal:
+        return NextBestActionOut(action="Monitor", reason="A new signal appeared, but score or confidence is not strong enough yet.", confidence=confidence, supporting_signals=supporting, blockers=["Score below contact threshold"], recommended_timing="Review again after the next signal")
     if revenue_score < 45:
-        return NextBestActionOut(action="Low priority", reason="Revenue fit is weaker than other opportunities in the workspace.", confidence=confidence)
-    return NextBestActionOut(action="Monitor", reason="Keep watching for a stronger timing signal before outreach.", confidence=confidence)
+        return NextBestActionOut(action="Low priority", reason="Revenue fit is weaker than other opportunities in the workspace.", confidence=confidence, supporting_signals=supporting, blockers=["Low revenue fit"], recommended_timing="Do not prioritize this week")
+    return NextBestActionOut(action="Monitor", reason="Keep watching for a stronger timing signal before outreach.", confidence=confidence, supporting_signals=supporting, blockers=["No recent high-intent signal"], recommended_timing="Monitor weekly")
 
 
 def _sales_brief(company: Company, metadata: dict[str, Any], timeline: list[SignalTimelineItemOut], next_action: NextBestActionOut, icp: ScoreBreakdownOut, intent: ScoreBreakdownOut, revenue: ScoreBreakdownOut) -> SalesBriefOut:

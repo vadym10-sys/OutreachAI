@@ -17,7 +17,7 @@ CustomerFinderStatus = Literal[
     "failed",
 ]
 
-VerifiedStatus = Literal["verified", "partially_verified", "unverified"]
+VerifiedStatus = Literal["verified", "partially_verified", "unknown", "rejected", "unverified"]
 
 
 class CustomerFinderCriteria(BaseModel):
@@ -78,6 +78,8 @@ class VerifiedCustomerSignal:
     source_type: str
     evidence_excerpt: str
     evidence_summary: str
+    observed_fact: str
+    model_inference: str
     fit_explanation: str
     ai_relevance_score: int
     confidence_score: int
@@ -86,6 +88,13 @@ class VerifiedCustomerSignal:
     source_provider: str
     dedupe_key: str
     signal_fingerprint: str
+    canonical_source_url: str
+    publication_date: str
+    retrieved_at: datetime
+    source_confidence: int
+    source_verification_status: str
+    first_line_opener: str
+    draft_email: str
     metadata: Dict = field(default_factory=dict)
 
 
@@ -125,12 +134,29 @@ class CustomerFinderResultOut(BaseModel):
     source_type: str = "official_website"
     evidence_excerpt: str = ""
     evidence_summary: str = ""
+    observed_fact: str = ""
+    model_inference: str = ""
     fit_explanation: str = ""
     ai_relevance_score: int
     confidence_score: int
     verified_status: str
     checked_at: datetime
     source_provider: str
+    canonical_source_url: str = ""
+    publication_date: str = "Unknown"
+    retrieved_at: Optional[datetime] = None
+    source_confidence: int = 0
+    source_verification_status: str = ""
+    scoring_version: str = ""
+    score_factors: Dict = Field(default_factory=dict)
+    score_weights: Dict = Field(default_factory=dict)
+    score_penalties: Dict = Field(default_factory=dict)
+    score_explanation: str = ""
+    icp_fit_score: int = 0
+    buying_intent_score: int = 0
+    revenue_opportunity_score: int = 0
+    first_line_opener: str = ""
+    draft_email: str = ""
     lead_id: str = ""
     company_id: str = ""
     score_delta: int = 0
@@ -143,6 +169,7 @@ class CustomerFinderJobOut(BaseModel):
     status: str
     progress: Dict
     criteria: CustomerFinderCriteria
+    summary: Dict = Field(default_factory=dict)
     error_message: str = ""
     results: List[CustomerFinderResultOut] = Field(default_factory=list)
     created_at: datetime

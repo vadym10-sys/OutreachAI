@@ -1215,6 +1215,9 @@ export type RevenueNextBestAction = {
   action: "Contact now" | "Wait" | "Monitor" | "Research more" | "Low priority" | string;
   reason: string;
   confidence: number;
+  supporting_signals?: string[];
+  blockers?: string[];
+  recommended_timing?: string;
 };
 
 export type RevenueSalesBrief = {

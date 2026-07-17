@@ -142,9 +142,118 @@ def test_ai_customer_finder_scoring_and_dedupe_require_public_evidence() -> None
     assert 0 <= score.relevance_score <= 100
     assert score.relevance_score >= 50
     assert score.confidence_score >= 60
-    assert score.factors["source_quality"] == 40
+    assert score.factors["source_quality"] >= 30
+    assert score.buying_intent_score >= 50
+    assert score.icp_fit_score >= 50
+    assert score.revenue_opportunity_score >= 50
+    assert score.scoring_version
     assert company_dedupe_key(website="https://www.Example.com/about", company_name="Example", country="Germany") == "domain:example.com"
     assert signal_fingerprint(source_url="https://example.com", signal_type="manual_workaround", evidence="Manual spreadsheet workflow", company_name="Example")
+
+
+def test_ai_customer_finder_evidence_dedupe_uses_canonical_source_and_signal() -> None:
+    from app.services.ai_customer_finder.dedupe import canonical_url, content_hash, signal_fingerprint
+
+    assert canonical_url("https://www.Example.com/path/?utm_source=x") == "https://example.com/path"
+    first = signal_fingerprint(source_url="https://www.Example.com/path/?utm_source=x", signal_type="manual_workaround", evidence="Manual spreadsheet workflow for outbound sales", company_name="Example Inc.")
+    second = signal_fingerprint(source_url="https://example.com/path", signal_type="manual workaround", evidence="Manual spreadsheet workflow for outbound sales", company_name="Example Inc")
+    assert first == second
+    assert content_hash("same source content") == content_hash("same source content")
+
+
+def test_ai_customer_finder_scoring_blocks_high_intent_without_buying_signal() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates outbound research",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200",
+    )
+    perfect_icp = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany building software for sales teams. Enterprise platform with CRM pages and integrations.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+    )
+    assert perfect_icp.icp_fit_score >= 50
+    assert perfect_icp.buying_intent_score <= 38
+    assert perfect_icp.has_meaningful_signal is False
+    assert perfect_icp.penalties["weak_or_missing_buying_signal"] > 0
+
+
+def test_ai_customer_finder_scoring_handles_quality_edge_cases() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates outbound research and CRM workflows",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200",
+    )
+    strong_signal_poor_icp = score_candidate(
+        criteria,
+        text="Manufacturing team is looking for an alternative to spreadsheet CRM and hiring SDRs in Canada.",
+        industry="Manufacturing",
+        country="Canada",
+        source_verified=True,
+        publication_date=datetime.utcnow().date().isoformat(),
+    )
+    assert strong_signal_poor_icp.buying_intent_score > strong_signal_poor_icp.icp_fit_score
+    assert strong_signal_poor_icp.icp_fit_score < 55
+
+    stale_signal = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany was looking for an alternative to manual spreadsheet CRM workflows.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+        publication_date="2020-01-01",
+    )
+    unknown_date = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany is looking for an alternative to manual spreadsheet CRM workflows.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+        publication_date="Unknown",
+    )
+    multi_source = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany is looking for an alternative to manual spreadsheet CRM workflows while hiring SDRs.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+        publication_date=datetime.utcnow().date().isoformat(),
+        independent_source_count=3,
+        source_diversity=2,
+    )
+    contradictory = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany is looking for an alternative to manual spreadsheet CRM workflows but announced layoffs and a hiring freeze.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+        publication_date=datetime.utcnow().date().isoformat(),
+    )
+    weak_source = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany is hiring SDRs and replacing manual spreadsheet CRM workflows.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=False,
+    )
+
+    assert stale_signal.factors["signal_recency"] < multi_source.factors["signal_recency"]
+    assert unknown_date.penalties["stale_or_unknown_publication_date"] > 0
+    assert multi_source.factors["source_diversity"] > unknown_date.factors["source_diversity"]
+    assert contradictory.buying_intent_score < multi_source.buying_intent_score
+    assert weak_source.buying_intent_score <= 45
 
 
 def test_ai_customer_finder_rejects_result_without_source_url() -> None:
@@ -329,6 +438,18 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert payload["results"][0]["source_url"] == "https://verified-finder.example"
     assert payload["results"][0]["verified_status"] == "verified"
     assert payload["results"][0]["company_id"]
+    assert payload["summary"]["verified"] == 1
+    assert payload["summary"]["rejected"] == 0
+    assert payload["results"][0]["canonical_source_url"] == "https://verified-finder.example"
+    assert payload["results"][0]["publication_date"] == "Unknown"
+    assert payload["results"][0]["observed_fact"]
+    assert payload["results"][0]["model_inference"]
+    assert payload["results"][0]["score_factors"]["signal_strength"] > 0
+    assert payload["results"][0]["score_penalties"]["stale_or_unknown_publication_date"] > 0
+    assert payload["results"][0]["buying_intent_score"] == payload["results"][0]["ai_relevance_score"]
+    assert payload["results"][0]["first_line_opener"]
+    assert payload["results"][0]["draft_email"]
+    assert "Draft only" in payload["results"][0]["draft_email"]
 
     crm = client.get("/api/workspace-app/companies?search=Verified%20Finder", headers=headers)
     assert crm.status_code == 200, crm.text
@@ -336,6 +457,15 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert len(companies) == 1
     assert companies[0]["source"] == "ai_customer_finder"
     assert companies[0]["buying_signal_evidence"][0]["source_url"] == "https://verified-finder.example"
+    db = get_sessionmaker()()
+    try:
+        company = db.get(Company, UUID(companies[0]["id"]))
+        assert company is not None
+        metadata = company.metadata_json or {}
+        assert metadata["ai_customer_finder"]["source_verification"]["status"] == "verified"
+        assert metadata["ai_customer_finder"]["outreach_draft"]["draft_only"] is True
+    finally:
+        db.close()
 
 
 def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monkeypatch) -> None:
@@ -398,6 +528,66 @@ def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monk
     assert payload["status"] == "partially_completed"
     assert len(payload["results"]) == 1
     assert payload["results"][0]["company_name"] == "Partial Good Co"
+    assert payload["summary"]["unknown"] == 1
+    assert payload["summary"]["saved"] == 1
+
+
+def test_ai_customer_finder_rejects_weak_industry_only_candidate(monkeypatch) -> None:
+    import app.services.ai_customer_finder.service as finder_service
+    from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "customer-finder-reject@example.com"}
+
+    class FakeProvider:
+        key = "test_provider"
+
+        def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            return [PublicCustomerCandidate(company_name="Weak ICP Only Co", website="https://weak-icp.example", industry=criteria.target_industry, country=criteria.target_country, source_provider=self.key)]
+
+    def fake_collect_website(url: str) -> WebsiteSnapshot:
+        return WebsiteSnapshot(
+            url=url,
+            title="Weak ICP Only Co",
+            meta_description="B2B SaaS company in Germany.",
+            text="Weak ICP Only Co is a B2B SaaS company in Germany with a CRM integration page and software services.",
+            technologies=["CRM"],
+        )
+
+    monkeypatch.setattr(finder_service, "provider_for_key", lambda _: FakeProvider())
+    monkeypatch.setattr(finder_service, "collect_website", fake_collect_website)
+
+    created = client.post(
+        "/api/workspace-app/ai-customer-finder/searches",
+        headers=headers,
+        json={
+            "company_description": "AI sales operating system",
+            "product_or_service": "Automates outbound research",
+            "target_country": "Germany",
+            "target_industry": "B2B SaaS",
+            "max_results": 3,
+        },
+    )
+    assert created.status_code == 202, created.text
+    job_id = created.json()["id"]
+
+    from app.services.ai_customer_finder.service import claim_next_ai_customer_finder_job, process_ai_customer_finder_job
+
+    db = get_sessionmaker()()
+    try:
+        claimed = claim_next_ai_customer_finder_job(db, worker_id="test-worker:customer-finder-reject")
+        assert claimed is not None
+        claim_token = claimed.locked_by
+    finally:
+        db.close()
+
+    assert process_ai_customer_finder_job(UUID(job_id), claim_token=claim_token) is True
+    refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
+    assert refreshed.status_code == 200, refreshed.text
+    payload = refreshed.json()
+    assert payload["status"] == "failed"
+    assert payload["results"] == []
+    assert payload["summary"]["rejected"] == 1
+    assert "no meaningful buying or timing signal" in payload["error_message"]
 
 
 def test_ai_customer_finder_intent_score_growth_creates_timeline_and_notification(monkeypatch) -> None:
@@ -479,6 +669,83 @@ def test_ai_customer_finder_intent_score_growth_creates_timeline_and_notificatio
     notifications = client.get("/api/notifications", headers=headers)
     assert notifications.status_code == 200, notifications.text
     assert any("Microsoft" in item["title"] and "86" in item["title"] for item in notifications.json())
+
+
+def test_ai_customer_finder_notification_cooldown_prevents_spam(monkeypatch) -> None:
+    import app.services.ai_customer_finder.service as finder_service
+    from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
+    from app.services.ai_customer_finder.scoring import ScoreResult
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "customer-finder-cooldown@example.com"}
+    score_queue = [86, 86]
+
+    class FakeProvider:
+        key = "test_provider"
+
+        def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            return [PublicCustomerCandidate(company_name="Cooldown Intent Co", website="https://cooldown-intent.example", industry=criteria.target_industry, country=criteria.target_country, source_provider=self.key)]
+
+    def fake_collect_website(url: str) -> WebsiteSnapshot:
+        return WebsiteSnapshot(
+            url=url,
+            title="Cooldown Intent signal",
+            meta_description="Cooldown Intent Co is hiring SDRs and replacing manual spreadsheet CRM workflows.",
+            text="Cooldown Intent Co is hiring SDRs and replacing manual spreadsheet CRM workflows for outbound sales teams.",
+            technologies=["CRM"],
+        )
+
+    monkeypatch.setattr(finder_service, "provider_for_key", lambda _: FakeProvider())
+    monkeypatch.setattr(finder_service, "collect_website", fake_collect_website)
+    monkeypatch.setattr(finder_service, "score_candidate", lambda *_, **__: ScoreResult(relevance_score=score_queue.pop(0), confidence_score=91, factors={"source_quality": 40}, explanation="Strong verified signal.", buying_intent_score=86, icp_fit_score=80, revenue_opportunity_score=82, has_meaningful_signal=True, source_quality_score=40))
+
+    from app.services.ai_customer_finder.service import claim_next_ai_customer_finder_job, process_ai_customer_finder_job
+
+    for run_index in range(2):
+        created = client.post(
+            "/api/workspace-app/ai-customer-finder/searches",
+            headers=headers,
+            json={
+                "company_description": "AI sales operating system",
+                "product_or_service": "Automates outbound research",
+                "target_country": "Germany",
+                "target_industry": "B2B SaaS",
+                "max_results": 3,
+            },
+        )
+        assert created.status_code == 202, created.text
+        db = get_sessionmaker()()
+        try:
+            claimed = claim_next_ai_customer_finder_job(db, worker_id=f"test-worker:cooldown:{run_index}")
+            assert claimed is not None
+            claim_token = claimed.locked_by
+            job_id = claimed.id
+        finally:
+            db.close()
+        assert process_ai_customer_finder_job(job_id, claim_token=claim_token) is True
+        if run_index == 0:
+            db = get_sessionmaker()()
+            try:
+                company = db.scalar(select(Company).where(Company.name == "Cooldown Intent Co"))
+                assert company is not None
+                metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+                company.metadata_json = {
+                    **metadata,
+                    "ai_live_buying_signals": {
+                        "generated_at": datetime.utcnow().isoformat(),
+                        "current_score": 74,
+                        "previous_score": 62,
+                        "score_delta": 12,
+                        "change_timeline": [],
+                    },
+                }
+                db.commit()
+            finally:
+                db.close()
+
+    notifications = client.get("/api/notifications", headers=headers)
+    assert notifications.status_code == 200, notifications.text
+    matching = [item for item in notifications.json() if "Cooldown Intent Co intent score increased to 86" in item["title"]]
+    assert len(matching) == 1
 
 
 def test_revenue_intelligence_feed_scores_watchlist_and_tenant_isolation() -> None:
