@@ -1,12 +1,12 @@
 # Railway PostgreSQL Backups Runbook
 
-OutreachAI readiness reports `database_backups_configured=true` only when the backend service has `DATABASE_BACKUPS_ENABLED=true`.
+OutreachAI readiness reports `database_backups_configured=true` only when the backend service has `DATABASE_BACKUPS_ENABLED=true`, a backup provider is configured, the latest backup finished successfully, and restore verification passed.
 
-Do not set this variable until Railway PostgreSQL backups are actually configured and a restore path has been reviewed.
+Do not set this variable until Railway PostgreSQL backups or the external `pg_dump` fallback are actually configured and a restore path has been verified.
 
 ## Current production status
 
-Last checked: 2026-07-10.
+Last checked: 2026-07-17.
 
 Production Postgres volume:
 
@@ -25,10 +25,11 @@ Railway backup API result:
 
 Operational conclusion:
 
-- `database_backups_configured` must remain `false`.
+- `database_backups_configured` must remain `false` until a successful backup and restore verification are recorded.
+- Production `/api/ready` is a release gate and returns degraded when backups are not confirmed.
 - Do not add `DATABASE_BACKUPS_ENABLED=true` yet.
-- The owner must enable backups from Railway Dashboard or grant a Railway role/token that can manage volume backups.
-- There is no configured external `pg_dump` target in production variables. Do not claim backups are configured unless either Railway backups are enabled or a tested external backup target is added.
+- Railway CLI is authenticated for the project, but the current shell cannot reach Railway GraphQL backup-management endpoints directly. Use Railway Dashboard or Railway agent tooling to apply backup settings.
+- There is no confirmed external `pg_dump` target in production variables. Do not claim backups are configured unless either Railway backups are enabled or a tested external backup target is added.
 
 ## Enable backups
 
@@ -44,6 +45,29 @@ Operational conclusion:
 8. Add `DATABASE_BACKUPS_ENABLED=true` only to the backend service (`outreachai-api`).
 9. Redeploy `outreachai-api`.
 10. Verify `/api/ready` returns `"database_backups_configured": true`.
+
+## Automatic external backup service
+
+If Railway managed backups are unavailable or insufficient, OutreachAI includes a config-as-code cron service:
+
+- config: `apps/api/railway.backup.toml`
+- schedule: `0 2 * * *` (daily at 02:00 UTC)
+- command: `python -m app.jobs.run_database_backup`
+- expected behavior: run `pg_dump`, upload the archive, verify restore against `BACKUP_RESTORE_TEST_DATABASE_URL`, record the run, then exit
+- retention defaults: at least 30 days and 30 retained backups
+
+Required production variables for the backup cron service and backend:
+
+- `DATABASE_BACKUPS_ENABLED=true`
+- `BACKUP_PROVIDER=aws_s3`, `cloudflare_r2`, `backblaze_b2`, or `gcs`
+- `BACKUP_BUCKET`
+- `BACKUP_PREFIX=outreachai/postgres`
+- `BACKUP_RETENTION_DAYS=30` or higher
+- `BACKUP_RETENTION_COUNT=30` or higher
+- `BACKUP_RESTORE_TEST_DATABASE_URL`
+- provider credentials (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` / `S3_ENDPOINT_URL`, or `GOOGLE_APPLICATION_CREDENTIALS`)
+
+After deploying the cron service, trigger one manual run from Railway or the owner-only `POST /api/backups/run` endpoint. Keep `DATABASE_BACKUPS_ENABLED=false` until that run succeeds and `restore_verified=true`.
 
 ## Verify latest backup
 
@@ -67,6 +91,8 @@ Operational conclusion:
    - `/api/live` returns 200,
    - `/api/ready` returns 200,
    - key CRM tables have expected record counts.
+7. Confirm `/api/backups/status` reports `backups_enabled=true` and `restore_verified=true`.
+8. Confirm `/api/ready` reports `status=ready`, `database_backups_configured=true`, and no `database_backups_not_confirmed` warning.
 
 ## Ownership
 
