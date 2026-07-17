@@ -19,6 +19,8 @@ from app.models.entities import (
     AuditLog,
     Company,
     Lead,
+    Notification,
+    NotificationKind,
 )
 from app.schemas.dto import LeadOut
 from app.services.ai_customer_finder.dedupe import canonical_url, company_dedupe_key, content_hash, normalized_domain, signal_fingerprint
@@ -264,6 +266,9 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         source_provider=result.source_provider,
         lead_id=str(result.lead_id or ""),
         company_id=str(result.company_id or ""),
+        score_delta=_safe_int((result.metadata_json or {}).get("score_delta"), 0),
+        intent_alert=bool((result.metadata_json or {}).get("intent_alert")),
+        intent_timeline=[item for item in (result.metadata_json or {}).get("intent_timeline", []) if isinstance(item, dict)] if isinstance((result.metadata_json or {}).get("intent_timeline"), list) else [],
     )
 
 
@@ -417,6 +422,7 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
     if existing:
         existing.notes = _merge_lead_metadata(existing, metadata)
         company = _sync_lead_to_crm(db, job.user_id, job.workspace, existing)
+        _record_intent_score_movement(db, job, company, result)
         result.lead_id = existing.id
         result.company_id = company.id
         result.updated_at = datetime.utcnow()
@@ -440,9 +446,138 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
     company.crm_stage = "Qualified"
     company.email_status = "Not prepared"
     company.updated_at = datetime.utcnow()
+    _record_intent_score_movement(db, job, company, result)
     result.lead_id = lead.id
     result.company_id = company.id
     result.updated_at = datetime.utcnow()
+
+
+def _record_intent_score_movement(db: Session, job: AICustomerFinderJob, company: Company, result: AICustomerFinderResult) -> None:
+    metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
+    live = metadata.get("ai_live_buying_signals") if isinstance(metadata.get("ai_live_buying_signals"), dict) else {}
+    previous_score = _score_or_none(live.get("current_score"))
+    current_score = _safe_int(result.ai_relevance_score, 0)
+    score_delta = current_score - previous_score if previous_score is not None else 0
+    timeline = [item for item in live.get("change_timeline", []) if isinstance(item, dict)] if isinstance(live.get("change_timeline"), list) else []
+    existing_fingerprints = {str(item.get("signal_fingerprint") or "") for item in timeline if isinstance(item, dict)}
+    is_new_event = result.signal_fingerprint not in existing_fingerprints
+    event = {
+        "change_type": _change_type_for_signal(result.signal_type),
+        "detected_at": result.checked_at.isoformat(),
+        "company": result.company_name,
+        "signal": result.signal_description,
+        "source_url": result.source_url,
+        "source_title": result.source_title,
+        "previous_score": previous_score,
+        "current_score": current_score,
+        "score_delta": score_delta,
+        "confidence": result.confidence_score,
+        "signal_fingerprint": result.signal_fingerprint,
+    }
+    if is_new_event:
+        timeline = [*timeline, event][-20:]
+    latest_changes = [event] if is_new_event else []
+    intent_alert = bool(is_new_event and previous_score is not None and ((current_score >= 80 and score_delta >= 8) or score_delta >= 15))
+    merged_signals = _dedupe_strings([*(metadata.get("buying_signals") if isinstance(metadata.get("buying_signals"), list) else []), result.signal_description])[:10]
+    merged_evidence = [item for item in metadata.get("buying_signal_evidence", []) if isinstance(item, dict)] if isinstance(metadata.get("buying_signal_evidence"), list) else []
+    evidence_entry = {"source_url": result.source_url, "value": result.evidence_summary, "source_field": "ai_customer_finder.source"}
+    if not any(str(item.get("source_url") or "") == result.source_url for item in merged_evidence):
+        merged_evidence = [*merged_evidence, evidence_entry][-10:]
+    live_update = {
+        **live,
+        "generated_at": datetime.utcnow().isoformat(),
+        "current_score": current_score,
+        "previous_score": previous_score,
+        "score_delta": score_delta,
+        "latest_changes": latest_changes,
+        "change_timeline": timeline,
+        "snapshot": {
+            **(live.get("snapshot") if isinstance(live.get("snapshot"), dict) else {}),
+            "latest_signal_type": result.signal_type,
+            "latest_signal": result.signal_description,
+            "latest_source_url": result.source_url,
+        },
+    }
+    company.metadata_json = {
+        **metadata,
+        "buying_signals": merged_signals,
+        "buying_signal_score": current_score,
+        "buying_signal_confidence": result.confidence_score,
+        "buying_signal_evidence": merged_evidence,
+        "priority_score": current_score,
+        "confidence_score": result.confidence_score,
+        "ai_live_buying_signals": live_update,
+    }
+    result.metadata_json = {
+        **(result.metadata_json or {}),
+        "previous_score": previous_score,
+        "score_delta": score_delta,
+        "intent_alert": intent_alert,
+        "intent_timeline": timeline,
+    }
+    db.add(
+        AuditLog(
+            user_id=job.user_id,
+            workspace_id=job.workspace_id,
+            action="ai_customer_finder.intent_score_changed",
+            metadata_json={"company_id": str(company.id), "result_id": str(result.id), "previous_score": previous_score, "current_score": current_score, "score_delta": score_delta, "signal_type": result.signal_type},
+        )
+    )
+    if intent_alert:
+        db.add(
+            Notification(
+                user_id=job.user_id,
+                workspace_id=job.workspace_id,
+                kind=NotificationKind.success,
+                title=f"{result.company_name} intent score increased to {current_score}",
+                message=f"{_human_signal_type(result.signal_type)} raised intent by {score_delta} points. Review the verified source before outreach.",
+            )
+        )
+
+
+def _safe_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _score_or_none(value: Any) -> int | None:
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _dedupe_strings(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        output.append(text)
+    return output
+
+
+def _change_type_for_signal(signal_type: str) -> str:
+    if signal_type == "hiring_related_workflow":
+        return "new_hiring"
+    if signal_type == "funding_or_growth":
+        return "new_funding"
+    if signal_type == "public_technology_adoption":
+        return "technology_changes"
+    if signal_type == "company_expansion_or_launch":
+        return "market_expansion"
+    if signal_type == "manual_workaround":
+        return "workflow_pain"
+    return "intent_signal"
+
+
+def _human_signal_type(signal_type: str) -> str:
+    return signal_type.replace("_", " ").capitalize()
 
 
 def _scoped_job(db: Session, *, workspace_id: UUID, job_id: UUID) -> AICustomerFinderJob:

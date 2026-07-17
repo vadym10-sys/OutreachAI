@@ -400,6 +400,87 @@ def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monk
     assert payload["results"][0]["company_name"] == "Partial Good Co"
 
 
+def test_ai_customer_finder_intent_score_growth_creates_timeline_and_notification(monkeypatch) -> None:
+    import app.services.ai_customer_finder.service as finder_service
+    from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
+    from app.services.ai_customer_finder.scoring import ScoreResult
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "customer-finder-intent@example.com"}
+    score_queue = [74, 86]
+    source_text_queue = [
+        "Microsoft is hiring SDRs and expanding sales operations for enterprise CRM workflows.",
+        "Microsoft announced funding-backed growth and is expanding sales operations for a new market launch.",
+    ]
+
+    class FakeProvider:
+        key = "test_provider"
+
+        def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            return [PublicCustomerCandidate(company_name="Microsoft", website="https://microsoft.example", industry=criteria.target_industry, country=criteria.target_country, source_provider=self.key)]
+
+    def fake_collect_website(url: str) -> WebsiteSnapshot:
+        text = source_text_queue.pop(0)
+        return WebsiteSnapshot(
+            url=url,
+            title="Microsoft intent signal",
+            meta_description=text,
+            text=text,
+            technologies=["CRM"],
+        )
+
+    monkeypatch.setattr(finder_service, "provider_for_key", lambda _: FakeProvider())
+    monkeypatch.setattr(finder_service, "collect_website", fake_collect_website)
+    monkeypatch.setattr(finder_service, "score_candidate", lambda *_, **__: ScoreResult(relevance_score=score_queue.pop(0), confidence_score=91, factors={"source_quality": 40}, explanation="Intent signal increased buying intent."))
+
+    from app.services.ai_customer_finder.service import claim_next_ai_customer_finder_job, process_ai_customer_finder_job
+
+    job_ids = []
+    for run_index in range(2):
+        created = client.post(
+            "/api/workspace-app/ai-customer-finder/searches",
+            headers=headers,
+            json={
+                "company_description": "AI sales operating system",
+                "product_or_service": "Automates outbound research",
+                "target_country": "United States",
+                "target_industry": "B2B SaaS",
+                "max_results": 3,
+            },
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["id"]
+        job_ids.append(job_id)
+        db = get_sessionmaker()()
+        try:
+            claimed = claim_next_ai_customer_finder_job(db, worker_id=f"test-worker:intent-growth:{run_index}")
+            assert claimed is not None
+            claim_token = claimed.locked_by
+        finally:
+            db.close()
+        assert process_ai_customer_finder_job(UUID(job_id), claim_token=claim_token) is True
+
+    job_id = job_ids[-1]
+    refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
+    assert refreshed.status_code == 200, refreshed.text
+    result = refreshed.json()["results"][0]
+    assert result["company_name"] == "Microsoft"
+    assert result["ai_relevance_score"] == 86
+    assert result["score_delta"] == 12
+    assert result["intent_alert"] is True
+    assert result["intent_timeline"][-1]["previous_score"] == 74
+    assert result["intent_timeline"][-1]["current_score"] == 86
+
+    crm = client.get("/api/workspace-app/companies?search=Microsoft", headers=headers)
+    assert crm.status_code == 200, crm.text
+    live = crm.json()[0]["ai_live_buying_signals"]
+    assert live["current_score"] == 86
+    assert live["change_timeline"][-1]["change_type"] == "new_funding"
+
+    notifications = client.get("/api/notifications", headers=headers)
+    assert notifications.status_code == 200, notifications.text
+    assert any("Microsoft" in item["title"] and "86" in item["title"] for item in notifications.json())
+
+
 def test_deep_contact_search_endpoint_downgrades_crm_apply_failure(monkeypatch) -> None:
     import app.api.usage as usage_module
 

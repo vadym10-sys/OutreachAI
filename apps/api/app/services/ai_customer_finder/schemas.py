@@ -133,6 +133,9 @@ class CustomerFinderResultOut(BaseModel):
     source_provider: str
     lead_id: str = ""
     company_id: str = ""
+    score_delta: int = 0
+    intent_alert: bool = False
+    intent_timeline: List[Dict] = Field(default_factory=list)
 
 
 class CustomerFinderJobOut(BaseModel):

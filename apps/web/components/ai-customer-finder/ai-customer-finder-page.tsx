@@ -34,6 +34,17 @@ type FinderResult = {
   source_provider: string;
   lead_id: string;
   company_id: string;
+  score_delta: number;
+  intent_alert: boolean;
+  intent_timeline: Array<{
+    change_type?: string;
+    detected_at?: string;
+    signal?: string;
+    previous_score?: number | null;
+    current_score?: number;
+    score_delta?: number;
+    source_url?: string;
+  }>;
 };
 
 type FinderJob = {
@@ -274,6 +285,7 @@ function Field({ label, value, onChange, placeholder, required, type = "text" }:
 }
 
 function ResultRow({ item }: { item: FinderResult }) {
+  const timeline = Array.isArray(item.intent_timeline) ? item.intent_timeline.slice(-3) : [];
   return (
     <article className="grid gap-4 p-4 lg:grid-cols-[1fr_auto] lg:items-start">
       <div className="min-w-0">
@@ -281,6 +293,8 @@ function ResultRow({ item }: { item: FinderResult }) {
           <h3 className="text-lg font-black text-ink">{item.company_name}</h3>
           <AppBadge tone={item.verified_status === "verified" ? "success" : "warning"}>{item.verified_status}</AppBadge>
           <AppBadge tone="brand">{item.signal_type.replaceAll("_", " ")}</AppBadge>
+          {item.intent_alert ? <AppBadge tone="success">Intent alert</AppBadge> : null}
+          {item.score_delta > 0 ? <AppBadge tone="warning">Intent +{item.score_delta}</AppBadge> : null}
         </div>
         <p className="mt-2 text-sm font-semibold text-slate-600">{item.industry || "Industry unknown"} · {item.country || "Country unknown"} · {item.company_size || "Size unverified"}</p>
         <p className="mt-3 text-sm leading-6 text-slate-700">{item.signal_description}</p>
@@ -292,6 +306,23 @@ function ResultRow({ item }: { item: FinderResult }) {
           {item.company_id ? <span className="rounded-full bg-teal-50 px-3 py-2 text-brand">Saved to CRM</span> : null}
           {item.contact_title ? <span className="rounded-full bg-slate-100 px-3 py-2 text-slate-700">Recommended role: {item.contact_title}</span> : null}
         </div>
+        {timeline.length ? (
+          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3">
+            <p className="text-xs font-black uppercase tracking-wide text-slate-500">Intent timeline</p>
+            <div className="mt-3 space-y-2">
+              {timeline.map((event, index) => (
+                <div key={`${event.detected_at || "event"}-${index}`} className="flex items-start gap-3 text-sm">
+                  <span className="mt-1 size-2 rounded-full bg-brand" aria-hidden="true" />
+                  <p className="min-w-0 flex-1 text-slate-700">
+                    <span className="font-bold text-ink">{event.change_type?.replaceAll("_", " ") || "intent signal"}</span>
+                    {typeof event.previous_score === "number" && typeof event.current_score === "number" ? <span> moved score {event.previous_score} → {event.current_score}</span> : null}
+                    {event.signal ? <span className="block truncate text-slate-500">{event.signal}</span> : null}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
       <div className="grid min-w-36 grid-cols-2 gap-2 text-center lg:grid-cols-1">
         <div className="rounded-2xl bg-[#101114] px-4 py-3 text-white">

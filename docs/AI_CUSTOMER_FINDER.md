@@ -130,6 +130,42 @@ Verified and partially verified results are saved into the existing CRM:
 - Evidence and source metadata are stored in CRM metadata and the AI Customer Finder audit tables.
 - No email is sent and no campaign is started automatically.
 
+## Intent Score Timeline and Notifications
+
+AI Customer Finder is designed to support repeated monitoring of the same company. When a new verified signal is found for an existing CRM company, the backend compares the previous company intent score with the new score.
+
+Example:
+
+```text
+Microsoft
+Intent Score: 62
+
+2 days later: Hiring SDR
+Intent Score: 74
+
+1 week later: Funding
+Intent Score: 86
+Notification created
+```
+
+The score movement is stored in `Company.metadata_json.ai_live_buying_signals`:
+
+- `current_score`
+- `previous_score`
+- `score_delta`
+- `latest_changes`
+- `change_timeline`
+- `snapshot.latest_signal`
+- `snapshot.latest_source_url`
+
+A notification is created only when the score movement is meaningful. The current rule is:
+
+- previous score exists;
+- the signal is new;
+- score reaches at least `80` with a delta of at least `8`, or the delta is at least `15`.
+
+This prevents small repeated source changes from becoming noisy alerts.
+
 ## Deduplication
 
 Company deduplication uses:
@@ -182,4 +218,3 @@ Rollback is safe because the integration adds isolated tables and one dashboard 
 1. Remove the dashboard route and navigation item.
 2. Stop processing AI Customer Finder jobs in the worker.
 3. Leave historical tables in place for audit retention or drop them through a planned migration if no longer needed.
-
