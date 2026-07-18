@@ -1,8 +1,8 @@
 import { expect, test, type Route } from "@playwright/test";
 
 const pages = [
-  ["/dashboard", "What should I do now?"],
-  ["/dashboard/leads", "Find real companies and turn each into a sales opportunity."],
+  ["/dashboard", "Find customers → CRM → first email."],
+  ["/dashboard/leads", "Find a customer, save the lead, write the email."],
   ["/dashboard/companies", "Open the next company to finish the opportunity."],
   ["/dashboard/website-analyzer", "Analyze a real prospect website."],
   ["/dashboard/contacts", "Decision makers and verified emails."],
@@ -346,9 +346,9 @@ test.describe("redesigned B2B outbound workspace", () => {
 
     await page.goto("/dashboard");
     const main = page.getByRole("main");
-    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
-    await expect(main).toContainText("Find leads");
-    await expect(main).toContainText("Open company");
+    await expect(page.getByRole("heading", { name: "Find customers → CRM → first email." })).toBeVisible();
+    await expect(main).toContainText("Start search");
+    await expect(main).toContainText("Open CRM");
     await expect(main).not.toContainText("Dashboard data is temporarily unavailable");
     await expect(main).not.toContainText("Dashboard details are temporarily unavailable");
   });
@@ -372,7 +372,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("main")).not.toContainText("Что-то пошло не так");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
-    await expect(page.getByRole("main")).toContainText(/Что мне делать сейчас\?|Загружаем рабочее пространство продаж/);
+    await expect(page.getByRole("main")).toContainText(/Найти клиентов → CRM → первое письмо\.|Загружаем пространство/);
     expect(pageErrors).toEqual([]);
   });
 
@@ -384,7 +384,7 @@ test.describe("redesigned B2B outbound workspace", () => {
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Dashboard unavailable" }) });
     });
     await page.goto("/dashboard/leads");
-    await expect(page.getByRole("heading", { name: "Find real companies and turn each into a sales opportunity." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Find a customer, save the lead, write the email." })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("Lead data unavailable");

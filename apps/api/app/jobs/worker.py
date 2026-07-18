@@ -15,7 +15,13 @@ from app.api.usage import mark_enrichment_job_failed, process_deep_contact_searc
 from app.core.config import get_settings
 from app.core.database import get_sessionmaker
 from app.core.observability import init_sentry
-from app.models.entities import EnrichmentJob
+from app.models.entities import AICustomerFinderJob, EnrichmentJob
+from app.services.ai_customer_finder.service import (
+    claim_next_ai_customer_finder_job,
+    fail_or_retry_ai_customer_finder_job,
+    heartbeat_ai_customer_finder_job,
+    process_ai_customer_finder_job,
+)
 from app.services.enrichment_queue import claim_next_enrichment_job, fail_or_retry_job, heartbeat_job_lock
 
 logger = logging.getLogger("outreachai.enrichment_worker")
@@ -36,11 +42,16 @@ def _claim_token(worker_id: str) -> str:
     return f"{worker_id}:{uuid.uuid4().hex[:8]}"
 
 
-def _heartbeat_job_until_stopped(job_id, claim_token: str, interval_seconds: float, stop_event: threading.Event) -> None:  # type: ignore[no-untyped-def]
+def _heartbeat_job_until_stopped(job_id, claim_token: str, interval_seconds: float, stop_event: threading.Event, job_kind: str = "enrichment") -> None:  # type: ignore[no-untyped-def]
     while not stop_event.wait(timeout=interval_seconds):
         db = get_sessionmaker()()
         try:
-            if not heartbeat_job_lock(db, job_id=job_id, claim_token=claim_token):
+            heartbeat_ok = (
+                heartbeat_ai_customer_finder_job(db, job_id=job_id, claim_token=claim_token)
+                if job_kind == "ai_customer_finder"
+                else heartbeat_job_lock(db, job_id=job_id, claim_token=claim_token)
+            )
+            if not heartbeat_ok:
                 return
         finally:
             db.close()
@@ -49,15 +60,26 @@ def _heartbeat_job_until_stopped(job_id, claim_token: str, interval_seconds: flo
 def run_enrichment_worker_once(worker_id: str | None = None) -> bool:
     settings = get_settings()
     db = get_sessionmaker()()
-    job: EnrichmentJob | None = None
+    job: EnrichmentJob | AICustomerFinderJob | None = None
+    job_kind = "enrichment"
     worker = worker_id or _worker_id()
     claim_token = _claim_token(worker)
     try:
         job = claim_next_enrichment_job(db, worker_id=claim_token, stale_after_seconds=settings.enrichment_worker_claim_timeout_seconds)
         if job is None:
+            job = claim_next_ai_customer_finder_job(db, worker_id=claim_token, stale_after_seconds=settings.enrichment_worker_claim_timeout_seconds)
+            job_kind = "ai_customer_finder" if job is not None else job_kind
+        if job is None:
             return False
         job_id = job.id
-        logger.info("Enrichment worker claimed job_id=%s lead_id=%s request_id=%s attempt=%s", job.id, job.lead_id, job.request_id, job.attempts)
+        logger.info(
+            "Enrichment worker claimed job_id=%s job_kind=%s lead_id=%s request_id=%s attempt=%s",
+            job.id,
+            job_kind,
+            getattr(job, "lead_id", ""),
+            job.request_id,
+            job.attempts,
+        )
     finally:
         db.close()
 
@@ -65,29 +87,35 @@ def run_enrichment_worker_once(worker_id: str | None = None) -> bool:
     heartbeat_interval = max(1.0, min(30.0, float(settings.enrichment_worker_claim_timeout_seconds or 900) / 3.0))
     heartbeat_thread = threading.Thread(
         target=_heartbeat_job_until_stopped,
-        args=(job_id, claim_token, heartbeat_interval, heartbeat_stop),
+        args=(job_id, claim_token, heartbeat_interval, heartbeat_stop, job_kind),
         name=f"outreachai-enrichment-heartbeat-{str(job_id)[:8]}",
         daemon=True,
     )
     heartbeat_thread.start()
     try:
-        if job.job_type == "deep_contact_search":
+        if job_kind == "ai_customer_finder":
+            completed = process_ai_customer_finder_job(job_id, claim_token=claim_token)
+        elif job.job_type == "deep_contact_search":
             completed = process_deep_contact_search_job(job_id, claim_token=claim_token)
         else:
             completed = process_enrichment_job(job_id, claim_token=claim_token)
         if completed:
-            logger.info("Enrichment worker completed job_id=%s job_type=%s", job_id, job.job_type)
+            logger.info("Enrichment worker completed job_id=%s job_type=%s", job_id, "ai_customer_finder" if job_kind == "ai_customer_finder" else job.job_type)
         else:
-            logger.info("Enrichment worker ignored stale claim job_id=%s claim_token=%s job_type=%s", job_id, claim_token, job.job_type)
+            logger.info("Enrichment worker ignored stale claim job_id=%s claim_token=%s job_type=%s", job_id, claim_token, "ai_customer_finder" if job_kind == "ai_customer_finder" else job.job_type)
         return True
     except Exception as exc:
         sentry_sdk.capture_exception(exc)
         retry_db = get_sessionmaker()()
         final = False
         try:
-            retry_job = retry_db.get(EnrichmentJob, job_id)
+            retry_job = retry_db.get(AICustomerFinderJob, job_id) if job_kind == "ai_customer_finder" else retry_db.get(EnrichmentJob, job_id)
             if retry_job is not None:
-                transitioned = fail_or_retry_job(retry_db, retry_job, exc, claim_token=claim_token)
+                transitioned = (
+                    fail_or_retry_ai_customer_finder_job(retry_db, retry_job, exc, claim_token=claim_token)
+                    if job_kind == "ai_customer_finder"
+                    else fail_or_retry_job(retry_db, retry_job, exc, claim_token=claim_token)
+                )
                 final = transitioned and retry_job.status == "failed"
                 if transitioned:
                     logger.warning(

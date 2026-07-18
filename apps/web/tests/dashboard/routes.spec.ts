@@ -5,8 +5,8 @@ import { expectNoBrokenImages, expectNoHorizontalOverflow, expectNoSensitiveCust
 const appHeader = "body > div > div > header";
 
 const customerRoutes = [
-  ["/dashboard", "What should I do now?"],
-  ["/dashboard/leads", "Find real companies and turn each into a sales opportunity."],
+  ["/dashboard", "Find customers → CRM → first email."],
+  ["/dashboard/leads", "Find a customer, save the lead, write the email."],
   ["/dashboard/companies", "Open the next company to finish the opportunity."],
   ["/dashboard/campaigns", "Review real outreach before anything is sent."],
   ["/dashboard/inbox", "Turn replies into meetings."],
@@ -30,7 +30,7 @@ test.describe("customer workspace routes", () => {
     const guards = installQaGuards(page, testInfo);
 
     await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Find customers → CRM → first email." })).toBeVisible();
     await expect(page.locator(appHeader)).toContainText("QA Private Workspace");
     await expect(page.locator("body")).not.toContainText("Something went wrong");
     await expect(page.locator("body")).not.toContainText("The page failed to render");
@@ -90,10 +90,10 @@ test.describe("customer workspace routes", () => {
     const guards = installQaGuards(page, testInfo);
 
     await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "Your private workspace is ready" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Find customers → CRM → first email." })).toBeVisible();
     await expect(page.locator(appHeader)).toContainText("Private Test Workspace");
-    await expect(page.getByRole("link", { name: "Add your first company" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Find leads" }).first()).toBeVisible();
+    await expect(page.getByRole("link", { name: "Start search" }).first()).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open CRM" }).first()).toBeVisible();
     await expect(page.getByRole("main")).not.toContainText("demo account");
     await expectNoHorizontalOverflow(page);
     await guards.assertClean();
@@ -138,15 +138,21 @@ test.describe("customer workspace routes", () => {
     await page.context().addCookies([{ name: "outreachai_locale", value: "ru", url: "http://127.0.0.1:3000" }]);
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
 
-    await expect(page.getByRole("heading", { name: "Что мне делать сейчас?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Найти клиентов → CRM → первое письмо." })).toBeVisible();
     await expect(page.locator(appHeader)).toContainText("QA Private Workspace");
     await expect(page.locator(appHeader)).toContainText("Аккаунт: qa@example.com");
     await expect(page.locator("body")).not.toContainText("What should I do now?");
+    await expect(page.locator("body")).not.toContainText("Find customers → CRM → first email.");
     await expect(page.locator("body")).not.toContainText("Dashboard details are temporarily unavailable");
     await expect(page.locator("body")).not.toContainText("Find your first qualified companies");
     await expect(page.locator("body")).not.toContainText("Sales workflow");
     await expect(page.locator("body")).not.toContainText("Current step");
     await expect(page.locator("body")).not.toContainText("OutreachAI keeps one obvious next action");
+    await expect(page.locator("body")).not.toContainText("Review drafts");
+    await expect(page.locator("body")).not.toContainText("Save to CRM");
+    await expect(page.locator("body")).not.toContainText("Open Mail");
+    await expect(page.locator("body")).not.toContainText("Live context");
+    await expect(page.locator("body")).not.toContainText("OutreachAI never sends email");
     await expectNoHorizontalOverflow(page);
     await guards.assertClean();
   });
@@ -168,12 +174,13 @@ test.describe("customer workspace routes", () => {
     await expect(drawer).toBeVisible();
     await expect(drawer).toContainText("QA Private Workspace");
     await expect(drawer).toContainText("Account: qa@example.com");
-    await expect(drawer.getByRole("link", { name: "Companies" })).toBeVisible();
+    await expect(drawer.getByRole("link", { name: "CRM" })).toHaveCount(0);
+    await expect(drawer.getByRole("link", { name: "Settings" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
 
-    await drawer.getByRole("link", { name: "Companies" }).click();
-    await expect(page).toHaveURL(/\/dashboard\/companies$/);
-    await expect(page.getByRole("heading", { name: "Open the next company to finish the opportunity." })).toBeVisible();
+    await drawer.getByRole("link", { name: "Settings" }).click();
+    await expect(page).toHaveURL(/\/dashboard\/settings$/);
+    await expect(page.getByRole("heading", { name: "Make the workspace ready for your first campaign." })).toBeVisible();
     await expect(drawer).not.toBeVisible();
     await expectNoHorizontalOverflow(page);
     await guards.assertClean();
@@ -190,7 +197,7 @@ test.describe("customer workspace routes", () => {
 
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("status")).toContainText("You are offline");
-    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Find customers → CRM → first email." })).toBeVisible();
     await expectNoHorizontalOverflow(page);
 
     await page.goto("/onboarding", { waitUntil: "domcontentloaded" });
@@ -231,6 +238,61 @@ test.describe("customer workspace routes", () => {
     await expect(page.getByRole("heading", { name: "Hill Country Build Co", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Open company workspace" }).first()).toBeVisible();
     await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
+  test("Lead Finder first-customer mode prepares evidence and saves to CRM only after approval", async ({ page }, testInfo) => {
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/dashboard/leads");
+
+    const form = page.getByRole("form", { name: "Find First Customers" });
+    await form.getByLabel("Product website").fill("https://outreachaiaiai.com");
+    await form.getByLabel("Country").fill("Germany");
+    await form.getByLabel("Industry").fill("B2B SaaS");
+    await form.getByLabel("Number of leads").fill("5");
+    await form.getByRole("button", { name: "Find First Customers" }).click();
+
+    await expect(page.getByText("Review the evidence, then save only the leads you approve.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+    await expect(page.getByText("84 fit score")).toBeVisible();
+    await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
+    await expect(page.getByText("Source date")).toBeVisible();
+    await expect(page.getByText("Draft message", { exact: true })).toBeVisible();
+    await expect(page.getByText("Saving is manual. Sending still requires separate approval from the email workflow.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Save to CRM" }).click();
+    await expect(page.getByText("Lead saved to CRM. Outreach draft is ready for manual review.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Saved to CRM" })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("source_provider");
+    await expect(page.locator("body")).not.toContainText("raw prompt");
+    await guards.assertClean();
+  });
+
+  test("AI Customer Finder runs the simple find, save, draft and send flow", async ({ page }, testInfo) => {
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/dashboard/ai-customer-finder");
+
+    await page.getByLabel("1. Your company website").fill("https://outreachaiaiai.com");
+    await page.getByLabel("2. Who should we find?").fill("B2B SaaS companies in Europe with sales teams that need better outbound research.");
+    await page.getByRole("button", { name: "Find leads" }).click();
+
+    await expect(page.getByText("First verified result is ready while the search continues.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+    await expect(page.getByText("Saved to CRM").first()).toBeVisible();
+    await expect(page.getByText("Письмо подготовлено").first()).toBeVisible();
+    await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
+    await expect(page.getByText("Quick idea for EuroScale CRM Co")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Сохранить как черновик" })).toBeVisible();
+    await page.getByRole("button", { name: "Сохранить как черновик" }).click();
+    await expect(page.getByText("Draft saved in CRM.")).toBeVisible();
+    await page.getByRole("button", { name: "Отправить" }).click();
+    await expect(page.getByText("Email sent. CRM stage updated.")).toBeVisible();
+    await expect(page.getByText("Отправлено").first()).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("Revenue");
+    await expect(page.locator("body")).not.toContainText("Intent timeline");
+    await expect(page.locator("body")).not.toContainText("google_places");
+    await expect(page.locator("body")).not.toContainText("source_provider");
+    await expect(page.locator("body")).not.toContainText("raw prompt");
     await guards.assertClean();
   });
 
@@ -402,9 +464,9 @@ test.describe("customer workspace routes", () => {
     });
 
     await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
-    await expect(page.getByRole("main")).toContainText("Find leads");
-    await expect(page.getByRole("main")).toContainText("Open company");
+    await expect(page.getByRole("heading", { name: "Find customers → CRM → first email." })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Start search");
+    await expect(page.getByRole("main")).toContainText("Open CRM");
     await expect(page.getByRole("main")).not.toContainText("Dashboard details are temporarily unavailable");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("The page failed to render");

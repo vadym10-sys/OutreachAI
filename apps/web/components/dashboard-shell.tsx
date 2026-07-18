@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, Sparkles, User } from "lucide-react";
+import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, Loader2, Menu, Search, Settings, Shield, Sparkles, User } from "lucide-react";
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -18,29 +18,28 @@ import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { Breadcrumbs, CommandDialog, CommandItem, Kbd } from "@/components/design-system";
 
-const nav = [
-  { href: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/leads", labelKey: "nav.leads", icon: Search },
-  { href: "/dashboard/companies", labelKey: "nav.companies", icon: Building2 },
-  { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
-  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
+const primaryNav = [
+  { href: "/dashboard/leads", labelKey: "nav.aiCustomerFinder", icon: Search, aliases: ["/dashboard", "/dashboard/ai-customer-finder"] },
+  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Building2, aliases: ["/dashboard/companies"] },
+  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, aliases: ["/dashboard/campaigns"] }
+] as const;
+
+const utilityNav = [
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
   { href: "/dashboard/profile", labelKey: "nav.profile", icon: User },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
   { href: "/dashboard/owner", labelKey: "nav.owner", icon: Crown, ownerOnly: true },
   { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
-];
+] as const;
 
 const featureFlags = {
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };
 
 const navDescriptions: Record<string, string> = {
-  "/dashboard": "Executive AI command center",
-  "/dashboard/leads": "Find and prioritize real companies",
-  "/dashboard/companies": "Research accounts and run AI analysis",
-  "/dashboard/campaigns": "Review and launch outreach",
-  "/dashboard/inbox": "Turn replies into meetings",
+  "/dashboard/leads": "Find companies, verified contacts and first emails",
+  "/dashboard/crm": "Saved leads, statuses and next company action",
+  "/dashboard/inbox": "Drafts, sent emails, replies and follow-up",
   "/dashboard/billing": "Plan, usage and invoices",
   "/dashboard/profile": "Workspace identity",
   "/dashboard/settings": "Integrations and readiness",
@@ -249,16 +248,30 @@ function profileInitials(email: string, workspaceLabel: string) {
   return `${first || ""}${second || ""}`.toUpperCase();
 }
 
+type ShellNavItem = (typeof primaryNav)[number] | (typeof utilityNav)[number];
+
+function isNavItemActive(item: ShellNavItem, pathname: string) {
+  if (pathname === item.href || pathname.startsWith(`${item.href}/`)) return true;
+  const aliases = "aliases" in item ? item.aliases || [] : [];
+  return aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`));
+}
+
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
   const { clerkEnabled } = useAuthRuntime();
   const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
-  const visibleNav = useMemo(
-    () => nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner)),
+  const visiblePrimaryNav = useMemo(() => primaryNav, []);
+  const visibleUtilityNav = useMemo(
+    () => utilityNav.filter((item) => {
+      const featureFlag = "featureFlag" in item ? item.featureFlag : undefined;
+      const ownerOnly = "ownerOnly" in item ? item.ownerOnly : false;
+      return (!featureFlag || featureFlags[featureFlag]) && (!ownerOnly || isOwner);
+    }),
     [isOwner]
   );
-  const primaryMobileNav = visibleNav.slice(0, 4);
+  const visibleNav = useMemo(() => [...visiblePrimaryNav, ...visibleUtilityNav], [visiblePrimaryNav, visibleUtilityNav]);
+  const primaryMobileNav = visiblePrimaryNav;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
@@ -351,7 +364,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
   const accountInitials = profileInitials(workspaceOwnerEmail || email, workspaceLabel);
-  const activeNavItem = visibleNav.find((item) => pathname === item.href) || visibleNav.find((item) => pathname.startsWith(`${item.href}/`));
+  const activeNavItem = visibleNav.find((item) => isNavItemActive(item, pathname));
   const activeLabel = activeNavItem ? t(activeNavItem.labelKey) : t("Workspace");
   const commandItems = useMemo(() => {
     const normalized = commandQuery.trim().toLowerCase();
@@ -490,36 +503,31 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="dashboard-safe ai-os-bg min-h-screen min-w-0 max-w-[100vw] overflow-x-clip">
       <CheckoutContinuation />
-      <aside className="fixed inset-y-0 left-0 hidden w-72 border-r border-[var(--ui-border)] bg-white/75 px-4 py-5 shadow-[12px_0_44px_rgba(16,17,20,0.05)] backdrop-blur-2xl lg:block">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-72 border-r border-[var(--ui-border)] bg-white px-4 py-5 shadow-[12px_0_44px_rgba(16,17,20,0.05)] lg:block">
         <Link href="/dashboard" className="mb-6 flex min-h-12 items-center gap-3 rounded-2xl px-2 text-xl font-black tracking-tight text-ink">
           <span className="grid size-10 place-items-center rounded-2xl bg-[linear-gradient(135deg,#111114,var(--ui-brand),var(--ui-accent))] text-sm text-white shadow-glow">OA</span>
           <span>
             OutreachAI
-            <span className="block text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">AI Operating System</span>
+            <span className="block text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t("Find → CRM → Mail")}</span>
           </span>
         </Link>
-        <div className="mb-4 rounded-[1.4rem] border border-[var(--ui-border)] bg-white/70 p-3 shadow-sm">
+        <div className="mb-4 rounded-[1.4rem] border border-[var(--ui-border)] bg-white p-3 shadow-sm">
           <p className="truncate text-sm font-black text-[var(--ui-text)]">{workspaceLabel}</p>
           <p className="mt-1 truncate text-xs font-semibold text-[var(--ui-text-soft)]">{workspaceOwnerEmail || email || t("shell.account")}</p>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[11px] font-black text-[var(--ui-text-soft)]">
-            <span className="rounded-xl bg-[var(--ui-surface-subtle)] px-2 py-2">{workspace ? "Live" : "Sync"}</span>
-            <span className="rounded-xl bg-[var(--ui-surface-subtle)] px-2 py-2">AI</span>
-            <span className="rounded-xl bg-[var(--ui-surface-subtle)] px-2 py-2">Secure</span>
-          </div>
         </div>
         <button
           type="button"
           onClick={() => setCommandOpen(true)}
-          className="mb-4 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-white/75 px-3 text-left text-sm font-bold text-[var(--ui-text-soft)] shadow-sm"
+          className="mb-4 flex min-h-11 w-full items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-white px-3 text-left text-sm font-bold text-[var(--ui-text-soft)] shadow-sm"
         >
           <Search size={16} />
-          <span className="min-w-0 flex-1 truncate">Search workspace</span>
+          <span className="min-w-0 flex-1 truncate">{t("Search workspace")}</span>
           <Kbd>⌘K</Kbd>
         </button>
         <nav className="space-y-1">
-          {visibleNav.map((item) => {
+          {visiblePrimaryNav.map((item) => {
             const Icon = item.icon;
-            const active = pathname === item.href;
+            const active = isNavItemActive(item, pathname);
             const label = t(item.labelKey);
             return (
               <Link key={item.href} href={item.href} className={`group flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white shadow-glow" : "text-[var(--ui-text-soft)] hover:bg-white/80 hover:text-[var(--ui-text)]"}`}>
@@ -531,10 +539,30 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
+        {visibleUtilityNav.length ? (
+          <details className="mt-5 rounded-2xl border border-[var(--ui-border)] bg-slate-50 p-2" open>
+            <summary className="cursor-pointer rounded-xl px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t("Account")}</summary>
+            <nav className="mt-1 space-y-1" aria-label={t("Account")}>
+              {visibleUtilityNav.map((item) => {
+                const Icon = item.icon;
+                const active = isNavItemActive(item, pathname);
+                const label = t(item.labelKey);
+                return (
+                  <Link key={item.href} href={item.href} className={`group flex min-h-11 items-center gap-3 rounded-xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white shadow-glow" : "text-[var(--ui-text-soft)] hover:bg-white hover:text-[var(--ui-text)]"}`}>
+                    <span className={`grid size-8 place-items-center rounded-xl ${active ? "bg-white/15 text-white" : "bg-[var(--ui-surface-subtle)] text-[var(--ui-text-soft)] group-hover:text-[var(--ui-text)]"}`}>
+                      <Icon size={16} aria-hidden="true" />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
+          </details>
+        ) : null}
       </aside>
       <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-72">
         <NetworkStatusBanner />
-        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-[var(--ui-border)] bg-[rgba(var(--ui-bg-rgb),0.76)] px-4 backdrop-blur-2xl min-[360px]:px-5">
+        <header className="sticky top-0 z-30 flex min-h-16 max-w-full items-center justify-between gap-2 overflow-visible border-b border-[var(--ui-border)] bg-white/95 px-4 backdrop-blur-xl min-[360px]:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <div className="group relative lg:hidden">
               <button
@@ -551,8 +579,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 <Menu size={20} aria-hidden="true" />
               </button>
               <div className={`${mobileMenuOpen ? "block" : "hidden"} fixed inset-0 z-50 lg:hidden`}>
-                <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-950/20" onClick={closeMobileMenu} />
-                <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),22rem)] overflow-y-auto rounded-[1.6rem] border border-[var(--ui-border)] bg-white/95 p-3 shadow-2xl backdrop-blur-2xl">
+                <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-950/45" onClick={closeMobileMenu} />
+                <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),22rem)] overflow-y-auto rounded-[1.6rem] border border-[var(--ui-border)] bg-white p-3 shadow-2xl">
                   <div className="mb-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-3">
                     <p className="truncate text-sm font-bold text-ink">{workspaceLabel}</p>
                     <p className="mt-1 truncate text-xs font-semibold text-slate-500">{accountLabel}</p>
@@ -560,18 +588,23 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                       <LanguageSwitcher compact />
                     </div>
                   </div>
-                  <nav className="space-y-1" aria-label={t("nav.open")}>
-                    {visibleNav.map((item) => {
-                      const Icon = item.icon;
-                      const active = pathname === item.href;
-                      const label = t(item.labelKey);
-                      return (
-                        <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white" : "text-[var(--ui-text-soft)] hover:bg-white"}`}>
-                          <Icon size={18} aria-hidden="true" />
-                          {label}
-                        </Link>
-                      );
-                    })}
+                  <nav className="space-y-1" aria-label={t("Account")}>
+                    {visibleUtilityNav.length ? (
+                      <div>
+                        <p className="mb-2 px-3 text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t("Account")}</p>
+                        {visibleUtilityNav.map((item) => {
+                          const Icon = item.icon;
+                          const active = isNavItemActive(item, pathname);
+                          const label = t(item.labelKey);
+                          return (
+                            <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white" : "text-[var(--ui-text-soft)] hover:bg-white"}`}>
+                              <Icon size={18} aria-hidden="true" />
+                              {label}
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </nav>
                 </div>
               </div>
@@ -584,10 +617,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             onClick={() => setCommandOpen(true)}
-            className="hidden min-h-11 min-w-[16rem] items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-white/70 px-3 text-left text-sm font-bold text-[var(--ui-text-soft)] shadow-sm md:flex"
+            className="hidden min-h-11 min-w-[16rem] items-center gap-2 rounded-2xl border border-[var(--ui-border)] bg-white px-3 text-left text-sm font-bold text-[var(--ui-text-soft)] shadow-sm md:flex"
           >
             <Command size={16} />
-            <span className="min-w-0 flex-1 truncate">Ask, search, navigate</span>
+            <span className="min-w-0 flex-1 truncate">{t("Search workspace")}</span>
             <Kbd>⌘K</Kbd>
           </button>
           <div className="hidden shrink-0 md:block">
@@ -597,7 +630,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <p className="truncate text-xs font-bold uppercase text-brand">{t("workspace.privateAccount")}</p>
             <p className="max-w-52 truncate text-sm font-semibold text-slate-700">{workspaceOwnerEmail || email || t("shell.account")}</p>
           </div>
-          <button type="button" onClick={() => setCommandOpen(true)} className="grid size-10 shrink-0 place-items-center rounded-2xl border border-[var(--ui-border)] bg-white/70 text-[var(--ui-text)] shadow-sm md:hidden" aria-label="Open command menu">
+          <button type="button" onClick={() => setCommandOpen(true)} className="grid size-10 shrink-0 place-items-center rounded-2xl border border-[var(--ui-border)] bg-white/70 text-[var(--ui-text)] shadow-sm md:hidden" aria-label={t("Open command menu")}>
             <Sparkles size={18} />
           </button>
           <div className="dashboard-user-button grid size-10 shrink-0 place-items-center overflow-hidden rounded-full ring-2 ring-indigo-100" aria-label={t("shell.account")}>
@@ -665,7 +698,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     {t("workspace.save")}
                   </button>
                   <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
-                    {t("nav.leads")} <ArrowRight size={17} />
+                    {t("nav.aiCustomerFinder")} <ArrowRight size={17} />
                   </Link>
                 </div>
               </form>
@@ -674,15 +707,15 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>
-      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-4 rounded-[1.6rem] border border-[var(--ui-border)] bg-white/90 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] backdrop-blur-2xl lg:hidden">
+      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-3 rounded-[1.6rem] border border-[var(--ui-border)] bg-white px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] lg:hidden">
         {primaryMobileNav.map((item) => {
           const Icon = item.icon;
-          const active = pathname === item.href;
+          const active = isNavItemActive(item, pathname);
           const label = t(item.labelKey);
           return (
             <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-[11px] font-black ${active ? "bg-[#101114] text-white shadow-sm" : "text-[var(--ui-text-soft)]"}`}>
               <Icon size={18} aria-hidden="true" />
-              <span className="max-w-full truncate">{item.href === "/dashboard/leads" ? t("nav.leadsShort") : label}</span>
+              <span className="max-w-full truncate">{label}</span>
             </Link>
           );
         })}
@@ -696,7 +729,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               href={item.href}
               icon={<Icon size={17} />}
               title={t(item.labelKey)}
-              detail={navDescriptions[item.href]}
+              detail={t(navDescriptions[item.href] || "")}
               shortcut={index < 9 ? <Kbd>{index + 1}</Kbd> : undefined}
               onSelect={() => setCommandOpen(false)}
             />

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -387,6 +387,96 @@ class EnrichmentJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     workspace: Mapped[Workspace] = relationship()
     lead: Mapped[Lead] = relationship()
+
+
+class AICustomerFinderJob(Base):
+    __tablename__ = "ai_customer_finder_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=2)
+    request_id: Mapped[str] = mapped_column(String(80), index=True)
+    criteria_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    progress_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    summary_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    locked_by: Mapped[str] = mapped_column(String(120), default="", index=True)
+    locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    run_after: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+
+
+class AICustomerFinderResult(Base):
+    __tablename__ = "ai_customer_finder_results"
+    __table_args__ = (UniqueConstraint("workspace_id", "job_id", "signal_fingerprint", name="uq_ai_customer_finder_result_signal"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_customer_finder_jobs.id", ondelete="CASCADE"), index=True)
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), index=True)
+    company_name: Mapped[str] = mapped_column(String(220), index=True)
+    official_website: Mapped[str] = mapped_column(String(500), default="")
+    domain: Mapped[str] = mapped_column(String(220), default="", index=True)
+    industry: Mapped[str] = mapped_column(String(160), default="")
+    country: Mapped[str] = mapped_column(String(120), default="")
+    company_size: Mapped[str] = mapped_column(String(80), default="")
+    contact_name: Mapped[str] = mapped_column(String(180), default="")
+    contact_title: Mapped[str] = mapped_column(String(180), default="")
+    public_work_contact: Mapped[str] = mapped_column(String(320), default="")
+    signal_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    signal_description: Mapped[str] = mapped_column(Text, default="")
+    signal_date: Mapped[str] = mapped_column(String(80), default="Unknown")
+    source_url: Mapped[str] = mapped_column(String(1000), index=True)
+    source_title: Mapped[str] = mapped_column(String(500), default="")
+    source_type: Mapped[str] = mapped_column(String(80), default="official_website")
+    evidence_excerpt: Mapped[str] = mapped_column(Text, default="")
+    evidence_summary: Mapped[str] = mapped_column(Text, default="")
+    fit_explanation: Mapped[str] = mapped_column(Text, default="")
+    ai_relevance_score: Mapped[int] = mapped_column(Integer, default=0)
+    confidence_score: Mapped[int] = mapped_column(Integer, default=0)
+    verified_status: Mapped[str] = mapped_column(String(40), default="verified", index=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    source_provider: Mapped[str] = mapped_column(String(80), default="")
+    dedupe_key: Mapped[str] = mapped_column(String(320), default="", index=True)
+    signal_fingerprint: Mapped[str] = mapped_column(String(128), index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    job: Mapped[AICustomerFinderJob] = relationship()
+    lead: Mapped[Optional[Lead]] = relationship()
+    company: Mapped[Optional[Company]] = relationship()
+
+
+class AICustomerFinderSource(Base):
+    __tablename__ = "ai_customer_finder_sources"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_customer_finder_jobs.id", ondelete="CASCADE"), index=True)
+    result_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_customer_finder_results.id", ondelete="CASCADE"), index=True)
+    source_url: Mapped[str] = mapped_column(String(1000), index=True)
+    canonical_url: Mapped[str] = mapped_column(String(1000), default="", index=True)
+    source_title: Mapped[str] = mapped_column(String(500), default="")
+    source_type: Mapped[str] = mapped_column(String(80), default="official_website")
+    publication_date: Mapped[str] = mapped_column(String(80), default="Unknown")
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    content_hash: Mapped[str] = mapped_column(String(128), default="", index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    job: Mapped[AICustomerFinderJob] = relationship()
+    result: Mapped[AICustomerFinderResult] = relationship()
 
 
 class AICEOBriefing(Base):

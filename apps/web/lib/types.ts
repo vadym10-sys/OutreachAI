@@ -942,6 +942,9 @@ export type CrmCompany = {
   ai_sales_workspace_updated_at?: string | null;
   ai_live_buying_signals?: {
     generated_at?: string;
+    current_score?: number;
+    previous_score?: number | null;
+    score_delta?: number;
     latest_changes?: Array<{
       change_type?: string;
       added?: string[];
@@ -953,6 +956,13 @@ export type CrmCompany = {
       change_type?: string;
       added?: string[];
       detected_at?: string;
+      source_url?: string;
+      evidence?: string;
+      signal?: string;
+      previous_score?: number | null;
+      current_score?: number;
+      score_delta?: number;
+      confidence?: number;
     }>;
     snapshot?: {
       new_hiring?: string[];
@@ -1065,6 +1075,7 @@ export type CrmCompany = {
       }>
     >;
   } | null;
+  ai_revenue_intelligence?: RevenueCompany;
   intelligence_quality?: IntelligenceQuality | null;
   company_intelligence?: CompanyIntelligence | null;
   technologies?: string[];
@@ -1164,6 +1175,93 @@ export type SalesEmployeeTaskPlan = {
     failure_reason?: string;
     next_recommended_action?: string;
   } | null;
+};
+
+export type RevenueScoreBreakdown = {
+  score: number;
+  factors: Record<string, number>;
+  weights: Record<string, number>;
+  explanation: string;
+};
+
+export type RevenueSignalTimelineItem = {
+  timestamp: string;
+  signal_type: string;
+  category: string;
+  source_url?: string;
+  evidence?: string;
+  previous_score?: number | null;
+  current_score: number;
+  score_delta: number;
+  confidence: number;
+};
+
+export type RevenueIntentHistory = {
+  current_score: number;
+  previous_score?: number | null;
+  delta: number;
+  trend: "up" | "down" | "flat" | string;
+  last_updated: string;
+  points: Array<Record<string, unknown>>;
+};
+
+export type RevenueVerification = {
+  verification_count: number;
+  source_diversity: number;
+  verification_level: "none" | "single_source" | "multi_source" | "strong" | string;
+};
+
+export type RevenueNextBestAction = {
+  action: "Contact now" | "Wait" | "Monitor" | "Research more" | "Low priority" | string;
+  reason: string;
+  confidence: number;
+  supporting_signals?: string[];
+  blockers?: string[];
+  recommended_timing?: string;
+};
+
+export type RevenueSalesBrief = {
+  why_now: string;
+  business_changes: string[];
+  buying_signals: string[];
+  icp_explanation: string;
+  risks: string[];
+  suggested_positioning: string;
+  suggested_cta: string;
+};
+
+export type RevenueCompany = {
+  company_id: string;
+  company: string;
+  industry?: string;
+  country?: string;
+  website?: string;
+  icp_fit: RevenueScoreBreakdown;
+  buying_intent: RevenueScoreBreakdown;
+  revenue_opportunity: RevenueScoreBreakdown;
+  confidence: number;
+  signal_summary: string;
+  last_change: string;
+  recommended_action: RevenueNextBestAction;
+  signal_timeline: RevenueSignalTimelineItem[];
+  intent_history: RevenueIntentHistory;
+  sales_brief: RevenueSalesBrief;
+  verification: RevenueVerification;
+  similar_companies_count: number;
+  watchlisted: boolean;
+  feed_categories: string[];
+};
+
+export type RevenueIntelligenceFeed = {
+  generated_at: string;
+  categories: Record<string, RevenueCompany[]>;
+  top_opportunities: RevenueCompany[];
+  highest_intent_increase: RevenueCompany[];
+  recently_changed: RevenueCompany[];
+  watchlist_updates: RevenueCompany[];
+  recommended_today: RevenueCompany[];
+  intent_trend: Array<Record<string, unknown>>;
+  pipeline_health: Record<string, unknown>;
 };
 
 export type SalesEmployeeTaskResult = {

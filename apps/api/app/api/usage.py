@@ -55,6 +55,10 @@ from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, en
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
 from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
 from app.services.deep_contact_search import normalize_domain, run_deep_contact_search
+from app.services.ai_customer_finder.schemas import CustomerFinderCriteria, CustomerFinderJobOut, CustomerFinderResultActionOut
+from app.services.ai_customer_finder.service import job_out as first_customer_job_out
+from app.services.ai_customer_finder.service import result_out as first_customer_result_out
+from app.services.ai_customer_finder.service import save_first_customer_result_to_crm, search_first_customer_candidates
 from app.services.continuous_learning import (
     DEFAULT_OPPORTUNITY_WEIGHTS,
     DEFAULT_PRIORITIZATION_WEIGHTS,
@@ -158,6 +162,13 @@ class UsageCompanyCreateOut(BaseModel):
     status: Literal["created", "reused"]
     message: str
     company: CrmCompanyOut
+
+
+class FirstCustomerSearchIn(BaseModel):
+    product_site: str = Field(min_length=3, max_length=500)
+    country: str = Field(min_length=2, max_length=120)
+    industry: str = Field(min_length=2, max_length=160)
+    results: int = Field(default=5, ge=1, le=10)
 
 
 class UsageContactCreateIn(BaseModel):
@@ -5911,6 +5922,18 @@ def run_continuous_company_monitoring_once(*, workspace_id: UUID | None = None) 
                     "ai_live_buying_signals": monitoring,
                 }
                 company.updated_at = datetime.utcnow()
+            from app.services.revenue_intelligence import build_and_store_revenue_intelligence, create_revenue_notification_if_needed
+
+            workspace_companies = [item for item in companies if item.workspace_id == company.workspace_id]
+            revenue_snapshot = build_and_store_revenue_intelligence(db, company=company, companies=workspace_companies)
+            if company.workspace_id is not None:
+                create_revenue_notification_if_needed(
+                    db,
+                    company=company,
+                    user_id=str(company.user_id or (lead.user_id if lead else "")),
+                    workspace_id=company.workspace_id,
+                    intelligence=revenue_snapshot,
+                )
 
             changed.append(
                 {
@@ -7083,6 +7106,52 @@ def _merge_lead_metadata_for_create(metadata: dict[str, Any]) -> str:
 @router.post("/leads/search", response_model=UsageLeadSearchOut)
 def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageLeadSearchOut:
     return _search_leads_impl(payload, request, user, db, run_turnkey_research=False)
+
+
+@router.post("/leads/first-customers/search", response_model=CustomerFinderJobOut)
+def search_first_customers(payload: FirstCustomerSearchIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> CustomerFinderJobOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    product_site = str(payload.product_site).strip()
+    industry = str(payload.industry).strip()
+    country = str(payload.country).strip()
+    criteria = CustomerFinderCriteria(
+        company_website=product_site,
+        company_description=product_site,
+        product_or_service=f"Product at {product_site}",
+        desired_customers=f"{industry} companies in {country}",
+        target_country=country,
+        target_industry=industry,
+        contact_titles=["Founder", "Head of Sales", "Operations Lead"],
+        max_results=payload.results,
+        keywords=[industry, "hiring", "manual", "looking for", "growth"],
+    )
+    try:
+        job = search_first_customer_candidates(
+            db,
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            criteria=criteria,
+            request_id=request_id,
+        )
+    except (GoogleMapsConfigurationError, GoogleMapsRequestError) as exc:
+        db.rollback()
+        capture_provider_exception(exc, provider="google_maps", endpoint="workspace_app.leads.first_customers.search", workspace_id=workspace.id, extra={"request_id": request_id})
+        raise HTTPException(status_code=503, detail="First-customer search is temporarily unavailable. Add the search key or try again later.") from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return first_customer_job_out(db, job)
+
+
+@router.post("/leads/first-customers/results/{result_id}/save", response_model=CustomerFinderResultActionOut)
+def save_first_customer_result(result_id: UUID, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> CustomerFinderResultActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    try:
+        result = save_first_customer_result_to_crm(db, workspace_id=workspace.id, result_id=result_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return CustomerFinderResultActionOut(status="success", message="Lead saved to CRM. Outreach draft is ready for manual review.", result=first_customer_result_out(result))
 
 
 def _search_leads_impl(

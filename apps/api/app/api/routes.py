@@ -1298,6 +1298,7 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     ai_lead_prioritization = company_metadata.get("ai_lead_prioritization") if isinstance(company_metadata.get("ai_lead_prioritization"), dict) else {}
     ai_sales_inbox_latest = company_metadata.get("ai_sales_inbox_latest") if isinstance(company_metadata.get("ai_sales_inbox_latest"), dict) else {}
     ai_sales_inbox_history = [item for item in company_metadata.get("ai_sales_inbox_history", []) if isinstance(item, dict)] if isinstance(company_metadata.get("ai_sales_inbox_history"), list) else []
+    ai_revenue_intelligence = company_metadata.get("ai_revenue_intelligence") if isinstance(company_metadata.get("ai_revenue_intelligence"), dict) else {}
     if not ai_executive_dashboard:
         ai_final_orchestrator = company_metadata.get("ai_final_orchestrator") if isinstance(company_metadata.get("ai_final_orchestrator"), dict) else {}
         ai_agent_intermediate_reasoning = company_metadata.get("ai_agent_intermediate_reasoning") if isinstance(company_metadata.get("ai_agent_intermediate_reasoning"), dict) else {}
@@ -1580,6 +1581,7 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         ai_sales_inbox_latest=ai_sales_inbox_latest,
         ai_sales_inbox_history=ai_sales_inbox_history,
         ai_evidence_engine=ai_evidence_engine,
+        ai_revenue_intelligence=ai_revenue_intelligence,
         intelligence_quality=intelligence_quality,
         company_intelligence=company_intelligence,
         technologies=[str(item) for item in technologies if item],

@@ -367,6 +367,7 @@ class CrmCompanyOut(BaseModel):
     ai_sales_inbox_latest: dict[str, Any] = Field(default_factory=dict)
     ai_sales_inbox_history: list[dict[str, Any]] = Field(default_factory=list)
     ai_evidence_engine: dict[str, Any] = Field(default_factory=dict)
+    ai_revenue_intelligence: dict[str, Any] = Field(default_factory=dict)
     intelligence_quality: dict[str, Any] = Field(default_factory=dict)
     company_intelligence: dict[str, Any] = Field(default_factory=dict)
     technologies: list[str] = Field(default_factory=list)

@@ -63,3 +63,4 @@ docker compose up --build
 - API documentation: `docs/API.md`
 - Deployment guide: `docs/DEPLOYMENT.md`
 - Project structure: `docs/PROJECT_STRUCTURE.md`
+- AI Customer Finder: `docs/AI_CUSTOMER_FINDER.md`
