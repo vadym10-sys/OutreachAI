@@ -166,8 +166,11 @@ class UsageCompanyCreateOut(BaseModel):
 
 class FirstCustomerSearchIn(BaseModel):
     product_site: str = Field(min_length=3, max_length=500)
+    target_customer: Optional[str] = Field(default=None, max_length=1000)
     country: str = Field(min_length=2, max_length=120)
     industry: str = Field(min_length=2, max_length=160)
+    company_size: Optional[str] = Field(default=None, max_length=80)
+    criteria: Optional[str] = Field(default=None, max_length=1500)
     results: int = Field(default=5, ge=1, le=10)
 
 
@@ -7115,16 +7118,21 @@ def search_first_customers(payload: FirstCustomerSearchIn, request: Request, use
     product_site = str(payload.product_site).strip()
     industry = str(payload.industry).strip()
     country = str(payload.country).strip()
+    target_customer = (payload.target_customer or workspace.target_customer or f"{industry} companies in {country}").strip()
+    additional_criteria = (payload.criteria or "").strip()
+    company_size = (payload.company_size or "").strip()
     criteria = CustomerFinderCriteria(
         company_website=product_site,
-        company_description=product_site,
+        company_description=workspace.company or product_site,
         product_or_service=f"Product at {product_site}",
-        desired_customers=f"{industry} companies in {country}",
+        desired_customers=target_customer,
         target_country=country,
         target_industry=industry,
+        company_size=company_size,
+        additional_criteria=additional_criteria,
         contact_titles=["Founder", "Head of Sales", "Operations Lead"],
         max_results=payload.results,
-        keywords=[industry, "hiring", "manual", "looking for", "growth"],
+        keywords=[industry, country, target_customer, additional_criteria, "hiring", "manual", "looking for", "growth"],
     )
     try:
         job = search_first_customer_candidates(

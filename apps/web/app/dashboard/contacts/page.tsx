@@ -1,5 +1,5 @@
-import { ContactsPage } from "@/components/outbound-workspace";
+import { CoreCrmPage } from "@/components/core-customer-workspace";
 
 export default function ContactsRoute() {
-  return <ContactsPage />;
+  return <CoreCrmPage />;
 }

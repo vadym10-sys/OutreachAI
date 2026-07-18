@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, Loader2, Menu, Search, Settings, Shield, Sparkles, User } from "lucide-react";
+import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Home, Inbox, Loader2, Menu, Search, Settings, Shield, Sparkles, User } from "lucide-react";
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -19,7 +19,8 @@ import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { Breadcrumbs, CommandDialog, CommandItem, Kbd } from "@/components/design-system";
 
 const primaryNav = [
-  { href: "/dashboard/leads", labelKey: "nav.aiCustomerFinder", icon: Search, aliases: ["/dashboard", "/dashboard/ai-customer-finder"] },
+  { href: "/dashboard", labelKey: "nav.dashboard", icon: Home },
+  { href: "/dashboard/leads", labelKey: "nav.aiCustomerFinder", icon: Search, aliases: ["/dashboard/ai-customer-finder"] },
   { href: "/dashboard/crm", labelKey: "nav.crm", icon: Building2, aliases: ["/dashboard/companies"] },
   { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, aliases: ["/dashboard/campaigns"] }
 ] as const;
@@ -37,6 +38,7 @@ const featureFlags = {
 };
 
 const navDescriptions: Record<string, string> = {
+  "/dashboard": "Start the customer workflow",
   "/dashboard/leads": "Find companies, verified contacts and first emails",
   "/dashboard/crm": "Saved leads, statuses and next company action",
   "/dashboard/inbox": "Drafts, sent emails, replies and follow-up",
@@ -707,7 +709,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>
-      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-3 rounded-[1.6rem] border border-[var(--ui-border)] bg-white px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] lg:hidden">
+      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-4 rounded-[1.6rem] border border-[var(--ui-border)] bg-white px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] lg:hidden">
         {primaryMobileNav.map((item) => {
           const Icon = item.icon;
           const active = isNavItemActive(item, pathname);

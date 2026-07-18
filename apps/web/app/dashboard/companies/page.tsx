@@ -1,5 +1,5 @@
-import { CompaniesPage } from "@/components/outbound-workspace";
+import { CoreCrmPage } from "@/components/core-customer-workspace";
 
 export default function CompaniesRoute() {
-  return <CompaniesPage />;
+  return <CoreCrmPage />;
 }

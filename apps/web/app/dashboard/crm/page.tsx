@@ -1,5 +1,5 @@
-import { CrmPipelinePage } from '@/components/outbound-workspace';
+import { CoreCrmPage } from '@/components/core-customer-workspace';
 
 export default function CrmPage() {
-  return <CrmPipelinePage />;
+  return <CoreCrmPage />;
 }

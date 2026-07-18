@@ -678,7 +678,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === `/api/crm/companies/${qaCompany.id}/stage`) {
       return fulfillJson(route, {
         ...qaCompany,
-        crm_stage: "Meeting Scheduled",
+        crm_stage: "Not Interested",
         stage_changed_at: now,
         activity: [{ id: "99999999-9999-9999-9999-999999999990", action: "crm.stage_changed", metadata_json: {}, created_at: now }, ...qaCompany.activity]
       });
@@ -693,6 +693,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/activity") return fulfillJson(route, []);
     if (apiPath === "/api/notifications") return fulfillJson(route, []);
     if (apiPath === "/api/inbox") return fulfillJson(route, []);
+    if (apiPath === "/api/outreach/sender/status") return fulfillJson(route, { connected: true, status: "connected", next_action: "Ready for manual sends." });
     if (apiPath === "/api/profile") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();

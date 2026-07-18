@@ -16,7 +16,7 @@ test.describe("authentication UX", () => {
   test("dashboard is available in QA bypass mode for authenticated-flow tests", async ({ page }) => {
     await mockWorkspaceApi(page);
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
-    await expect(page.getByRole("heading", { name: "Find customers → CRM → first email." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Find customers, save CRM leads, write emails." })).toBeVisible();
   });
 
   test("selected Russian language also localizes auth fallbacks", async ({ page }, testInfo) => {

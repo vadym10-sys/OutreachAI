@@ -749,11 +749,13 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
     from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
 
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "first-customers-mode@example.com"}
+    captured_criteria: dict[str, object] = {}
 
     class FakeProvider:
         key = "test_provider"
 
         def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            captured_criteria.update(criteria.model_dump())
             return [
                 PublicCustomerCandidate(
                     company_name="First Customer Signal Co",
@@ -788,12 +790,18 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
         headers=headers,
         json={
             "product_site": "https://outreachaiaiai.com",
+            "target_customer": "B2B SaaS companies expanding their sales team in Europe",
             "country": "Germany",
             "industry": "B2B SaaS",
+            "company_size": "20-200 employees",
+            "criteria": "Prioritize hiring SDRs and replacing manual spreadsheet workflows.",
             "results": 5,
         },
     )
     assert search.status_code == 200, search.text
+    assert captured_criteria["desired_customers"] == "B2B SaaS companies expanding their sales team in Europe"
+    assert captured_criteria["company_size"] == "20-200 employees"
+    assert captured_criteria["additional_criteria"] == "Prioritize hiring SDRs and replacing manual spreadsheet workflows."
     payload = search.json()
     assert payload["status"] in {"completed", "partially_completed"}
     assert len(payload["results"]) == 1

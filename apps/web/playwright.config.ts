@@ -24,7 +24,7 @@ export default defineConfig({
     command: "npm run build && npm run start -- -H 127.0.0.1",
     url: "http://127.0.0.1:3000",
     reuseExistingServer: false,
-    timeout: 120_000,
+    timeout: 240_000,
     env: {
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "",
       CLERK_SECRET_KEY: "",

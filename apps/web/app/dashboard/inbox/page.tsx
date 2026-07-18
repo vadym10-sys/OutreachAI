@@ -1,5 +1,5 @@
-import { InboxPage as InboxWorkspacePage } from '@/components/outbound-workspace';
+import { CoreMailPage } from '@/components/core-customer-workspace';
 
 export default function InboxPage() {
-  return <InboxWorkspacePage />;
+  return <CoreMailPage />;
 }

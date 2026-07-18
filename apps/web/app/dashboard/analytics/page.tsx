@@ -1,5 +1,5 @@
-import { AnalyticsPage as AnalyticsWorkspacePage } from '@/components/outbound-workspace';
+import { CoreDashboardHome } from '@/components/core-customer-workspace';
 
 export default function AnalyticsPage() {
-  return <AnalyticsWorkspacePage />;
+  return <CoreDashboardHome />;
 }

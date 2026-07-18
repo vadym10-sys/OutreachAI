@@ -6,16 +6,17 @@ const visibleLanguageSelect = (page: import("@playwright/test").Page) =>
 test("landing explains the B2B outbound product and pricing", async ({ page }) => {
   await page.goto("/");
   const main = page.getByRole("main");
-  await expect(page.getByRole("heading", { name: "AI Sales Employee for B2B Lead Generation" })).toBeVisible();
-  await expect(main.getByText("Find qualified companies, analyze their websites, generate personalized outreach").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Find your first B2B customers and write the first email." })).toBeVisible();
+  await expect(main.getByText("verified company leads, CRM records and short draft emails").first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Start free trial" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Login" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "View demo dashboard" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Lead Finder" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Decision Maker Finder" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Customer Search" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Manual CRM Save" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Starter" }).first()).toBeVisible();
-  await expect(page.getByText("€149").first()).toBeVisible();
-  await expect(page.getByText("€499").first()).toBeVisible();
+  await expect(page.getByText("Exact limits appear inside Billing.").first()).toBeVisible();
+  await expect(main).not.toContainText("€149");
+  await expect(main).not.toContainText("€499");
 });
 
 test("landing follows the selected language without mixed English hero copy", async ({ page }) => {
@@ -23,13 +24,13 @@ test("landing follows the selected language without mixed English hero copy", as
   const main = page.getByRole("main");
   await visibleLanguageSelect(page).selectOption("ru");
 
-  await expect(page.getByRole("heading", { name: "AI сотрудник продаж для поиска B2B клиентов" })).toBeVisible();
-  await expect(page.getByText("Находите подходящие компании, анализируйте их сайты")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Найдите первых B2B-клиентов и подготовьте первое письмо." })).toBeVisible();
+  await expect(page.getByText("проверенные компании, CRM-записи и короткие черновики писем")).toBeVisible();
   await expect(page.getByRole("link", { name: "Начать бесплатно" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Войти" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Посмотреть демо-панель" })).toHaveCount(0);
-  await expect(main).not.toContainText("AI Sales Employee for B2B Lead Generation");
-  await expect(main).not.toContainText("Find qualified companies, analyze their websites");
+  await expect(main).not.toContainText("Find your first B2B customers and write the first email.");
+  await expect(main).not.toContainText("verified company leads, CRM records");
   await expect(main).not.toContainText("Start free trial");
 });
 
@@ -39,14 +40,14 @@ for (const width of [360, 390, 430]) {
     await page.goto("/");
     await visibleLanguageSelect(page).selectOption("ru");
 
-    await expect(page.getByRole("heading", { name: "AI сотрудник продаж для поиска B2B клиентов" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Найдите первых B2B-клиентов и подготовьте первое письмо." })).toBeVisible();
     await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("Something went wrong");
 
     const metrics = await page.evaluate(() => {
       const ctaRect = document.querySelector('[data-testid="hero-start-free-trial"]')?.getBoundingClientRect();
       const headingRect = Array.from(document.querySelectorAll("h1"))
-        .find((heading) => heading.textContent?.includes("AI сотрудник"))
+        .find((heading) => heading.textContent?.includes("первых B2B"))
         ?.getBoundingClientRect();
       return {
         innerWidth: window.innerWidth,
@@ -80,7 +81,7 @@ test("Russian landing works in Telegram-like in-app mobile browser", async ({ br
   await page.goto("/");
   await visibleLanguageSelect(page).selectOption("ru");
 
-  await expect(page.getByRole("heading", { name: "AI сотрудник продаж для поиска B2B клиентов" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Найдите первых B2B-клиентов и подготовьте первое письмо." })).toBeVisible();
   await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
   const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1 || document.body.scrollWidth > window.innerWidth + 1);
   expect(hasOverflow).toBe(false);

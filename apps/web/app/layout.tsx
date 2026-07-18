@@ -8,13 +8,13 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl),
   title: {
-    default: "OutreachAI - AI outbound platform for B2B growth",
+    default: "OutreachAI - Find customers, save CRM leads, write emails",
     template: "%s | OutreachAI"
   },
-  description: "Find leads, analyze websites, generate personalized outbound, manage campaigns, and close deals from one AI-powered CRM.",
+  description: "Find public-source B2B customer leads, save selected companies to CRM, create personalized draft emails, and send only after manual review.",
   openGraph: {
     title: "OutreachAI",
-    description: "AI outbound platform for agencies, real estate, construction, consulting, and B2B services.",
+    description: "A focused AI customer finder for B2B teams: search, CRM, draft email, manual send.",
     type: "website"
   },
   robots: {

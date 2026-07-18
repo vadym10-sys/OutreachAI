@@ -81,7 +81,7 @@ async function signInAsQaUser(page: Page) {
   await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
   await page.getByRole("button", { name: "Continue to workspace" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expectHealthyPage(page, "Find customers → CRM → first email.");
+  await expectHealthyPage(page, "Find customers, save CRM leads, write emails.");
 }
 
 test.describe("manual production-readiness journey", () => {
@@ -104,52 +104,47 @@ test.describe("manual production-readiness journey", () => {
     await signInAsQaUser(page);
 
     await page.getByRole("link", { name: "Search", exact: true }).click();
-    await expectHealthyPage(page, "Find a customer, save the lead, write the email.");
-    const firstCustomerForm = page.getByRole("form", { name: "Find First Customers" });
+    await expectHealthyPage(page, "Find customers, then decide what to save.");
+    const firstCustomerForm = page.getByRole("form", { name: "Customer search" });
     await firstCustomerForm.getByLabel("Product website").fill("https://outreachaiaiai.com");
+    await firstCustomerForm.getByLabel("Target customer").fill("B2B SaaS companies in Europe with sales teams that need better outbound research.");
     await firstCustomerForm.getByLabel("Country").fill("Germany");
     await firstCustomerForm.getByLabel("Industry").fill("B2B SaaS");
-    await firstCustomerForm.getByLabel("Number of leads").fill("5");
-    await firstCustomerForm.getByRole("button", { name: "Find First Customers" }).click();
-    await expect(page.getByText("Review the evidence, then save only the leads you approve.")).toBeVisible();
+    await firstCustomerForm.getByLabel("Results").fill("5");
+    await firstCustomerForm.getByRole("button", { name: "Find customers" }).click();
+    await expect(page.getByText("Verified results are ready. Save only the companies you want in CRM.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "EuroScale CRM Co" }).first()).toBeVisible();
     await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
-    await expect(page.getByText("Draft message", { exact: true })).toBeVisible();
+    await expect(page.getByText("Draft preview", { exact: true })).toBeVisible();
     await expect(page.getByText("Worth a quick fit review?")).toBeVisible();
     await page.getByRole("button", { name: "Save to CRM" }).click();
     await expect(page.getByText("Lead saved to CRM. Outreach draft is ready for manual review.")).toBeVisible();
 
     await page.getByRole("link", { name: "CRM", exact: true }).click();
-    await expectHealthyPage(page, "Move real leads from research to revenue.");
+    await expectHealthyPage(page, "Saved leads, stages, notes and history.");
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
-    await page.getByRole("link", { name: "Open company" }).first().click();
-    await expect(page).toHaveURL(new RegExp(`/dashboard/companies\\?company=${qaCompany.id}`));
-    await expectHealthyPage(page, "Open the next company to finish the opportunity.");
-    await expect(page.getByText("Company Actions")).toBeVisible();
-
-    await page.getByRole("button", { name: "Generate", exact: true }).click();
-    await expect(page.getByText("AI sales analysis generated.")).toBeVisible({ timeout: 15_000 });
-    await page.getByRole("button", { name: "Regenerate analysis", exact: true }).click();
-    await expect(page.getByText("AI sales analysis generated.")).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("main").getByRole("combobox").selectOption("Email Draft Ready");
+    await page.getByRole("button", { name: "Update stage" }).click();
+    await expect(page.getByText("CRM stage updated.")).toBeVisible();
+    await page.getByLabel("Notes and history").fill("Customer asked to review next week.");
+    await page.getByRole("button", { name: "Add note" }).click();
+    await expect(page.getByText("Note saved.")).toBeVisible();
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expectHealthyPage(page, "Open the next company to finish the opportunity.");
+    await expectHealthyPage(page, "Saved leads, stages, notes and history.");
     await expect(page.getByText("Hill Country Build Co").first()).toBeVisible();
 
-    await page.goto("/dashboard/campaigns", { waitUntil: "domcontentloaded" });
-    await expectHealthyPage(page, "Review real outreach before anything is sent.");
-    await page.getByLabel("Campaign name").fill("Production readiness campaign");
-    await page.getByRole("button", { name: /Create campaign/ }).click();
-    await expect(page.getByText("Campaign created. Your first opportunity was added for review; no email was sent.")).toBeVisible();
-    await page.getByRole("button", { name: /Launch after approval/ }).click();
-    await expect(page.getByText(/is now Running/)).toBeVisible();
-    await page.getByRole("button", { name: /Pause/ }).click();
-    await expect(page.getByText(/is now Paused/)).toBeVisible();
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await expect(page.getByText(/Production readiness campaign|Austin Builders Outreach/)).toBeVisible();
-
     await page.getByRole("link", { name: "Mail", exact: true }).click();
-    await expectHealthyPage(page, "Turn replies into meetings.");
-    await expect(page.getByRole("link", { name: "Prepare email" }).first()).toBeVisible();
+    await expectHealthyPage(page, "Review drafts, send manually, track replies.");
+    await expect(page.getByLabel("Subject")).toHaveValue("Quick idea for Hill Country Build Co");
+    await expect(page.getByRole("button", { name: "Send manually" }).first()).toBeDisabled();
+    await page.getByRole("button", { name: "Approve" }).first().click();
+    await expect(page.getByText("Email approved. It is ready to send, but nothing was sent automatically.")).toBeVisible();
+    await page.getByRole("button", { name: "Send manually" }).first().click();
+    await expect(page.getByText("Confirm the recipient and click Confirm send. Nothing has been sent yet.")).toBeVisible();
+    await page.getByRole("button", { name: "Confirm send" }).first().click();
+    await expect(page.getByText("Approved email was sent. CRM stage updated.")).toBeVisible();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expectHealthyPage(page, "Review drafts, send manually, track replies.");
 
     await page.getByRole("link", { name: "Billing" }).click();
     await expectHealthyPage(page, "Subscription and usage.");
@@ -177,15 +172,17 @@ test.describe("manual production-readiness journey", () => {
     await expect(page).toHaveURL(/\/sign-in/);
     await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
     await page.getByRole("button", { name: "Continue to workspace" }).click();
-    await expectHealthyPage(page, "Find customers → CRM → first email.");
+    await expectHealthyPage(page, "Find customers, save CRM leads, write emails.");
 
     for (const endpoint of [
       "/api/workspace-app/bootstrap",
       "/api/workspace-app/leads/first-customers/search",
       "/api/workspace-app/leads/first-customers/results/finder-result-1/save",
       "/api/workspace-app/companies",
-      `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis`,
-      "/api/campaigns",
+      `/api/crm/companies/${qaCompany.id}/stage`,
+      `/api/crm/companies/${qaCompany.id}/notes`,
+      "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve",
+      "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send",
       "/api/inbox",
       "/api/billing/status",
       "/api/billing/usage",
@@ -207,11 +204,11 @@ test.describe("manual production-readiness journey", () => {
     await expectNoHorizontalOverflow(page);
 
     for (const [route, heading] of [
-      ["/dashboard/leads", "Find a customer, save the lead, write the email."],
-      ["/dashboard/companies", "Open the next company to finish the opportunity."],
-      [`/dashboard/companies?company=${qaCompany.id}`, "Open the next company to finish the opportunity."],
-      ["/dashboard/campaigns", "Review real outreach before anything is sent."],
-      ["/dashboard/inbox", "Turn replies into meetings."],
+      ["/dashboard/leads", "Find customers, then decide what to save."],
+      ["/dashboard/companies", "Saved leads, stages, notes and history."],
+      [`/dashboard/companies?company=${qaCompany.id}`, "Saved leads, stages, notes and history."],
+      ["/dashboard/campaigns", "Review drafts, send manually, track replies."],
+      ["/dashboard/inbox", "Review drafts, send manually, track replies."],
       ["/dashboard/billing", "Subscription and usage."],
       ["/dashboard/settings", "Make the workspace ready for your first campaign."],
       ["/dashboard/profile", "Set the workspace identity AI should use."]
@@ -225,7 +222,7 @@ test.describe("manual production-readiness journey", () => {
     await page.getByTestId("qa-sign-out").click();
     await expect(page).toHaveURL(/\/sign-in/);
     await page.getByRole("button", { name: "Continue to workspace" }).click();
-    await expectHealthyPage(page, "Find customers → CRM → first email.");
+    await expectHealthyPage(page, "Find customers, save CRM leads, write emails.");
     await guards.assertClean();
   });
 });

@@ -1,5 +1,5 @@
-import { AiCustomerFinderPage } from "@/components/ai-customer-finder/ai-customer-finder-page";
+import { CoreLeadFinderPage } from "@/components/core-customer-workspace";
 
 export default function Page() {
-  return <AiCustomerFinderPage />;
+  return <CoreLeadFinderPage />;
 }

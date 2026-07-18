@@ -23,66 +23,65 @@ import { LanguageSwitcher } from "@/components/language-switcher";
 import { useI18n } from "@/lib/i18n/provider";
 
 const tools = [
-  ["Lead Finder", "Find companies by industry, country, city, size, website, niche and business type.", Search],
-  ["Decision Maker Finder", "Find CEOs, founders, owners, sales managers, marketing managers and other key contacts.", UserRoundSearch],
-  ["AI Website Analyzer", "Analyze every prospect website and detect services, weak points, offers, competitors and personalization angles.", Globe2],
-  ["AI Email Generator", "Generate personal cold emails and follow-ups based on real company research.", Mail],
-  ["Campaign Manager", "Create outreach sequences, approve emails, schedule sending and track performance.", Workflow],
-  ["CRM Pipeline", "Manage leads from New to Researched to Contacted to Replied to Meeting to Client.", BarChart3]
+  ["Customer Search", "Find B2B companies from a product site, target country, industry and criteria.", Search],
+  ["Public Evidence", "Show the source URL, date when available and the reason each company matches.", Globe2],
+  ["Contact Route", "Save only public business contact routes. Missing emails stay clearly unavailable.", UserRoundSearch],
+  ["Manual CRM Save", "Selected companies are saved to your private CRM only after approval.", Building2],
+  ["Draft Email", "Create a short personalized first email from saved company context.", Mail],
+  ["Manual Send", "Approve and confirm before one email is sent. No automatic campaigns.", ShieldCheck]
 ] as const;
 
 const workflow = [
-  "Describe your offer",
-  "Choose target market",
-  "Find companies",
-  "Analyze websites",
-  "Generate personalized emails",
-  "Approve and launch campaign",
-  "Track replies and meetings"
+  "Enter your product site",
+  "Describe target customers",
+  "Search public sources",
+  "Review evidence",
+  "Save selected leads to CRM",
+  "Review and send one email manually"
 ] as const;
 
 const aiDemo = [
-  ["Market scan", "248 companies found", "Berlin construction market", 82],
-  ["Research", "193 websites analyzed", "Pain, offer, tech and buying triggers", 76],
-  ["Prioritize", "27 accounts need attention", "AI ranked by fit and urgency", 68],
-  ["Outreach", "41 messages ready", "Review mode, no blind sending", 88]
+  ["Search", "Product site + market", "The user defines the target customer.", 25],
+  ["Verify", "Public source checked", "Unverified fields stay unknown.", 52],
+  ["CRM", "Manual save only", "No CRM record is created without approval.", 76],
+  ["Mail", "Draft ready", "Sending requires approve and confirm.", 90]
 ] as const;
 
 const productMoments = [
-  ["AI Command Center", "Know what happened, what matters and what to do next before opening a CRM table.", Sparkles],
-  ["Company Workspace", "Every account becomes a live brief: fit, signals, people, risks, message angle and next action.", Building2],
-  ["Outreach Control Room", "Campaigns and replies stay connected to the research that created them.", Inbox]
+  ["Search Workspace", "Start from one product website and one target market instead of a blank CRM table.", Sparkles],
+  ["Simple CRM", "Saved companies show stage, contacts, notes, source, history and next manual action.", Building2],
+  ["Mail Review", "Drafts, approvals, sends and replies stay connected to the saved lead.", Inbox]
 ] as const;
 
 const plans = [
   {
     name: "Starter",
-    price: "€49",
-    audience: "For freelancers and small businesses",
+    price: "Billing",
+    audience: "For the first customer workflow",
     cta: "Start free trial",
-    items: ["500 leads/month", "1,000 AI emails/month", "Lead Finder", "Website Analyzer", "CRM", "Review mode"]
+    items: ["Customer search", "Manual CRM save", "Draft email", "Review mode"]
   },
   {
     name: "Pro",
-    price: "€149",
-    audience: "For sales teams",
+    price: "Billing",
+    audience: "For teams with higher usage",
     cta: "Start Pro trial",
     featured: true,
-    items: ["5,000 leads/month", "10,000 AI emails/month", "AI Reply Assistant", "Campaign Manager", "Advanced Analytics", "Multiple campaigns"]
+    items: ["Higher usage limits", "CRM stages and notes", "Manual sending", "Reply status"]
   },
   {
     name: "Agency",
-    price: "€499",
-    audience: "For agencies and SaaS companies",
+    price: "Billing",
+    audience: "For multi-workspace outbound teams",
     cta: "Start Agency trial",
-    items: ["50,000 leads/month", "100,000 AI emails/month", "Client workspaces", "Team members", "AI Lead Qualification", "Meeting booking", "Agency controls"]
+    items: ["Workspace controls", "Team setup", "Billing management", "Manual review workflow"]
   }
 ] as const;
 
 const faq = [
   ["Does OutreachAI send emails automatically?", "No. The interface is built around review and approval before sending."],
-  ["Where does the personalization come from?", "From the company data, website analysis, contacts and AI research available in your workspace."],
-  ["Can I use it without a complete CRM setup?", "Yes. Start from one target market or one company, then enrich the account from the workspace."],
+  ["Where does the personalization come from?", "From saved company context, public source evidence, contact route and the product description in your workspace."],
+  ["Can I use it without a complete CRM setup?", "Yes. Start from one search, review the evidence, and save only the companies you want to work."],
   ["Are the customer logos on this page real?", "No public customer logos are shown until they are approved. Demo placeholders are clearly labeled."]
 ] as const;
 
@@ -128,8 +127,8 @@ export function LandingPage() {
     "@type": "SoftwareApplication",
     name: "OutreachAI",
     applicationCategory: "SalesApplication",
-    description: "AI Sales Workspace for B2B lead generation, website analysis, personalized outreach, email campaigns and CRM.",
-    offers: plans.map((plan) => ({ "@type": "Offer", name: `OutreachAI ${plan.name}`, price: plan.price.replace("€", ""), priceCurrency: "EUR" }))
+    description: "AI customer finder for B2B teams: find public-source leads, save selected companies to CRM, draft email, and send only after review.",
+    offers: plans.map((plan) => ({ "@type": "Offer", name: `OutreachAI ${plan.name}` }))
   };
 
   return (
@@ -144,7 +143,7 @@ export function LandingPage() {
             <span>OutreachAI</span>
           </Link>
           <div className="hidden items-center gap-7 text-sm font-bold text-white/60 md:flex">
-            <a href="#product" className="hover:text-white">{t("Tools")}</a>
+            <a href="#product" className="hover:text-white">{t("Product")}</a>
             <a href="#workflow" className="hover:text-white">{t("Workflow")}</a>
             <a href="#pricing" className="hover:text-white">{t("Pricing")}</a>
           </div>
@@ -158,13 +157,13 @@ export function LandingPage() {
         <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-10 px-4 pb-20 pt-10 min-[360px]:px-5 sm:pb-24 sm:pt-16 lg:grid-cols-[0.92fr_1.08fr]">
           <div className="min-w-0">
             <p className="inline-flex min-h-9 items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 text-sm font-black text-white/80 backdrop-blur">
-              <Sparkles size={16} /> {t("AI Sales Workspace for outbound growth")}
+              <Sparkles size={16} /> {t("Find customers, save CRM, write email")}
             </p>
             <h1 className="mt-6 max-w-full text-[clamp(2.7rem,10vw,6.4rem)] font-black leading-[0.88] tracking-[-0.04em] text-white">
-              {t("AI Sales Employee for B2B Lead Generation")}
+              {t("Find your first B2B customers and write the first email.")}
             </h1>
             <p className="mt-6 max-w-2xl text-base leading-7 text-white/70 min-[390px]:text-lg sm:text-xl sm:leading-8">
-              {t("Find qualified companies, analyze their websites, generate personalized outreach, launch campaigns, and turn replies into meetings — from one workspace.")}
+              {t("OutreachAI turns a product website and target market into verified company leads, CRM records and short draft emails. You decide what gets saved and what gets sent.")}
             </p>
             <div className="mt-8 flex flex-col gap-3 min-[430px]:flex-row">
               <AuthNavigationLink href="/sign-up?plan=Starter" className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-white px-5 text-sm font-black text-[#101114] shadow-glow hover:bg-white/90 min-[430px]:w-auto" testId="hero-start-free-trial">
@@ -175,7 +174,7 @@ export function LandingPage() {
               </AuthNavigationLink>
             </div>
             <div className="mt-8 grid gap-3 text-sm font-bold text-white/60 sm:grid-cols-3">
-              {["Review before send", "No fake demo CRM", "Built for meetings"].map((item) => (
+              {["Public source required", "Manual CRM save", "Review before send"].map((item) => (
                 <span key={item} className="inline-flex items-center gap-2"><CheckCircle2 size={17} className="text-[#65d9ff]" />{t(item)}</span>
               ))}
             </div>
@@ -213,7 +212,7 @@ export function LandingPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-xs font-black uppercase tracking-[0.12em] text-white/50">{t("AI recommendation")}</p>
-                      <p className="mt-2 text-sm font-bold leading-6 text-white/80">{t("Prioritize accounts with recent hiring signals, weak conversion pages and verified decision makers.")}</p>
+                    <p className="mt-2 text-sm font-bold leading-6 text-white/80">{t("Save the companies that have real source evidence, then review the prepared email before sending.")}</p>
                     </div>
                     <Zap className="shrink-0 text-[#f5c16c]" size={22} />
                   </div>
@@ -243,8 +242,8 @@ export function LandingPage() {
       <section id="product" className="mx-auto max-w-7xl px-4 py-16 min-[360px]:px-5 sm:py-24">
         <div className="max-w-3xl">
           <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("What OutreachAI does")}</p>
-          <h2 className="mt-3 text-4xl font-black leading-[0.96] tracking-[-0.03em] text-ink min-[390px]:text-5xl">{t("One AI operating system for outbound revenue.")}</h2>
-          <p className="mt-4 text-base leading-7 text-[var(--ui-text-soft)]">{t("It replaces the messy handoff between lead search, research, prompting, spreadsheets, email drafts, campaigns and replies.")}</p>
+          <h2 className="mt-3 text-4xl font-black leading-[0.96] tracking-[-0.03em] text-ink min-[390px]:text-5xl">{t("One focused workflow for first customer outreach.")}</h2>
+          <p className="mt-4 text-base leading-7 text-[var(--ui-text-soft)]">{t("It replaces the messy handoff between manual research, spreadsheets, CRM entry and first email drafting.")}</p>
         </div>
         <div className="mt-10 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {tools.map(([title, copy, Icon]) => (
@@ -261,8 +260,8 @@ export function LandingPage() {
         <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
           <div className="ui-card rounded-[2rem] p-6">
             <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Workflow")}</p>
-            <h2 className="mt-3 text-4xl font-black leading-none text-ink">{t("From market idea to approved campaign in minutes.")}</h2>
-            <p className="mt-4 text-sm leading-7 text-[var(--ui-text-soft)]">{t("The product always guides the user to the next action: find companies, research them, review AI work, approve, and measure results.")}</p>
+            <h2 className="mt-3 text-4xl font-black leading-none text-ink">{t("From product site to reviewed first email.")}</h2>
+            <p className="mt-4 text-sm leading-7 text-[var(--ui-text-soft)]">{t("The product always guides the user to the next real action: search, review evidence, save to CRM, review the email and send manually.")}</p>
           </div>
           <ol className="grid gap-3 sm:grid-cols-2">
             {workflow.map((step, index) => (
@@ -279,7 +278,7 @@ export function LandingPage() {
         <div className="mx-auto max-w-7xl">
           <div className="max-w-3xl">
             <p className="text-sm font-black uppercase tracking-[0.14em] text-[#65d9ff]">{t("Product moments")}</p>
-            <h2 className="mt-3 text-4xl font-black leading-none tracking-[-0.03em] min-[390px]:text-5xl">{t("Every screen should feel like a finished commercial product.")}</h2>
+            <h2 className="mt-3 text-4xl font-black leading-none tracking-[-0.03em] min-[390px]:text-5xl">{t("Every screen is tied to the same customer workflow.")}</h2>
           </div>
           <div className="mt-10 grid gap-4 lg:grid-cols-3">
             {productMoments.map(([title, copy, Icon]) => (
@@ -296,7 +295,8 @@ export function LandingPage() {
       <section id="pricing" className="mx-auto max-w-7xl px-4 py-16 min-[360px]:px-5 sm:py-24">
         <div className="max-w-3xl">
           <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Pricing")}</p>
-          <h2 className="mt-3 text-4xl font-black leading-[0.96] tracking-[-0.03em] text-ink min-[390px]:text-5xl">{t("Simple plans for teams that want more qualified meetings.")}</h2>
+          <h2 className="mt-3 text-4xl font-black leading-[0.96] tracking-[-0.03em] text-ink min-[390px]:text-5xl">{t("Plans are managed by the real billing setup.")}</h2>
+          <p className="mt-4 text-sm font-semibold leading-6 text-[var(--ui-text-soft)]">{t("The app shows the current plan and usage from Billing after sign in. This page does not invent quotas or customer claims.")}</p>
         </div>
         <div className="mt-10 grid gap-5 lg:grid-cols-3">
           {plans.map((plan) => {
@@ -306,8 +306,8 @@ export function LandingPage() {
                 {featured && <p className="mb-4 w-fit rounded-full bg-[#101114] px-3 py-1 text-xs font-black text-white">{t("Most popular")}</p>}
                 <h3 className="text-2xl font-black text-ink">{t(plan.name)}</h3>
                 <p className="mt-2 text-sm text-[var(--ui-text-soft)]">{t(plan.audience)}</p>
-                <p className="mt-5 text-4xl font-black text-ink">{plan.price}<span className="text-base font-semibold text-[var(--ui-text-soft)]">{t("/month")}</span></p>
-                <p className="mt-2 text-sm font-black text-brand">{t("14-day free trial")}</p>
+                <p className="mt-5 text-3xl font-black text-ink">{t(plan.price)}</p>
+                <p className="mt-2 text-sm font-black text-brand">{t("Exact limits appear inside Billing.")}</p>
                 <ul className="mt-6 space-y-3 text-sm text-[var(--ui-text-soft)]">
                   {plan.items.map((item) => <li key={item} className="flex gap-2"><CheckCircle2 size={18} className="mt-0.5 shrink-0 text-brand" />{t(item)}</li>)}
                 </ul>
@@ -344,7 +344,7 @@ export function LandingPage() {
           <div>
             <p className="text-sm font-black uppercase tracking-[0.14em] text-[#65d9ff]">{t("Final CTA")}</p>
             <h2 className="mt-3 text-3xl font-black leading-none min-[390px]:text-4xl">{t("Find customers faster than manual outbound.")}</h2>
-            <p className="mt-3 max-w-2xl text-sm leading-7 text-white/60">{t("Start with a target market. OutreachAI prepares leads, research, emails and campaign review from one workspace.")}</p>
+            <p className="mt-3 max-w-2xl text-sm leading-7 text-white/60">{t("Start with a target market. OutreachAI prepares verified leads, CRM records and draft emails for manual review.")}</p>
           </div>
           <AuthNavigationLink href="/sign-up?plan=Starter" className="inline-flex min-h-12 w-fit items-center justify-center gap-2 rounded-full bg-white px-5 text-sm font-black text-[#101114] hover:bg-white/90">
             {t("Start free trial")} <ArrowRight size={18} />
@@ -360,7 +360,7 @@ export function LandingPage() {
             <Link href="/terms" className="font-bold hover:text-ink">{t("Terms")}</Link>
             <Link href="/security" className="font-bold hover:text-ink">{t("Security")}</Link>
           </div>
-          <p>{t("Lead generation, AI research, outbound campaigns and CRM in one workspace.")}</p>
+          <p>{t("Find customers, save CRM leads, review draft emails and send manually.")}</p>
           <ShieldCheck size={18} className="hidden text-brand sm:block" />
         </div>
       </footer>

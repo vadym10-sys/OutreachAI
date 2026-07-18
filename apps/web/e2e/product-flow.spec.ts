@@ -1,19 +1,19 @@
 import { expect, test, type Route } from "@playwright/test";
 
 const pages = [
-  ["/dashboard", "Find customers → CRM → first email."],
-  ["/dashboard/leads", "Find a customer, save the lead, write the email."],
-  ["/dashboard/companies", "Open the next company to finish the opportunity."],
-  ["/dashboard/website-analyzer", "Analyze a real prospect website."],
-  ["/dashboard/contacts", "Decision makers and verified emails."],
-  ["/dashboard/campaigns", "Review real outreach before anything is sent."],
-  ["/dashboard/inbox", "Turn replies into meetings."],
-  ["/dashboard/crm", "Move real leads from research to revenue."],
-  ["/dashboard/deals", "Revenue opportunities from saved companies."],
-  ["/dashboard/analytics", "Measure what creates meetings."],
+  ["/dashboard", "Find customers, save CRM leads, write emails."],
+  ["/dashboard/leads", "Find customers, then decide what to save."],
+  ["/dashboard/companies", "Saved leads, stages, notes and history."],
+  ["/dashboard/website-analyzer", "Find customers, then decide what to save."],
+  ["/dashboard/contacts", "Saved leads, stages, notes and history."],
+  ["/dashboard/campaigns", "Review drafts, send manually, track replies."],
+  ["/dashboard/inbox", "Review drafts, send manually, track replies."],
+  ["/dashboard/crm", "Saved leads, stages, notes and history."],
+  ["/dashboard/deals", "Saved leads, stages, notes and history."],
+  ["/dashboard/analytics", "Find customers, save CRM leads, write emails."],
   ["/dashboard/settings", "Make the workspace ready for your first campaign."],
   ["/dashboard/billing", "Subscription and usage."],
-  ["/dashboard/sales-employees", "One click should replace hours of manual sales research."],
+  ["/dashboard/sales-employees", "Find customers, save CRM leads, write emails."],
   ["/dashboard/admin/quality", "AI Quality & Self-Healing"]
 ] as const;
 
@@ -167,6 +167,15 @@ const workspace = {
 };
 
 test.beforeEach(async ({ page }) => {
+  let currentEmailDeliveryStatus: "draft" | "approved" | "sent" = "draft";
+  const companyForMail = () => ({
+    ...crmCompany,
+    crm_stage: currentEmailDeliveryStatus === "sent" ? "Sent" : currentEmailDeliveryStatus === "approved" ? "Approved" : crmCompany.crm_stage,
+    email_approved_at: currentEmailDeliveryStatus === "approved" || currentEmailDeliveryStatus === "sent" ? new Date().toISOString() : null,
+    email_sent_at: currentEmailDeliveryStatus === "sent" ? new Date().toISOString() : null,
+    generated_emails: [{ ...crmCompany.generated_emails[0], delivery_status: currentEmailDeliveryStatus }]
+  });
+
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
@@ -178,7 +187,7 @@ test.beforeEach(async ({ page }) => {
     } else if (apiPath === "/api/crm/companies") {
       body = [crmCompany];
     } else if (apiPath === `/api/crm/companies/${crmCompany.id}/stage`) {
-      body = { ...crmCompany, crm_stage: "Meeting Scheduled", stage_changed_at: new Date().toISOString(), activity: [{ id: "99999999-9999-9999-9999-999999999990", action: "crm.stage_changed", metadata_json: {}, created_at: new Date().toISOString() }, ...crmCompany.activity] };
+      body = { ...crmCompany, crm_stage: "Not Interested", stage_changed_at: new Date().toISOString(), activity: [{ id: "99999999-9999-9999-9999-999999999990", action: "crm.stage_changed", metadata_json: {}, created_at: new Date().toISOString() }, ...crmCompany.activity] };
     } else if (apiPath === `/api/crm/companies/${crmCompany.id}/notes`) {
       body = { id: "99999999-9999-9999-9999-999999999991", company_id: crmCompany.id, lead_id: lead.id, body: "Customer asked to review next week.", kind: "note", created_at: new Date().toISOString() };
     } else if (apiPath === "/api/crm/contacts") {
@@ -199,7 +208,7 @@ test.beforeEach(async ({ page }) => {
         counts: { leads: 1, companies: 1, campaigns: 1, emails: 0, deals: 1 },
         metrics: { leads: 1, companies: 1, contacts: 1, campaigns: 1, emails: 0, deals: 1 },
         next_action: "Review the first prepared outreach email.",
-        recent_companies: [crmCompany],
+        recent_companies: [companyForMail()],
         recent_activity: [{ action: "lead.found", created_at: new Date().toISOString(), company: lead.company, message: "Lead found" }]
       };
     } else if (apiPath === "/api/workspace-app/integrations/status") {
@@ -213,15 +222,94 @@ test.beforeEach(async ({ page }) => {
         ]
       };
     } else if (apiPath === "/api/workspace-app/companies") {
-      body = route.request().method() === "POST" ? { status: "created", message: "Company saved to CRM.", company: crmCompany } : [crmCompany];
+      body = route.request().method() === "POST" ? { status: "created", message: "Company saved to CRM.", company: companyForMail() } : [companyForMail()];
     } else if (apiPath === "/api/workspace-app/leads/search") {
       body = { status: "success", request_id: "e2e-lead-search", message: "Found 1 companies and saved them to CRM.", companies_saved: 1, duplicates_skipped: 0, companies: [crmCompany], warnings: [] };
+    } else if (apiPath === "/api/workspace-app/leads/first-customers/search") {
+      body = {
+        id: "finder-job-1",
+        status: "completed",
+        progress: { stage: "completed", percent: 100 },
+        criteria: {},
+        summary: { results: 1, saved_to_crm: 0, rejected: 0 },
+        error_message: "",
+        created_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        results: [{
+          id: "finder-result-1",
+          company_name: crmCompany.name,
+          official_website: crmCompany.website,
+          industry: crmCompany.industry,
+          country: crmCompany.country,
+          company_size: "20-200",
+          contact_name: "Jane Doe",
+          contact_title: "Owner",
+          public_work_contact: lead.email,
+          signal_type: "Hiring",
+          signal_description: "Hiring and conversion improvement signal.",
+          signal_date: "Unknown",
+          source_url: crmCompany.website,
+          source_title: "Company website",
+          source_type: "website",
+          evidence_summary: "The company publicly describes commercial renovation services.",
+          fit_explanation: "Matches the selected construction target market.",
+          ai_relevance_score: 87,
+          confidence_score: 76,
+          verified_status: "verified",
+          checked_at: new Date().toISOString(),
+          publication_date: "Unknown",
+          first_line_opener: "Noticed your commercial renovation focus.",
+          draft_email: "Hi Jane, noticed your commercial renovation focus. Worth a quick look at a simple way to turn more site visitors into qualified calls?",
+          lead_id: "",
+          company_id: "",
+          email_id: "",
+          email_subject: "",
+          email_body: ""
+        }]
+      };
+    } else if (apiPath === "/api/workspace-app/leads/first-customers/results/finder-result-1/save") {
+      body = {
+        status: "success",
+        message: "Lead saved to CRM. Outreach draft is ready for manual review.",
+        result: {
+          id: "finder-result-1",
+          company_name: crmCompany.name,
+          official_website: crmCompany.website,
+          industry: crmCompany.industry,
+          country: crmCompany.country,
+          company_size: "20-200",
+          contact_name: "Jane Doe",
+          contact_title: "Owner",
+          public_work_contact: lead.email,
+          signal_type: "Hiring",
+          signal_description: "Hiring and conversion improvement signal.",
+          signal_date: "Unknown",
+          source_url: crmCompany.website,
+          source_title: "Company website",
+          source_type: "website",
+          evidence_summary: "The company publicly describes commercial renovation services.",
+          fit_explanation: "Matches the selected construction target market.",
+          ai_relevance_score: 87,
+          confidence_score: 76,
+          verified_status: "verified",
+          checked_at: new Date().toISOString(),
+          publication_date: "Unknown",
+          first_line_opener: "Noticed your commercial renovation focus.",
+          draft_email: "Hi Jane, noticed your commercial renovation focus. Worth a quick look?",
+          lead_id: lead.id,
+          company_id: crmCompany.id,
+          email_id: crmCompany.generated_emails[0].id,
+          email_subject: crmCompany.generated_emails[0].subject,
+          email_body: crmCompany.generated_emails[0].body
+        }
+      };
     } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/analyze`) {
       body = { status: "success", message: "Website analysis saved.", company: { ...crmCompany, crm_stage: "Website Analyzed", website_analyzed_at: new Date().toISOString() } };
     } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/contacts`) {
       body = { status: "success", message: "Verified contact saved to CRM.", company: { ...crmCompany, crm_stage: "Contact Found", contact_found_at: new Date().toISOString() } };
     } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/email-draft`) {
-      body = { status: "success", message: "Email draft created for review. Nothing was sent.", company: { ...crmCompany, crm_stage: "Email Draft Ready", email_generated_at: new Date().toISOString() }, email: crmCompany.generated_emails[0] };
+      currentEmailDeliveryStatus = "draft";
+      body = { status: "success", message: "Email draft created for review. Nothing was sent.", company: { ...companyForMail(), crm_stage: "Email Draft Ready", email_generated_at: new Date().toISOString() }, email: companyForMail().generated_emails[0] };
     } else if (apiPath === `/api/workspace-app/companies/${crmCompany.id}/complete-opportunity` || apiPath === `/api/workspace-app/companies/${crmCompany.id}/enrichment/restart`) {
       body = {
         status: "success",
@@ -239,9 +327,15 @@ test.beforeEach(async ({ page }) => {
         email: crmCompany.generated_emails[0]
       };
     } else if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") {
-      body = { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: { ...crmCompany, crm_stage: "Approved", email_approved_at: new Date().toISOString() }, email: { ...crmCompany.generated_emails[0], delivery_status: "approved" } };
+      currentEmailDeliveryStatus = "approved";
+      body = { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: companyForMail(), email: companyForMail().generated_emails[0] };
     } else if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
-      body = { status: "success", message: "Approved email was sent. CRM stage updated.", company: { ...crmCompany, crm_stage: "Sent", email_sent_at: new Date().toISOString() }, email: { ...crmCompany.generated_emails[0], delivery_status: "sent", sent_at: new Date().toISOString() } };
+      currentEmailDeliveryStatus = "sent";
+      body = { status: "success", message: "Approved email was sent. CRM stage updated.", company: companyForMail(), email: { ...companyForMail().generated_emails[0], sent_at: new Date().toISOString() } };
+    } else if (apiPath === "/api/outreach/sender/status") {
+      body = { connected: true, status: "connected", next_action: "Ready for manual sends." };
+    } else if (apiPath === "/api/emails/33333333-3333-3333-3333-333333333333") {
+      body = { ...companyForMail().generated_emails[0], subject: "Quick idea for Hill Country Build Co" };
     } else if (apiPath === "/api/leads/find") {
       body = [lead];
     } else if (apiPath === "/api/campaigns") {
@@ -291,45 +385,41 @@ test.describe("redesigned B2B outbound workspace", () => {
   test("lead finder supports the primary outbound actions", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 900 });
     await page.goto("/dashboard/leads");
-    await page.getByRole("button", { name: "Find leads" }).first().click();
+    await page.getByLabel("Product website").fill("https://outreachaiaiai.com");
+    await page.getByLabel("Target customer").fill("Commercial builders that need more qualified sales calls.");
+    await page.getByRole("button", { name: /Find customers/ }).click();
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
-    await expect(page.getByText("Verified email").first()).toBeVisible();
     await expect(page.getByText("jane@example.com").first()).toBeVisible();
-    await page.getByRole("button", { name: /Run all missing steps/ }).click();
-    await expect(page.getByText("AI enrichment restarted. This card will update as data arrives.")).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText("Complete sales research to generate the first email.")).toBeVisible();
-    const approveButton = page.getByRole("button", { name: /Approve email/ });
-    await expect(approveButton).toBeDisabled();
-    const sendButton = page.getByRole("button", { name: /Send approved email/ });
-    await expect(sendButton).toBeDisabled();
+    await page.getByRole("button", { name: /Save to CRM/ }).click();
+    await expect(page.getByText("Lead saved to CRM. Outreach draft is ready for manual review.")).toBeVisible();
   });
 
-  test("campaign review never sends without approval", async ({ page }) => {
+  test("mail review never sends without approval", async ({ page }) => {
     await page.goto("/dashboard/campaigns");
-    await expect(page.getByText("Review before send: enabled")).toBeVisible();
-    await expect(page.getByText("Austin Builders Outreach")).toBeVisible();
-    await page.getByRole("button", { name: /Launch after approval/ }).click();
-    await expect(page.getByText("Austin Builders Outreach is now Running. Emails still require approved drafts before sending.")).toBeVisible();
-    await page.getByRole("button", { name: /Pause/ }).click();
-    await expect(page.getByText("Austin Builders Outreach is now Paused. Emails still require approved drafts before sending.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Review drafts, send manually, track replies." })).toBeVisible();
+    await expect(page.getByText("No automatic email sending.")).toBeVisible();
+    await expect(page.getByLabel("Subject")).toHaveValue("Quick idea for Hill Country Build Co");
+    await expect(page.getByRole("button", { name: "Send manually" }).first()).toBeDisabled();
   });
 
-  test("campaign creation connects saved leads to review workflow", async ({ page }) => {
+  test("mail approval requires a second explicit send confirmation", async ({ page }) => {
     await page.goto("/dashboard/campaigns");
-    await page.getByLabel("Campaign name").fill("First customer campaign");
-    await page.getByRole("button", { name: /Create campaign/ }).click();
-    await expect(page.getByText("Campaign created. Your first opportunity was added for review; no email was sent.")).toBeVisible();
+    await page.getByRole("button", { name: "Approve" }).first().click();
+    await expect(page.getByText("Email approved. It is ready to send, but nothing was sent automatically.")).toBeVisible();
+    await page.getByRole("button", { name: "Send manually" }).first().click();
+    await expect(page.getByText("Confirm the recipient and click Confirm send. Nothing has been sent yet.")).toBeVisible();
+    await page.getByRole("button", { name: "Confirm send" }).first().click();
+    await expect(page.getByText("Approved email was sent. CRM stage updated.")).toBeVisible();
   });
 
   test("crm company stage move and note actions show reliable feedback", async ({ page }) => {
     await page.goto("/dashboard/companies");
-    await page.getByRole("link", { name: /Open company/ }).first().click();
-    await page.getByRole("main").getByRole("combobox").selectOption("Meeting Scheduled");
-    await page.getByRole("button", { name: /Move stage/ }).click();
-    await expect(page.getByText("CRM stage moved to Meeting Scheduled.")).toBeVisible();
-    await page.getByLabel("Add note").fill("Customer asked to review next week.");
+    await page.getByRole("main").getByRole("combobox").selectOption("Not Interested");
+    await page.getByRole("button", { name: /Update stage/ }).click();
+    await expect(page.getByText("CRM stage updated.")).toBeVisible();
+    await page.getByLabel("Notes and history").fill("Customer asked to review next week.");
     await page.getByRole("button", { name: /Add note/ }).click();
-    await expect(page.getByText("Note saved to the activity history.")).toBeVisible();
+    await expect(page.getByText("Note saved.")).toBeVisible();
     await expect(page.getByText("Customer asked to review next week.").first()).toBeVisible();
   });
 
@@ -346,7 +436,7 @@ test.describe("redesigned B2B outbound workspace", () => {
 
     await page.goto("/dashboard");
     const main = page.getByRole("main");
-    await expect(page.getByRole("heading", { name: "Find customers → CRM → first email." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Find customers, save CRM leads, write emails." })).toBeVisible();
     await expect(main).toContainText("Start search");
     await expect(main).toContainText("Open CRM");
     await expect(main).not.toContainText("Dashboard data is temporarily unavailable");
@@ -372,7 +462,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("main")).not.toContainText("Что-то пошло не так");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
-    await expect(page.getByRole("main")).toContainText(/Найти клиентов → CRM → первое письмо\.|Загружаем пространство/);
+    await expect(page.getByRole("main")).toContainText(/Найти клиентов, сохранить CRM-лиды, написать письма\.|Загружаем пространство/);
     expect(pageErrors).toEqual([]);
   });
 
@@ -384,8 +474,8 @@ test.describe("redesigned B2B outbound workspace", () => {
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Dashboard unavailable" }) });
     });
     await page.goto("/dashboard/leads");
-    await expect(page.getByRole("heading", { name: "Find a customer, save the lead, write the email." })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Find customers, then decide what to save." })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Search criteria");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("Lead data unavailable");
   });
@@ -395,7 +485,7 @@ test.describe("redesigned B2B outbound workspace", () => {
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Pipeline unavailable" }) });
     });
     await page.goto("/dashboard/companies");
-    await expect(page.getByRole("heading", { name: "Open the next company to finish the opportunity." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Saved leads, stages, notes and history." })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("CRM data could not be loaded");

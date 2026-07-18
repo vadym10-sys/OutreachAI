@@ -1,5 +1,5 @@
-import { DashboardHome } from '@/components/outbound-workspace';
+import { CoreDashboardHome } from '@/components/core-customer-workspace';
 
 export default function DashboardPage() {
-  return <DashboardHome />;
+  return <CoreDashboardHome />;
 }
