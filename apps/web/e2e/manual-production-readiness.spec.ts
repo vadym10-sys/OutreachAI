@@ -81,7 +81,7 @@ async function signInAsQaUser(page: Page) {
   await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
   await page.getByRole("button", { name: "Continue to workspace" }).click();
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expectHealthyPage(page, "What should I do now?");
+  await expectHealthyPage(page, "Find customers → CRM → first email.");
 }
 
 test.describe("manual production-readiness journey", () => {
@@ -105,17 +105,19 @@ test.describe("manual production-readiness journey", () => {
 
     await page.getByRole("link", { name: "Search", exact: true }).click();
     await expectHealthyPage(page, "Find a customer, save the lead, write the email.");
-    await page.getByLabel("1. Your company website").fill("https://outreachaiaiai.com");
-    await page.getByLabel("2. Who should we find?").fill("B2B SaaS companies in Europe with sales teams that need better outbound research.");
-    await page.getByRole("button", { name: "Find leads" }).click();
+    const firstCustomerForm = page.getByRole("form", { name: "Find First Customers" });
+    await firstCustomerForm.getByLabel("Product website").fill("https://outreachaiaiai.com");
+    await firstCustomerForm.getByLabel("Country").fill("Germany");
+    await firstCustomerForm.getByLabel("Industry").fill("B2B SaaS");
+    await firstCustomerForm.getByLabel("Number of leads").fill("5");
+    await firstCustomerForm.getByRole("button", { name: "Find First Customers" }).click();
+    await expect(page.getByText("Review the evidence, then save only the leads you approve.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "EuroScale CRM Co" }).first()).toBeVisible();
     await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
-    await expect(page.getByText("Saved to CRM").first()).toBeVisible();
-    await expect(page.getByText("Quick idea for EuroScale CRM Co")).toBeVisible();
-    await page.getByRole("button", { name: /Сохранить как черновик|Save as draft/ }).click();
-    await expect(page.getByText("Draft saved in CRM.")).toBeVisible();
-    await page.getByRole("button", { name: /Отправить|Send/ }).click();
-    await expect(page.getByText("Email sent. CRM stage updated.")).toBeVisible();
+    await expect(page.getByText("Draft message", { exact: true })).toBeVisible();
+    await expect(page.getByText("Worth a quick fit review?")).toBeVisible();
+    await page.getByRole("button", { name: "Save to CRM" }).click();
+    await expect(page.getByText("Lead saved to CRM. Outreach draft is ready for manual review.")).toBeVisible();
 
     await page.getByRole("link", { name: "CRM", exact: true }).click();
     await expectHealthyPage(page, "Move real leads from research to revenue.");
@@ -175,13 +177,12 @@ test.describe("manual production-readiness journey", () => {
     await expect(page).toHaveURL(/\/sign-in/);
     await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
     await page.getByRole("button", { name: "Continue to workspace" }).click();
-    await expectHealthyPage(page, "What should I do now?");
+    await expectHealthyPage(page, "Find customers → CRM → first email.");
 
     for (const endpoint of [
       "/api/workspace-app/bootstrap",
-      "/api/workspace-app/ai-customer-finder/searches",
-      "/api/workspace-app/ai-customer-finder/results/finder-result-1/draft",
-      "/api/workspace-app/ai-customer-finder/results/finder-result-1/send",
+      "/api/workspace-app/leads/first-customers/search",
+      "/api/workspace-app/leads/first-customers/results/finder-result-1/save",
       "/api/workspace-app/companies",
       `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis`,
       "/api/campaigns",
@@ -206,7 +207,7 @@ test.describe("manual production-readiness journey", () => {
     await expectNoHorizontalOverflow(page);
 
     for (const [route, heading] of [
-      ["/dashboard/leads", "Find real companies and turn each into a sales opportunity."],
+      ["/dashboard/leads", "Find a customer, save the lead, write the email."],
       ["/dashboard/companies", "Open the next company to finish the opportunity."],
       [`/dashboard/companies?company=${qaCompany.id}`, "Open the next company to finish the opportunity."],
       ["/dashboard/campaigns", "Review real outreach before anything is sent."],
@@ -224,7 +225,7 @@ test.describe("manual production-readiness journey", () => {
     await page.getByTestId("qa-sign-out").click();
     await expect(page).toHaveURL(/\/sign-in/);
     await page.getByRole("button", { name: "Continue to workspace" }).click();
-    await expectHealthyPage(page, "What should I do now?");
+    await expectHealthyPage(page, "Find customers → CRM → first email.");
     await guards.assertClean();
   });
 });

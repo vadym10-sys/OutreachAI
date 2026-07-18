@@ -7,7 +7,7 @@ import { Component, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRe
 import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Rocket, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
-import { AiLiveCard, AiTimeline, AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, MiniBarChart, OperatingPanel, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
+import { AiTimeline, AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, OperatingPanel, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
 import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
 import { companyGrowthSignals, companyHiringSignals, companyNewsSignals, executiveTimelineV2, leadScoreV2, nextBestActionV2, outreachCopilotAssetsV2, researchInputsV2 } from "@/lib/ai-sales-operating-system";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
@@ -16,7 +16,7 @@ import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
 import type { Activity, AISalesEmployee, BillingStatus, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, Profile, RevenueCompany, RevenueIntelligenceFeed, SalesCopilot, Usage, WebsiteAudit } from "@/lib/types";
-import type { AnalysisResult, FirstCustomerJob, FirstCustomerResult, FirstCustomerSaveResponse, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadCommandResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
+import type { AnalysisResult, FirstCustomerJob, FirstCustomerResult, FirstCustomerSaveResponse, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
 
@@ -825,13 +825,6 @@ function recentDate(value?: string | null) {
   return Date.now() - timestamp <= 24 * 60 * 60 * 1000;
 }
 
-function leadPriorityBucket(lead: Lead): "Hot" | "Warm" | "Cold" {
-  const score = leadOpportunityScoreForWorkspace(lead);
-  if (score >= 75) return "Hot";
-  if (score >= 55) return "Warm";
-  return "Cold";
-}
-
 function leadMissingDataForWorkspace(lead: Lead) {
   return !lead.website || !lead.ai_summary || !lead.contact || !lead.email;
 }
@@ -1007,46 +1000,38 @@ function dashboardNextStep(metrics: DashboardMetrics, leads: Lead[], campaigns: 
   if (!leads.length && metrics.leads === 0) {
     return {
       step: "Lead Search",
-      title: "Find your first qualified companies",
-      copy: "Start with one narrow market. OutreachAI will save real companies to CRM and prepare the next sales step.",
+      title: "Find customers first",
+      copy: "Enter your product and target market. OutreachAI will prepare evidence-backed candidates for review.",
       href: "/dashboard/leads",
-      label: "Find leads"
+      label: "Start search"
     };
   }
-  const leadNeedingResearch = leads.find((lead) => !lead.ai_summary || !lead.email_generated_at) || leads[0];
-  if (leadNeedingResearch) {
+  const leadWithoutDraft = leads.find((lead) => !lead.email_generated_at && !safeArray(lead.generated_emails).length);
+  if (leadWithoutDraft) {
     return {
-      step: leadNeedingResearch.ai_summary ? "AI Email" : "Company Research",
-      title: "Complete company research",
-      copy: "Turn the saved company into a complete opportunity: research, contacts, AI email, follow-ups and approval.",
-      href: "/dashboard/companies",
-      label: "Review opportunity"
-    };
-  }
-  if (!campaigns.length && metrics.campaigns === 0) {
-    return {
-      step: "Approval",
-      title: "Create a campaign from approved opportunities",
-      copy: "Build a short sequence, review each message, and keep sending blocked until you approve it.",
-      href: "/dashboard/campaigns",
-      label: "Create campaign"
-    };
-  }
-  if (metrics.replies > 0 || metrics.meetings > 0) {
-    return {
-      step: metrics.meetings > 0 ? "Meeting" : "Reply Tracking",
-      title: metrics.meetings > 0 ? "Work the meetings created by outreach" : "Review replies and move opportunities forward",
-      copy: "Keep CRM stages current so the dashboard reflects what needs attention today.",
+      step: "CRM",
+      title: "Save and review CRM leads",
+      copy: "Open the saved companies, check the public source and complete missing contact details.",
       href: "/dashboard/crm",
       label: "Open CRM"
     };
   }
+  if (metrics.replies > 0 || metrics.meetings > 0) {
+    return {
+      step: "Mail",
+      title: "Review replies",
+      copy: "Open Mail, handle replies and update the CRM status manually.",
+      href: "/dashboard/inbox",
+      label: "Open Mail"
+    };
+  }
+  void campaigns;
   return {
-    step: "Approval",
-    title: "Review the next approved action",
-    copy: "Check saved opportunities and approve only the outreach that is ready for a real prospect.",
-    href: "/dashboard/companies",
-    label: "Review opportunities"
+    step: "Mail",
+    title: "Prepare the first email",
+    copy: "Review the draft before anything is sent. Sending stays blocked until explicit approval.",
+    href: "/dashboard/inbox",
+    label: "Review drafts"
   };
 }
 
@@ -1068,16 +1053,15 @@ function completedWorkflowSteps(metrics: DashboardMetrics, leads: Lead[], campai
 }
 
 const coreCustomerActions = [
-  ["Find leads", "Search one focused market.", "/dashboard/leads"],
-  ["Open company", "Review the best saved opportunity.", "/dashboard/companies"],
-  ["Prepare email", "Turn company research into a reviewed email.", "/dashboard/companies"],
-  ["Approve", "Send only after approval.", "/dashboard/campaigns"]
+  ["Find customers", "Search one focused market.", "/dashboard/leads"],
+  ["Save to CRM", "Review and keep only the right companies.", "/dashboard/crm"],
+  ["Prepare email", "Create a draft and approve every send manually.", "/dashboard/inbox"]
 ] as const;
 
 function CoreActionGrid({ activeHref }: { activeHref?: string }) {
   const { t } = useI18n();
   return (
-    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <section className="grid gap-3 md:grid-cols-3">
       {coreCustomerActions.map(([title, copy, href], index) => {
         const active = activeHref === href || (!activeHref && index === 0);
         return (
@@ -2963,285 +2947,99 @@ function OpportunityCard({
 }
 
 export function DashboardHome() {
-  const { metrics, leads, recentCompanies, revenueFeed, campaigns, employees, activity, loading, error, supportingError, cachedAt } = useDashboardData();
+  const { metrics, leads, recentCompanies, campaigns, activity, loading, error, supportingError, cachedAt } = useDashboardData();
   const { t } = useI18n();
-  const hasAnyData = metrics.leads > 0 || metrics.campaigns > 0 || metrics.emails_sent > 0 || metrics.replies > 0 || metrics.meetings > 0 || leads.length > 0 || campaigns.length > 0 || employees.length > 0 || activity.length > 0;
   const nextStep = dashboardNextStep(metrics, leads, campaigns);
-  const companies = recentCompanies.length ? recentCompanies : [];
-  const revenueItems = revenueFeed?.top_opportunities?.length ? revenueFeed.top_opportunities : companies.map(revenueCompanyFromCrm);
-  const revenueCategories = revenueFeed?.categories || {
-    "Hot Today": revenueItems.filter((item) => item.feed_categories.includes("Hot Today")),
-    "Intent Increased": revenueItems.filter((item) => item.feed_categories.includes("Intent Increased")),
-    "New Buying Signals": revenueItems.filter((item) => item.feed_categories.includes("New Buying Signals")),
-    "Intent Dropped": revenueItems.filter((item) => item.feed_categories.includes("Intent Dropped")),
-    "Recommended Now": revenueItems.filter((item) => item.feed_categories.includes("Recommended Now"))
-  };
-  const recommendedRevenue = revenueFeed?.recommended_today?.length ? revenueFeed.recommended_today : revenueItems.filter((item) => item.recommended_action.action === "Contact now");
-  const intentTrend = revenueFeed?.intent_trend?.length ? revenueFeed.intent_trend : revenueItems.map((item) => ({
-    company_id: item.company_id,
-    company: item.company,
-    current_score: item.intent_history.current_score,
-    previous_score: item.intent_history.previous_score,
-    delta: item.intent_history.delta,
-    trend: item.intent_history.trend,
-    last_updated: item.intent_history.last_updated
-  }));
-
-  const opportunities = [...companies]
-    .sort((left, right) => {
-      const leftScore = Number(left.ai_crm?.priority?.score || left.overall_score || 0);
-      const rightScore = Number(right.ai_crm?.priority?.score || right.overall_score || 0);
-      return rightScore - leftScore;
-    })
-    .slice(0, 6);
-
-  const readyToSendEmails = companies
-    .map((company) => ({
-      company,
-      email: safeArray(company.generated_emails)[0]
-    }))
-    .filter((item) => {
-      if (!item.email) return false;
-      const status = String(item.email.delivery_status || "").toLowerCase();
-      return status === "approved" || status === "draft";
-    })
-    .slice(0, 5);
-
-  const needsReviewCount = companies.filter((company) => {
-    const hasErrorStage = Object.values(company.workflow_stages || {}).some((stage) => String(stage).toLowerCase() === "error");
-    const hasReviewMessage = Object.values(company.workflow_stage_messages || {}).some((message) => String(message || "").toLowerCase().includes("review"));
-    const stage = String(company.crm_stage || "");
-    return hasErrorStage || hasReviewMessage || stage === "Email Draft Ready" || stage === "Approved";
-  }).length;
-
-  const allBuyingChanges = companies.flatMap((company) => safeArray(company.ai_live_buying_signals?.latest_changes));
-  const buyingSignalBuckets = {
-    hiring: allBuyingChanges.filter((item) => item?.change_type === "new_hiring"),
-    technology: allBuyingChanges.filter((item) => item?.change_type === "technology_changes"),
-    expansion: allBuyingChanges.filter((item) => item?.change_type === "market_expansion"),
-    funding: allBuyingChanges.filter((item) => item?.change_type === "new_funding"),
-    product: allBuyingChanges.filter((item) => item?.change_type === "new_products")
-  };
-
-  const summaryCards = [
+  const savedCount = Math.max(Number(metrics.leads || 0), leads.length, recentCompanies.length);
+  const draftLeads = leads.filter((lead) => lead.email_generated_at || safeArray(lead.generated_emails).length || String(lead.status || "").toLowerCase().includes("draft"));
+  const draftCompanies = recentCompanies.filter((company) => safeArray(company.generated_emails).length || company.email_generated_at);
+  const draftCount = Math.max(draftLeads.length, draftCompanies.length);
+  const sentCount = Number(metrics.emails_sent || 0) || leads.filter((lead) => lead.email_sent_at).length;
+  const replyCount = Number(metrics.replies || 0) || leads.filter((lead) => lead.replied_at).length;
+  const hasAnyData = savedCount > 0 || draftCount > 0 || sentCount > 0 || replyCount > 0 || activity.length > 0;
+  const recentSavedCompanies = recentCompanies.length ? recentCompanies.slice(0, 4) : leads.slice(0, 4).map((lead) => ({
+    id: lead.crm_company_id || lead.id,
+    name: lead.company,
+    website: leadWebsite(lead),
+    crm_stage: lead.status || "New Lead",
+    generated_emails: safeArray(lead.generated_emails),
+    saved_to_crm_at: lead.saved_to_crm_at || lead.created_at,
+    source: lead.source
+  } as Partial<CrmCompany> as CrmCompany));
+  const recentDrafts = [
+    ...draftCompanies.map((company) => ({ company: company.name, email: latestCompanyEmail(company), href: `/dashboard/companies?company=${company.id}` })),
+    ...draftLeads.map((lead) => ({ company: lead.company, email: safeArray(lead.generated_emails)[0], href: lead.crm_company_id ? `/dashboard/companies?company=${lead.crm_company_id}` : "/dashboard/inbox" }))
+  ].filter((item, index, items) => items.findIndex((candidate) => candidate.company === item.company) === index).slice(0, 4);
+  const recentActivity = activity.slice(0, 5);
+  const workflowSteps = [
     {
-      label: t("Hot opportunities"),
-      value: revenueCategories["Hot Today"]?.length || opportunities.filter((item) => Number(item.ai_crm?.priority?.score || item.overall_score || 0) >= 70).length,
-      helper: t("High-priority accounts")
+      label: t("Find customers"),
+      detail: savedCount ? t("Companies are available for review.") : t("Start with your product site, country and industry."),
+      status: savedCount ? "done" as const : "active" as const,
+      href: "/dashboard/leads",
+      cta: "Start search"
     },
     {
-      label: t("Buying signals"),
-      value: revenueCategories["New Buying Signals"]?.length || allBuyingChanges.length,
-      helper: t("Recent signal changes")
+      label: t("Save to CRM"),
+      detail: savedCount ? t("Saved leads are kept in your private CRM.") : t("Approve only the companies you want to keep."),
+      status: savedCount ? "done" as const : "waiting" as const,
+      href: "/dashboard/crm",
+      cta: "Open CRM"
     },
     {
-      label: t("Intent increased"),
-      value: revenueCategories["Intent Increased"]?.length || 0,
-      helper: t("Accounts gaining urgency")
-    },
-    {
-      label: t("Recommended now"),
-      value: recommendedRevenue.length,
-      helper: t("AI says contact now")
+      label: t("Prepare email"),
+      detail: draftCount ? t("Drafts are ready for manual review.") : t("Create a short message after the lead is saved."),
+      status: draftCount ? "done" as const : savedCount ? "active" as const : "waiting" as const,
+      href: "/dashboard/inbox",
+      cta: "Review drafts"
     }
   ];
-
-  const primaryCompany = opportunities[0] || null;
-  const primaryContact = primaryCompany?.contacts?.[0] || null;
-  const who = primaryContact
-    ? `${primaryContact.name || "Decision maker"}${primaryContact.title ? ` · ${primaryContact.title}` : ""}`
-    : (primaryCompany?.name || t("No company selected yet"));
-  const why = String(
-    primaryCompany?.ai_crm?.buying_intent?.reasoning
-    || primaryCompany?.ai_sales_os?.orchestrator?.coordination_summary
-    || primaryCompany?.reasoning
-    || t("AI ranked this account based on current buying intent, risk and verified signals.")
-  );
-  const whatNext = String(
-    primaryCompany?.ai_crm?.next_action
-    || primaryCompany?.ai_sales_os?.orchestrator?.output?.next_action
-    || primaryCompany?.recommended_next_action
-    || t(nextStep.title)
-  );
-
-  const aiRecommendation = {
-    bestCompany: primaryCompany?.name || t("No best company yet"),
-    whyNow: String(primaryCompany?.ai_crm?.buying_intent?.reasoning || primaryCompany?.ai_revenue_engine_report?.recommended_outreach_strategy?.why_contact_now || why),
-    whoToContact: who,
-    outreachAngle: String(primaryCompany?.ai_outreach_strategy?.strongest_value_proposition || primaryCompany?.ai_competitor_intelligence?.opportunity_to_sell || t("Use the strongest value proposition from the company card.")),
-    href: primaryCompany ? `/dashboard/companies?company=${primaryCompany.id}` : "/dashboard/companies"
-  };
-  const aiTimeline = [
-    {
-      label: t("Market scan"),
-      detail: companies.length ? t("Recent companies are ranked by current fit, urgency and workflow readiness.") : t("Run lead search or add one company to create the first market signal."),
-      status: companies.length ? "done" as const : "active" as const
-    },
-    {
-      label: t("AI research"),
-      detail: opportunities.length ? t("AI has enough account context to recommend who to contact and why now.") : t("Company research will appear here after the first enrichment run."),
-      status: opportunities.length ? "done" as const : "waiting" as const
-    },
-    {
-      label: t("Outreach decision"),
-      detail: readyToSendEmails.length ? t("Drafts are ready for human review before launch.") : t("Generate or approve an outreach draft when the account is ready."),
-      status: readyToSendEmails.length ? "active" as const : "waiting" as const
-    }
-  ];
-  const chartValues = [
-    ...intentTrend.slice(0, 4).map((item) => Math.max(0, Number(item.current_score || 0))),
-    Math.max(0, summaryCards[0]?.value || 0),
-    Math.max(0, summaryCards[1]?.value || 0)
-  ].slice(0, 4);
-  const todayBrief = [
-    {
-      label: "Focus",
-      value: primaryCompany ? primaryCompany.name : t("Start with one market"),
-      detail: primaryCompany ? whatNext : t("Find or add one real company to activate the AI workspace.")
-    },
-    {
-      label: "Risk",
-      value: needsReviewCount ? t("Review needed") : t("No blocker detected"),
-      detail: needsReviewCount ? t("Some opportunities need a human decision before outreach.") : t("The workspace has no urgent review blocker right now.")
-    },
-    {
-      label: "Momentum",
-      value: readyToSendEmails.length ? t("Draft ready") : t("Research first"),
-      detail: readyToSendEmails.length ? t("At least one message can be reviewed before sending.") : t("Generate company research before approving outreach.")
-    }
-  ];
-  const executiveKpis = [
-    ["Leads", metrics.leads || leads.length],
-    ["Campaigns", metrics.campaigns || campaigns.length],
-    ["Replies", metrics.replies],
-    ["Meetings", metrics.meetings],
-    ["Reply rate", `${Math.round(metrics.reply_rate || 0)}%`],
-    ["Emails sent", metrics.emails_sent]
-  ] as const;
-  const dashboardInsights = uniqueStrings([
-    primaryCompany ? `${primaryCompany.name}: ${why}` : "",
-    allBuyingChanges.length ? t("Buying signals changed. Review the highest-priority accounts first.") : "",
-    readyToSendEmails.length ? t("Some drafts are ready. Review before launching any campaign.") : "",
-    needsReviewCount ? t("Manual review is the current bottleneck.") : "",
-    !hasAnyData ? t("Activation starts with one focused lead search or one manually saved company.") : ""
-  ].filter(Boolean)).slice(0, 4);
-  const activityItems = [
-    ...activity.map((item) => {
-      const metadata = item.metadata_json || {};
-      const activityCompany = String(metadata.company || metadata.company_name || metadata.lead_company || "").trim();
-      const activityMessage = String(metadata.message || metadata.detail || metadata.status || "").trim();
-      return {
-        label: activityCompany || item.action,
-        detail: activityMessage || item.action,
-        time: item.created_at
-      };
-    }),
-    ...companies.flatMap((company) => [
-      company.email_generated_at ? { label: company.name, detail: t("Email draft generated"), time: company.email_generated_at } : null,
-      company.website_analyzed_at ? { label: company.name, detail: t("Company research completed"), time: company.website_analyzed_at } : null,
-      company.replied_at ? { label: company.name, detail: t("Reply received"), time: company.replied_at } : null
-    ].filter(Boolean) as Array<{ label: string; detail: string; time: string }>)
-  ].sort((left, right) => new Date(right.time || 0).getTime() - new Date(left.time || 0).getTime()).slice(0, 6);
-  const recentCompanies24h = companies.filter((company) => recentDate(company.created_at) || recentDate(company.found_at) || recentDate(company.saved_to_crm_at));
-  const hotLeads24h = companies.filter((company) => {
-    const score = Number(company.ai_crm?.priority?.score || company.ai_lead_prioritization?.score || company.overall_score || 0);
-    return score >= 70 && (recentDate(company.updated_at) || recentDate(company.last_activity_at) || recentDate(company.website_analyzed_at));
-  });
-  const newSignalCount24h = allBuyingChanges.filter((change) => recentDate(change?.detected_at)).length || allBuyingChanges.length;
-  const dailyBriefItems = [
-    {
-      label: "New companies",
-      value: recentCompanies24h.length,
-      detail: recentCompanies24h[0]?.name || t("No new company detected in the last 24 hours.")
-    },
-    {
-      label: "Hot leads",
-      value: hotLeads24h.length,
-      detail: hotLeads24h[0]?.name || primaryCompany?.name || t("No hot lead change in the last 24 hours.")
-    },
-    {
-      label: "Buying signals",
-      value: newSignalCount24h,
-      detail: allBuyingChanges[0]?.change_type ? String(allBuyingChanges[0].change_type).replaceAll("_", " ") : t("No fresh buying signal yet.")
-    },
-    {
-      label: "Best action",
-      value: primaryCompany ? t("Ready") : t("Start"),
-      detail: whatNext
-    },
-    {
-      label: "24h changes",
-      value: activityItems.filter((item) => recentDate(item.time)).length,
-      detail: activityItems[0]?.detail || t("No recent activity yet.")
-    }
-  ];
+  const manualSafety = t("OutreachAI never sends email or creates CRM records from first-customer search until you approve the exact action.");
 
   return (
-    <div className="space-y-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
-      <section className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-[#0b0d13] p-5 text-white shadow-2xl sm:p-7">
-        <div className="pointer-events-none absolute -right-16 -top-20 h-72 w-72 rounded-full bg-indigo-500/30 blur-3xl" />
-        <div className="pointer-events-none absolute -left-10 bottom-0 h-56 w-56 rounded-full bg-sky-400/20 blur-3xl" />
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.55),transparent)]" />
-        <div className="relative flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0">
-            <p className="text-xs font-black uppercase tracking-[0.18em] text-sky-200">{t("Executive Dashboard")}</p>
-            <h1 className="mt-3 text-4xl font-black leading-[0.94] tracking-[-0.04em] text-white sm:text-5xl">{t("What should I do now?")}</h1>
-            <p className="mt-4 max-w-3xl text-sm font-semibold leading-7 text-white/60">{t("AI-first control center. Every card explains who to target, why this matters now, and what next action creates the most momentum.")}</p>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white px-4 text-sm font-black text-[#101114] shadow-glow">{t(nextStep.label)} <ArrowRight size={16} /></Link>
-            <Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 text-sm font-black text-white backdrop-blur"><Building2 size={16} /> {t("Open Companies")}</Link>
-            <Link href="/dashboard/inbox" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 text-sm font-black text-white backdrop-blur"><Inbox size={16} /> {t("Open Inbox")}</Link>
-          </div>
-        </div>
-        <div className="relative mt-6 grid gap-3 md:grid-cols-4">
-          {summaryCards.map((card) => (
-            <article key={card.label} className="rounded-2xl border border-white/10 bg-white/[0.07] p-4 backdrop-blur">
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-white/50">{card.label}</p>
-              <p className="mt-2 text-3xl font-black text-white">{card.value}</p>
-              <p className="mt-1 text-sm font-semibold text-white/60">{card.helper}</p>
-            </article>
-          ))}
-        </div>
-      </section>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Workspace"
+        title="Find customers → CRM → first email."
+        copy="One simple path: find suitable companies, save only the right ones to CRM, then review a short email draft before any send."
+        action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t(nextStep.label)} <ArrowRight size={17} /></Link>}
+      />
 
       {(loading || supportingError || error) && (
         <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          {loading ? t("Loading executive context…") : null}
+          {loading ? t("Loading workspace...") : null}
           {!loading && (supportingError || error) ? supportingError || error : null}
           {cachedAt ? ` ${t("Showing last successful refresh.")}` : ""}
         </section>
       )}
 
-      <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+      <section className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
         <OperatingPanel>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <p className="ui-eyebrow">{t("Today Brief")}</p>
-              <h2 className="ui-title mt-1 text-2xl">{t("Your AI sales briefing for today.")}</h2>
+              <p className="ui-eyebrow">{t("Next step")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t(nextStep.title)}</h2>
+              <p className="ui-copy mt-2 max-w-2xl">{t(nextStep.copy)}</p>
             </div>
             <Link href={nextStep.href} className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">
               {t(nextStep.label)} <ArrowRight size={16} />
             </Link>
           </div>
-          <div className="mt-5 grid gap-3 md:grid-cols-3">
-            {todayBrief.map((item) => (
-              <article key={item.label} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4">
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-brand">{t(item.label)}</p>
-                <h3 className="mt-2 text-lg font-black text-[var(--ui-text)]">{item.value}</h3>
-                <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{item.detail}</p>
-              </article>
-            ))}
-          </div>
+          <p className="mt-5 rounded-2xl border border-teal-100 bg-teal-50 p-4 text-sm font-semibold leading-6 text-brand">{manualSafety}</p>
         </OperatingPanel>
 
         <OperatingPanel>
-          <p className="ui-eyebrow">{t("KPI Cards")}</p>
-          <h2 className="ui-title mt-1 text-2xl">{t("Only metrics that change the next decision.")}</h2>
+          <p className="ui-eyebrow">{t("Current workspace")}</p>
+          <h2 className="ui-title mt-1 text-2xl">{t("Only the numbers needed for the workflow.")}</h2>
           <div className="mt-5 grid grid-cols-2 gap-3">
-            {executiveKpis.map(([label, value]) => (
-              <article key={label} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-3">
-                <p className="text-xs font-black uppercase tracking-[0.12em] text-[var(--ui-text-soft)]">{t(label)}</p>
+            {[
+              ["Saved leads", savedCount],
+              ["Drafts", draftCount],
+              ["Sent", sentCount],
+              ["Replies", replyCount]
+            ].map(([label, value]) => (
+              <article key={String(label)} className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                <p className="text-xs font-black uppercase tracking-[0.12em] text-[var(--ui-text-soft)]">{t(String(label))}</p>
                 <p className="mt-2 text-2xl font-black text-[var(--ui-text)]">{value}</p>
               </article>
             ))}
@@ -3252,241 +3050,120 @@ export function DashboardHome() {
       <OperatingPanel>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="ui-eyebrow">{t("AI Daily Brief")}</p>
-            <h2 className="ui-title mt-1 text-2xl">{t("What changed in the last 24 hours.")}</h2>
+            <p className="ui-eyebrow">{t("Workflow")}</p>
+            <h2 className="ui-title mt-1 text-2xl">{t("Find customers → save to CRM → prepare email.")}</h2>
+            <p className="ui-copy mt-2">{t("The product stays small on purpose. Each step leads to the next real customer action.")}</p>
           </div>
-          <Link href="/dashboard/companies" className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-full border border-[var(--ui-border)] bg-white/70 px-4 text-sm font-black text-[var(--ui-text)]">
-            {t("Review changes")} <ArrowRight size={16} />
-          </Link>
         </div>
-        <div className="mt-5 grid gap-3 md:grid-cols-5">
-          {dailyBriefItems.map((item) => (
-            <article key={item.label} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4">
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t(item.label)}</p>
-              <p className="mt-2 text-3xl font-black text-[var(--ui-text)]">{item.value}</p>
-              <p className="mt-2 line-clamp-3 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{t(String(item.detail))}</p>
-            </article>
+        <div className="mt-5 grid gap-3 md:grid-cols-3">
+          {workflowSteps.map((step, index) => (
+            <Link key={step.label} href={step.href} className={`rounded-2xl border p-4 shadow-sm transition hover:-translate-y-0.5 ${step.status === "active" ? "border-teal-300 bg-teal-50" : step.status === "done" ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50"}`}>
+              <div className="flex items-center justify-between gap-3">
+                <span className={`grid size-9 place-items-center rounded-xl text-sm font-black ${step.status === "done" ? "bg-teal-50 text-brand" : step.status === "active" ? "bg-brand text-white" : "bg-white text-slate-500"}`}>
+                  {step.status === "done" ? <CheckCircle2 size={17} /> : index + 1}
+                </span>
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-slate-600">{t(step.status === "done" ? "Done" : step.status === "active" ? "Next" : "Waiting")}</span>
+              </div>
+              <h3 className="mt-4 text-lg font-black text-ink">{step.label}</h3>
+              <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{step.detail}</p>
+              <p className="mt-4 inline-flex items-center gap-2 text-sm font-black text-brand">{t(step.cta)} <ArrowRight size={15} /></p>
+            </Link>
           ))}
         </div>
       </OperatingPanel>
 
-      <OperatingPanel>
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="ui-eyebrow">{t("Opportunity Feed")}</p>
-            <h2 className="ui-title mt-1 text-2xl">{t("Who to contact, why now, and what changed.")}</h2>
-          </div>
-          <span className="w-fit rounded-full border border-[var(--ui-border)] bg-white/70 px-3 py-1 text-xs font-black text-[var(--ui-text-soft)]">
-            {t("Revenue Intelligence")} · {revenueItems.length}
-          </span>
-        </div>
-        <div className="mt-5 grid gap-3 xl:grid-cols-5">
-          {Object.entries(revenueCategories).map(([category, items]) => {
-            const item = safeArray(items)[0];
-            return (
-              <article key={category} className="rounded-2xl border border-[var(--ui-border)] bg-white/70 p-4 shadow-sm">
-                <p className="text-xs font-black uppercase tracking-[0.13em] text-brand">{t(category)}</p>
-                {item ? (
-                  <>
-                    <div className="mt-3 flex items-start justify-between gap-3">
-                      <h3 className="min-w-0 text-base font-black text-[var(--ui-text)]">{item.company}</h3>
-                      <span className="shrink-0 rounded-full bg-[#101114] px-2.5 py-1 text-xs font-black text-white">{item.buying_intent.score}</span>
-                    </div>
-                    <p className="mt-2 line-clamp-3 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{item.signal_summary}</p>
-                    <div className="mt-3 grid grid-cols-3 gap-1 text-center text-[11px] font-black">
-                      <span className="rounded-lg bg-slate-50 p-2">{t("ICP")}<br />{item.icp_fit.score}</span>
-                      <span className="rounded-lg bg-slate-50 p-2">{t("Intent")}<br />{item.buying_intent.score}</span>
-                      <span className="rounded-lg bg-slate-50 p-2">{t("Revenue")}<br />{item.revenue_opportunity.score}</span>
-                    </div>
-                    <p className="mt-3 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{item.recommended_action.action}: {item.recommended_action.reason}</p>
-                    <Link href={`/dashboard/companies?company=${encodeURIComponent(item.company_id)}`} className="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-full bg-[#101114] px-3 text-xs font-black text-white">{t("Open company")}</Link>
-                  </>
-                ) : (
-                  <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{t("No company in this category yet.")}</p>
-                )}
-              </article>
-            );
-          })}
-        </div>
-      </OperatingPanel>
-
-      <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+      <section className="grid gap-4 xl:grid-cols-2">
         <OperatingPanel>
-          <p className="ui-eyebrow">{t("AI Insights")}</p>
-          <h2 className="ui-title mt-1 text-2xl">{t("What the system noticed.")}</h2>
-          <div className="mt-5 grid gap-3">
-            {(dashboardInsights.length ? dashboardInsights : [t("No insight yet. Add one company or run lead search to generate the first briefing.")]).map((insight) => (
-              <p key={insight} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4 text-sm font-semibold leading-6 text-[var(--ui-text)]">
-                {insight}
-              </p>
-            ))}
-          </div>
-        </OperatingPanel>
-
-        <OperatingPanel>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="ui-eyebrow">{t("Activity Timeline")}</p>
-              <h2 className="ui-title mt-1 text-2xl">{t("What changed recently.")}</h2>
-            </div>
-            <Link href="/dashboard/companies" className="text-sm font-black text-brand">{t("Open workspace")}</Link>
-          </div>
-          <div className="mt-5 grid gap-3">
-            {(activityItems.length ? activityItems : [{ label: t("No activity yet"), detail: t("Run lead search or save one company to create the first timeline event."), time: "" }]).map((item, index) => (
-              <div key={`${item.label}-${item.time}-${index}`} className="grid grid-cols-[2rem_1fr] gap-3">
-                <span className="mt-1 grid size-8 place-items-center rounded-full border border-[var(--ui-border)] bg-white text-xs font-black text-brand">{index + 1}</span>
-                <div className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-3">
-                  <p className="text-sm font-black text-[var(--ui-text)]">{item.label}</p>
-                  <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]">{item.detail}</p>
-                  {item.time ? <p className="mt-1 text-xs font-bold text-[var(--ui-muted)]">{formatDateTime(item.time)}</p> : null}
-                </div>
-              </div>
-            ))}
-          </div>
-        </OperatingPanel>
-      </section>
-
-      {!hasAnyData && (
-        <WidgetBoundary name="Private workspace onboarding">
-          <section className="rounded-3xl border border-teal-100 bg-gradient-to-br from-white to-teal-50/70 p-5 shadow-sm sm:p-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div className="min-w-0">
-                <p className="text-sm font-bold uppercase text-brand">{t("Private workspace")}</p>
-                <h2 className="mt-2 text-2xl font-bold text-ink">{t("Your private workspace is ready")}</h2>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">{t("No shared demo CRM is loaded. Add your first company or run Lead Finder, and every saved lead will belong only to this account.")}</p>
-              </div>
-              <div className="grid min-w-0 gap-2 sm:grid-cols-3 lg:w-[34rem]">
-                <Link href="/dashboard/leads#manual-company" className="inline-flex min-h-12 items-center justify-center rounded-md border border-teal-200 bg-white px-3 text-center text-sm font-bold text-brand shadow-sm">{t("Add your first company")}</Link>
-                <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center rounded-md bg-brand px-3 text-center text-sm font-bold text-white shadow-sm">{t("Find leads")}</Link>
-                <Link href="/dashboard/campaigns" className="inline-flex min-h-12 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-center text-sm font-bold text-slate-800 shadow-sm">{t("Create your first campaign")}</Link>
-              </div>
-            </div>
-          </section>
-        </WidgetBoundary>
-      )}
-
-      <section className="grid gap-4 lg:grid-cols-3">
-        <AiLiveCard label={t("Who?")} title={who} copy={primaryCompany?.name || t("No prioritized account yet. Run lead search to create opportunities.")} metric={primaryCompany ? t("Priority") : t("Waiting")} />
-        <AiLiveCard label={t("Why?")} title={t("Reason to act")} copy={why} metric={allBuyingChanges.length ? `${allBuyingChanges.length} ${t("signals")}` : t("No signal")} />
-        <AiLiveCard
-          label={t("What next?")}
-          title={t("Next best action")}
-          copy={whatNext}
-          metric={t("Recommended")}
-          action={<Link href={nextStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">{t("Do next action")} <ArrowRight size={16} /></Link>}
-        />
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
-        <OperatingPanel>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="ui-eyebrow">{t("AI timeline")}</p>
-              <h2 className="ui-title mt-1 text-2xl">{t("From signal to approved outreach.")}</h2>
-            </div>
-            <span className="w-fit rounded-full border border-[var(--ui-border)] bg-white/70 px-3 py-1 text-xs font-black text-[var(--ui-text-soft)]">{cachedAt ? t("Cached context") : t("Live context")}</span>
-          </div>
-          <div className="mt-5">
-            <AiTimeline items={aiTimeline} />
-          </div>
-        </OperatingPanel>
-        <OperatingPanel>
-          <p className="ui-eyebrow">{t("Opportunity shape")}</p>
-          <h2 className="ui-title mt-1 text-2xl">{t("Where the workspace has momentum.")}</h2>
-          <div className="mt-5">
-            <MiniBarChart values={chartValues} labels={[t("Hot"), t("Signals"), t("Emails"), t("Review")]} />
-          </div>
-          <p className="ui-copy mt-4">{t("The chart uses only the current workspace data. No sample account activity is injected.")}</p>
-        </OperatingPanel>
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-3">
-        <OperatingPanel as="article" className="xl:col-span-2">
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-black text-[var(--ui-text)]">{t("Priority queue")}</h2>
-            <Link href="/dashboard/companies" className="text-sm font-black text-brand">{t("View all")}</Link>
+            <div>
+              <p className="ui-eyebrow">{t("CRM")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t("Recently saved leads.")}</h2>
+            </div>
+            <Link href="/dashboard/crm" className="text-sm font-black text-brand">{t("Open CRM")}</Link>
           </div>
-          <div className="mt-4 grid gap-3">
-            {opportunities.length ? opportunities.slice(0, 4).map((company) => {
-              const score = Number(company.ai_crm?.priority?.score || company.overall_score || 0);
-              const reason = String(company.ai_crm?.buying_intent?.reasoning || company.reasoning || t("Signals are still being collected."));
-              const next = String(company.ai_crm?.next_action || company.recommended_next_action || t("Open company workspace."));
-              return (
-                <article key={company.id} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4 shadow-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-base font-black text-[var(--ui-text)]">{company.name}</p>
-                    <span className="rounded-full bg-[#101114] px-2.5 py-1 text-xs font-black text-white">{t("Priority")} {score}</span>
+          <div className="mt-5 grid gap-3">
+            {recentSavedCompanies.length ? recentSavedCompanies.map((company) => (
+              <Link key={company.id} href={`/dashboard/companies?company=${company.id}`} className="rounded-2xl border border-[var(--ui-border)] bg-white p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-base font-black text-ink">{company.name}</h3>
+                    <p className="mt-1 truncate text-sm font-semibold text-slate-600">{company.website || company.source || t("No public website saved yet")}</p>
                   </div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]"><span className="font-black text-[var(--ui-text)]">{t("Why now")}: </span>{reason}</p>
-                  <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]"><span className="font-black text-[var(--ui-text)]">{t("Next")}: </span>{next}</p>
-                  <Link href={`/dashboard/companies?company=${company.id}`} className="mt-3 inline-flex min-h-10 items-center justify-center rounded-full bg-[#101114] px-3 text-xs font-black text-white">{t("Open company")}</Link>
-                </article>
-              );
-            }) : (
-              <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-600">
-                {t("No prioritized companies yet. Run lead search or save one company to start.")}
-              </div>
+                  <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-600">{t(String(company.crm_stage || "New Lead"))}</span>
+                </div>
+              </Link>
+            )) : (
+              <EmptyState title="No leads saved yet" copy="Start a search and approve the companies you want to keep." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Start search")}</Link>} />
             )}
           </div>
         </OperatingPanel>
 
-        <OperatingPanel as="article">
-          <h2 className="text-lg font-black text-[var(--ui-text)]">{t("Recommended now")}</h2>
-          <div className="mt-4 space-y-3 text-sm">
-            <div className="rounded-2xl bg-white/60 p-3">
-              <p className="font-black text-[var(--ui-text)]">{t("Company")}</p>
-              <p className="mt-1 text-slate-700">{aiRecommendation.bestCompany}</p>
+        <OperatingPanel>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="ui-eyebrow">{t("Mail")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t("Drafts to review.")}</h2>
             </div>
-            <div className="rounded-2xl bg-white/60 p-3">
-              <p className="font-black text-[var(--ui-text)]">{t("Who")}</p>
-              <p className="mt-1 text-slate-700">{aiRecommendation.whoToContact}</p>
-            </div>
-            <div className="rounded-2xl bg-white/60 p-3">
-              <p className="font-black text-[var(--ui-text)]">{t("Why")}</p>
-              <p className="mt-1 text-slate-700">{aiRecommendation.whyNow}</p>
-            </div>
-            <div className="rounded-2xl bg-white/60 p-3">
-              <p className="font-black text-[var(--ui-text)]">{t("First move")}</p>
-              <p className="mt-1 text-slate-700">{aiRecommendation.outreachAngle}</p>
-            </div>
+            <Link href="/dashboard/inbox" className="text-sm font-black text-brand">{t("Open Mail")}</Link>
           </div>
-          <Link href={aiRecommendation.href} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">{t("Open company")} <ArrowRight size={16} /></Link>
+          <div className="mt-5 grid gap-3">
+            {recentDrafts.length ? recentDrafts.map((item) => (
+              <Link key={item.company} href={item.href} className="rounded-2xl border border-[var(--ui-border)] bg-white p-4 shadow-sm">
+                <p className="text-base font-black text-ink">{item.company}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-600">{item.email?.subject || t("Draft ready for review")}</p>
+                <p className="mt-3 rounded-xl bg-amber-50 p-3 text-xs font-bold leading-5 text-amber-800">{t("Nothing is sent until you approve it.")}</p>
+              </Link>
+            )) : (
+              <EmptyState title="No email drafts yet" copy="Save a lead to CRM, then prepare the first email from the company workspace." action={<Link href="/dashboard/crm" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Open CRM")}</Link>} />
+            )}
+          </div>
         </OperatingPanel>
       </section>
 
-      <OperatingPanel>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="max-w-3xl">
-            <p className="ui-eyebrow">{t("Customer Activation")}</p>
-            <h2 className="ui-title mt-1 text-2xl">{t("From signup to first AI outreach in under 10 minutes.")}</h2>
-            <p className="ui-copy mt-2">{t("The fastest path is intentionally small: define a market, save one real company, run AI research, generate one message, then review it before sending.")}</p>
+      <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+        <OperatingPanel>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="ui-eyebrow">{t("Progress")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t("Where the current workspace stands.")}</h2>
+            </div>
+            <span className="w-fit rounded-full border border-[var(--ui-border)] bg-white px-3 py-1 text-xs font-black text-[var(--ui-text-soft)]">{cachedAt ? t("Cached context") : t("Live context")}</span>
           </div>
-          <Link href="/dashboard/leads" className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">
-            {t("Start activation")} <ArrowRight size={16} />
-          </Link>
-        </div>
-        <div className="mt-5 grid gap-3 md:grid-cols-5">
-          {[
-            ["1", "Define ICP", "Country, city, industry or one manual company."],
-            ["2", "Find companies", "Save only real accounts into the workspace."],
-            ["3", "AI research", "Prepare company profile, signals and next action."],
-            ["4", "Generate outreach", "Create the first email from existing data."],
-            ["5", "Review and send", "Approve before anything leaves the system."]
-          ].map(([step, title, copy]) => (
-            <article key={step} className="rounded-2xl border border-[var(--ui-border)] bg-white/60 p-4">
-              <span className="grid size-8 place-items-center rounded-full bg-[#101114] text-xs font-black text-white">{step}</span>
-              <p className="mt-3 text-sm font-black text-[var(--ui-text)]">{t(title)}</p>
-              <p className="mt-2 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{t(copy)}</p>
-            </article>
-          ))}
-        </div>
-      </OperatingPanel>
+          <div className="mt-5">
+            <AiTimeline items={workflowSteps.map((step) => ({ label: step.label, detail: step.detail, status: step.status }))} />
+          </div>
+        </OperatingPanel>
+        <OperatingPanel>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="ui-eyebrow">{t("Recent activity")}</p>
+              <h2 className="ui-title mt-1 text-2xl">{t("Last useful workspace events.")}</h2>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-3">
+            {recentActivity.length ? recentActivity.map((item) => {
+              const metadata = item.metadata_json || {};
+              const label = String(metadata.company || metadata.company_name || metadata.lead_company || item.action || "").trim();
+              const detail = String(metadata.message || metadata.detail || metadata.status || item.action || "").trim();
+              return (
+                <article key={item.id || `${item.action}-${item.created_at}`} className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                  <p className="text-sm font-black text-ink">{t(label || "Workspace updated")}</p>
+                  <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">{t(detail || "A workspace action was completed.")}</p>
+                  <p className="mt-2 text-xs font-bold text-slate-500">{formatDateTime(item.created_at)}</p>
+                </article>
+              );
+            }) : (
+              <p className="rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-sm font-semibold leading-6 text-slate-600">{t("No activity yet. Start with a focused customer search.")}</p>
+            )}
+          </div>
+        </OperatingPanel>
+      </section>
 
       <WidgetBoundary name="Main customer actions">
         <CoreActionGrid activeHref={nextStep.href} />
       </WidgetBoundary>
 
-      {!hasAnyData && <WidgetBoundary name="Dashboard onboarding"><EmptyState title={t("Start with one focused lead search.")} copy={t("Choose one country, one city and one industry. OutreachAI will save real companies, analyze websites and prepare outreach only after verified data exists.")} action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} /></WidgetBoundary>}
+      {!hasAnyData && <WidgetBoundary name="Dashboard onboarding"><EmptyState title="Start with one focused customer search." copy="No demo data is shown here. Enter your product site and target market to create the first real leads." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Start search")}</Link>} /></WidgetBoundary>}
     </div>
   );
 }
@@ -3501,8 +3178,6 @@ export function LeadFinderPage() {
   const [searchSummary, setSearchSummary] = useState<{ found: number; saved: number; duplicates: number } | null>(null);
   const [opportunityReadiness, setOpportunityReadiness] = useState<OpportunityReadiness | null>(null);
   const [searching, setSearching] = useState(false);
-  const [commandBusy, setCommandBusy] = useState(false);
-  const [leadCommand, setLeadCommand] = useState("");
   const [lastSearchPayload, setLastSearchPayload] = useState<LeadSearchPayload | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
   const [leadSearchStatus, setLeadSearchStatus] = useState<WorkspaceIntegrationStatus["status"] | "unknown">("unknown");
@@ -3528,35 +3203,10 @@ export function LeadFinderPage() {
     () => [...visibleLeads].sort((a, b) => leadOpportunityScoreForWorkspace(b) - leadOpportunityScoreForWorkspace(a)),
     [visibleLeads]
   );
-  const todaysBestLead = rankedLeads[0] || null;
   const activeWorkflowCompany = workflowCompanies.find((company) => company.id === activeWorkflowCompanyId) || null;
   const nextWorkflowLead = activeWorkflowCompanyId
     ? rankedLeads.find((lead) => lead.crm_company_id && lead.crm_company_id !== activeWorkflowCompanyId) || null
     : rankedLeads[0] || null;
-  const summaryMetrics = useMemo(() => {
-    const list = visibleLeads;
-    const hotLeads = list.filter((lead) => leadOpportunityScoreForWorkspace(lead) >= 75).length;
-    const buyingSignals = list.filter((lead) => leadBuyingIntentForWorkspace(lead) >= 60).length;
-    const readyEmails = list.filter((lead) => safeArray(lead.generated_emails).length > 0).length;
-    const meetingsPotential = list.reduce((sum, lead) => sum + leadReplyProbabilityForWorkspace(lead), 0);
-    return {
-      totalLeads: list.length,
-      hotLeads,
-      buyingSignals,
-      readyEmails,
-      meetingsPotential: list.length ? Math.round(meetingsPotential / Math.max(1, list.length)) : 0
-    };
-  }, [visibleLeads]);
-  const prioritySummary = useMemo(() => {
-    const counts = { hot: 0, warm: 0, cold: 0 };
-    rankedLeads.forEach((lead) => {
-      const bucket = leadPriorityBucket(lead);
-      if (bucket === "Hot") counts.hot += 1;
-      else if (bucket === "Warm") counts.warm += 1;
-      else counts.cold += 1;
-    });
-    return counts;
-  }, [rankedLeads]);
 
   const syncWorkflowCompanies = useCallback(async () => {
     if (!ready) return;
@@ -3642,21 +3292,6 @@ export function LeadFinderPage() {
       technologies: splitList(String(data.get("technology") || "")),
       radius: Number(data.get("radius") || 10000),
       limit: Number(data.get("limit") || 10)
-    };
-  }
-
-  function payloadFromCommandFilters(filters?: Partial<LeadSearchPayload> | null): LeadSearchPayload {
-    return {
-      country: String(filters?.country || ""),
-      city: String(filters?.city || ""),
-      industry: String(filters?.industry || ""),
-      category: String(filters?.category || filters?.industry || ""),
-      keyword: String(filters?.keyword || filters?.industry || ""),
-      company_size: String(filters?.company_size || ""),
-      keywords: safeArray(filters?.keywords).map(String),
-      technologies: safeArray(filters?.technologies).map(String),
-      radius: Number(filters?.radius || 10000),
-      limit: Number(filters?.limit || 10)
     };
   }
 
@@ -3771,17 +3406,17 @@ export function LeadFinderPage() {
     }
   }
 
-  function applyLeadSearchResult(result: WorkspaceAppLeadSearchResponse, payload: LeadSearchPayload, source: "lead_search" | "ai_command") {
+  function applyLeadSearchResult(result: WorkspaceAppLeadSearchResponse, payload: LeadSearchPayload) {
     const companies = safeArray(result.companies).map(normalizeCrmCompany);
     const found = companies.map(leadFromCrmCompany);
     const readiness = opportunityReadinessFromCompanies(companies);
-    leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id, source });
+    leadFinderDebug("FETCH_FINISHED", { status: result.status, count: found.length, request_id: result.request_id, source: "lead_search" });
     const warnings = safeArray(result.warnings);
     const savedCount = Number(result.companies_saved ?? 0);
     const duplicateCount = Number(result.duplicates_skipped ?? 0);
     const persistenceStep = found.length && savedCount === 0 && duplicateCount > 0 ? t("Already in CRM") : found.length ? t("Saved to CRM") : t("No companies found");
     setSearchSteps([
-      source === "ai_command" ? t("AI command understood") : t("Lead search finished"),
+      t("Lead search finished"),
       t("Found companies count").replace("{count}", String(found.length)),
       persistenceStep,
       found.length ? t("AI enrichment is running automatically") : "",
@@ -3804,7 +3439,7 @@ export function LeadFinderPage() {
       industry: payload.industry,
       result_count: found.length,
       status: result.status,
-      source
+      source: "lead_search"
     });
   }
 
@@ -3851,7 +3486,7 @@ export function LeadFinderPage() {
         36000,
         "Lead search timed out. Try a smaller radius or broader filters."
       );
-      applyLeadSearchResult(result, payload, "lead_search");
+      applyLeadSearchResult(result, payload);
     } catch (err) {
       leadFinderDebug("FETCH_FINISHED", { status: "error", reason: err instanceof Error ? err.message : "unknown" });
       if (isSessionExpiredError(err)) {
@@ -3873,62 +3508,6 @@ export function LeadFinderPage() {
       });
     } finally {
       setSearching(false);
-    }
-  }
-
-  async function runLeadCommand() {
-    const command = leadCommand.trim();
-    if (!command || commandBusy || searching) return;
-    if (!automaticSearchReady) {
-      setHasSearched(true);
-      setSearchSteps([t("Automatic search is waiting for setup")]);
-      setMessage(t("Automatic company search needs a key. Add one company manually and continue with CRM, research and outreach."));
-      return;
-    }
-    setCommandBusy(true);
-    setHasSearched(true);
-    setSearchResults([]);
-    setSearchSummary(null);
-    setOpportunityReadiness(null);
-    setLastSearchPayload(null);
-    setSearchSteps([t("AI is turning your request into search filters")]);
-    setMessage(t("Preparing AI search..."));
-    trackEvent("lead_command_started", { source: "ai_command" });
-    try {
-      leadFinderDebug("FETCH_STARTED", { endpoint: "/api/workspace-app/leads/command" });
-      const result = await withTimeout(
-        api<WorkspaceAppLeadCommandResponse>("/api/workspace-app/leads/command", {
-          method: "POST",
-          body: JSON.stringify({ command }),
-          timeoutMs: 45000
-        }),
-        46000,
-        "AI search timed out. Try a shorter command or use the fields below."
-      );
-      const parsedPayload = payloadFromCommandFilters(result.filters);
-      if (result.status === "error" && !result.companies?.length) {
-        setSearchSteps([t("AI needs clearer search details")]);
-        setMessage(t(result.message || "Add a city, country and industry, then try again."));
-        setSearchSummary(null);
-        setOpportunityReadiness(null);
-        return;
-      }
-      applyLeadSearchResult(result, parsedPayload, "ai_command");
-    } catch (err) {
-      leadFinderDebug("FETCH_FINISHED", { status: "error", reason: err instanceof Error ? err.message : "unknown", source: "ai_command" });
-      if (isSessionExpiredError(err)) {
-        redirectToSignIn();
-        return;
-      }
-      const reason = userMessage(err, "AI search could not be completed. Use the fields below or try again.", t);
-      setSearchResults([]);
-      setSearchSummary(null);
-      setOpportunityReadiness(null);
-      setSearchSteps([t("Search stopped")]);
-      setMessage(reason);
-      trackEvent("lead_command_failed", { source: "ai_command", reason });
-    } finally {
-      setCommandBusy(false);
     }
   }
 
@@ -4033,66 +3612,17 @@ export function LeadFinderPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader eyebrow="Lead Finder" title="Find real companies and turn each into a sales opportunity." copy="Search one focused market. OutreachAI saves real companies to CRM and prepares the best next action." />
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-black text-ink">{t("Lead priority now")}</h2>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("Who to contact first")}</p>
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          {[
-            ["Total leads", summaryMetrics.totalLeads],
-            ["Hot", prioritySummary.hot],
-            ["Warm", prioritySummary.warm],
-            ["Cold", prioritySummary.cold],
-            ["Ready emails", summaryMetrics.readyEmails]
-          ].map(([label, value]) => (
-            <article key={String(label)} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(String(label))}</p>
-              <p className="mt-2 text-2xl font-black tracking-tight text-ink">{value}</p>
-            </article>
-          ))}
-        </div>
-        <p className="mt-4 text-sm text-slate-700">
-          <span className="font-bold text-slate-900">{t("Next action")}: </span>
-          {todaysBestLead ? t(leadRecommendedActionForWorkspace(todaysBestLead)) : t("Run a focused search and save the first company.")}
-        </p>
-      </section>
+      <PageHeader
+        eyebrow="Search"
+        title="Find a customer, save the lead, write the email."
+        copy="Use one focused search. Results stay outside CRM until you approve them, and every email stays a draft until you send it."
+      />
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="grid gap-6">
         <div className="space-y-6">
           {!automaticSearchReady && <IntegrationStatusPanel api={api} ready={ready} />}
-          {automaticSearchReady && <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              <div>
-                <p className="text-sm font-black uppercase text-brand">{t("Natural language search")}</p>
-                <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{t("Describe your ideal companies in one sentence.")}</h2>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-700">{t("OutreachAI parses your request with existing backend search, ranks the results, and saves valid companies to CRM.")}</p>
-              </div>
-              <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">{t("AI-first")}</span>
-            </div>
-            <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-              <textarea
-                value={leadCommand}
-                onChange={(event) => setLeadCommand(event.target.value)}
-                disabled={!automaticSearchReady || commandBusy || searching}
-                rows={2}
-                placeholder={t("Find SaaS companies hiring SDRs in Germany.")}
-                className="min-h-20 w-full resize-none rounded-xl border border-slate-300 px-4 py-3 text-sm leading-6 text-ink shadow-sm outline-none focus:border-brand disabled:bg-slate-100 disabled:text-slate-500"
-              />
-              <button
-                type="button"
-                onClick={runLeadCommand}
-                disabled={!leadCommand.trim() || !automaticSearchReady || commandBusy || searching}
-                className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-ink px-5 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {commandBusy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
-                {commandBusy ? t("Running AI search") : t("Run AI search")}
-              </button>
-            </div>
-          </section>}
 
-          <ActionPanel eyebrow="Find First Customers" title="Find evidence-backed first customers." copy="Enter your product site, country, industry and result count. OutreachAI reviews public sources, scores fit, drafts a short message and waits for your approval before saving anything to CRM.">
+          <ActionPanel eyebrow="Search" title="Find First Customers." copy="Enter your product site, country, industry and result count. OutreachAI prepares evidence-backed candidates, then waits for your approval before saving anything to CRM.">
           {!automaticSearchReady && (
             <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
               <p className="text-sm font-black uppercase text-amber-800">{t("Automatic search setup")}</p>
@@ -4308,54 +3838,20 @@ export function LeadFinderPage() {
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-sm font-black uppercase tracking-wide text-brand">{t("Autonomous AI Sales Workspace")}</p>
-                <h2 className="mt-1 text-2xl font-black tracking-tight text-ink">{t("Decide the next action in under 30 seconds.")}</h2>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Open one lead, review AI summary, decision maker, buying intent, opportunity score, competitor snapshot, email draft, review, send, schedule follow-up, and continue to the next lead without leaving this screen.")}</p>
+                <p className="text-sm font-black uppercase tracking-wide text-brand">{t("CRM and draft preview")}</p>
+                <h2 className="mt-1 text-2xl font-black tracking-tight text-ink">{t("Review one saved lead before sending.")}</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Open a saved company to check the public source, contact route and draft email. Nothing is sent until you approve it.")}</p>
               </div>
               <div className="flex flex-col gap-2 sm:items-end">
-                {nextWorkflowLead?.crm_company_id ? <button type="button" onClick={() => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "")} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Return to Next Lead")} <ArrowRight size={16} /></button> : null}
-                {activeWorkflowCompany ? <button type="button" onClick={() => setActiveWorkflowCompanyId("")} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Hide workflow")}</button> : null}
+                {nextWorkflowLead?.crm_company_id ? <button type="button" onClick={() => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "")} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Open next saved lead")} <ArrowRight size={16} /></button> : null}
+                {activeWorkflowCompany ? <button type="button" onClick={() => setActiveWorkflowCompanyId("")} className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Close preview")}</button> : null}
               </div>
             </div>
             <div className="mt-5">
-              {workflowLoading && !activeWorkflowCompany ? <LoadingSkeleton title="Loading company workflow" /> : activeWorkflowCompany ? <CrmCompanyCard company={activeWorkflowCompany} api={api} highlighted onOpenNextLead={nextWorkflowLead?.crm_company_id ? () => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "") : undefined} nextLeadName={nextWorkflowLead?.company || ""} /> : <EmptyState title="Select one lead to continue the workflow" copy="Open a company from the lead cards above. The full Autonomous AI Sales Workspace will load here without page switching." />}
+              {workflowLoading && !activeWorkflowCompany ? <LoadingSkeleton title="Loading CRM preview" /> : activeWorkflowCompany ? <CrmCompanyCard company={activeWorkflowCompany} api={api} highlighted onOpenNextLead={nextWorkflowLead?.crm_company_id ? () => setActiveWorkflowCompanyId(nextWorkflowLead.crm_company_id || "") : undefined} nextLeadName={nextWorkflowLead?.company || ""} /> : <EmptyState title="Choose a saved lead" copy="Use Open Company on any result to preview the saved CRM record and draft." />}
             </div>
           </section>
         </div>
-
-        <aside className="space-y-4 xl:sticky xl:top-24 xl:self-start">
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Today's Best Lead")}</p>
-            {todaysBestLead ? (
-              <>
-                <p className="mt-2 text-lg font-black text-ink">{todaysBestLead.company}</p>
-                <div className="mt-4 space-y-3 text-sm">
-                  <div className="rounded-xl bg-slate-50 p-3">
-                    <p className="text-xs font-black uppercase text-slate-500">{t("Why now")}</p>
-                    <p className="mt-1 font-semibold leading-6 text-slate-800">{leadTopOpportunityForWorkspace(todaysBestLead)}</p>
-                  </div>
-                  <div className="rounded-xl bg-slate-50 p-3">
-                    <p className="text-xs font-black uppercase text-slate-500">{t("Suggested first action")}</p>
-                    <p className="mt-1 font-semibold leading-6 text-slate-800">{leadRecommendedActionForWorkspace(todaysBestLead)}</p>
-                  </div>
-                  <div className="rounded-xl bg-slate-50 p-3">
-                    <p className="text-xs font-black uppercase text-slate-500">{t("Expected reply probability")}</p>
-                    <p className="mt-1 text-xl font-black text-ink">{leadReplyProbabilityForWorkspace(todaysBestLead)}%</p>
-                  </div>
-                  <div className="rounded-xl bg-slate-50 p-3">
-                    <p className="text-xs font-black uppercase text-slate-500">{t("AI recommendation")}</p>
-                    <p className="mt-1 font-semibold leading-6 text-slate-800">{leadSummaryForWorkspace(todaysBestLead)}</p>
-                  </div>
-                </div>
-                <Link href={todaysBestLead.crm_company_id ? `/dashboard/companies?company=${todaysBestLead.crm_company_id}` : "/dashboard/companies"} className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">
-                  {t("Open Company")}
-                </Link>
-              </>
-            ) : (
-              <p className="mt-2 text-sm leading-6 text-slate-600">{t("Run lead search to surface the top-ranked opportunity for today.")}</p>
-            )}
-          </section>
-        </aside>
       </div>
     </div>
   );
