@@ -1,11 +1,11 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { ExternalLink, Loader2, Search, ShieldCheck, StopCircle } from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, Mail, Save, Search, Send, StopCircle } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useAuthRuntime } from "@/components/app-providers";
-import { AppBadge, AppButton, MetricSurface, PageHero, SectionPanel, SurfaceCard } from "@/components/design-system";
-import { clientApi, friendlyErrorMessage, splitList } from "@/lib/client-api";
+import { AppBadge, AppButton, PageHero, SectionPanel, SurfaceCard } from "@/components/design-system";
+import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 
 type FinderResult = {
@@ -14,79 +14,51 @@ type FinderResult = {
   official_website: string;
   industry: string;
   country: string;
-  company_size: string;
   contact_name: string;
   contact_title: string;
   public_work_contact: string;
-  signal_type: string;
   signal_description: string;
-  signal_date: string;
   source_url: string;
   source_title: string;
-  source_type: string;
-  evidence_excerpt: string;
-  evidence_summary: string;
-  observed_fact: string;
-  model_inference: string;
   fit_explanation: string;
-  ai_relevance_score: number;
-  confidence_score: number;
   verified_status: string;
-  checked_at: string;
-  source_provider: string;
-  canonical_source_url: string;
-  publication_date: string;
-  retrieved_at?: string | null;
-  source_confidence: number;
-  source_verification_status: string;
-  scoring_version: string;
-  score_factors: Record<string, number>;
-  score_weights: Record<string, number>;
-  score_penalties: Record<string, number>;
-  score_explanation: string;
-  icp_fit_score: number;
-  buying_intent_score: number;
-  revenue_opportunity_score: number;
-  first_line_opener: string;
-  draft_email: string;
   lead_id: string;
   company_id: string;
-  score_delta: number;
-  intent_alert: boolean;
-  intent_timeline: Array<{
-    change_type?: string;
-    detected_at?: string;
-    signal?: string;
-    previous_score?: number | null;
-    current_score?: number;
-    score_delta?: number;
-    source_url?: string;
-  }>;
+  simple_status: string;
+  email_id: string;
+  email_subject: string;
+  email_body: string;
+  email_delivery_status: string;
+  can_send: boolean;
 };
 
 type FinderJob = {
   id: string;
   status: string;
-  progress: { stage?: string; message?: string; percent?: number; warnings?: string[]; verified?: number; partially_verified?: number; unknown?: number; rejected?: number; saved?: number; candidates?: number };
-  criteria: Record<string, unknown>;
-  summary?: { verified?: number; partially_verified?: number; unknown?: number; rejected?: number; saved?: number; candidates?: number; warnings?: string[] };
+  progress: { stage?: string; message?: string; percent?: number; saved?: number; candidates?: number; warnings?: string[] };
+  summary?: { saved?: number; candidates?: number; warnings?: string[] };
   error_message: string;
   results: FinderResult[];
   created_at: string;
   completed_at?: string | null;
 };
 
-const initialForm = {
-  company_description: "",
-  product_or_service: "",
-  target_country: "",
-  target_industry: "",
-  company_size: "",
-  contact_titles: "Founder, CEO, Head of Sales",
-  max_results: "10",
-  keywords: "",
-  exclusions: "",
-  additional_criteria: "",
+type ResultActionResponse = {
+  status: string;
+  message: string;
+  result: FinderResult;
+};
+
+const terminalStatuses = new Set(["completed", "partially_completed", "failed"]);
+
+const stageLabels: Record<string, string> = {
+  queued: "Preparing search",
+  searching: "Finding companies",
+  verifying: "Checking source and email",
+  enriching: "Saving to CRM and writing email",
+  completed: "Ready to review",
+  partially_completed: "Ready with partial results",
+  failed: "No verified leads found",
 };
 
 async function devApi<T>(path: string, init = {}) {
@@ -121,41 +93,17 @@ function useFinderApi() {
 
 export function AiCustomerFinderPage() {
   const { api, ready } = useFinderApi();
-  const [form, setForm] = useState(initialForm);
+  const [companyWebsite, setCompanyWebsite] = useState("");
+  const [desiredCustomers, setDesiredCustomers] = useState("");
   const [job, setJob] = useState<FinderJob | null>(null);
   const [history, setHistory] = useState<FinderJob[]>([]);
   const [loading, setLoading] = useState(false);
-  const [qualityFilter, setQualityFilter] = useState("verified");
-  const [sortBy, setSortBy] = useState("intent");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
-  const activeJob = job && !["completed", "partially_completed", "failed"].includes(job.status);
-  const qualitySummary = useMemo(() => {
-    const source = { ...(job?.summary || {}), ...(job?.progress || {}) };
-    const results = job?.results || [];
-    const countByStatus = (status: string) => results.filter((item) => item.verified_status === status).length;
-    return {
-      verified: Number(source.verified ?? countByStatus("verified") ?? 0),
-      partiallyVerified: Number(source.partially_verified ?? countByStatus("partially_verified") ?? 0),
-      unknown: Number(source.unknown ?? countByStatus("unknown") ?? 0),
-      rejected: Number(source.rejected ?? 0),
-      saved: Number(source.saved ?? results.filter((item) => item.company_id).length ?? 0),
-      candidates: Number(source.candidates ?? results.length ?? 0),
-    };
-  }, [job]);
-  const visibleResults = useMemo(() => {
-    let items = [...(job?.results || [])];
-    if (qualityFilter !== "all") {
-      items = items.filter((item) => item.verified_status === qualityFilter && item.source_url);
-    }
-    items.sort((a, b) => {
-      if (sortBy === "confidence") return b.confidence_score - a.confidence_score;
-      if (sortBy === "revenue") return (b.revenue_opportunity_score || b.ai_relevance_score) - (a.revenue_opportunity_score || a.ai_relevance_score);
-      if (sortBy === "recent") return new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime();
-      return (b.buying_intent_score || b.ai_relevance_score) - (a.buying_intent_score || a.ai_relevance_score);
-    });
-    return items;
-  }, [job, qualityFilter, sortBy]);
+  const activeJob = Boolean(job && !terminalStatuses.has(job.status));
+  const savedCount = useMemo(() => job?.results.filter((item) => item.company_id || item.lead_id).length || 0, [job]);
+  const readyResults = useMemo(() => (job?.results || []).filter((item) => item.source_url && item.company_id), [job]);
 
   const refreshJob = useCallback(async (jobId: string) => {
     const next = await api<FinderJob>(`/api/workspace-app/ai-customer-finder/searches/${jobId}`);
@@ -172,7 +120,7 @@ export function AiCustomerFinderPage() {
         setHistory(items);
         setJob((current) => current || items[0] || null);
       })
-      .catch((err) => setError(friendlyErrorMessage(err, "AI Customer Finder history could not load.")));
+      .catch((err) => setError(friendlyErrorMessage(err, "Customer Finder history could not load.")));
     return () => {
       mounted = false;
     };
@@ -181,8 +129,8 @@ export function AiCustomerFinderPage() {
   useEffect(() => {
     if (!activeJob || !job?.id) return;
     const timer = window.setInterval(() => {
-      refreshJob(job.id).catch((err) => setError(friendlyErrorMessage(err, "AI Customer Finder progress could not update.")));
-    }, 2500);
+      refreshJob(job.id).catch((err) => setError(friendlyErrorMessage(err, "Search progress could not update.")));
+    }, 2200);
     return () => window.clearInterval(timer);
   }, [activeJob, job?.id, refreshJob]);
 
@@ -190,18 +138,21 @@ export function AiCustomerFinderPage() {
     event.preventDefault();
     setLoading(true);
     setError("");
+    setNotice("");
     try {
       const payload = {
-        company_description: form.company_description,
-        product_or_service: form.product_or_service,
-        target_country: form.target_country,
-        target_industry: form.target_industry,
-        company_size: form.company_size,
-        contact_titles: splitList(form.contact_titles),
-        max_results: Number(form.max_results || 10),
-        additional_criteria: form.additional_criteria,
-        keywords: splitList(form.keywords),
-        exclusions: splitList(form.exclusions),
+        company_website: companyWebsite,
+        desired_customers: desiredCustomers,
+        company_description: companyWebsite,
+        product_or_service: desiredCustomers,
+        target_country: "Any",
+        target_industry: "B2B",
+        company_size: "",
+        contact_titles: ["Founder", "CEO", "Head of Sales"],
+        max_results: 5,
+        additional_criteria: desiredCustomers,
+        keywords: [],
+        exclusions: [],
       };
       const next = await api<FinderJob>("/api/workspace-app/ai-customer-finder/searches", {
         method: "POST",
@@ -211,7 +162,7 @@ export function AiCustomerFinderPage() {
       setJob(next);
       setHistory((items) => [next, ...items.filter((item) => item.id !== next.id)]);
     } catch (err) {
-      setError(friendlyErrorMessage(err, "AI Customer Finder could not start."));
+      setError(friendlyErrorMessage(err, "Customer search could not start."));
     } finally {
       setLoading(false);
     }
@@ -223,89 +174,118 @@ export function AiCustomerFinderPage() {
     try {
       setJob(await api<FinderJob>(`/api/workspace-app/ai-customer-finder/searches/${job.id}/cancel`, { method: "POST" }));
     } catch (err) {
-      setError(friendlyErrorMessage(err, "AI Customer Finder could not be stopped."));
+      setError(friendlyErrorMessage(err, "Search could not be stopped."));
     } finally {
       setLoading(false);
     }
   }
 
+  async function resultAction(resultId: string, action: "draft" | "send") {
+    setError("");
+    setNotice("");
+    try {
+      const response = await api<ResultActionResponse>(`/api/workspace-app/ai-customer-finder/results/${resultId}/${action}`, { method: "POST" });
+      setNotice(response.message);
+      setJob((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          results: current.results.map((item) => (item.id === response.result.id ? response.result : item)),
+        };
+      });
+    } catch (err) {
+      setError(friendlyErrorMessage(err, action === "send" ? "Email could not be sent." : "Draft could not be saved."));
+    }
+  }
+
+  const progressPercent = Math.max(0, Math.min(100, Number(job?.progress?.percent || 0)));
+  const stage = String(job?.progress?.stage || job?.status || "queued");
+
   return (
     <div className="space-y-6">
       <PageHero
         eyebrow="AI Customer Finder"
-        title="Find companies with verified public intent signals."
-        copy="Search approved public sources, verify every result, score fit, and save confirmed companies into the existing CRM without sending outreach."
-        action={activeJob ? <AppButton variant="secondary" onClick={cancelJob} disabled={loading}><StopCircle size={17} /> Stop search</AppButton> : undefined}
+        title="Find a customer, save the lead, write the email."
+        copy="Enter your website and the customers you want. OutreachAI finds public B2B leads, saves them to CRM without duplicates, and prepares a short first email for review."
+        action={activeJob ? <AppButton variant="secondary" onClick={cancelJob} disabled={loading}><StopCircle size={17} /> Stop</AppButton> : undefined}
       />
 
-      {error ? <SurfaceCard tone="warning" className="rounded-[1.5rem] text-sm font-semibold text-amber-900">{error}</SurfaceCard> : null}
+      {error ? <SurfaceCard tone="warning" className="rounded-[1.25rem] text-sm font-semibold text-amber-900">{error}</SurfaceCard> : null}
+      {notice ? <SurfaceCard className="rounded-[1.25rem] text-sm font-semibold text-emerald-800">{notice}</SurfaceCard> : null}
 
-      <section className="grid gap-5 xl:grid-cols-[0.95fr_1.4fr]">
-        <SectionPanel eyebrow="Search criteria" title="Describe the customers worth finding." copy="The search only returns records with a verified public source URL. Unknown fields stay blank.">
-          <form onSubmit={submit} className="grid gap-4">
-            <Field label="Your company" value={form.company_description} onChange={(value) => setForm({ ...form, company_description: value })} placeholder="AI platform for outbound sales teams" required />
-            <Field label="Product or service" value={form.product_or_service} onChange={(value) => setForm({ ...form, product_or_service: value })} placeholder="Finds companies with buying signals and drafts reviewed outreach" required />
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Target country" value={form.target_country} onChange={(value) => setForm({ ...form, target_country: value })} placeholder="Germany" required />
-              <Field label="Target industry" value={form.target_industry} onChange={(value) => setForm({ ...form, target_industry: value })} placeholder="B2B SaaS" required />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Company size" value={form.company_size} onChange={(value) => setForm({ ...form, company_size: value })} placeholder="10-200 employees" />
-              <Field label="Max results" type="number" value={form.max_results} onChange={(value) => setForm({ ...form, max_results: value })} placeholder="10" />
-            </div>
-            <Field label="Contact roles" value={form.contact_titles} onChange={(value) => setForm({ ...form, contact_titles: value })} placeholder="Founder, CEO, Head of Sales" />
-            <Field label="Keywords" value={form.keywords} onChange={(value) => setForm({ ...form, keywords: value })} placeholder="sales automation, CRM, outbound" />
-            <Field label="Exclusions" value={form.exclusions} onChange={(value) => setForm({ ...form, exclusions: value })} placeholder="agencies, freelancers" />
-            <label className="text-sm font-bold text-slate-700">Additional criteria<textarea value={form.additional_criteria} onChange={(event) => setForm({ ...form, additional_criteria: event.target.value })} className="mt-2 min-h-28 w-full rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-brand/30" placeholder="Look for teams hiring SDRs or describing manual lead research." /></label>
-            <AppButton type="submit" disabled={!ready || loading || Boolean(activeJob)}>{loading ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} Start verified search</AppButton>
+      <section className="grid gap-5 xl:grid-cols-[0.9fr_1.35fr]">
+        <SectionPanel eyebrow="Start" title="Two inputs. One job." copy="No dashboards or reports. The goal is a CRM lead with a ready first email.">
+          <form onSubmit={submit} className="space-y-4">
+            <label className="block text-sm font-bold text-slate-700">
+              1. Your company website
+              <input
+                type="url"
+                value={companyWebsite}
+                required
+                onChange={(event) => setCompanyWebsite(event.target.value)}
+                placeholder="https://yourcompany.com"
+                className="mt-2 min-h-12 w-full rounded-2xl border border-[var(--ui-border)] bg-white px-4 text-sm outline-none focus:ring-2 focus:ring-brand/30"
+              />
+            </label>
+            <label className="block text-sm font-bold text-slate-700">
+              2. Who should we find?
+              <textarea
+                value={desiredCustomers}
+                required
+                onChange={(event) => setDesiredCustomers(event.target.value)}
+                placeholder="B2B SaaS companies in Europe with sales teams that need better outbound research."
+                className="mt-2 min-h-32 w-full rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-brand/30"
+              />
+            </label>
+            <AppButton type="submit" disabled={!ready || loading || Boolean(activeJob)}>
+              {loading ? <Loader2 className="animate-spin" size={17} /> : <Search size={17} />} Find leads
+            </AppButton>
           </form>
+
+          <div className="mt-6 grid gap-2">
+            {["Find company", "Find email", "Save to CRM", "Write email", "Send or draft"].map((label, index) => (
+              <div key={label} className="flex items-center gap-3 rounded-2xl bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700">
+                <span className="grid size-7 place-items-center rounded-full bg-white text-xs text-brand">{index + 1}</span>
+                {label}
+              </div>
+            ))}
+          </div>
         </SectionPanel>
 
         <div className="space-y-5">
-          <section className="grid gap-3 sm:grid-cols-3">
-            <MetricSurface label="Status" value={job?.status || "No search"} detail={job?.progress?.message || "Start a search to build CRM-ready accounts."} />
-            <MetricSurface label="Progress" value={`${job?.progress?.percent || 0}%`} detail={job?.progress?.stage || "Waiting"} />
-            <MetricSurface label="Saved to CRM" value={qualitySummary.saved} detail={`${qualitySummary.verified} verified · ${qualitySummary.partiallyVerified} partial`} />
-          </section>
-          <section className="grid gap-3 sm:grid-cols-4">
-            <MetricSurface label="Verified" value={qualitySummary.verified} detail="Strong source and signal evidence." />
-            <MetricSurface label="Partially verified" value={qualitySummary.partiallyVerified} detail="Useful, but evidence is incomplete." />
-            <MetricSurface label="Unknown" value={qualitySummary.unknown} detail="Source could not confirm the claim." />
-            <MetricSurface label="Rejected" value={qualitySummary.rejected} detail="Weak, duplicate or low-quality signal." />
-          </section>
-
-          <SectionPanel eyebrow="Results" title="Verified companies saved to CRM." copy="Every material claim links back to a public source. Unverified records are hidden by default.">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                {["verified", "partially_verified", "all"].map((item) => (
-                  <button key={item} type="button" onClick={() => setQualityFilter(item)} className={`rounded-full border px-3 py-2 text-xs font-black ${qualityFilter === item ? "border-brand bg-brand text-white" : "border-slate-200 bg-white text-slate-700"}`}>
-                    {item === "all" ? "All saved" : item.replace("_", " ")}
-                  </button>
-                ))}
+          <SurfaceCard className="rounded-[1.5rem]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">Progress</p>
+                <h2 className="mt-1 text-2xl font-black text-ink">{stageLabels[stage] || stageLabels[job?.status || "queued"] || "Ready"}</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-600">{job?.progress?.message || "Start a search to create CRM-ready leads."}</p>
               </div>
-              <label className="text-xs font-black uppercase text-slate-500">
-                Sort
-                <select value={sortBy} onChange={(event) => setSortBy(event.target.value)} className="ml-2 min-h-10 rounded-full border border-slate-200 bg-white px-3 text-sm font-bold normal-case text-ink">
-                  <option value="intent">Buying intent</option>
-                  <option value="revenue">Revenue score</option>
-                  <option value="confidence">Confidence</option>
-                  <option value="recent">Newest</option>
-                </select>
-              </label>
-              {activeJob ? <span className="inline-flex items-center gap-2 text-sm font-bold text-brand"><Loader2 className="animate-spin" size={16} /> Working in background</span> : null}
+              {activeJob ? <Loader2 className="animate-spin text-brand" size={26} /> : <CheckCircle2 className="text-emerald-600" size={26} />}
             </div>
-            {visibleResults.length ? (
-              <div className="overflow-hidden rounded-2xl border border-[var(--ui-border)] bg-white">
-                <div className="grid gap-0 divide-y divide-slate-100">
-                  {visibleResults.map((item) => <ResultRow key={item.id} item={item} />)}
-                </div>
+            <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100">
+              <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${progressPercent}%` }} />
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <Stat label="Saved leads" value={savedCount} />
+              <Stat label="Ready emails" value={readyResults.filter((item) => item.email_id).length} />
+              <Stat label="Found companies" value={job?.results.length || 0} />
+            </div>
+          </SurfaceCard>
+
+          <SectionPanel eyebrow="Leads" title="Saved in CRM with a ready first email." copy="Only useful fields are shown: company, website, contact, email, source, reason, status, and draft.">
+            {readyResults.length ? (
+              <div className="space-y-3">
+                {readyResults.map((item) => (
+                  <LeadCard key={item.id} item={item} onDraft={() => resultAction(item.id, "draft")} onSend={() => resultAction(item.id, "send")} />
+                ))}
               </div>
             ) : (
               <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
-                <ShieldCheck className="mx-auto text-brand" size={28} />
-                <h2 className="mt-3 text-lg font-black text-ink">No verified results yet</h2>
-                <p className="mt-2 text-sm leading-6 text-slate-600">{job?.status === "failed" ? "No company met the evidence threshold. Try broader criteria or stronger signal keywords." : "The system keeps partial progress and only promotes companies with public source evidence."}</p>
-                {qualitySummary.rejected || qualitySummary.unknown ? <p className="mt-3 text-xs font-bold text-slate-500">{qualitySummary.rejected} rejected · {qualitySummary.unknown} unknown</p> : null}
+                <Mail className="mx-auto text-brand" size={30} />
+                <h2 className="mt-3 text-lg font-black text-ink">No leads ready yet</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">
+                  {job?.status === "failed" ? "No company had enough public evidence. Try a broader customer description." : "The first saved lead will appear here as soon as the worker verifies the company and prepares the email."}
+                </p>
               </div>
             )}
           </SectionPanel>
@@ -314,9 +294,9 @@ export function AiCustomerFinderPage() {
             <SurfaceCard className="rounded-[1.5rem]">
               <p className="text-sm font-black uppercase text-brand">Recent searches</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {history.slice(0, 6).map((item) => (
+                {history.slice(0, 5).map((item) => (
                   <button key={item.id} type="button" onClick={() => setJob(item)} className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700">
-                    {item.status} · {item.results.length} results
+                    {(stageLabels[item.status] || item.status)} · {item.results.length} leads
                   </button>
                 ))}
               </div>
@@ -328,106 +308,69 @@ export function AiCustomerFinderPage() {
   );
 }
 
-function Field({ label, value, onChange, placeholder, required, type = "text" }: { label: string; value: string; onChange: (value: string) => void; placeholder: string; required?: boolean; type?: string }) {
+function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <label className="text-sm font-bold text-slate-700">
-      {label}
-      <input
-        type={type}
-        value={value}
-        required={required}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        className="mt-2 min-h-12 w-full rounded-2xl border border-[var(--ui-border)] bg-white px-4 text-sm outline-none focus:ring-2 focus:ring-brand/30"
-      />
-    </label>
+    <div className="rounded-2xl border border-slate-200 bg-white p-3">
+      <p className="text-xs font-black uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-2xl font-black text-ink">{value}</p>
+    </div>
   );
 }
 
-function ResultRow({ item }: { item: FinderResult }) {
-  const timeline = Array.isArray(item.intent_timeline) ? item.intent_timeline.slice(-3) : [];
-  const unknowns = [
-    item.publication_date === "Unknown" ? "Publication date is unknown" : "",
-    item.company_size ? "" : "Company size is unverified",
-    item.contact_name ? "" : "Named contact is not confirmed",
-  ].filter(Boolean);
-  const scoreRows = [
-    ["ICP", item.icp_fit_score],
-    ["Intent", item.buying_intent_score || item.ai_relevance_score],
-    ["Revenue", item.revenue_opportunity_score],
-  ];
+function LeadCard({ item, onDraft, onSend }: { item: FinderResult; onDraft: () => void; onSend: () => void }) {
+  const status = item.simple_status || (item.email_delivery_status === "sent" ? "Отправлено" : item.email_id ? "Письмо подготовлено" : "Найден");
   return (
-    <article className="grid gap-4 p-4 lg:grid-cols-[1fr_auto] lg:items-start">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-lg font-black text-ink">{item.company_name}</h3>
-          <AppBadge tone={item.verified_status === "verified" ? "success" : "warning"}>{item.verified_status}</AppBadge>
-          <AppBadge tone="brand">{item.signal_type.replaceAll("_", " ")}</AppBadge>
-          {item.intent_alert ? <AppBadge tone="success">Intent alert</AppBadge> : null}
-          {item.score_delta > 0 ? <AppBadge tone="warning">Intent +{item.score_delta}</AppBadge> : null}
+    <article className="rounded-2xl border border-[var(--ui-border)] bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-lg font-black text-ink">{item.company_name}</h3>
+            <AppBadge tone={item.company_id ? "success" : "warning"}>{item.company_id ? "Saved to CRM" : "Saving"}</AppBadge>
+            <AppBadge tone="brand">{status}</AppBadge>
+          </div>
+          <p className="mt-1 text-sm font-semibold text-slate-600">{item.industry || "Industry unknown"} · {item.country || "Country unknown"}</p>
         </div>
-        <p className="mt-2 text-sm font-semibold text-slate-600">{item.industry || "Industry unknown"} · {item.country || "Country unknown"} · {item.company_size || "Size unverified"}</p>
-        <p className="mt-3 text-sm leading-6 text-slate-700">{item.signal_description}</p>
-        <div className="mt-3 grid gap-3 lg:grid-cols-3">
-          <div className="rounded-2xl bg-emerald-50 p-3">
-            <p className="text-xs font-black uppercase text-emerald-800">Verified fact</p>
-            <p className="mt-1 text-sm leading-6 text-slate-700">{item.observed_fact || item.evidence_summary || item.evidence_excerpt}</p>
-          </div>
-          <div className="rounded-2xl bg-blue-50 p-3">
-            <p className="text-xs font-black uppercase text-blue-800">AI inference</p>
-            <p className="mt-1 text-sm leading-6 text-slate-700">{item.model_inference || item.fit_explanation}</p>
-          </div>
-          <div className="rounded-2xl bg-slate-50 p-3">
-            <p className="text-xs font-black uppercase text-slate-500">Unknowns</p>
-            <p className="mt-1 text-sm leading-6 text-slate-700">{unknowns.length ? unknowns.join(" · ") : "No critical unknowns surfaced."}</p>
-          </div>
-        </div>
-        <div className="mt-3 flex flex-wrap gap-2 text-sm font-bold">
-          <a href={item.source_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-2 text-ink">
-            Source <ExternalLink size={14} />
-          </a>
-          <span className="rounded-full bg-slate-100 px-3 py-2 text-slate-700">Publication: {item.publication_date || "Unknown"}</span>
-          {item.company_id ? <span className="rounded-full bg-teal-50 px-3 py-2 text-brand">Saved to CRM</span> : null}
-          {item.contact_title ? <span className="rounded-full bg-slate-100 px-3 py-2 text-slate-700">Recommended role: {item.contact_title}</span> : null}
-        </div>
-        {item.first_line_opener || item.draft_email ? (
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-black uppercase tracking-wide text-slate-500">AI Sales Brief</p>
-            {item.first_line_opener ? <p className="mt-2 text-sm font-semibold text-ink">{item.first_line_opener}</p> : null}
-            {item.draft_email ? <pre className="mt-3 whitespace-pre-wrap rounded-2xl bg-slate-950 p-4 text-sm leading-6 text-white">{item.draft_email}</pre> : null}
-            <p className="mt-2 text-xs font-bold text-slate-500">Draft only. Nothing is sent or added to a campaign automatically.</p>
-          </div>
-        ) : null}
-        {timeline.length ? (
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3">
-            <p className="text-xs font-black uppercase tracking-wide text-slate-500">Intent timeline</p>
-            <div className="mt-3 space-y-2">
-              {timeline.map((event, index) => (
-                <div key={`${event.detected_at || "event"}-${index}`} className="flex items-start gap-3 text-sm">
-                  <span className="mt-1 size-2 rounded-full bg-brand" aria-hidden="true" />
-                  <p className="min-w-0 flex-1 text-slate-700">
-                    <span className="font-bold text-ink">{event.change_type?.replaceAll("_", " ") || "intent signal"}</span>
-                    {typeof event.previous_score === "number" && typeof event.current_score === "number" ? <span> moved score {event.previous_score} → {event.current_score}</span> : null}
-                    {event.signal ? <span className="block truncate text-slate-500">{event.signal}</span> : null}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
+        <a href={item.official_website || item.source_url} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center gap-2 rounded-full border border-slate-200 px-3 text-sm font-bold text-ink">
+          Website <ExternalLink size={14} />
+        </a>
       </div>
-      <div className="grid min-w-36 grid-cols-2 gap-2 text-center lg:grid-cols-1">
-        {scoreRows.map(([label, value]) => (
-          <div key={label} className={label === "Intent" ? "rounded-2xl bg-[#101114] px-4 py-3 text-white" : "rounded-2xl bg-slate-100 px-4 py-3 text-ink"}>
-            <p className={label === "Intent" ? "text-xs font-bold uppercase text-white/60" : "text-xs font-bold uppercase text-slate-500"}>{label}</p>
-            <p className="text-2xl font-black">{Number(value || 0)}</p>
-          </div>
-        ))}
-        <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-ink">
-          <p className="text-xs font-bold uppercase text-emerald-700">Confidence</p>
-          <p className="text-2xl font-black">{item.confidence_score}</p>
-        </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <Info label="Contact" value={[item.contact_name, item.contact_title].filter(Boolean).join(" · ") || item.contact_title || "Recommended role not confirmed"} />
+        <Info label="Email" value={item.public_work_contact || "No verified email yet"} />
+        <Info label="Source" value={item.source_title || item.source_url} href={item.source_url} />
+        <Info label="Why this company" value={item.fit_explanation || item.signal_description || "Public source matched the customer description."} />
+      </div>
+
+      <div className="mt-4 rounded-2xl bg-slate-950 p-4 text-white">
+        <p className="text-xs font-black uppercase tracking-wide text-white/60">First email</p>
+        <p className="mt-2 text-sm font-black">{item.email_subject || "Draft email"}</p>
+        <pre className="mt-3 whitespace-pre-wrap text-sm leading-6 text-white/90">{item.email_body || "Email draft is being prepared."}</pre>
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <AppButton variant="secondary" onClick={onDraft} disabled={!item.email_id || item.email_delivery_status === "sent"}>
+          <Save size={16} /> Сохранить как черновик
+        </AppButton>
+        <AppButton onClick={onSend} disabled={!item.can_send || !item.public_work_contact || item.email_delivery_status === "sent"}>
+          <Send size={16} /> Отправить
+        </AppButton>
       </div>
     </article>
+  );
+}
+
+function Info({ label, value, href }: { label: string; value: string; href?: string }) {
+  return (
+    <div className="rounded-2xl bg-slate-50 p-3">
+      <p className="text-xs font-black uppercase tracking-wide text-slate-500">{label}</p>
+      {href ? (
+        <a href={href} target="_blank" rel="noreferrer" className="mt-1 inline-flex min-w-0 items-center gap-1 break-all text-sm font-bold text-brand">
+          {value} <ExternalLink size={13} />
+        </a>
+      ) : (
+        <p className="mt-1 text-sm font-semibold leading-6 text-slate-700">{value}</p>
+      )}
+    </div>
   );
 }

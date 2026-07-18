@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 
 CustomerFinderStatus = Literal[
@@ -21,10 +21,12 @@ VerifiedStatus = Literal["verified", "partially_verified", "unknown", "rejected"
 
 
 class CustomerFinderCriteria(BaseModel):
-    company_description: str = Field(min_length=3, max_length=2000)
-    product_or_service: str = Field(min_length=3, max_length=2000)
-    target_country: str = Field(min_length=2, max_length=120)
-    target_industry: str = Field(min_length=2, max_length=160)
+    company_website: str = Field(default="", max_length=500)
+    desired_customers: str = Field(default="", max_length=2000)
+    company_description: str = Field(default="", max_length=2000)
+    product_or_service: str = Field(default="", max_length=2000)
+    target_country: str = Field(default="Any", max_length=120)
+    target_industry: str = Field(default="B2B", max_length=160)
     company_size: str = Field(default="", max_length=80)
     contact_titles: List[str] = Field(default_factory=list, max_length=8)
     max_results: int = Field(default=10, ge=1, le=25)
@@ -47,6 +49,24 @@ class CustomerFinderCriteria(BaseModel):
             seen.add(key)
             cleaned.append(text[:120])
         return cleaned
+
+    @model_validator(mode="after")
+    def normalize_simple_request(self) -> "CustomerFinderCriteria":
+        if not self.company_description.strip() and self.company_website.strip():
+            self.company_description = self.company_website.strip()
+        if not self.product_or_service.strip() and self.desired_customers.strip():
+            self.product_or_service = self.desired_customers.strip()
+        if not self.desired_customers.strip() and self.product_or_service.strip():
+            self.desired_customers = self.product_or_service.strip()
+        if not self.company_website.strip() and self.company_description.strip().startswith(("http://", "https://")):
+            self.company_website = self.company_description.strip()
+        self.target_country = self.target_country.strip() or "Any"
+        self.target_industry = self.target_industry.strip() or "B2B"
+        if len(self.company_description.strip()) < 3:
+            raise ValueError("Enter your company website.")
+        if len(self.product_or_service.strip()) < 3:
+            raise ValueError("Describe the customers you want to find.")
+        return self
 
 
 @dataclass(frozen=True)
@@ -162,6 +182,19 @@ class CustomerFinderResultOut(BaseModel):
     score_delta: int = 0
     intent_alert: bool = False
     intent_timeline: List[Dict] = Field(default_factory=list)
+    lead_status: str = ""
+    simple_status: str = ""
+    email_id: str = ""
+    email_subject: str = ""
+    email_body: str = ""
+    email_delivery_status: str = ""
+    can_send: bool = False
+
+
+class CustomerFinderResultActionOut(BaseModel):
+    status: str
+    message: str
+    result: CustomerFinderResultOut
 
 
 class CustomerFinderJobOut(BaseModel):

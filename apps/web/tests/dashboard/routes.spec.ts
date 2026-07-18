@@ -234,30 +234,28 @@ test.describe("customer workspace routes", () => {
     await guards.assertClean();
   });
 
-  test("AI Customer Finder shows partial results, evidence, scores, brief and draft-only CRM save", async ({ page }, testInfo) => {
+  test("AI Customer Finder runs the simple find, save, draft and send flow", async ({ page }, testInfo) => {
     const guards = installQaGuards(page, testInfo);
     await page.goto("/dashboard/ai-customer-finder");
 
-    await page.getByLabel("Your company").fill("AI sales research and outreach platform");
-    await page.getByLabel("Product or service").fill("AI sales research and outreach");
-    await page.getByLabel("Target country").fill("Germany");
-    await page.getByLabel("Target industry").fill("B2B SaaS");
-    await page.getByLabel("Company size").fill("20-200");
-    await page.getByLabel("Keywords").fill("SDR hiring, CRM");
-    await page.getByText("Start verified search").click();
+    await page.getByLabel("1. Your company website").fill("https://outreachaiaiai.com");
+    await page.getByLabel("2. Who should we find?").fill("B2B SaaS companies in Europe with sales teams that need better outbound research.");
+    await page.getByRole("button", { name: "Find leads" }).click();
 
     await expect(page.getByText("First verified result is ready while the search continues.")).toBeVisible();
-    await expect(page.getByText("Verified").first()).toBeVisible();
-    await expect(page.getByText("Rejected")).toBeVisible();
     await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
-    await expect(page.getByText("Verified fact")).toBeVisible();
-    await expect(page.getByText("AI inference")).toBeVisible();
-    await expect(page.getByText("Publication: Unknown")).toBeVisible();
-    await expect(page.locator("span", { hasText: "Saved to CRM" })).toBeVisible();
-    await expect(page.getByText("AI Sales Brief")).toBeVisible();
-    await expect(page.getByText("Draft only. Nothing is sent or added to a campaign automatically.")).toBeVisible();
-    await expect(page.getByText("Intent").first()).toBeVisible();
-    await expect(page.locator("p", { hasText: /^Revenue$/ })).toBeVisible();
+    await expect(page.getByText("Saved to CRM").first()).toBeVisible();
+    await expect(page.getByText("Письмо подготовлено").first()).toBeVisible();
+    await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
+    await expect(page.getByText("Quick idea for EuroScale CRM Co")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Сохранить как черновик" })).toBeVisible();
+    await page.getByRole("button", { name: "Сохранить как черновик" }).click();
+    await expect(page.getByText("Draft saved in CRM.")).toBeVisible();
+    await page.getByRole("button", { name: "Отправить" }).click();
+    await expect(page.getByText("Email sent. CRM stage updated.")).toBeVisible();
+    await expect(page.getByText("Отправлено").first()).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("Revenue");
+    await expect(page.locator("body")).not.toContainText("Intent timeline");
     await expect(page.locator("body")).not.toContainText("google_places");
     await expect(page.locator("body")).not.toContainText("source_provider");
     await expect(page.locator("body")).not.toContainText("raw prompt");

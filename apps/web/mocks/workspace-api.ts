@@ -147,17 +147,17 @@ export const qaCompany = {
 const qaCustomerFinderResult = {
   id: "finder-result-1",
   company_name: "EuroScale CRM Co",
-  official_website: "https://euroscale.example",
+  official_website: "https://euroscale-crm.co",
   industry: "B2B SaaS",
   country: "Germany",
   company_size: "20-200",
-  contact_name: "",
+  contact_name: "Sarah Meyer",
   contact_title: "Head of Sales",
-  public_work_contact: "",
+  public_work_contact: "sarah.meyer@euroscale-crm.co",
   signal_type: "hiring_related_workflow",
   signal_description: "EuroScale CRM Co is hiring SDRs while replacing manual spreadsheet CRM workflows.",
   signal_date: "Unknown",
-  source_url: "https://euroscale.example/careers",
+  source_url: "https://euroscale-crm.co/careers",
   source_title: "EuroScale CRM careers",
   source_type: "official_website",
   evidence_excerpt: "We are hiring SDRs to scale outbound sales and replace manual spreadsheet CRM workflows.",
@@ -184,13 +184,20 @@ const qaCustomerFinderResult = {
   buying_intent_score: 84,
   revenue_opportunity_score: 79,
   first_line_opener: "I noticed EuroScale CRM Co's public site shows hiring-related workflow evidence tied to SDR growth.",
+  email_id: "55555555-5555-5555-5555-555555555555",
+  email_subject: "Quick idea for EuroScale CRM Co",
+  email_body: "Hi Sarah,\n\nI noticed EuroScale CRM Co is hiring SDRs while replacing manual spreadsheet CRM workflows.\n\nOutreachAI helps sales teams find verified companies, save them to CRM, and prepare short personalized first emails.\n\nWorth a quick fit review?",
+  email_delivery_status: "draft",
+  can_send: true,
+  lead_status: "Письмо подготовлено",
+  simple_status: "Письмо подготовлено",
   draft_email: "Hi Head of Sales,\n\nI noticed EuroScale CRM Co's public site shows hiring-related workflow evidence tied to SDR growth.\n\nWe help B2B SaaS teams with AI sales research and outreach. This signal may indicate timing for reviewed outbound.\n\nWould it be worth a quick fit review?\n\nDraft only — review before sending.",
   lead_id: "22222222-2222-2222-2222-222222222224",
   company_id: "44444444-4444-4444-4444-444444444446",
   score_delta: 22,
   intent_alert: true,
   intent_timeline: [
-    { change_type: "new_hiring", detected_at: now, signal: "Hiring SDRs", previous_score: 62, current_score: 84, score_delta: 22, source_url: "https://euroscale.example/careers" }
+    { change_type: "new_hiring", detected_at: now, signal: "Hiring SDRs", previous_score: 62, current_score: 84, score_delta: 22, source_url: "https://euroscale-crm.co/careers" }
   ]
 };
 
@@ -200,8 +207,10 @@ const qaCustomerFinderJob = {
   progress: { stage: "partially_completed", message: "AI Customer Finder saved partial verified results.", percent: 100, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 1, candidates: 3 },
   summary: { verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 1, candidates: 3, warnings: ["Unknown Source Co: Website could not be reached.", "Weak Fit Co: no meaningful buying or timing signal."] },
   criteria: {
-    company_description: "AI sales research and outreach platform",
-    product_or_service: "AI sales research and outreach",
+    company_website: "https://outreachaiaiai.com",
+    desired_customers: "B2B SaaS companies in Europe with sales teams that need better outbound research.",
+    company_description: "https://outreachaiaiai.com",
+    product_or_service: "B2B SaaS companies in Europe with sales teams that need better outbound research.",
     target_country: "Germany",
     target_industry: "B2B SaaS",
     company_size: "20-200",
@@ -435,6 +444,16 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === `/api/workspace-app/ai-customer-finder/searches/${currentFinderJob.id}/cancel`) {
       currentFinderJob = { ...currentFinderJob, status: "failed", progress: { ...currentFinderJob.progress, stage: "failed", message: "Cancellation requested.", percent: 100 } };
       return fulfillJson(route, currentFinderJob);
+    }
+    if (apiPath === `/api/workspace-app/ai-customer-finder/results/${qaCustomerFinderResult.id}/draft`) {
+      const updated = { ...qaCustomerFinderResult, email_delivery_status: "draft", simple_status: "Письмо подготовлено", can_send: true };
+      currentFinderJob = { ...currentFinderJob, results: [updated] };
+      return fulfillJson(route, { status: "success", message: "Draft saved in CRM.", result: updated });
+    }
+    if (apiPath === `/api/workspace-app/ai-customer-finder/results/${qaCustomerFinderResult.id}/send`) {
+      const updated = { ...qaCustomerFinderResult, email_delivery_status: "sent", simple_status: "Отправлено", can_send: false };
+      currentFinderJob = { ...currentFinderJob, results: [updated] };
+      return fulfillJson(route, { status: "success", message: "Email sent. CRM stage updated.", result: updated });
     }
     if (apiPath === "/api/workspace-app/companies" && route.request().method() === "POST") {
       const body = route.request().postDataJSON() as Partial<typeof qaCompany>;

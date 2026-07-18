@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import socket
 from datetime import datetime, timedelta
 from typing import Any
@@ -18,7 +19,9 @@ from app.models.entities import (
     AICustomerFinderSource,
     AuditLog,
     Company,
+    EmailMessage,
     Lead,
+    LeadStatus,
     Notification,
     NotificationKind,
 )
@@ -34,6 +37,12 @@ logger = logging.getLogger("outreachai.ai_customer_finder")
 ACTIVE_STATUSES = {"queued", "searching", "verifying", "enriching"}
 TERMINAL_STATUSES = {"completed", "partially_completed", "failed"}
 MAX_RETRY_BACKOFF_SECONDS = 3600
+SIMPLE_STATUS_FOUND = "Найден"
+SIMPLE_STATUS_EMAIL_VERIFIED = "Email проверен"
+SIMPLE_STATUS_DRAFT_READY = "Письмо подготовлено"
+SIMPLE_STATUS_SENT = "Отправлено"
+SIMPLE_STATUS_REPLIED = "Ответил"
+SIMPLE_STATUS_NOT_INTERESTED = "Не заинтересован"
 
 
 def enqueue_ai_customer_finder_job(
@@ -263,6 +272,8 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
     source_verification = metadata.get("source_verification") if isinstance(metadata.get("source_verification"), dict) else {}
     scoring = metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
     outreach = metadata.get("outreach_draft") if isinstance(metadata.get("outreach_draft"), dict) else {}
+    simple = metadata.get("simple_customer_finder") if isinstance(metadata.get("simple_customer_finder"), dict) else {}
+    email_meta = metadata.get("email") if isinstance(metadata.get("email"), dict) else {}
     return CustomerFinderResultOut(
         id=str(result.id),
         company_name=result.company_name,
@@ -309,6 +320,13 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         score_delta=_safe_int((result.metadata_json or {}).get("score_delta"), 0),
         intent_alert=bool((result.metadata_json or {}).get("intent_alert")),
         intent_timeline=[item for item in (result.metadata_json or {}).get("intent_timeline", []) if isinstance(item, dict)] if isinstance((result.metadata_json or {}).get("intent_timeline"), list) else [],
+        lead_status=str(simple.get("lead_status") or ""),
+        simple_status=str(simple.get("simple_status") or email_meta.get("simple_status") or ""),
+        email_id=str(email_meta.get("email_id") or ""),
+        email_subject=str(email_meta.get("subject") or ""),
+        email_body=str(email_meta.get("body") or outreach.get("draft_email") or ""),
+        email_delivery_status=str(email_meta.get("delivery_status") or ""),
+        can_send=bool(email_meta.get("can_send")),
     )
 
 
@@ -319,8 +337,7 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
     if not text.strip():
         raise WebsiteFetchError("Public source had no readable evidence.")
     signal_type = signal_type_from_text(text)
-    if signal_type == "public_company_fit" or not meaningful_signal_present(text):
-        raise ValueError("Rejected: public source confirms ICP fit but no meaningful buying or timing signal.")
+    has_timing_signal = meaningful_signal_present(text)
     score = score_candidate(criteria, text=text, industry=candidate.industry, country=candidate.country, source_verified=True, source_type="official_website", publication_date="Unknown")
     excerpt = _evidence_excerpt(text, criteria)
     source_url = canonical_url(snapshot.url or website)
@@ -333,7 +350,9 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
     model_inference = _model_inference(signal_type, criteria)
     first_line = _first_line_opener(candidate.company_name, observed_fact)
     draft_email = _draft_email(criteria, candidate.company_name, first_line, model_inference)
-    verified_status = "verified" if score.confidence_score >= 60 and score.buying_intent_score >= 60 else "partially_verified"
+    public_email = _public_business_email(text, domain)
+    verified_status = "verified" if score.confidence_score >= 60 and has_timing_signal else "partially_verified"
+    evidence_summary = f"Verified public website content supports this company as a potential fit for {criteria.target_industry}."
     return VerifiedCustomerSignal(
         company_name=candidate.company_name,
         official_website=source_url,
@@ -343,7 +362,7 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
         company_size="",
         contact_name="",
         contact_title=", ".join(criteria.contact_titles[:2]),
-        public_work_contact="",
+        public_work_contact=public_email,
         signal_type=signal_type,
         signal_description=signal_description,
         signal_date="Unknown",
@@ -351,7 +370,7 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
         source_title=snapshot.title or candidate.company_name,
         source_type="official_website",
         evidence_excerpt=excerpt,
-        evidence_summary=f"Verified public website content contains a {signal_type.replace('_', ' ')} signal relevant to {criteria.target_industry}.",
+        evidence_summary=evidence_summary,
         observed_fact=observed_fact,
         model_inference=model_inference,
         fit_explanation=score.explanation,
@@ -385,7 +404,7 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
                 "source_type": "official_website",
                 "publication_date": "Unknown",
                 "retrieved_at": datetime.utcnow().isoformat(),
-                "evidence_summary": f"Verified public website content contains a {signal_type.replace('_', ' ')} signal relevant to {criteria.target_industry}.",
+                "evidence_summary": evidence_summary,
                 "observed_fact": observed_fact,
                 "model_inference": model_inference,
                 "confidence": score.source_quality_score,
@@ -405,6 +424,7 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
             },
             "outreach_draft": {
                 "first_line_opener": first_line,
+                "subject": _draft_subject(candidate.company_name, criteria),
                 "draft_email": draft_email,
                 "draft_only": True,
                 "requires_review": True,
@@ -483,37 +503,31 @@ def _persist_signal(db: Session, job: AICustomerFinderJob, signal: VerifiedCusto
 def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustomerFinderResult, criteria: CustomerFinderCriteria) -> None:
     from app.api.routes import _existing_duplicate_lead, _merge_lead_metadata, _sync_lead_to_crm
 
+    source_summary = result.fit_explanation or result.evidence_summary or result.signal_description
     metadata = {
         "source": "ai_customer_finder",
-        "ai_customer_finder": {
+        "simple_customer_finder": {
             "job_id": str(job.id),
             "result_id": str(result.id),
-            "signal_type": result.signal_type,
-            "signal_description": result.signal_description,
-            "signal_date": result.signal_date,
+            "company": result.company_name,
+            "website": result.official_website,
+            "industry": result.industry,
+            "country": result.country,
+            "contact_name": result.contact_name,
+            "contact_title": result.contact_title,
+            "email": result.public_work_contact,
             "source_url": result.source_url,
             "source_title": result.source_title,
-            "source_type": result.source_type,
-            "evidence_summary": result.evidence_summary,
-            "evidence_excerpt": result.evidence_excerpt,
-            "observed_fact": (result.metadata_json or {}).get("observed_fact"),
-            "model_inference": (result.metadata_json or {}).get("model_inference"),
-            "source_verification": (result.metadata_json or {}).get("source_verification"),
-            "scoring": (result.metadata_json or {}).get("scoring"),
-            "outreach_draft": (result.metadata_json or {}).get("outreach_draft"),
-            "fit_explanation": result.fit_explanation,
-            "ai_relevance_score": result.ai_relevance_score,
-            "confidence_score": result.confidence_score,
+            "why_this_company": source_summary,
+            "signal_type": result.signal_type,
+            "signal_description": result.signal_description,
             "verified_status": result.verified_status,
+            "email_status": "verified" if result.public_work_contact else "not_found",
+            "simple_status": SIMPLE_STATUS_EMAIL_VERIFIED if result.public_work_contact else SIMPLE_STATUS_FOUND,
             "checked_at": result.checked_at.isoformat(),
         },
-        "buying_signals": [result.signal_description],
-        "buying_signal_score": result.ai_relevance_score,
-        "buying_signal_confidence": result.confidence_score,
-        "buying_signal_evidence": [{"source_url": result.source_url, "value": result.evidence_summary, "source_field": "ai_customer_finder.source"}],
         "recommended_decision_maker_role": result.contact_title or ", ".join(criteria.contact_titles[:2]),
-        "priority_score": result.ai_relevance_score,
-        "confidence_score": result.confidence_score,
+        "email_status": "Verified" if result.public_work_contact else "Not found",
     }
     lead_out = LeadOut(
         company=result.company_name,
@@ -529,8 +543,10 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
     existing = _existing_duplicate_lead(db, job.workspace, job.user_id, lead_out)
     if existing:
         existing.notes = _merge_lead_metadata(existing, metadata)
+        existing.status = LeadStatus.email_generated if result.public_work_contact else LeadStatus.qualified
         company = _sync_lead_to_crm(db, job.user_id, job.workspace, existing)
-        _record_intent_score_movement(db, job, company, result)
+        draft = _ensure_customer_finder_email_draft(db, job=job, lead=existing, result=result, criteria=criteria)
+        _mark_simple_crm_state(db, company=company, lead=existing, result=result, draft=draft, metadata=metadata)
         result.lead_id = existing.id
         result.company_id = company.id
         result.updated_at = datetime.utcnow()
@@ -545,19 +561,116 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
         contact=result.contact_name or None,
         email=result.public_work_contact or None,
         notes=json.dumps(metadata),
+        status=LeadStatus.email_generated if result.public_work_contact else LeadStatus.qualified,
     )
     db.add(lead)
     db.flush()
     company = _sync_lead_to_crm(db, job.user_id, job.workspace, lead)
-    company.source = "ai_customer_finder"
-    company.metadata_json = {**(company.metadata_json or {}), **metadata}
-    company.crm_stage = "Qualified"
-    company.email_status = "Not prepared"
-    company.updated_at = datetime.utcnow()
-    _record_intent_score_movement(db, job, company, result)
+    draft = _ensure_customer_finder_email_draft(db, job=job, lead=lead, result=result, criteria=criteria)
+    _mark_simple_crm_state(db, company=company, lead=lead, result=result, draft=draft, metadata=metadata)
     result.lead_id = lead.id
     result.company_id = company.id
     result.updated_at = datetime.utcnow()
+
+
+def _ensure_customer_finder_email_draft(db: Session, *, job: AICustomerFinderJob, lead: Lead, result: AICustomerFinderResult, criteria: CustomerFinderCriteria) -> EmailMessage:
+    existing = db.scalar(
+        select(EmailMessage)
+        .where(
+            EmailMessage.workspace_id == job.workspace_id,
+            EmailMessage.lead_id == lead.id,
+            EmailMessage.tags["source"].as_string() == "ai_customer_finder",
+        )
+        .order_by(EmailMessage.created_at.desc())
+    )
+    if existing:
+        _sync_result_email_metadata(result, existing, simple_status=SIMPLE_STATUS_SENT if existing.delivery_status == "sent" else SIMPLE_STATUS_DRAFT_READY)
+        return existing
+    outreach = result.metadata_json.get("outreach_draft") if isinstance(result.metadata_json, dict) and isinstance(result.metadata_json.get("outreach_draft"), dict) else {}
+    subject = str(outreach.get("subject") or _draft_subject(result.company_name, criteria))[:300]
+    body = str(outreach.get("draft_email") or result.fit_explanation or result.signal_description).strip()
+    message = EmailMessage(
+        user_id=job.user_id,
+        workspace_id=job.workspace_id,
+        lead_id=lead.id,
+        direction="outbound",
+        subject=subject,
+        preview=(body.replace("\n", " ")[:220] if body else ""),
+        body=body or _draft_email(criteria, result.company_name, _first_line_opener(result.company_name, result.signal_description), result.fit_explanation),
+        cta="Worth a quick fit review?",
+        tags={
+            "source": "ai_customer_finder",
+            "job_id": str(job.id),
+            "result_id": str(result.id),
+            "draft_only": True,
+            "requires_review": True,
+            "recipient": result.public_work_contact or "",
+            "source_url": result.source_url,
+        },
+        delivery_status="draft",
+    )
+    db.add(message)
+    db.flush()
+    _sync_result_email_metadata(result, message, simple_status=SIMPLE_STATUS_DRAFT_READY)
+    return message
+
+
+def _mark_simple_crm_state(db: Session, *, company: Company, lead: Lead, result: AICustomerFinderResult, draft: EmailMessage, metadata: dict[str, Any]) -> None:
+    simple_status = SIMPLE_STATUS_SENT if draft.delivery_status == "sent" else SIMPLE_STATUS_DRAFT_READY
+    company.source = "ai_customer_finder"
+    company.crm_stage = simple_status
+    company.email_status = "Verified" if lead.email else "Not found"
+    company.metadata_json = {
+        **(company.metadata_json if isinstance(company.metadata_json, dict) else {}),
+        "source": "ai_customer_finder",
+        "simple_customer_finder": {
+            **metadata["simple_customer_finder"],
+            "simple_status": simple_status,
+            "email_id": str(draft.id),
+            "email_delivery_status": draft.delivery_status,
+        },
+    }
+    lead.status = LeadStatus.email_generated if draft.delivery_status != "sent" else LeadStatus.contacted
+    lead.notes = json.dumps({
+        **metadata,
+        "simple_customer_finder": {
+            **metadata["simple_customer_finder"],
+            "simple_status": simple_status,
+            "email_id": str(draft.id),
+            "email_delivery_status": draft.delivery_status,
+        },
+    })
+    lead.updated_at = datetime.utcnow()
+    company.updated_at = datetime.utcnow()
+    _sync_result_email_metadata(result, draft, simple_status=simple_status)
+    db.add(
+        AuditLog(
+            user_id=result.user_id,
+            workspace_id=result.workspace_id,
+            action="ai_customer_finder.crm_saved",
+            metadata_json={"result_id": str(result.id), "lead_id": str(lead.id), "company_id": str(company.id), "email_id": str(draft.id)},
+        )
+    )
+
+
+def _sync_result_email_metadata(result: AICustomerFinderResult, email: EmailMessage, *, simple_status: str) -> None:
+    metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+    result.metadata_json = {
+        **metadata,
+        "simple_customer_finder": {
+            **(metadata.get("simple_customer_finder") if isinstance(metadata.get("simple_customer_finder"), dict) else {}),
+            "lead_status": simple_status,
+            "simple_status": simple_status,
+        },
+        "email": {
+            "email_id": str(email.id),
+            "subject": email.subject,
+            "body": email.body,
+            "delivery_status": email.delivery_status,
+            "simple_status": simple_status,
+            "can_send": bool(result.public_work_contact and email.delivery_status != "sent"),
+        },
+    }
 
 
 def _record_intent_score_movement(db: Session, job: AICustomerFinderJob, company: Company, result: AICustomerFinderResult) -> None:
@@ -761,6 +874,35 @@ def _draft_email(criteria: CustomerFinderCriteria, company_name: str, first_line
         "Would it be worth a quick fit review?\n\n"
         "Draft only — review before sending."
     )
+
+
+def _draft_subject(company_name: str, criteria: CustomerFinderCriteria) -> str:
+    return f"Quick idea for {company_name}"
+
+
+def _public_business_email(text: str, domain: str) -> str:
+    if not text or not domain:
+        return ""
+    candidates = re.findall(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, flags=re.IGNORECASE)
+    blocked_prefixes = {"example", "test", "noreply", "no-reply", "donotreply", "privacy", "legal", "abuse"}
+    preferred_prefixes = ("sales", "hello", "contact", "info", "partnerships", "business", "growth")
+    cleaned: list[str] = []
+    for item in candidates:
+        email = item.strip(".,;:()[]<>").lower()
+        local, _, email_domain = email.partition("@")
+        if not local or not email_domain:
+            continue
+        if local in blocked_prefixes:
+            continue
+        if email_domain == domain or email_domain.endswith(f".{domain}"):
+            cleaned.append(email)
+    if not cleaned:
+        return ""
+    for prefix in preferred_prefixes:
+        for email in cleaned:
+            if email.startswith(f"{prefix}@"):
+                return email
+    return cleaned[0]
 
 
 def _signal_description(signal_type: str, company_name: str, criteria: CustomerFinderCriteria) -> str:

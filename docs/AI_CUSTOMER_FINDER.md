@@ -1,66 +1,151 @@
 # AI Customer Finder
 
-AI Customer Finder is an evidence-first prospect discovery workflow for OutreachAI. It adapts the local Codex `first-customer-finder` skill into a native product feature while keeping fact gathering, verification, scoring, and CRM persistence inside the OutreachAI backend.
+AI Customer Finder is intentionally simple. It exists to complete one customer-facing workflow:
+
+```text
+Enter website
+  -> find B2B companies and public work emails
+  -> save leads to the existing CRM without duplicates
+  -> prepare a short personalized first email
+  -> let the user send it or keep it as a draft
+```
+
+It is not a separate AI Sales Platform, dashboard, report engine, or revenue-intelligence module.
+
+## Source Skill
+
+The implementation adapts the useful parts of the local Codex `first-customer-finder` skill:
+
+- understand the user's product from a website or short description;
+- search public sources for plausible B2B customers;
+- keep a public source URL for every material claim;
+- reject unverified or weak matches;
+- deduplicate companies and evidence;
+- write a short source-grounded outreach draft;
+- never send email automatically.
+
+Rejected from the production product:
+
+- standalone HTML reports;
+- dozens of score panels;
+- revenue/opportunity dashboards;
+- raw prompts or provider output;
+- speculative facts without a public source.
 
 ## Architecture
 
-The feature follows the existing OutreachAI app shape:
+The feature reuses the existing OutreachAI stack:
 
 ```text
-Web UI
+Web page
   -> FastAPI workspace API
   -> ai_customer_finder_jobs
-  -> enrichment worker
+  -> existing worker loop
   -> search provider
-  -> website verification
-  -> deterministic scoring
-  -> existing Lead and Company CRM records
+  -> public source verification
+  -> existing Lead / Company / EmailMessage CRM tables
 ```
 
-The production integration is modular:
+Important backend files:
 
-- `search providers`: source adapters that return public candidate companies.
-- `verification layer`: fetches original public source pages and rejects candidates without a working source URL.
-- `AI scoring`: deterministic scoring and explanation based on verified public evidence.
-- `deduplication`: normalizes domains, company names, canonical URLs, and signal fingerprints.
-- `CRM persistence`: reuses existing `Lead` and `Company` models instead of creating a parallel CRM.
-- `job orchestration`: reuses the enrichment worker loop and stores partial progress.
+- `apps/api/app/api/ai_customer_finder.py`
+- `apps/api/app/services/ai_customer_finder/service.py`
+- `apps/api/app/services/ai_customer_finder/providers.py`
+- `apps/api/app/services/ai_customer_finder/dedupe.py`
+- `apps/api/app/services/ai_customer_finder/schemas.py`
 
-## Skill Installation
+Important frontend files:
 
-The source repository was installed as a local Codex skill:
+- `apps/web/app/dashboard/ai-customer-finder/page.tsx`
+- `apps/web/components/ai-customer-finder/ai-customer-finder-page.tsx`
+
+## User Flow
+
+The page asks for only two inputs:
+
+- company website;
+- short description of the customers to find.
+
+The backend keeps compatibility with the earlier richer criteria shape, but the UI sends a minimal request and defaults the rest safely.
+
+The worker then:
+
+1. searches approved public sources;
+2. opens original public pages instead of trusting snippets;
+3. extracts a business signal and a public work email when available;
+4. rejects records without a working source URL;
+5. saves or updates the CRM lead/company;
+6. creates a draft `EmailMessage`;
+7. returns progress and partial results to the UI.
+
+## CRM Persistence
+
+AI Customer Finder does not create a parallel CRM.
+
+Saved fields are kept intentionally small:
+
+- company name;
+- website;
+- industry;
+- country;
+- contact name and title if found;
+- public work email if verified from the source;
+- source URL and title;
+- short reason why the company fits;
+- simple lead status;
+- draft email.
+
+Simple statuses:
 
 ```text
-~/.codex/skills/first-customer-finder
+Найден
+Email проверен
+Письмо подготовлено
+Отправлено
+Ответил
+Не заинтересован
 ```
 
-The original skill instructions remain intact. OutreachAI-specific guidance was added in:
+## Deduplication
 
-```text
-~/.codex/skills/first-customer-finder/references/outreachai-adaptation.md
-```
+Company and lead deduplication use the existing CRM duplicate logic plus Customer Finder keys:
 
-That adaptation documents the OutreachAI CRM field mapping, truth rules, signal policy, and draft-only outreach behavior.
+- existing CRM lead/company;
+- normalized domain;
+- canonical website URL;
+- normalized company name and country;
+- email uniqueness inside the workspace/user scope.
 
-## Database Schema
+Evidence deduplication uses:
 
-Migration:
+- canonical source URL;
+- content hash;
+- signal fingerprint.
 
-```text
-db/migrations/010_ai_customer_finder.sql
-```
+Repeated searches should update the existing CRM records and reuse the existing draft instead of creating uncontrolled duplicates.
 
-New tables:
+## Email Rules
 
-- `ai_customer_finder_jobs`: criteria, status, progress, retries, cancellation, and completion metadata.
-- `ai_customer_finder_results`: verified companies, signal evidence, scoring, confidence, and CRM links.
-- `ai_customer_finder_sources`: source audit trail, retrieval metadata, content hash, and verification status.
+AI Customer Finder creates drafts only.
 
-The feature preserves workspace isolation by storing `workspace_id` on every job, result, and source record.
+It never:
+
+- sends automatically;
+- starts a campaign automatically;
+- invents a recipient;
+- sends to placeholder or missing email addresses;
+- bypasses sender setup, limits, or approval checks.
+
+The UI exposes two explicit actions:
+
+- `Сохранить как черновик`;
+- `Отправить`.
+
+Sending uses the existing OutreachAI email sender configuration and usage controls.
 
 ## Environment Variables
 
-Optional variables:
+Optional:
 
 ```bash
 AI_CUSTOMER_FINDER_PROVIDER=google_places
@@ -69,229 +154,66 @@ AI_CUSTOMER_FINDER_MAX_CANDIDATES_PER_JOB=25
 AI_CUSTOMER_FINDER_AI_CLASSIFICATION_ENABLED=false
 ```
 
-The current provider reuses the existing Google Maps/Places configuration already used by OutreachAI:
+Provider keys are configured through existing environment variables, for example:
 
 ```bash
 GOOGLE_MAPS_API_KEY=
 ```
 
-No secrets are required in code. Provider credentials must be set only through environment variables.
+Do not commit real keys.
 
-## Worker Lifecycle
+## Local Setup
 
-The existing enrichment worker claims AI Customer Finder jobs when no enrichment job is pending.
+1. Apply the project database migrations.
+2. Start the API, web app, and worker.
+3. Open `/dashboard/ai-customer-finder`.
+4. Enter a company website and desired customer description.
+5. Start the search.
+6. Confirm that the first saved result appears with a source, CRM status, email draft, and draft/send buttons.
 
-Job statuses:
+## Verification Rules
 
-- `queued`
-- `searching`
-- `verifying`
-- `enriching`
-- `completed`
-- `partially_completed`
-- `failed`
+The product must keep uncertainty visible:
 
-The worker supports bounded retries with exponential backoff, job locking, cancellation requests, partial result persistence, and structured audit logs.
+- source URL is required;
+- publication date can be `Unknown`;
+- company size can be blank;
+- contact name can be blank;
+- email can be blank when no legal public work email is found;
+- AI is used for classification and drafting, not as a source of facts.
 
-## Running Locally
+Search snippets alone are not treated as verified evidence when an original source is available.
 
-1. Apply migrations in the normal project migration flow.
-2. Set the optional AI Customer Finder environment variables if defaults are not desired.
-3. Start the API, web app, and worker.
-4. Open the app and go to:
+## Limits
 
-```text
-/dashboard/ai-customer-finder
-```
+The MVP is deliberately bounded:
 
-5. Enter a company description, product/service, country, industry, company size, contact roles, and optional criteria.
-6. Start the search and let the worker process it asynchronously.
+- small result count per job;
+- asynchronous worker processing;
+- partial results returned before the full job completes;
+- no broad analytics panels;
+- no automatic campaigns;
+- no personal email scraping;
+- no paywall, CAPTCHA, private community, or access-control bypass.
 
-## Result Verification
+## Manual Test Scenario
 
-A result is accepted only when it has:
-
-- company name
-- official website
-- working public source URL
-- source title or type
-- retrieved evidence summary
-- signal type and explanation
-- relevance and confidence scores
-
-Each result is classified as one of:
-
-- `verified`: a working public source confirms a meaningful buying or timing signal.
-- `partially_verified`: the source opens and supports part of the finding, but confidence or intent is not strong enough for a verified result.
-- `unknown`: the source or publication date could not be confirmed.
-- `rejected`: the candidate has no meaningful signal, weak source quality, duplicate evidence, or contradictory data.
-
-If a field cannot be confirmed, it is left empty or marked as `Unknown`. AI output is not treated as a source of facts. Search snippets are not final evidence when the original public page is unavailable.
-
-For every important claim the API keeps a source ledger:
-
-- source URL and canonical URL
-- source title and source type
-- publication date or `Unknown`
-- retrieval date
-- evidence summary
-- observed fact
-- model inference
-- confidence
-- verification status
-
-Industry fit alone is never enough to create a high-intent lead.
-
-## Quality Gates and Scoring
-
-Scoring version: `intent-signals-quality-v2`.
-
-The backend calculates three deterministic scores:
-
-- `ICP Fit Score`: industry, country, use-case match, and disqualifiers.
-- `Buying Intent Score`: signal strength, explicitness, recency, source quality, source diversity, independent source count, product relevance, and negative evidence.
-- `Revenue Opportunity Score`: ICP Fit, Buying Intent, and source quality.
-
-Every score stores:
-
-- final score
-- previous score where available
-- factor values
-- factor weights
-- penalties
-- explanation
-- scoring version
-
-Buying Intent is capped when no meaningful public signal exists. Stale or unknown publication dates receive a penalty, and negative evidence such as layoffs, hiring freezes, or no-budget language reduces the score. A verified company with only generic industry match is rejected instead of being promoted as high intent.
-
-## Partial Results and User Flow
-
-The product flow is optimized for a 5-10 minute first success path:
+Input:
 
 ```text
-Product and ICP input
-  -> Search created
-  -> First partial results
-  -> Verified company evidence
-  -> ICP, Intent, and Revenue scores
-  -> AI Sales Brief
-  -> Next Best Action
-  -> Draft email
-  -> Save to CRM
+Website: https://outreachaiaiai.com
+Customers: B2B SaaS companies in Europe with sales teams that need better outbound research.
 ```
 
-The UI polls the existing job API and shows current stage, progress percentage, saved count, verified count, partially verified count, unknown count, rejected count, partial results, filters, sorting, retry, cancel, and CRM status. It does not expose provider names, raw prompts, JSON, stack traces, internal job names, or infrastructure details.
-
-Demo/test fixture:
+Expected:
 
 ```text
-User product: AI sales research and outreach platform
-ICP: B2B SaaS companies with 20-200 employees expanding their sales team in Europe
-Result: EuroScale CRM Co
-Evidence: verified public careers/source page shows SDR hiring and CRM workflow expansion
-Scores: ICP, Buying Intent, Revenue Opportunity, Confidence
-Output: AI Sales Brief, Next Best Action, first-line opener, draft-only email, saved CRM status
+Search starts
+  -> first lead appears
+  -> source link is visible
+  -> lead is saved to CRM
+  -> public work email is shown when found
+  -> short first email is prepared
+  -> Save draft keeps delivery_status=draft
+  -> Send uses the existing email sender and updates CRM status
 ```
-
-## CRM Persistence
-
-Verified and partially verified results are saved into the existing CRM:
-
-- A matching `Company` is reused when the domain, URL, or normalized name matches.
-- A matching `Lead` is reused when an existing duplicate is found.
-- Evidence and source metadata are stored in CRM metadata and the AI Customer Finder audit tables.
-- No email is sent and no campaign is started automatically.
-
-## Intent Score Timeline and Notifications
-
-AI Customer Finder is designed to support repeated monitoring of the same company. When a new verified signal is found for an existing CRM company, the backend compares the previous company intent score with the new score.
-
-Example:
-
-```text
-Microsoft
-Intent Score: 62
-
-2 days later: Hiring SDR
-Intent Score: 74
-
-1 week later: Funding
-Intent Score: 86
-Notification created
-```
-
-The score movement is stored in `Company.metadata_json.ai_live_buying_signals`:
-
-- `current_score`
-- `previous_score`
-- `score_delta`
-- `latest_changes`
-- `change_timeline`
-- `snapshot.latest_signal`
-- `snapshot.latest_source_url`
-
-A notification is created only when the score movement is meaningful. The current rule is:
-
-- the signal is new;
-- previous score exists and score reaches at least `80` with a delta of at least `8`;
-- or previous score is missing, but the first verified signal reaches at least `85` confidence-backed intent;
-- or the delta is at least `15`.
-
-This prevents small repeated source changes from becoming noisy alerts.
-
-The backend also applies a 24-hour notification cooldown for repeated alerts with the same company/title pair. Notifications are created only for verified or partially verified signals that materially change intent; unknown, rejected, or insignificant changes update history without notifying the user.
-
-The broader Dashboard read model is documented in [AI_REVENUE_INTELLIGENCE.md](AI_REVENUE_INTELLIGENCE.md). It turns saved signal changes into Opportunity Feed categories, explainable ICP/Intent/Revenue scores, watchlist updates, and next-best-action recommendations.
-
-## Deduplication
-
-Company deduplication uses:
-
-- normalized domain
-- canonical website URL
-- normalized company name plus country
-
-Evidence deduplication uses:
-
-- canonical source URL
-- normalized title
-- evidence content hash
-- signal fingerprint
-
-The database enforces one signal fingerprint per workspace/job pair.
-
-## Adding a Search Provider
-
-Add a provider implementing `CustomerSearchProvider` in:
-
-```text
-apps/api/app/services/ai_customer_finder/providers.py
-```
-
-A provider must return `PublicCustomerCandidate` objects and must not bypass paywalls, authentication, CAPTCHA, robots restrictions, access controls, or rate limits.
-
-Provider API keys must be added through environment variables and documented in `.env.example`.
-
-## Limits and Costs
-
-The feature is intentionally bounded:
-
-- default maximum results per job: 10
-- default maximum candidates per job: 25
-- retries are bounded
-- providers should enforce rate limits and timeouts
-- LLM-based classification is disabled by default
-
-The MVP uses deterministic scoring from verified source content. Future LLM classification must use structured JSON and validation before persistence.
-
-## Privacy Rules
-
-AI Customer Finder uses public business information only. It must not use leaked data, private communities, personal email scraping, phone-number enrichment, sensitive personal data, or automated outreach.
-
-## Rollback
-
-Rollback is safe because the integration adds isolated tables and one dashboard route. To roll back:
-
-1. Remove the dashboard route and navigation item.
-2. Stop processing AI Customer Finder jobs in the worker.
-3. Leave historical tables in place for audit retention or drop them through a planned migration if no longer needed.
