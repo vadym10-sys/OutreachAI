@@ -255,8 +255,8 @@ test.describe("customer workspace routes", () => {
     await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
     await expect(page.getByText("84/100 quality")).toBeVisible();
     await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
-    await expect(page.getByText("Draft preview", { exact: true })).toBeVisible();
-    await expect(page.getByText("Public signal", { exact: true })).toBeVisible();
+    await expect(page.getByText("Personalized draft", { exact: true })).toBeVisible();
+    await expect(page.getByText("Verified fact", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Save to CRM" }).click();
     await expect(page.getByText("Lead saved to CRM. Outreach draft is ready for manual review.")).toBeVisible();

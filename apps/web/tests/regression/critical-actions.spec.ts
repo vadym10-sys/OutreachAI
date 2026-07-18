@@ -25,6 +25,10 @@ const finderResult = {
   source_title: "Careers",
   source_type: "careers_page",
   evidence_summary: "Public careers page shows active SDR hiring.",
+  observed_fact: "Public careers page shows active SDR hiring tied to outbound growth.",
+  model_inference: "This may be a relevant timing signal for AI sales research.",
+  source_confidence: 82,
+  source_verification_status: "verified",
   fit_explanation: "B2B SaaS company in Germany with a sales hiring signal.",
   ai_relevance_score: 91,
   confidence_score: 88,
@@ -56,6 +60,7 @@ async function submitCustomerSearch(page: Page) {
   await form.getByLabel("Target customer").fill("B2B SaaS companies hiring sales teams in Europe.");
   await form.getByLabel("Country").fill("Germany");
   await form.getByLabel("Industry").fill("B2B SaaS");
+  await form.getByLabel("Decision-maker role").fill("Head of Sales");
   await form.getByRole("button", { name: "Find customers" }).click();
 }
 
@@ -75,7 +80,12 @@ test("customer search has loading, success, manual CRM save, and no global crash
   await submitCustomerSearch(page);
   await expect(page.getByText("Verified results are ready. Save only the companies you want in CRM.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+  await expect(page.getByText("Why AI suggests this")).toBeVisible();
+  await expect(page.getByText("Verified fact")).toBeVisible();
   await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
+  await page.getByRole("button", { name: "Edit draft" }).click();
+  await page.getByLabel("Subject").fill("Edited first customer idea");
+  await page.getByLabel("Message").fill("Hi Sarah,\n\nSaw the SDR hiring signal.\n\nWorth a quick fit review?");
   await page.getByRole("button", { name: "Save to CRM" }).click();
   await expect(page.getByText("Lead saved to CRM. Outreach draft is ready for manual review.")).toBeVisible();
   expect(searchRequests).toBe(1);

@@ -169,9 +169,15 @@ class FirstCustomerSearchIn(BaseModel):
     target_customer: Optional[str] = Field(default=None, max_length=1000)
     country: str = Field(min_length=2, max_length=120)
     industry: str = Field(min_length=2, max_length=160)
+    contact_role: Optional[str] = Field(default=None, max_length=220)
     company_size: Optional[str] = Field(default=None, max_length=80)
     criteria: Optional[str] = Field(default=None, max_length=1500)
     results: int = Field(default=5, ge=1, le=10)
+
+
+class FirstCustomerSaveIn(BaseModel):
+    draft_subject: Optional[str] = Field(default=None, max_length=300)
+    draft_body: Optional[str] = Field(default=None, max_length=3000)
 
 
 class UsageContactCreateIn(BaseModel):
@@ -7119,8 +7125,19 @@ def search_first_customers(payload: FirstCustomerSearchIn, request: Request, use
     industry = str(payload.industry).strip()
     country = str(payload.country).strip()
     target_customer = (payload.target_customer or workspace.target_customer or f"{industry} companies in {country}").strip()
-    additional_criteria = (payload.criteria or "").strip()
+    contact_role = (payload.contact_role or "").strip()
+    additional_criteria = "\n".join(
+        item
+        for item in [
+            (payload.criteria or "").strip(),
+            f"Preferred decision-maker role: {contact_role}" if contact_role else "",
+        ]
+        if item
+    )
     company_size = (payload.company_size or "").strip()
+    contact_titles = [item.strip() for item in re.split(r"[,;\n]+", contact_role) if item.strip()][:5]
+    if not contact_titles:
+        contact_titles = ["Founder", "Head of Sales", "Operations Lead"]
     criteria = CustomerFinderCriteria(
         company_website=product_site,
         company_description=workspace.company or product_site,
@@ -7130,9 +7147,9 @@ def search_first_customers(payload: FirstCustomerSearchIn, request: Request, use
         target_industry=industry,
         company_size=company_size,
         additional_criteria=additional_criteria,
-        contact_titles=["Founder", "Head of Sales", "Operations Lead"],
+        contact_titles=contact_titles,
         max_results=payload.results,
-        keywords=[industry, country, target_customer, additional_criteria, "hiring", "manual", "looking for", "growth"],
+        keywords=[industry, country, target_customer, additional_criteria, contact_role, "hiring", "manual", "looking for", "growth"],
     )
     try:
         job = search_first_customer_candidates(
@@ -7153,10 +7170,16 @@ def search_first_customers(payload: FirstCustomerSearchIn, request: Request, use
 
 
 @router.post("/leads/first-customers/results/{result_id}/save", response_model=CustomerFinderResultActionOut)
-def save_first_customer_result(result_id: UUID, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> CustomerFinderResultActionOut:
+def save_first_customer_result(result_id: UUID, user: WorkspaceUserContext, payload: Optional[FirstCustomerSaveIn] = None, db: Session = Depends(get_db)) -> CustomerFinderResultActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     try:
-        result = save_first_customer_result_to_crm(db, workspace_id=workspace.id, result_id=result_id)
+        result = save_first_customer_result_to_crm(
+            db,
+            workspace_id=workspace.id,
+            result_id=result_id,
+            draft_subject=payload.draft_subject if payload else None,
+            draft_body=payload.draft_body if payload else None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return CustomerFinderResultActionOut(status="success", message="Lead saved to CRM. Outreach draft is ready for manual review.", result=first_customer_result_out(result))

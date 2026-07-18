@@ -197,6 +197,28 @@ function contactEmail(company: CrmCompany) {
   return company.email || primaryContact(company)?.email || "";
 }
 
+function confidenceLabel(value: number | undefined) {
+  const confidence = Number(value || 0);
+  if (confidence >= 80) return "High confidence";
+  if (confidence >= 55) return "Medium confidence";
+  return "Low confidence";
+}
+
+function resultSourceDate(result: FirstCustomerResult) {
+  const publicationDate = String(result.publication_date || result.signal_date || "").trim();
+  if (publicationDate && publicationDate.toLowerCase() !== "unknown") return publicationDate;
+  return result.retrieved_at || result.checked_at || "Unknown";
+}
+
+function firstCustomerUnknowns(result: FirstCustomerResult) {
+  return [
+    !result.public_work_contact ? "Public business email was not found." : "",
+    !result.contact_name ? "Contact person is not confirmed." : "",
+    !result.company_size ? "Company size is unknown." : "",
+    !result.publication_date || String(result.publication_date).toLowerCase() === "unknown" ? "Publication date is unknown." : ""
+  ].filter(Boolean);
+}
+
 function mergeCompanyRecord(incoming: CrmCompany, current?: CrmCompany): CrmCompany {
   if (!current) return incoming;
   return {
@@ -471,6 +493,14 @@ export function CoreDashboardHome() {
   const foundCount = Number(data.bootstrap?.counts?.leads || companies.length || 0);
   const workspaceName = data.bootstrap?.workspace?.company || data.bootstrap?.workspace?.name || t("your workspace");
   const readyDrafts = companies.filter((company) => latestDraft(company)?.delivery_status === "draft" || latestDraft(company)?.delivery_status === "approved");
+  const setupSteps = [
+    { label: "Describe your product", done: Boolean(data.bootstrap?.workspace?.company), href: "/onboarding" },
+    { label: "Confirm target customer", done: Boolean(data.bootstrap?.workspace?.target_customer || data.bootstrap?.workspace?.target_country || data.bootstrap?.workspace?.industry), href: "/onboarding" },
+    { label: "Connect email", done: Boolean(data.senderStatus?.connected), href: "/dashboard/settings#email-sending" },
+    { label: "Run first search", done: Boolean(foundCount || companies.length), href: "/dashboard/leads" }
+  ];
+  const setupDone = setupSteps.filter((step) => step.done).length;
+  const nextSetupStep = setupSteps.find((step) => !step.done) || setupSteps[setupSteps.length - 1];
   const tasks = [
     !companies.length ? { title: "Run your first search", copy: "Describe your product and target market, then review real public-source results.", href: "/dashboard/leads", label: "Start search" } : null,
     companies.some((company) => !contactEmail(company)) ? { title: "Complete contact routes", copy: "Some saved leads do not have a verified public business email yet.", href: "/dashboard/crm", label: "Open CRM" } : null,
@@ -492,6 +522,27 @@ export function CoreDashboardHome() {
       <p className="text-sm font-semibold text-slate-500">{t("Workspace")}: {workspaceName}</p>
       {data.error ? <StateBanner tone="error">{data.error}</StateBanner> : null}
       {data.notice ? <StateBanner tone="warning">{data.notice}</StateBanner> : null}
+
+      <Card>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("First setup")}</p>
+            <h2 className="mt-1 text-2xl font-black text-ink">{t("Get to the first useful lead")}</h2>
+            <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{t("Complete these steps once. You can keep working while unfinished services show clear setup states.")}</p>
+          </div>
+          <Link href={nextSetupStep.href} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-black text-ink shadow-sm hover:bg-slate-50">
+            {setupDone === setupSteps.length ? t("Review CRM") : t(nextSetupStep.label)} <ArrowRight size={16} />
+          </Link>
+        </div>
+        <div className="mt-5 grid gap-3 md:grid-cols-4">
+          {setupSteps.map((step, index) => (
+            <Link key={step.label} href={step.href} className={cx("rounded-2xl border p-4 transition", step.done ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-slate-50 hover:border-blue-200")}>
+              <span className={cx("grid size-8 place-items-center rounded-full text-xs font-black", step.done ? "bg-brand text-white" : "bg-white text-slate-600")}>{step.done ? <CheckCircle2 size={16} /> : index + 1}</span>
+              <p className="mt-3 text-sm font-black text-ink">{t(step.label)}</p>
+            </Link>
+          ))}
+        </div>
+      </Card>
 
       <WorkflowRail
         steps={[
@@ -576,10 +627,30 @@ export function CoreDashboardHome() {
   );
 }
 
-function FirstCustomerCard({ result, saving, onSave }: { result: FirstCustomerResult; saving: boolean; onSave: () => void }) {
+function FirstCustomerCard({
+  result,
+  saving,
+  onSave,
+  onReject
+}: {
+  result: FirstCustomerResult;
+  saving: boolean;
+  onSave: (draft: { draft_subject: string; draft_body: string }) => void;
+  onReject: () => void;
+}) {
   const { t } = useI18n();
+  const initialSubject = result.email_subject || `Quick question for ${result.company_name}`;
+  const initialBody = result.email_body || result.draft_email || result.first_line_opener || "";
+  const [editing, setEditing] = useState(false);
+  const [draftSubject, setDraftSubject] = useState(initialSubject);
+  const [draftBody, setDraftBody] = useState(initialBody);
   const saved = Boolean(result.company_id || result.lead_id);
   const score = Math.max(0, Math.min(100, Math.round(Number(result.ai_relevance_score || 0))));
+  const confidence = Math.max(0, Math.min(100, Math.round(Number(result.confidence_score || result.source_confidence || 0))));
+  const unknowns = firstCustomerUnknowns(result);
+  const verifiedFact = result.observed_fact || result.evidence_summary || result.signal_description || t("No verified fact returned yet.");
+  const inference = result.model_inference || result.fit_explanation || t("AI did not add an inference yet.");
+
   return (
     <article className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -587,6 +658,7 @@ function FirstCustomerCard({ result, saving, onSave }: { result: FirstCustomerRe
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-xl font-black text-ink">{result.company_name}</h2>
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">{score}/100 {t("quality")}</span>
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">{confidence}% {t(confidenceLabel(confidence))}</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{t(result.verified_status || "unknown")}</span>
           </div>
           <p className="mt-2 text-sm font-semibold text-slate-600">{result.industry || t("Industry unknown")} · {result.country || t("Country unknown")}</p>
@@ -597,16 +669,27 @@ function FirstCustomerCard({ result, saving, onSave }: { result: FirstCustomerRe
               {t("Source")} <ExternalLink size={15} />
             </a>
           ) : null}
-          <Button disabled={saved || saving} onClick={onSave}>
+          {!saved ? (
+            <Button type="button" variant="secondary" onClick={onReject}>
+              <XCircle size={16} />
+              {t("Reject")}
+            </Button>
+          ) : null}
+          <Button disabled={saved || saving} onClick={() => onSave({ draft_subject: draftSubject, draft_body: draftBody })}>
             {saving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />}
             {saved ? t("Saved to CRM") : t("Save to CRM")}
           </Button>
         </div>
       </div>
-      <div className="mt-5 grid gap-3 md:grid-cols-2">
-        <div className="rounded-2xl bg-slate-50 p-4">
-          <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Why it fits")}</p>
-          <p className="mt-2 text-sm font-semibold leading-6 text-ink">{result.fit_explanation || result.evidence_summary || result.signal_description || t("No explanation returned yet.")}</p>
+      <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_0.85fr]">
+        <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+          <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Why AI suggests this")}</p>
+          <p className="mt-2 text-sm font-semibold leading-6 text-blue-950">
+            {result.fit_explanation || result.evidence_summary || result.signal_description || t("No explanation returned yet.")}
+          </p>
+          <p className="mt-3 text-xs font-bold leading-5 text-blue-800">
+            {t("Used source")}: {result.source_title || publicSourceLabel(result.source_url)} · {t("Date")}: {resultSourceDate(result)}
+          </p>
         </div>
         <div className="rounded-2xl bg-slate-50 p-4">
           <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Contact route")}</p>
@@ -614,14 +697,44 @@ function FirstCustomerCard({ result, saving, onSave }: { result: FirstCustomerRe
           <p className="mt-2 text-sm font-semibold text-slate-600">{[result.contact_name, result.contact_title].filter(Boolean).join(" · ") || t("Recommended role not confirmed")}</p>
         </div>
         <div className="rounded-2xl bg-slate-50 p-4">
-          <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Public signal")}</p>
-          <p className="mt-2 text-sm font-semibold leading-6 text-ink">{result.signal_type}: {result.signal_description}</p>
-          <p className="mt-2 text-xs font-bold text-slate-500">{t("Date")}: {result.publication_date || result.signal_date || t("Unknown")}</p>
+          <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Verified fact")}</p>
+          <p className="mt-2 text-sm font-semibold leading-6 text-ink">{verifiedFact}</p>
+          <p className="mt-2 text-xs font-bold text-slate-500">{t("Verification")}: {t(result.source_verification_status || result.verified_status || "Unknown")}</p>
         </div>
-        <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
-          <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Draft preview")}</p>
-          <p className="mt-2 whitespace-pre-wrap text-sm font-semibold leading-6 text-blue-950">{result.email_body || result.draft_email || result.first_line_opener || t("Draft will be prepared after saving, if AI is connected.")}</p>
+        <div className="rounded-2xl bg-slate-50 p-4">
+          <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("AI inference")}</p>
+          <p className="mt-2 text-sm font-semibold leading-6 text-ink">{inference}</p>
+          {unknowns.length ? (
+            <p className="mt-2 text-xs font-bold leading-5 text-amber-800">{t("Still unknown")}: {unknowns.map((item) => t(item)).join(" ")}</p>
+          ) : null}
         </div>
+      </div>
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Personalized draft")}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">{t("Review or edit before saving. It stays a draft and is never sent automatically.")}</p>
+          </div>
+          <Button type="button" variant="secondary" onClick={() => setEditing((value) => !value)}>
+            <FileText size={16} />
+            {editing ? t("Preview draft") : t("Edit draft")}
+          </Button>
+        </div>
+        {editing ? (
+          <div className="mt-4 grid gap-3">
+            <label className="text-sm font-bold text-slate-700">{t("Subject")}
+              <input value={draftSubject} onChange={(event) => setDraftSubject(event.target.value)} maxLength={300} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
+            </label>
+            <label className="text-sm font-bold text-slate-700">{t("Message")}
+              <textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} maxLength={3000} rows={6} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm" />
+            </label>
+          </div>
+        ) : (
+          <div className="mt-4 rounded-2xl bg-slate-50 p-4">
+            <p className="text-sm font-black text-ink">{draftSubject || t("Draft subject")}</p>
+            <p className="mt-3 whitespace-pre-wrap text-sm font-semibold leading-6 text-slate-700">{draftBody || t("Draft will be prepared after saving, if AI is connected.")}</p>
+          </div>
+        )}
       </div>
     </article>
   );
@@ -633,6 +746,7 @@ export function CoreLeadFinderPage() {
   const [job, setJob] = useState<FirstCustomerJob | null>(null);
   const [searching, setSearching] = useState(false);
   const [savingId, setSavingId] = useState("");
+  const [hiddenResultIds, setHiddenResultIds] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const leadSearchStatus = data.integrations.find((item) => item.key === "lead_search")?.status || "needs_setup";
@@ -647,6 +761,7 @@ export function CoreLeadFinderPage() {
     setError("");
     setMessage(t("Searching public sources and verifying every result before showing it."));
     setJob(null);
+    setHiddenResultIds([]);
     try {
       const contactRole = String(formData.get("contact_role") || "").trim();
       const criteria = String(formData.get("criteria") || "").trim();
@@ -655,8 +770,9 @@ export function CoreLeadFinderPage() {
         target_customer: String(formData.get("target_customer") || "").trim(),
         country: String(formData.get("country") || "").trim(),
         industry: String(formData.get("industry") || "").trim(),
+        contact_role: contactRole,
         company_size: String(formData.get("company_size") || "").trim(),
-        criteria: [criteria, contactRole ? `Preferred decision-maker role: ${contactRole}` : ""].filter(Boolean).join("\n"),
+        criteria,
         results: Number(formData.get("results") || 5)
       };
       const nextJob = await data.api<FirstCustomerJob>("/api/workspace-app/leads/first-customers/search", {
@@ -676,13 +792,14 @@ export function CoreLeadFinderPage() {
     }
   }
 
-  async function saveResult(result: FirstCustomerResult) {
+  async function saveResult(result: FirstCustomerResult, draft: { draft_subject: string; draft_body: string }) {
     setSavingId(result.id);
     setError("");
     setMessage(t("Saving selected lead to CRM and keeping the email as a draft."));
     try {
       const response = await data.api<FirstCustomerSaveResponse>(`/api/workspace-app/leads/first-customers/results/${result.id}/save`, {
         method: "POST",
+        body: JSON.stringify(draft),
         timeoutMs: 30000
       });
       setJob((current) => current ? {
@@ -698,6 +815,8 @@ export function CoreLeadFinderPage() {
       setSavingId("");
     }
   }
+
+  const visibleResults = safeArray(job?.results).filter((result) => !hiddenResultIds.includes(result.id));
 
   return (
     <div className="space-y-6">
@@ -778,11 +897,17 @@ export function CoreLeadFinderPage() {
           <div className="grid gap-3 md:grid-cols-4">
             <ResultStat label="Found" value={String(safeArray(job.results).length)} detail="Evidence-backed results returned." />
             <ResultStat label="Saved" value={String(Number(job.summary?.saved_to_crm || 0))} detail="Manually saved CRM records." />
-            <ResultStat label="Rejected" value={String(Number(job.summary?.rejected || 0))} detail="Weak or duplicate results hidden." />
+            <ResultStat label="Rejected" value={String(Number(job.summary?.rejected || 0) + hiddenResultIds.length)} detail="Weak or duplicate results hidden." />
             <ResultStat label="Progress" value={`${Number(job.progress?.percent || 100)}%`} detail={String(job.progress?.stage || job.status)} />
           </div>
-          {safeArray(job.results).length ? safeArray(job.results).map((result) => (
-            <FirstCustomerCard key={result.id} result={result} saving={savingId === result.id} onSave={() => saveResult(result)} />
+          {visibleResults.length ? visibleResults.map((result) => (
+            <FirstCustomerCard
+              key={result.id}
+              result={result}
+              saving={savingId === result.id}
+              onSave={(draft) => saveResult(result, draft)}
+              onReject={() => setHiddenResultIds((current) => current.includes(result.id) ? current : [...current, result.id])}
+            />
           )) : (
             <EmptyState title="No verified results for this search" copy="Try a broader industry, another country, or simpler criteria. OutreachAI will not invent leads to fill the table." />
           )}

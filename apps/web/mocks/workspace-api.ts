@@ -443,7 +443,19 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, currentFinderJob);
     }
     if (apiPath === `/api/workspace-app/leads/first-customers/results/${qaCustomerFinderResult.id}/save`) {
-      const updated = { ...qaCustomerFinderResult, simple_status: "Письмо подготовлено", email_delivery_status: "draft" };
+      let requestBody: { draft_subject?: string; draft_body?: string } | null = null;
+      try {
+        requestBody = route.request().postDataJSON() as { draft_subject?: string; draft_body?: string } | null;
+      } catch {
+        requestBody = null;
+      }
+      const updated = {
+        ...qaCustomerFinderResult,
+        email_subject: requestBody?.draft_subject || qaCustomerFinderResult.email_subject,
+        email_body: requestBody?.draft_body || qaCustomerFinderResult.email_body,
+        simple_status: "Письмо подготовлено",
+        email_delivery_status: "draft"
+      };
       currentFinderJob = { ...currentFinderJob, results: [updated] };
       return fulfillJson(route, { status: "success", message: "Lead saved to CRM. Outreach draft is ready for manual review.", result: updated });
     }

@@ -351,7 +351,14 @@ def search_first_customer_candidates(
     return job
 
 
-def save_first_customer_result_to_crm(db: Session, *, workspace_id: UUID, result_id: UUID) -> AICustomerFinderResult:
+def save_first_customer_result_to_crm(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    result_id: UUID,
+    draft_subject: str | None = None,
+    draft_body: str | None = None,
+) -> AICustomerFinderResult:
     result = db.scalar(
         select(AICustomerFinderResult).where(
             AICustomerFinderResult.id == result_id,
@@ -364,6 +371,7 @@ def save_first_customer_result_to_crm(db: Session, *, workspace_id: UUID, result
     if job is None:
         raise ValueError("First-customer search not found.")
     criteria = CustomerFinderCriteria.model_validate(job.criteria_json or {})
+    _apply_user_draft_override(result, draft_subject=draft_subject, draft_body=draft_body)
     _save_signal_to_crm(db, job, result, criteria)
     metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
     result.metadata_json = {
@@ -379,6 +387,32 @@ def save_first_customer_result_to_crm(db: Session, *, workspace_id: UUID, result
     db.commit()
     db.refresh(result)
     return result
+
+
+def _apply_user_draft_override(result: AICustomerFinderResult, *, draft_subject: str | None, draft_body: str | None) -> None:
+    subject = (draft_subject or "").strip()[:300]
+    body = (draft_body or "").strip()[:3000]
+    if not subject and not body:
+        return
+    metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+    existing_outreach = metadata.get("outreach_draft") if isinstance(metadata.get("outreach_draft"), dict) else {}
+    user_review = metadata.get("user_review") if isinstance(metadata.get("user_review"), dict) else {}
+    result.metadata_json = {
+        **metadata,
+        "outreach_draft": {
+            **existing_outreach,
+            **({"subject": subject} if subject else {}),
+            **({"draft_email": body} if body else {}),
+            "draft_only": True,
+            "requires_review": True,
+            "user_edited_before_crm_save": True,
+        },
+        "user_review": {
+            **user_review,
+            "draft_edited_before_crm_save": True,
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    }
 
 
 def fail_or_retry_ai_customer_finder_job(db: Session, job: AICustomerFinderJob, exc: Exception, *, claim_token: str | None = None, retry_delay_seconds: int = 60) -> bool:

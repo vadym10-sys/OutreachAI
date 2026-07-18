@@ -793,6 +793,7 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
             "target_customer": "B2B SaaS companies expanding their sales team in Europe",
             "country": "Germany",
             "industry": "B2B SaaS",
+            "contact_role": "VP Sales",
             "company_size": "20-200 employees",
             "criteria": "Prioritize hiring SDRs and replacing manual spreadsheet workflows.",
             "results": 5,
@@ -801,7 +802,8 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
     assert search.status_code == 200, search.text
     assert captured_criteria["desired_customers"] == "B2B SaaS companies expanding their sales team in Europe"
     assert captured_criteria["company_size"] == "20-200 employees"
-    assert captured_criteria["additional_criteria"] == "Prioritize hiring SDRs and replacing manual spreadsheet workflows."
+    assert captured_criteria["contact_titles"] == ["VP Sales"]
+    assert captured_criteria["additional_criteria"] == "Prioritize hiring SDRs and replacing manual spreadsheet workflows.\nPreferred decision-maker role: VP Sales"
     payload = search.json()
     assert payload["status"] in {"completed", "partially_completed"}
     assert len(payload["results"]) == 1
@@ -829,7 +831,13 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
     finally:
         db.close()
 
-    save = client.post(f"/api/workspace-app/leads/first-customers/results/{result['id']}/save", headers=headers)
+    edited_subject = "Edited first customer idea"
+    edited_body = "Hi Sarah,\n\nEdited reviewed draft.\n\nWorth a quick fit review?"
+    save = client.post(
+        f"/api/workspace-app/leads/first-customers/results/{result['id']}/save",
+        headers=headers,
+        json={"draft_subject": edited_subject, "draft_body": edited_body},
+    )
     assert save.status_code == 200, save.text
     saved = save.json()["result"]
     assert saved["company_id"]
@@ -848,6 +856,8 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
         assert company_count == 1
         emails = list(db.scalars(select(EmailMessage).where(EmailMessage.lead_id == leads[0].id)).all())
         assert len(emails) == 1
+        assert emails[0].subject == edited_subject
+        assert emails[0].body == edited_body
         assert emails[0].delivery_status == "draft"
         assert emails[0].sent_at is None
         assert emails[0].tags["draft_only"] is True

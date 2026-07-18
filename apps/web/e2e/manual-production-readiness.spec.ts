@@ -119,7 +119,7 @@ test.describe("manual production-readiness journey", () => {
     await expect(page.getByText("Verified results are ready. Save only the companies you want in CRM.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "EuroScale CRM Co" }).first()).toBeVisible();
     await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
-    await expect(page.getByText("Draft preview", { exact: true })).toBeVisible();
+    await expect(page.getByText("Personalized draft", { exact: true })).toBeVisible();
     await expect(page.getByText("Worth a quick fit review?")).toBeVisible();
     await page.getByRole("button", { name: "Save to CRM" }).click();
     await expect(page.getByText("Lead saved to CRM. Outreach draft is ready for manual review.")).toBeVisible();
