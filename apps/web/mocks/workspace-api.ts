@@ -678,7 +678,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === `/api/crm/companies/${qaCompany.id}/stage`) {
       return fulfillJson(route, {
         ...qaCompany,
-        crm_stage: "Not Interested",
+        crm_stage: "Lost",
         stage_changed_at: now,
         activity: [{ id: "99999999-9999-9999-9999-999999999990", action: "crm.stage_changed", metadata_json: {}, created_at: now }, ...qaCompany.activity]
       });

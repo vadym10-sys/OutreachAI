@@ -132,7 +132,7 @@ test("customer search can recover by rerunning the same criteria", async ({ page
 test("CRM stage and note actions provide visible feedback", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/crm");
-  await page.getByRole("main").getByRole("combobox").selectOption("Not Interested");
+  await page.getByRole("main").getByRole("combobox").selectOption("Lost");
   await page.getByRole("button", { name: /Update stage/ }).click();
   await expect(page.getByText("CRM stage updated.")).toBeVisible();
   await page.getByLabel("Notes and history").fill("Follow up next week.");

@@ -543,7 +543,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
         {visibleUtilityNav.length ? (
-          <details className="mt-5 rounded-2xl border border-[var(--ui-border)] bg-slate-50 p-2" open>
+          <details className="mt-5 rounded-2xl border border-[var(--ui-border)] bg-slate-50 p-2" open={visibleUtilityNav.some((item) => isNavItemActive(item, pathname))}>
             <summary className="cursor-pointer rounded-xl px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t("Account")}</summary>
             <nav className="mt-1 space-y-1" aria-label={t("Account")}>
               {visibleUtilityNav.map((item) => {
@@ -683,6 +683,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   <ol className="mt-2 grid gap-2 text-sm font-semibold text-slate-700">
                     <li>{t("workspace.stepCompany")}</li>
                     <li>{t("workspace.stepMarket")}</li>
+                    <li>{t("workspace.stepEmail")}</li>
                     <li>{t("workspace.stepLeads")}</li>
                   </ol>
                 </div>

@@ -1,30 +1,33 @@
 # Landing To Backend Alignment
 
-This document records the production-facing promises that the public site can safely make after the product-flow repair.
+Date: 2026-07-18
+Scope: current Preview customer workflow. No backend contracts are changed by this audit.
 
-| Landing promise | Backend/API that supports it | Frontend surface | Status |
-| --- | --- | --- | --- |
-| User enters a product website, target customer, country, industry and criteria. | `POST /api/workspace-app/leads/first-customers/search` accepts `product_site`, `target_customer`, `country`, `industry`, `company_size`, `criteria`, `results`. | `/dashboard/leads` search form. | Supported. |
-| OutreachAI searches approved public sources for matching companies. | `search_first_customer_candidates` uses the configured customer finder provider and stores an evidence ledger without CRM writes. | `/dashboard/leads` progress and results. | Supported when search provider keys are configured. |
-| Each result keeps a source URL, source date when available, evidence and reason. | `CustomerFinderResultOut` returns `source_url`, `source_title`, `source_type`, `publication_date`, `evidence_summary`, `fit_explanation`, `verified_status`. | `/dashboard/leads` result cards. | Supported. Unknown values are displayed as unavailable. |
-| Companies are saved to CRM only after user approval. | `POST /api/workspace-app/leads/first-customers/results/{result_id}/save` creates/reuses CRM records and draft email. Search itself records `crm_write=false`. | `/dashboard/leads` `Save to CRM` button. | Supported. |
-| Saved companies show stage, contact route, notes and history. | `GET /api/workspace-app/companies`, `PATCH /api/crm/companies/{id}/stage`, `POST /api/crm/companies/{id}/notes`. | `/dashboard/crm`. | Supported. |
-| AI prepares a short personalized draft email. | `POST /api/workspace-app/companies/{company_id}/email-draft` and first-customer save create `EmailMessage` with `delivery_status=draft`. | `/dashboard/crm`, `/dashboard/inbox`. | Supported when AI key is configured. |
-| Email is never sent automatically. | `POST /api/workspace-app/emails/{email_id}/approve` only approves. `POST /api/workspace-app/emails/{email_id}/send` requires approved draft, recipient email and sender setup. | `/dashboard/inbox` separate Save, Approve, Send and Confirm Send buttons. | Supported. |
-| Replies and send status update the workspace. | `GET /api/inbox`, Resend webhook processing and CRM company email status fields. | `/dashboard/inbox`, `/dashboard/crm`. | Supported when sender/webhook configuration is connected. |
-| Service readiness is visible. | `GET /api/workspace-app/integrations/status`, `GET /api/outreach/sender/status`. | `/dashboard`, `/dashboard/leads`, `/dashboard/inbox`. | Supported. |
-| Billing is real, not invented static quota claims. | `GET /api/billing/status`, `GET /api/billing/usage`, `GET /api/billing/plans`. | Account menu `/dashboard/billing`; public landing now avoids unverified quotas. | Supported inside app. |
+| Landing promise | App screen | User action | API contract | Database tables | Production note |
+| --- | --- | --- | --- | --- | --- |
+| Enter a product website and target market to find customers. | Search: `/dashboard/leads` | Submit the search wizard. | `POST /api/workspace-app/leads/first-customers/search` with `product_site`, `target_customer`, `country`, `industry`, `company_size`, `criteria`, `results`. | `ai_customer_finder_jobs`, `ai_customer_finder_results`, `ai_customer_finder_sources`, `audit_logs`. | Supported when `GOOGLE_MAPS_API_KEY`, `HUNTER_API_KEY` and `OPENAI_API_KEY` are configured. |
+| Results come from public sources with evidence. | Search results: `/dashboard/leads` | Review result cards before any CRM save. | Response `CustomerFinderJobOut` exposes result fields including source URL, source title/type, publication date, evidence summary, fit explanation and verification status. | `ai_customer_finder_results`, `ai_customer_finder_sources`. | Unknown source dates remain visible as unknown; search results are not silently treated as CRM records. |
+| Save only selected companies to CRM. | Search and CRM: `/dashboard/leads`, `/dashboard/crm` | Click `Save to CRM` on one result. | `POST /api/workspace-app/leads/first-customers/results/{result_id}/save`. | `companies`, `contacts`, `leads`, `deals`, `notes`, `email_messages`, `audit_logs`. | Manual approval is required before CRM persistence. Search itself does not create CRM records. |
+| Work saved companies by stage, contacts, notes and history. | CRM: `/dashboard/crm` | Filter, open a company, update stage, add notes. | `GET /api/workspace-app/companies`, `PATCH /api/crm/companies/{company_id}/stage`, `POST /api/crm/companies/{company_id}/notes`. | `companies`, `contacts`, `deals`, `notes`, `audit_logs`. | Existing backend stages are displayed as the simpler user-facing stages: New, Under review, Ready to email, Contacted, Replied, Closed. |
+| Prepare a short personalized first email. | CRM and Mail: `/dashboard/crm`, `/dashboard/inbox` | Generate/regenerate or review the draft. | `POST /api/workspace-app/companies/{company_id}/email-draft`, `PATCH /api/emails/{email_id}`. | `email_messages`, `companies`, `leads`, `audit_logs`. | Drafts remain draft-only until explicit approval and send confirmation. |
+| Send is always manual. | Mail: `/dashboard/inbox` | Save draft, approve, click send, then confirm send. | `POST /api/workspace-app/emails/{email_id}/approve`, `POST /api/workspace-app/emails/{email_id}/send`. | `email_messages`, `companies`, `leads`, `audit_logs`. | Send requires an approved draft, recipient email and configured sender; no automatic sending is exposed in the primary UI. |
+| Track sent status and replies. | Mail and CRM: `/dashboard/inbox`, `/dashboard/crm` | Review sent/replies tabs and CRM history. | `GET /api/inbox`, `GET /api/workspace-app/companies`. | `email_messages`, `companies`, `audit_logs`. | Reply and delivery data appear only when provider/webhook infrastructure is connected. |
+| Show service readiness clearly. | Home, Search, Mail: `/dashboard`, `/dashboard/leads`, `/dashboard/inbox` | Review connection status before trying an unavailable action. | `GET /api/workspace-app/integrations/status`, `GET /api/outreach/sender/status`. | `app_settings`, workspace configuration, provider env-backed runtime state. | Missing external keys are shown as setup work instead of hidden failed buttons. |
+| Keep workspace and language settings isolated per account. | Onboarding/account menu: dashboard shell, `/dashboard/profile`, `/dashboard/settings`. | Complete onboarding or update profile/settings. | `GET/PUT /api/workspace`, `GET/PATCH /api/profile`, settings endpoints used by the existing app. | `workspaces`, `workspace_members`, `workspace_profiles`, `app_settings`. | UI reads through authenticated API calls and keeps settings/profile out of the main workflow navigation. |
+| Billing is real and not invented. | Public pricing, account menu Billing: `/dashboard/billing`. | Review plan, usage, invoices and upgrade controls. | `GET /api/billing/status`, `GET /api/billing/usage`, `GET /api/billing/invoices`, `GET /api/billing/plans`. | `subscriptions`, `usage_counters`. | Public pricing follows existing Billing configuration; exact limits remain inside Billing when they depend on runtime setup. |
 
-## Corrected Public Claims
+## Removed Or De-Emphasized Claims
 
-- Removed "AI Sales Employee", "launch campaigns", "meetings booked" and large usage quota claims from the primary landing message.
-- Replaced fake-looking volume metrics with a process preview: search, verify, manual CRM save, draft review.
-- Kept campaign and advanced surfaces out of the primary navigation because the production customer workflow is Search -> CRM -> Mail.
-- Pricing copy now points to real Billing state instead of hardcoded public quotas.
+- No fake customer logos, fake production metrics or decorative zero dashboards are used as proof.
+- The primary app no longer exposes separate duplicate CRM sections for Leads, Companies and Deals in the main navigation.
+- Executive Dashboard, Revenue Intelligence and broad campaign automation are not part of the primary Preview workflow.
+- Search does not automatically save companies, send email, create campaigns or take LinkedIn actions.
 
-## External Configuration Needed For Full Production Value
+## Required External Configuration
 
-- `GOOGLE_MAPS_API_KEY`: company search provider.
+These secrets must stay in Vercel/Railway or the backend runtime and must never be committed:
+
+- `GOOGLE_MAPS_API_KEY`: company discovery.
 - `HUNTER_API_KEY`: public business email discovery and verification.
-- `OPENAI_API_KEY`: company fit analysis and draft email generation.
-- Sender configuration: Resend or SMTP sender settings before manual sends.
+- `OPENAI_API_KEY`: fit explanation and email draft generation.
+- Resend or SMTP sender settings: manual email sending after review.

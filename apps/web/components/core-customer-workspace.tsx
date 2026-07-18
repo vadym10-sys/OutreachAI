@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowRight, CheckCircle2, Clock3, ExternalLink, FileText, Inbox, Loader2, Mail, MapPin, Plus, RefreshCw, Save, Search, Send, ShieldCheck, Sparkles, UserRound, XCircle } from "lucide-react";
+import { ArrowRight, CheckCircle2, Clock3, ExternalLink, FileText, Inbox, Loader2, Mail, MapPin, Plus, RefreshCw, Save, Search, Send, Sparkles, XCircle } from "lucide-react";
 import { useI18n } from "@/lib/i18n/provider";
 import { clientApi, friendlyErrorMessage, type ClientApiInit } from "@/lib/client-api";
 import type { CrmCompany, CrmContact, Email } from "@/lib/types";
@@ -45,7 +45,49 @@ const localQaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
   && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
   && (process.env.NEXT_PUBLIC_API_URL === "http://127.0.0.1:8000" || process.env.NEXT_PUBLIC_API_URL === "http://localhost:8000");
 
-const workflowStages = ["New Lead", "Contact Found", "Email Draft Ready", "Approved", "Sent", "Replied", "Not Interested"] as const;
+const workflowStageOptions = [
+  { value: "New Lead", label: "New" },
+  { value: "Contact Found", label: "Under review" },
+  { value: "Email Draft Ready", label: "Ready to email" },
+  { value: "Sent", label: "Contacted" },
+  { value: "Replied", label: "Replied" },
+  { value: "Lost", label: "Closed" }
+] as const;
+
+const stageDisplayNames: Record<string, string> = {
+  "New": "New",
+  "New Lead": "New",
+  "Qualified": "Under review",
+  "Website Analyzed": "Under review",
+  "Contact Found": "Under review",
+  "Email Draft Ready": "Ready to email",
+  "Approved": "Ready to email",
+  "Sent": "Contacted",
+  "Contacted": "Contacted",
+  "Replied": "Replied",
+  "Meeting Scheduled": "Replied",
+  "Won": "Closed",
+  "Lost": "Closed",
+  "Not Interested": "Closed",
+  "Archive": "Closed"
+};
+
+const crmStageFilters = [
+  { key: "all", label: "All stages", values: [] },
+  { key: "new", label: "New", values: ["New", "New Lead"] },
+  { key: "review", label: "Under review", values: ["Qualified", "Website Analyzed", "Contact Found"] },
+  { key: "ready", label: "Ready to email", values: ["Email Draft Ready", "Approved"] },
+  { key: "contacted", label: "Contacted", values: ["Sent", "Contacted"] },
+  { key: "replied", label: "Replied", values: ["Replied", "Meeting Scheduled"] },
+  { key: "closed", label: "Closed", values: ["Won", "Lost", "Not Interested", "Archive"] }
+] as const;
+
+const mailTabs = [
+  { key: "drafts", label: "Drafts" },
+  { key: "ready", label: "Ready to send" },
+  { key: "sent", label: "Sent" },
+  { key: "replies", label: "Replies" }
+] as const;
 
 function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -77,11 +119,37 @@ function safeArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-function formatDate(value?: string | null) {
-  if (!value) return "Not recorded";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Not recorded";
-  return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(date);
+function displayStage(stage?: string | null) {
+  const normalized = String(stage || "New Lead").trim();
+  return stageDisplayNames[normalized] || normalized || "New";
+}
+
+function stageMatchesFilter(stage: string | null | undefined, filter: string) {
+  if (filter === "all") return true;
+  const target = crmStageFilters.find((item) => item.key === filter);
+  if (!target) return true;
+  return (target.values as readonly string[]).includes(String(stage || "New Lead"));
+}
+
+function isSentCompany(company: CrmCompany) {
+  return Boolean(company.email_sent_at || latestDraft(company)?.delivery_status === "sent" || company.crm_stage === "Sent");
+}
+
+function hasReply(company: CrmCompany) {
+  return Boolean(company.replied_at || company.crm_stage === "Replied");
+}
+
+function activityDisplayLabel(action: string) {
+  if (action.includes("email.sent")) return "Email sent";
+  if (action.includes("email.approved")) return "Email approved";
+  if (action.includes("email.generated")) return "Email draft prepared";
+  if (action.includes("note.added")) return "Note added";
+  if (action.includes("crm.stage_changed")) return "CRM stage changed";
+  if (action.includes("lead.saved_to_crm")) return "Lead saved to CRM";
+  if (action.includes("lead.found")) return "Lead found";
+  if (action.includes("contact.found")) return "Contact found";
+  if (action.includes("website.analyzed")) return "Company reviewed";
+  return "Workspace activity";
 }
 
 function latestDraft(company: CrmCompany): Email | null {
@@ -152,6 +220,7 @@ function nextActionForCompany(company: CrmCompany) {
   const draft = latestDraft(company);
   const email = contactEmail(company);
   const stage = String(company.crm_stage || "");
+  if (stage === "Not Interested" || stage === "Lost" || stage === "Won" || stage === "Archive") return "No next action. Keep it closed unless the context changes.";
   if (!email) return "Find or add a verified business email.";
   if (!draft) return "Prepare the first personalized email.";
   if (draft.delivery_status === "sent" || stage === "Sent") return "Watch for replies and update the CRM stage.";
@@ -185,7 +254,7 @@ function Button({
   return (
     <button
       className={cx(
-        "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-55",
+        "inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-55",
         variant === "primary" && "bg-brand text-white shadow-sm hover:bg-blue-700",
         variant === "secondary" && "border border-slate-300 bg-white text-ink shadow-sm hover:bg-slate-50",
         variant === "danger" && "border border-red-200 bg-red-50 text-red-700 hover:bg-red-100",
@@ -250,13 +319,13 @@ function ServiceStatusGrid({ integrations, senderStatus }: { integrations: Works
   ];
 
   return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-3 md:grid-cols-2">
       {items.map((item) => (
         <article key={item.key} className={cx("rounded-2xl border p-4", integrationTone(item.status))}>
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-sm font-black">{t(item.label)}</p>
-              <p className="mt-1 text-xs font-black uppercase tracking-wide opacity-70">{t(integrationStatusText(item.status))}</p>
+              <p className="mt-1 whitespace-nowrap text-xs font-black uppercase tracking-wide opacity-70">{t(integrationStatusText(item.status))}</p>
             </div>
             {item.status === "connected" ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
           </div>
@@ -342,9 +411,53 @@ function ResultStat({ label, value, detail }: { label: string; value: string; de
   return (
     <article className="rounded-2xl border border-slate-200 bg-white p-4">
       <p className="text-xs font-black uppercase tracking-[0.12em] text-slate-500">{t(label)}</p>
-      <p className="mt-2 text-2xl font-black text-ink">{value}</p>
+      <p className="mt-2 text-2xl font-black text-ink">{t(value)}</p>
       <p className="mt-1 text-sm font-semibold leading-5 text-slate-600">{t(detail)}</p>
     </article>
+  );
+}
+
+function WorkflowRail({ steps }: { steps: Array<{ label: string; value: number; detail: string; active?: boolean }> }) {
+  const { t } = useI18n();
+  return (
+    <Card className="p-0">
+      <div className="grid divide-y divide-slate-200 md:grid-cols-5 md:divide-x md:divide-y-0">
+        {steps.map((step, index) => (
+          <article key={step.label} className={cx("p-4", step.active && "bg-blue-50/70")}>
+            <div className="flex items-center justify-between gap-3">
+              <span className={cx("grid size-8 place-items-center rounded-full text-xs font-black", step.active ? "bg-brand text-white" : "bg-slate-100 text-slate-600")}>{index + 1}</span>
+              <span className="text-2xl font-black text-ink">{step.value}</span>
+            </div>
+            <p className="mt-3 text-sm font-black text-ink">{t(step.label)}</p>
+            <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{t(step.detail)}</p>
+          </article>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function RecentActivityList({ activities }: { activities: NonNullable<WorkspaceAppBootstrapResponse["recent_activity"]> }) {
+  const { t, formatDate } = useI18n();
+  return (
+    <div className="grid gap-2">
+      {activities.slice(0, 6).map((activity, index) => (
+        <div key={`${activity.action}:${activity.created_at}:${index}`} className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white p-3">
+          <span className="mt-1 grid size-7 shrink-0 place-items-center rounded-full bg-blue-50 text-brand">
+            <Clock3 size={15} />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-black text-ink">{t(activityDisplayLabel(activity.action))}</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">{activity.company ? `${activity.company} · ` : ""}{formatDate(activity.created_at)}</p>
+          </div>
+        </div>
+      ))}
+      {!activities.length ? (
+        <p className="rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-sm font-semibold leading-6 text-slate-600">
+          {t("No activity yet. Run a search or save a CRM lead to start the history.")}
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -353,9 +466,11 @@ export function CoreDashboardHome() {
   const { t } = useI18n();
   const companies = data.companies.length ? data.companies : safeArray(data.bootstrap?.recent_companies);
   const drafts = companies.filter((company) => latestDraft(company));
-  const sent = companies.filter((company) => company.email_sent_at || latestDraft(company)?.delivery_status === "sent");
-  const replies = companies.filter((company) => company.replied_at);
-  const workspaceName = data.bootstrap?.workspace?.company || data.bootstrap?.workspace?.name || "your workspace";
+  const sent = companies.filter(isSentCompany);
+  const replies = companies.filter(hasReply);
+  const foundCount = Number(data.bootstrap?.counts?.leads || companies.length || 0);
+  const workspaceName = data.bootstrap?.workspace?.company || data.bootstrap?.workspace?.name || t("your workspace");
+  const readyDrafts = companies.filter((company) => latestDraft(company)?.delivery_status === "draft" || latestDraft(company)?.delivery_status === "approved");
   const tasks = [
     !companies.length ? { title: "Run your first search", copy: "Describe your product and target market, then review real public-source results.", href: "/dashboard/leads", label: "Start search" } : null,
     companies.some((company) => !contactEmail(company)) ? { title: "Complete contact routes", copy: "Some saved leads do not have a verified public business email yet.", href: "/dashboard/crm", label: "Open CRM" } : null,
@@ -370,40 +485,30 @@ export function CoreDashboardHome() {
     <div className="space-y-6">
       <PageIntro
         eyebrow="Home"
-        title="Find customers, save CRM leads, write emails."
-        copy={`Good to see you. Start from ${workspaceName}. One workflow matters here: find the right companies, save selected leads to CRM, prepare a short email, then send only after review.`}
-        action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-black text-white shadow-sm">{t("Start search")} <ArrowRight size={17} /></Link>}
+        title="What should I do now?"
+        copy="Find real companies, save only the right ones to CRM, prepare a short email, and send only after review."
+        action={<Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-black text-white shadow-sm hover:bg-blue-700">{t("Find customers")} <ArrowRight size={17} /></Link>}
       />
+      <p className="text-sm font-semibold text-slate-500">{t("Workspace")}: {workspaceName}</p>
       {data.error ? <StateBanner tone="error">{data.error}</StateBanner> : null}
       {data.notice ? <StateBanner tone="warning">{data.notice}</StateBanner> : null}
 
-      <Card>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Service readiness")}</p>
-            <h2 className="mt-1 text-2xl font-black text-ink">{t("Connected services for the customer flow.")}</h2>
-            <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{t("Unavailable services are explained here instead of hiding broken buttons inside the workflow.")}</p>
-          </div>
-          <Button variant="secondary" onClick={data.refresh}><RefreshCw size={16} />{t("Refresh")}</Button>
-        </div>
-        <div className="mt-5">
-          <ServiceStatusGrid integrations={data.integrations} senderStatus={data.senderStatus} />
-        </div>
-      </Card>
-
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <ResultStat label="Saved leads" value={companies.length ? String(companies.length) : "Not started"} detail={companies.length ? "Real CRM records in this workspace." : "Run a search and save selected leads."} />
-        <ResultStat label="Drafts" value={drafts.length ? String(drafts.length) : "None yet"} detail={drafts.length ? "Waiting for human review." : "Prepare drafts after saving leads."} />
-        <ResultStat label="Sent" value={sent.length ? String(sent.length) : "Not sent"} detail="No email is sent automatically." />
-        <ResultStat label="Replies" value={replies.length ? String(replies.length) : "No replies"} detail="Replies appear after real email events." />
-      </section>
+      <WorkflowRail
+        steps={[
+          { label: "Found", value: foundCount, detail: foundCount ? "Real leads discovered in this workspace." : "Start with a focused search.", active: !companies.length },
+          { label: "Saved in CRM", value: companies.length, detail: companies.length ? "Companies you approved and saved." : "Nothing is saved without approval.", active: Boolean(companies.length && !readyDrafts.length) },
+          { label: "Drafts", value: drafts.length, detail: drafts.length ? "Emails waiting for review." : "Prepare drafts from CRM leads.", active: Boolean(readyDrafts.length) },
+          { label: "Sent", value: sent.length, detail: "Only confirmed sends are counted.", active: false },
+          { label: "Replies", value: replies.length, detail: "Replies appear after real email events.", active: Boolean(replies.length) }
+        ]}
+      />
 
       <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
         <Card>
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Today")}</p>
-              <h2 className="mt-1 text-2xl font-black text-ink">{t("What to do next.")}</h2>
+              <h2 className="mt-1 text-2xl font-black text-ink">{t("Tasks for today")}</h2>
             </div>
           </div>
           <div className="mt-5 grid gap-3">
@@ -423,7 +528,7 @@ export function CoreDashboardHome() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Latest companies")}</p>
-              <h2 className="mt-1 text-2xl font-black text-ink">{t("Recently found or saved.")}</h2>
+              <h2 className="mt-1 text-2xl font-black text-ink">{t("Recently saved")}</h2>
             </div>
             <Link href="/dashboard/crm" className="text-sm font-black text-brand">{t("Open CRM")}</Link>
           </div>
@@ -433,14 +538,37 @@ export function CoreDashboardHome() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate font-black text-ink">{company.name}</p>
-                    <p className="mt-1 truncate text-sm font-semibold text-slate-600">{company.industry || "Industry unknown"} · {company.country || company.city || "Country unknown"}</p>
+                    <p className="mt-1 truncate text-sm font-semibold text-slate-600">{company.industry || t("Industry unknown")} · {company.country || company.city || t("Country unknown")}</p>
                   </div>
-                  <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-600">{t(company.crm_stage || "New Lead")}</span>
+                  <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-600">{t(displayStage(company.crm_stage))}</span>
                 </div>
                 <p className="mt-3 text-sm font-semibold leading-6 text-slate-600">{t(nextActionForCompany(company))}</p>
               </Link>
             ))}
             {!companies.length ? <EmptyState title="No real companies saved yet" copy="Start with one focused search. OutreachAI will not show demo CRM data here." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white">{t("Start search")}</Link>} /> : null}
+          </div>
+        </Card>
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr]">
+        <Card>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Connections")}</p>
+              <h2 className="mt-1 text-2xl font-black text-ink">{t("Service status")}</h2>
+              <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{t("Unavailable services are explained before a button depends on them.")}</p>
+            </div>
+            <Button variant="secondary" onClick={data.refresh}><RefreshCw size={16} />{t("Refresh")}</Button>
+          </div>
+          <div className="mt-5">
+            <ServiceStatusGrid integrations={data.integrations} senderStatus={data.senderStatus} />
+          </div>
+        </Card>
+        <Card>
+          <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Recent actions")}</p>
+          <h2 className="mt-1 text-2xl font-black text-ink">{t("What changed")}</h2>
+          <div className="mt-5">
+            <RecentActivityList activities={safeArray(data.bootstrap?.recent_activity)} />
           </div>
         </Card>
       </section>
@@ -483,7 +611,7 @@ function FirstCustomerCard({ result, saving, onSave }: { result: FirstCustomerRe
         <div className="rounded-2xl bg-slate-50 p-4">
           <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Contact route")}</p>
           <p className="mt-2 break-words text-sm font-semibold leading-6 text-ink">{result.public_work_contact || t("No public contact route found")}</p>
-          <p className="mt-2 text-sm font-semibold text-slate-600">{result.contact_name || result.contact_title || t("Recommended role not confirmed")}</p>
+          <p className="mt-2 text-sm font-semibold text-slate-600">{[result.contact_name, result.contact_title].filter(Boolean).join(" · ") || t("Recommended role not confirmed")}</p>
         </div>
         <div className="rounded-2xl bg-slate-50 p-4">
           <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t("Public signal")}</p>
@@ -520,13 +648,15 @@ export function CoreLeadFinderPage() {
     setMessage(t("Searching public sources and verifying every result before showing it."));
     setJob(null);
     try {
+      const contactRole = String(formData.get("contact_role") || "").trim();
+      const criteria = String(formData.get("criteria") || "").trim();
       const payload = {
         product_site: String(formData.get("product_site") || "").trim(),
         target_customer: String(formData.get("target_customer") || "").trim(),
         country: String(formData.get("country") || "").trim(),
         industry: String(formData.get("industry") || "").trim(),
         company_size: String(formData.get("company_size") || "").trim(),
-        criteria: String(formData.get("criteria") || "").trim(),
+        criteria: [criteria, contactRole ? `Preferred decision-maker role: ${contactRole}` : ""].filter(Boolean).join("\n"),
         results: Number(formData.get("results") || 5)
       };
       const nextJob = await data.api<FirstCustomerJob>("/api/workspace-app/leads/first-customers/search", {
@@ -573,8 +703,8 @@ export function CoreLeadFinderPage() {
     <div className="space-y-6">
       <PageIntro
         eyebrow="Search"
-        title="Find customers, then decide what to save."
-        copy="Enter your product site and target market. OutreachAI searches public sources, shows evidence and keeps CRM creation manual."
+        title="Find customers"
+        copy="Use one product, one market and one decision-maker role. Search results stay outside CRM until you save them."
         action={<a href="#search-form" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-black text-white">{t("New search")} <ArrowRight size={17} /></a>}
       />
       {data.notice ? <StateBanner tone="warning">{data.notice}</StateBanner> : null}
@@ -602,27 +732,31 @@ export function CoreLeadFinderPage() {
       <Card>
         <form id="search-form" aria-label="Customer search" onSubmit={runSearch} className="space-y-5">
           <div>
-            <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Search criteria")}</p>
-            <h2 className="mt-1 text-2xl font-black text-ink">{t("Describe the buyer you want.")}</h2>
+            <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Search wizard")}</p>
+            <h2 className="mt-1 text-2xl font-black text-ink">{t("Describe the buyer you want")}</h2>
+            <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{t("The search uses public sources, source URLs and verified contact routes when available.")}</p>
           </div>
           <div className="grid gap-4 md:grid-cols-2">
-            <label className="text-sm font-bold text-slate-700">{t("Product website")}
+            <label className="text-sm font-bold text-slate-700"><span className="mb-1 inline-flex size-7 items-center justify-center rounded-full bg-blue-50 text-xs font-black text-brand">1</span> {t("Product website")}
               <input name="product_site" required defaultValue={workspace?.company ? "" : "https://"} placeholder="https://your-company.com" className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
             </label>
-            <label className="text-sm font-bold text-slate-700">{t("Country")}
-              <input name="country" required defaultValue={workspace?.target_country || ""} placeholder="Germany" className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
+            <label className="text-sm font-bold text-slate-700"><span className="mb-1 inline-flex size-7 items-center justify-center rounded-full bg-blue-50 text-xs font-black text-brand">2</span> {t("Country")}
+              <input name="country" required defaultValue={workspace?.target_country || ""} placeholder={t("Germany")} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
             </label>
-            <label className="text-sm font-bold text-slate-700">{t("Industry")}
-              <input name="industry" required defaultValue={workspace?.industry || ""} placeholder="B2B SaaS" className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
+            <label className="text-sm font-bold text-slate-700"><span className="mb-1 inline-flex size-7 items-center justify-center rounded-full bg-blue-50 text-xs font-black text-brand">3</span> {t("Industry")}
+              <input name="industry" required defaultValue={workspace?.industry || ""} placeholder={t("B2B SaaS")} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
+            </label>
+            <label className="text-sm font-bold text-slate-700"><span className="mb-1 inline-flex size-7 items-center justify-center rounded-full bg-blue-50 text-xs font-black text-brand">4</span> {t("Decision-maker role")}
+              <input name="contact_role" placeholder={t("Founder, Head of Sales, Operations Lead")} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
             </label>
             <label className="text-sm font-bold text-slate-700">{t("Company size")}
-              <input name="company_size" placeholder="20-200 employees" className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
+              <input name="company_size" placeholder={t("20-200 employees")} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
             </label>
             <label className="text-sm font-bold text-slate-700 md:col-span-2">{t("Target customer")}
-              <textarea name="target_customer" defaultValue={workspace?.target_customer || ""} required placeholder="B2B SaaS companies expanding sales teams in Europe" rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm" />
+              <textarea name="target_customer" defaultValue={workspace?.target_customer || ""} required placeholder={t("B2B SaaS companies expanding sales teams in Europe")} rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm" />
             </label>
             <label className="text-sm font-bold text-slate-700 md:col-span-2">{t("Extra criteria")}
-              <textarea name="criteria" placeholder="Look for hiring, expansion, tool replacement, or public complaints about manual workflows." rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm" />
+              <textarea name="criteria" placeholder={t("Look for hiring, expansion, tool replacement, or public complaints about manual workflows.")} rows={3} className="mt-2 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm" />
             </label>
             <label className="text-sm font-bold text-slate-700">{t("Results")}
               <input name="results" type="number" min={1} max={10} defaultValue={5} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
@@ -672,13 +806,14 @@ function CompanyMiniCard({ company, selected, onSelect }: { company: CrmCompany;
         </div>
         <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-slate-600">{score}/100</span>
       </div>
+      <p className="mt-2 text-xs font-black uppercase tracking-wide text-slate-500">{t(displayStage(company.crm_stage))}</p>
       <p className="mt-3 text-sm font-semibold leading-6 text-slate-600">{t(nextActionForCompany(company))}</p>
     </button>
   );
 }
 
 function CompanyDetail({ company, api, onUpdated }: { company: CrmCompany; api: CoreApi; onUpdated: (company: CrmCompany) => void }) {
-  const { t } = useI18n();
+  const { t, formatDate } = useI18n();
   const [stage, setStage] = useState(company.crm_stage || "New Lead");
   const [note, setNote] = useState("");
   const [state, setState] = useState<ActionState>({ busy: "", notice: "", error: "" });
@@ -691,6 +826,7 @@ function CompanyDetail({ company, api, onUpdated }: { company: CrmCompany; api: 
     try {
       const updated = await api<CrmCompany>(`/api/crm/companies/${company.id}/stage`, { method: "PATCH", body: JSON.stringify({ stage }) });
       onUpdated(updated);
+      setStage(updated.crm_stage || stage);
       setState({ busy: "", notice: t("CRM stage updated."), error: "" });
     } catch (err) {
       setState({ busy: "", notice: "", error: friendlyErrorMessage(err, t("CRM stage could not be updated.")) });
@@ -732,7 +868,7 @@ function CompanyDetail({ company, api, onUpdated }: { company: CrmCompany; api: 
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-2xl font-black text-ink">{company.name}</h2>
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">{companyQualityScore(company)}/100 {t("quality")}</span>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{t(stage)}</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{t(displayStage(stage))}</span>
           </div>
           <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{company.ai_summary || company.reasoning || company.sales_angle || t("No AI summary yet. Prepare the company or add a note before outreach.")}</p>
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm font-semibold text-slate-600">
@@ -764,7 +900,7 @@ function CompanyDetail({ company, api, onUpdated }: { company: CrmCompany; api: 
         <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <label className="text-sm font-black text-ink">{t("Lead stage")}
             <select value={stage} onChange={(event) => setStage(event.target.value)} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-semibold">
-              {workflowStages.map((item) => <option key={item} value={item}>{t(item)}</option>)}
+              {workflowStageOptions.map((item) => <option key={item.value} value={item.value}>{t(item.label)}</option>)}
             </select>
           </label>
           <Button className="mt-3 w-full" variant="secondary" onClick={moveStage} disabled={state.busy === "stage"}>
@@ -802,9 +938,9 @@ function CompanyDetail({ company, api, onUpdated }: { company: CrmCompany; api: 
       <div className="mt-5">
         <p className="text-sm font-black text-ink">{t("Activity history")}</p>
         <div className="mt-3 grid gap-2">
-          {[...localNotes.map((noteItem) => ({ id: noteItem.id, label: noteItem.body, time: noteItem.created_at })), ...safeArray(company.activity).map((activityItem) => ({ id: activityItem.id, label: activityItem.action, time: activityItem.created_at }))].slice(0, 6).map((item) => (
+          {[...localNotes.map((noteItem) => ({ id: noteItem.id, label: noteItem.body, time: noteItem.created_at, userText: true })), ...safeArray(company.activity).map((activityItem) => ({ id: activityItem.id, label: activityDisplayLabel(activityItem.action), time: activityItem.created_at, userText: false }))].slice(0, 6).map((item) => (
             <div key={item.id} className="rounded-xl bg-white p-3 text-sm shadow-sm">
-              <p className="font-semibold leading-6 text-slate-700">{t(item.label)}</p>
+              <p className="font-semibold leading-6 text-slate-700">{item.userText ? item.label : t(item.label)}</p>
               <p className="text-xs font-bold text-slate-500">{formatDate(item.time)}</p>
             </div>
           ))}
@@ -820,13 +956,18 @@ export function CoreCrmPage() {
   const { t } = useI18n();
   const searchParams = useSearchParams();
   const [query, setQuery] = useState("");
+  const [stageFilter, setStageFilter] = useState("all");
   const [selectedId, setSelectedId] = useState("");
   const requestedCompanyId = searchParams.get("company") || "";
   const filteredCompanies = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return data.companies;
-    return data.companies.filter((company) => [company.name, company.website, company.industry, company.country, company.crm_stage].some((value) => String(value || "").toLowerCase().includes(normalized)));
-  }, [data.companies, query]);
+    return data.companies.filter((company) => {
+      const matchesStage = stageMatchesFilter(company.crm_stage, stageFilter);
+      if (!matchesStage) return false;
+      if (!normalized) return true;
+      return [company.name, company.website, company.industry, company.country, displayStage(company.crm_stage)].some((value) => String(value || "").toLowerCase().includes(normalized));
+    });
+  }, [data.companies, query, stageFilter]);
   const selected = filteredCompanies.find((company) => company.id === (selectedId || requestedCompanyId)) || filteredCompanies[0] || null;
 
   function updateCompany(company: CrmCompany) {
@@ -838,8 +979,8 @@ export function CoreCrmPage() {
     <div className="space-y-6">
       <PageIntro
         eyebrow="CRM"
-        title="Saved leads, stages, notes and history."
-        copy="This CRM shows only companies you saved or added. Use it to finish contact data, prepare a draft and track the next manual action."
+        title="CRM"
+        copy="Work saved companies by stage, contact route, notes, history and the next manual action."
         action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-black text-white">{t("Find customers")} <ArrowRight size={17} /></Link>}
       />
       {data.loading && !data.companies.length ? <LoadingWorkspace /> : null}
@@ -850,6 +991,18 @@ export function CoreCrmPage() {
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("Company, stage, country, website")} className="mt-2 min-h-12 w-full rounded-xl border border-slate-300 px-3 text-sm" />
           </label>
           <Button variant="secondary" onClick={data.refresh}><RefreshCw size={16} />{t("Refresh")}</Button>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {crmStageFilters.map((filter) => (
+            <button
+              key={filter.key}
+              type="button"
+              onClick={() => setStageFilter(filter.key)}
+              className={cx("min-h-10 rounded-full border px-3 text-xs font-black", stageFilter === filter.key ? "border-blue-200 bg-blue-50 text-brand" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300")}
+            >
+              {t(filter.label)}
+            </button>
+          ))}
         </div>
       </Card>
       {filteredCompanies.length ? (
@@ -896,7 +1049,6 @@ function DraftCard({ company, senderStatus, api, onUpdated }: { company: CrmComp
       await api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}/approve`, { method: "POST" });
       setDeliveryStatus("approved");
       setState({ busy: "", notice: t("Email approved. It is ready to send, but nothing was sent automatically."), error: "" });
-      onUpdated();
     } catch (err) {
       setState({ busy: "", notice: "", error: friendlyErrorMessage(err, t("Email approval could not be completed.")) });
     }
@@ -915,7 +1067,6 @@ function DraftCard({ company, senderStatus, api, onUpdated }: { company: CrmComp
       setDeliveryStatus("sent");
       setState({ busy: "", notice: t("Approved email was sent. CRM stage updated."), error: "" });
       setConfirmSend(false);
-      onUpdated();
     } catch (err) {
       setState({ busy: "", notice: "", error: friendlyErrorMessage(err, t("Email could not be sent. The draft remains saved.")) });
     }
@@ -933,6 +1084,7 @@ function DraftCard({ company, senderStatus, api, onUpdated }: { company: CrmComp
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{t(deliveryStatus)}</span>
           </div>
           <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{t("Recipient")}: {recipient || t("No verified recipient email yet")}</p>
+          <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">{t("Source")}: {t(publicSourceLabel(company.source))}</p>
         </div>
         <Link href={`/dashboard/crm?company=${encodeURIComponent(company.id)}`} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-3 text-sm font-black text-ink">{t("Open CRM")} <ArrowRight size={15} /></Link>
       </div>
@@ -945,6 +1097,7 @@ function DraftCard({ company, senderStatus, api, onUpdated }: { company: CrmComp
         </label>
       </div>
       {!senderStatus?.connected ? <div className="mt-4"><StateBanner tone="warning">{t(senderStatus?.next_action || "Connect a verified sender before sending. You can still save drafts.")}</StateBanner></div> : null}
+      <div className="mt-4"><StateBanner tone="info">{t("Manual send only. Check the recipient, source and message before confirming.")}</StateBanner></div>
       {confirmSend ? <div className="mt-4"><StateBanner tone="warning">{t("This sends one email to the saved recipient. Confirm only after reviewing the content.")}</StateBanner></div> : null}
       {state.notice ? <div className="mt-4"><StateBanner tone="success">{state.notice}</StateBanner></div> : null}
       {state.error ? <div className="mt-4"><StateBanner tone="error">{state.error}</StateBanner></div> : null}
@@ -968,16 +1121,26 @@ function DraftCard({ company, senderStatus, api, onUpdated }: { company: CrmComp
 
 export function CoreMailPage() {
   const data = useCoreWorkspaceData();
-  const { t } = useI18n();
-  const draftCompanies = data.companies.filter((company) => latestDraft(company));
-  const replyEvents = data.companies.filter((company) => company.replied_at);
+  const { t, formatDate } = useI18n();
+  const [activeTab, setActiveTab] = useState<(typeof mailTabs)[number]["key"]>("drafts");
+  const draftCompanies = data.companies.filter((company) => latestDraft(company)?.delivery_status === "draft");
+  const readyCompanies = data.companies.filter((company) => latestDraft(company)?.delivery_status === "approved");
+  const sentCompanies = data.companies.filter(isSentCompany);
+  const replyEvents = data.companies.filter(hasReply);
+  const visibleMailCompanies = activeTab === "ready" ? readyCompanies : activeTab === "sent" ? sentCompanies : draftCompanies;
+  const tabCounts = {
+    drafts: draftCompanies.length,
+    ready: readyCompanies.length,
+    sent: sentCompanies.length,
+    replies: replyEvents.length
+  };
 
   return (
     <div className="space-y-6">
       <PageIntro
         eyebrow="Mail"
-        title="Review drafts, send manually, track replies."
-        copy="Every email is draft-only until you save edits, approve the message and confirm the send. Replies and delivery events update CRM status."
+        title="Mail"
+        copy="Review drafts, approve messages, send manually and track replies without automatic outreach."
         action={<Link href="/dashboard/crm" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-black text-white">{t("Open CRM")} <ArrowRight size={17} /></Link>}
       />
       {data.loading && !data.companies.length ? <LoadingWorkspace /> : null}
@@ -986,28 +1149,46 @@ export function CoreMailPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-sm font-black uppercase tracking-[0.14em] text-brand">{t("Sending safety")}</p>
-            <h2 className="mt-1 text-2xl font-black text-ink">{t("No automatic email sending.")}</h2>
+            <p className="mt-1 text-2xl font-black text-ink">{t("No automatic email sending.")}</p>
             <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{t("A draft must be saved, approved and confirmed before the backend sends one email.")}</p>
           </div>
           <Button variant="secondary" onClick={data.refresh}><RefreshCw size={16} />{t("Refresh")}</Button>
         </div>
-        <div className="mt-5 grid gap-3 md:grid-cols-3">
+        <div className="mt-5 grid gap-3 md:grid-cols-4">
           <ResultStat label="Drafts" value={draftCompanies.length ? String(draftCompanies.length) : "None"} detail="Prepared emails waiting for review." />
+          <ResultStat label="Ready to send" value={readyCompanies.length ? String(readyCompanies.length) : "None"} detail="Approved emails waiting for confirmation." />
           <ResultStat label="Sender" value={data.senderStatus?.connected ? "Connected" : "Not ready"} detail={data.senderStatus?.connected ? "Manual sending can be confirmed." : "Drafts can be saved until setup is complete."} />
           <ResultStat label="Replies" value={replyEvents.length ? String(replyEvents.length) : "No replies"} detail="Reply events are recorded after sending." />
         </div>
       </Card>
 
+      <Card>
+        <div className="flex flex-wrap gap-2" role="tablist" aria-label={t("Mail folders")}>
+          {mailTabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={cx("min-h-11 rounded-full border px-4 text-sm font-black", activeTab === tab.key ? "border-blue-200 bg-blue-50 text-brand" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300")}
+            >
+              {t(tab.label)} <span className="ml-1 text-xs text-slate-500">{tabCounts[tab.key]}</span>
+            </button>
+          ))}
+        </div>
+      </Card>
+
       <section className="grid gap-4">
-        {draftCompanies.map((company) => (
+        {activeTab !== "replies" && visibleMailCompanies.map((company) => (
           <DraftCard key={`${company.id}:${latestDraft(company)?.id || "no-draft"}`} company={company} senderStatus={data.senderStatus} api={data.api} onUpdated={data.refresh} />
         ))}
-        {!draftCompanies.length && !data.loading ? (
+        {activeTab !== "replies" && !visibleMailCompanies.length && !data.loading ? (
           <EmptyState title="No drafts ready yet" copy="Save a company to CRM, then prepare the first email. Drafts will appear here for manual review." action={<Link href="/dashboard/crm" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-black text-white">{t("Open CRM")}</Link>} />
         ) : null}
       </section>
 
-      <Card>
+      {activeTab === "replies" ? <Card>
         <div className="flex items-center gap-2">
           <Inbox size={20} className="text-brand" />
           <h2 className="text-2xl font-black text-ink">{t("Replies and status")}</h2>
@@ -1022,7 +1203,7 @@ export function CoreMailPage() {
           {!replyEvents.length ? <p className="rounded-2xl bg-slate-50 p-4 text-sm font-semibold leading-6 text-slate-600">{t("No replies yet. After manual sends, delivery and reply events will appear here when webhooks are configured.")}</p> : null}
           {data.inbox.length ? <p className="text-sm font-semibold text-slate-500">{t("Inbox events loaded")}: {data.inbox.length}</p> : null}
         </div>
-      </Card>
+      </Card> : null}
     </div>
   );
 }

@@ -1,19 +1,19 @@
 import { expect, test, type Route } from "@playwright/test";
 
 const pages = [
-  ["/dashboard", "Find customers, save CRM leads, write emails."],
-  ["/dashboard/leads", "Find customers, then decide what to save."],
-  ["/dashboard/companies", "Saved leads, stages, notes and history."],
-  ["/dashboard/website-analyzer", "Find customers, then decide what to save."],
-  ["/dashboard/contacts", "Saved leads, stages, notes and history."],
-  ["/dashboard/campaigns", "Review drafts, send manually, track replies."],
-  ["/dashboard/inbox", "Review drafts, send manually, track replies."],
-  ["/dashboard/crm", "Saved leads, stages, notes and history."],
-  ["/dashboard/deals", "Saved leads, stages, notes and history."],
-  ["/dashboard/analytics", "Find customers, save CRM leads, write emails."],
+  ["/dashboard", "What should I do now?"],
+  ["/dashboard/leads", "Find customers"],
+  ["/dashboard/companies", "CRM"],
+  ["/dashboard/website-analyzer", "Find customers"],
+  ["/dashboard/contacts", "CRM"],
+  ["/dashboard/campaigns", "Mail"],
+  ["/dashboard/inbox", "Mail"],
+  ["/dashboard/crm", "CRM"],
+  ["/dashboard/deals", "CRM"],
+  ["/dashboard/analytics", "What should I do now?"],
   ["/dashboard/settings", "Make the workspace ready for your first campaign."],
   ["/dashboard/billing", "Subscription and usage."],
-  ["/dashboard/sales-employees", "Find customers, save CRM leads, write emails."],
+  ["/dashboard/sales-employees", "What should I do now?"],
   ["/dashboard/admin/quality", "AI Quality & Self-Healing"]
 ] as const;
 
@@ -187,7 +187,7 @@ test.beforeEach(async ({ page }) => {
     } else if (apiPath === "/api/crm/companies") {
       body = [crmCompany];
     } else if (apiPath === `/api/crm/companies/${crmCompany.id}/stage`) {
-      body = { ...crmCompany, crm_stage: "Not Interested", stage_changed_at: new Date().toISOString(), activity: [{ id: "99999999-9999-9999-9999-999999999990", action: "crm.stage_changed", metadata_json: {}, created_at: new Date().toISOString() }, ...crmCompany.activity] };
+      body = { ...crmCompany, crm_stage: "Lost", stage_changed_at: new Date().toISOString(), activity: [{ id: "99999999-9999-9999-9999-999999999990", action: "crm.stage_changed", metadata_json: {}, created_at: new Date().toISOString() }, ...crmCompany.activity] };
     } else if (apiPath === `/api/crm/companies/${crmCompany.id}/notes`) {
       body = { id: "99999999-9999-9999-9999-999999999991", company_id: crmCompany.id, lead_id: lead.id, body: "Customer asked to review next week.", kind: "note", created_at: new Date().toISOString() };
     } else if (apiPath === "/api/crm/contacts") {
@@ -374,7 +374,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     test(`${route} renders on mobile without dead screens`, async ({ page }) => {
       await page.setViewportSize({ width: 390, height: 900 });
       await page.goto(route, { waitUntil: "commit" });
-      await expect(page.getByRole("heading", { name: heading })).toBeVisible({ timeout: 15000 });
+      await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible({ timeout: 15000 });
       await expect(page.getByRole("main")).not.toContainText("Load failed");
       await expect(page.getByRole("main")).not.toContainText("Failed to fetch");
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
@@ -396,7 +396,7 @@ test.describe("redesigned B2B outbound workspace", () => {
 
   test("mail review never sends without approval", async ({ page }) => {
     await page.goto("/dashboard/campaigns");
-    await expect(page.getByRole("heading", { name: "Review drafts, send manually, track replies." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Mail", exact: true })).toBeVisible();
     await expect(page.getByText("No automatic email sending.")).toBeVisible();
     await expect(page.getByLabel("Subject")).toHaveValue("Quick idea for Hill Country Build Co");
     await expect(page.getByRole("button", { name: "Send manually" }).first()).toBeDisabled();
@@ -414,7 +414,7 @@ test.describe("redesigned B2B outbound workspace", () => {
 
   test("crm company stage move and note actions show reliable feedback", async ({ page }) => {
     await page.goto("/dashboard/companies");
-    await page.getByRole("main").getByRole("combobox").selectOption("Not Interested");
+    await page.getByRole("main").getByRole("combobox").selectOption("Lost");
     await page.getByRole("button", { name: /Update stage/ }).click();
     await expect(page.getByText("CRM stage updated.")).toBeVisible();
     await page.getByLabel("Notes and history").fill("Customer asked to review next week.");
@@ -436,8 +436,8 @@ test.describe("redesigned B2B outbound workspace", () => {
 
     await page.goto("/dashboard");
     const main = page.getByRole("main");
-    await expect(page.getByRole("heading", { name: "Find customers, save CRM leads, write emails." })).toBeVisible();
-    await expect(main).toContainText("Start search");
+    await expect(page.getByRole("heading", { name: "What should I do now?" })).toBeVisible();
+    await expect(main).toContainText("Find customers");
     await expect(main).toContainText("Open CRM");
     await expect(main).not.toContainText("Dashboard data is temporarily unavailable");
     await expect(main).not.toContainText("Dashboard details are temporarily unavailable");
@@ -462,7 +462,7 @@ test.describe("redesigned B2B outbound workspace", () => {
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("main")).not.toContainText("Что-то пошло не так");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
-    await expect(page.getByRole("main")).toContainText(/Найти клиентов, сохранить CRM-лиды, написать письма\.|Загружаем пространство/);
+    await expect(page.getByRole("main")).toContainText(/Что мне делать сейчас\?|Загружаем пространство/);
     expect(pageErrors).toEqual([]);
   });
 
@@ -474,8 +474,8 @@ test.describe("redesigned B2B outbound workspace", () => {
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Dashboard unavailable" }) });
     });
     await page.goto("/dashboard/leads");
-    await expect(page.getByRole("heading", { name: "Find customers, then decide what to save." })).toBeVisible();
-    await expect(page.getByRole("main")).toContainText("Search criteria");
+    await expect(page.getByRole("heading", { name: "Find customers" })).toBeVisible();
+    await expect(page.getByRole("main")).toContainText("Search wizard");
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("Lead data unavailable");
   });
@@ -485,7 +485,7 @@ test.describe("redesigned B2B outbound workspace", () => {
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ detail: "Pipeline unavailable" }) });
     });
     await page.goto("/dashboard/companies");
-    await expect(page.getByRole("heading", { name: "Saved leads, stages, notes and history." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "CRM" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
     await expect(page.getByRole("main")).not.toContainText("Something went wrong");
     await expect(page.getByRole("main")).not.toContainText("CRM data could not be loaded");
