@@ -508,7 +508,7 @@ function integrationStatusLabel(status: WorkspaceIntegrationStatus["status"]) {
 }
 
 function integrationStatusClasses(status: WorkspaceIntegrationStatus["status"]) {
-  if (status === "connected") return "border-teal-200 bg-teal-50 text-brand";
+  if (status === "connected") return "border-blue-200 bg-blue-50 text-brand";
   if (status === "missing_key" || status === "needs_setup") return "border-amber-200 bg-amber-50 text-amber-800";
   return "border-red-200 bg-red-50 text-red-700";
 }
@@ -1069,7 +1069,7 @@ function CoreActionGrid({ activeHref }: { activeHref?: string }) {
             key={title}
             href={href}
             className={`min-w-0 rounded-2xl border p-4 shadow-sm transition hover:-translate-y-0.5 ${
-              active ? "border-teal-300 bg-teal-50 text-brand" : "border-slate-200 bg-white text-slate-700 hover:border-teal-200"
+              active ? "border-blue-300 bg-blue-50 text-brand" : "border-slate-200 bg-white text-slate-700 hover:border-blue-200"
             }`}
           >
             <span className="grid size-9 place-items-center rounded-xl bg-white text-sm font-black shadow-sm">{index + 1}</span>
@@ -1625,9 +1625,9 @@ function OpportunityCard({
   const riskToCheck = copilot?.risk_to_check || dataSummary.missingText;
   const bestNextAction = copilot?.next_best_action || nextStep.title;
   const salesDecisionCards = [
-    { label: "Why this lead matters", value: leadDecisionReason, tone: "teal" },
+    { label: "Why this lead matters", value: leadDecisionReason, tone: "blue" },
     { label: "Known now", value: dataSummary.foundText, tone: "slate" },
-    { label: "Needs review", value: riskToCheck, tone: dataSummary.missing.length || copilot?.risk_to_check ? "amber" : "teal" },
+    { label: "Needs review", value: riskToCheck, tone: dataSummary.missing.length || copilot?.risk_to_check ? "amber" : "blue" },
     { label: "Best next action", value: bestNextAction, tone: "ink" }
   ];
   const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
@@ -2146,24 +2146,24 @@ function OpportunityCard({
           <p className="mt-2 text-sm text-slate-600">{summaryParts.join(" · ")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t("Completion count").replace("{count}", String(completed))}</span>
+          <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-brand">{t("Completion count").replace("{count}", String(completed))}</span>
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{t("Data")}: {t(sourceLabel(profile.source))}</span>
         </div>
       </div>
 
       <div className="mt-5 grid gap-3 lg:grid-cols-4">
         {salesDecisionCards.map((item) => {
-          const toneClass = item.tone === "teal"
-            ? "border-teal-100 bg-teal-50 text-brand"
+          const toneClass = item.tone === "blue"
+            ? "border-blue-100 bg-blue-50 text-brand"
             : item.tone === "amber"
               ? "border-amber-200 bg-amber-50 text-amber-800"
               : item.tone === "ink"
-                ? "border-slate-900 bg-ink text-white"
+                ? "border-blue-200 bg-brand text-white"
                 : "border-slate-200 bg-slate-50 text-slate-700";
           const bodyClass = item.tone === "ink" ? "text-white" : "text-slate-800";
           return (
             <div key={item.label} className={`rounded-xl border p-3 ${toneClass}`}>
-              <p className={`text-xs font-black uppercase ${item.tone === "ink" ? "text-white/75" : ""}`}>{t(item.label)}</p>
+              <p className={`text-xs font-black uppercase ${item.tone === "ink" ? "text-slate-600" : ""}`}>{t(item.label)}</p>
               <p className={`mt-2 line-clamp-4 text-sm font-semibold leading-6 ${bodyClass}`}>{t(item.value)}</p>
             </div>
           );
@@ -2213,11 +2213,11 @@ function OpportunityCard({
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("This lead workspace shows why the lead is prioritized and which outreach asset should be used next.")}</p>
           </div>
           <div className="grid grid-cols-2 gap-2 text-center sm:min-w-56">
-            <div className="rounded-2xl bg-slate-950 p-3 text-white">
-              <p className="text-xs font-black uppercase text-white/60">{t("Lead Score")}</p>
-              <p className="mt-1 text-3xl font-black">{opportunityScore}</p>
+            <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-blue-950">
+              <p className="text-xs font-black uppercase text-slate-600">{t("Lead Score")}</p>
+              <p className="mt-1 text-3xl font-black text-ink">{opportunityScore}</p>
             </div>
-            <div className="rounded-2xl bg-teal-50 p-3 text-brand">
+            <div className="rounded-2xl bg-blue-50 p-3 text-brand">
               <p className="text-xs font-black uppercase">{t("Reply probability")}</p>
               <p className="mt-1 text-3xl font-black">{leadReplyProbabilityForWorkspace(lead)}%</p>
             </div>
@@ -2240,7 +2240,7 @@ function OpportunityCard({
             <p className="text-sm font-black text-ink">{t("Interaction history")}</p>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {leadHistory.map((item) => (
-                <div key={item.label} className={`rounded-xl p-3 text-sm ${item.value ? "bg-teal-50 text-brand" : "bg-white text-slate-500"}`}>
+                <div key={item.label} className={`rounded-xl p-3 text-sm ${item.value ? "bg-blue-50 text-brand" : "bg-white text-slate-500"}`}>
                   <p className="text-xs font-black uppercase tracking-wide">{t(item.label)}</p>
                   <p className="mt-1 font-semibold">{item.value ? t(formatDateTime(item.value)) : t("Not yet")}</p>
                 </div>
@@ -2257,7 +2257,7 @@ function OpportunityCard({
             <h3 className="mt-2 text-2xl font-black tracking-tight text-ink">{t("Outreach assets for every channel.")}</h3>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t("Email, LinkedIn, follow-up, subject and call opener are shown only from existing AI analysis or saved draft data.")}</p>
           </div>
-          <button type="button" onClick={() => void runSalesAnalysis(false)} disabled={salesAnalysisLoading || !companyId} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">
+          <button type="button" onClick={() => void runSalesAnalysis(false)} disabled={salesAnalysisLoading || !companyId} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-brand px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">
             {salesAnalysisLoading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
             {t("Generate assets")}
           </button>
@@ -2321,17 +2321,17 @@ function OpportunityCard({
                 ) : null}
               </div>
             ) : null}
-            <div className="mt-4 rounded-[1.5rem] border border-slate-900/10 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 p-4 text-white shadow-[0_24px_70px_rgba(15,23,42,0.28)]">
+            <div className="mt-4 rounded-[1.5rem] border border-blue-100 bg-blue-50 p-4 text-blue-950 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">{t("AI Recommendations")}</p>
-                  <h4 className="mt-1 text-xl font-black text-white">{t("What to do next with this company")}</h4>
-                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">{t(String(salesRecommendationConfidenceExplanation))}</p>
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-brand">{t("AI Recommendations")}</p>
+                  <h4 className="mt-1 text-xl font-black text-ink">{t("What to do next with this company")}</h4>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{t(String(salesRecommendationConfidenceExplanation))}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-black uppercase tracking-wide ${salesRecommendationPriorityTone}`}>{t(salesRecommendationPriorityTier)}</span>
-                  <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-black text-white">{t("Confidence")}: {salesRecommendationConfidence}%</span>
-                  <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-black text-white">{t("ICP fit")}: {salesRecommendationIcPFit}%</span>
+                  <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-black text-brand">{t("Confidence")}: {salesRecommendationConfidence}%</span>
+                  <span className="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-black text-brand">{t("ICP fit")}: {salesRecommendationIcPFit}%</span>
                 </div>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -2343,17 +2343,17 @@ function OpportunityCard({
                 ].map((item) => {
                   const Icon = item.icon;
                   return (
-                    <article key={item.label} className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur-sm">
+                    <article key={item.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
-                          <p className="mt-2 text-2xl font-black text-white">{t(item.value)}</p>
+                          <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(item.label)}</p>
+                          <p className="mt-2 text-2xl font-black text-ink">{t(item.value)}</p>
                         </div>
-                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white">
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-brand">
                           <Icon size={18} />
                         </span>
                       </div>
-                      <p className="mt-3 text-sm leading-6 text-slate-300">{t(String(item.note || unavailable))}</p>
+                      <p className="mt-3 text-sm leading-6 text-slate-600">{t(String(item.note || unavailable))}</p>
                     </article>
                   );
                 })}
@@ -2367,20 +2367,20 @@ function OpportunityCard({
                 ].map((item) => {
                   const Icon = item.icon;
                   return (
-                    <article key={item.label} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <article key={item.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       <div className="flex items-center gap-3">
-                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white">
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-blue-50 text-brand">
                           <Icon size={18} />
                         </span>
-                        <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
+                        <p className="text-xs font-black uppercase tracking-wide text-slate-500">{t(item.label)}</p>
                       </div>
-                      <p className="mt-3 text-sm font-semibold leading-6 text-white">{t(String(item.value || unavailable))}</p>
+                      <p className="mt-3 text-sm font-semibold leading-6 text-slate-700">{t(String(item.value || unavailable))}</p>
                     </article>
                   );
                 })}
               </div>
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <article className="rounded-2xl border border-slate-200 bg-white/5 p-4">
                   <div className="flex items-center gap-2">
                     <Target className="text-emerald-300" size={18} />
                     <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Top buying signals")}</p>
@@ -2395,7 +2395,7 @@ function OpportunityCard({
                     <p className="mt-3 rounded-xl bg-white/5 px-3 py-2 text-sm text-slate-300">{t(unavailable)}</p>
                   )}
                 </article>
-                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <article className="rounded-2xl border border-slate-200 bg-white/5 p-4">
                   <div className="flex items-center gap-2">
                     <AlertTriangle className="text-amber-300" size={18} />
                     <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Top risks or objections")}</p>
@@ -2412,14 +2412,14 @@ function OpportunityCard({
                 </article>
               </div>
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <article className="rounded-2xl border border-slate-200 bg-white/5 p-4">
                   <div className="flex items-center gap-2">
                     <Lightbulb className="text-cyan-300" size={18} />
                     <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Personalized opening message")}</p>
                   </div>
                   <p className="mt-3 text-sm leading-6 text-slate-100">{t(String(salesRecommendationOpeningMessage))}</p>
                 </article>
-                <article className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <article className="rounded-2xl border border-slate-200 bg-white/5 p-4">
                   <div className="flex items-center gap-2">
                     <CalendarDays className="text-violet-300" size={18} />
                     <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t("Personalized follow-up sequence")}</p>
@@ -2437,7 +2437,7 @@ function OpportunityCard({
                   )}
                 </article>
               </div>
-              <div className="mt-4 rounded-2xl border border-white/15 bg-slate-950/45 p-4">
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-black uppercase tracking-wide text-cyan-200">{t("AI Copilot")}</p>
@@ -2455,7 +2455,7 @@ function OpportunityCard({
                     const rowConfidence = Number(rowState.confidence || salesRecommendationConfidence || 0);
                     const isEditing = salesRecommendationEditKey === item.key;
                     return (
-                      <article key={`recommendation-action-${item.key}`} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                      <article key={`recommendation-action-${item.key}`} className="rounded-xl border border-slate-200 bg-white/5 p-3">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <p className="text-xs font-black uppercase tracking-wide text-slate-300">{t(item.label)}</p>
@@ -2500,13 +2500,13 @@ function OpportunityCard({
                             <textarea
                               value={salesRecommendationEditValue}
                               onChange={(event) => setSalesRecommendationEditValue(event.target.value)}
-                              className="min-h-24 w-full rounded-md border border-white/20 bg-slate-900/70 p-2 text-sm text-white"
+                              className="min-h-24 w-full rounded-md border border-slate-300 bg-white p-2 text-sm text-ink"
                             />
                             <input
                               value={salesRecommendationEditReason}
                               onChange={(event) => setSalesRecommendationEditReason(event.target.value)}
                               placeholder={t("Why was this edit made?")}
-                              className="min-h-10 w-full rounded-md border border-white/20 bg-slate-900/70 px-3 text-sm text-white placeholder:text-slate-400"
+                              className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-ink placeholder:text-slate-400"
                             />
                             <div className="flex flex-wrap gap-2">
                               <button
@@ -2529,7 +2529,7 @@ function OpportunityCard({
                                   setSalesRecommendationEditValue("");
                                   setSalesRecommendationEditReason("");
                                 }}
-                                className="inline-flex min-h-10 items-center justify-center rounded-md border border-white/20 px-3 text-xs font-black text-slate-200"
+                                className="inline-flex min-h-10 items-center justify-center rounded-md border border-slate-300 px-3 text-xs font-black text-slate-200"
                               >
                                 {t("Cancel")}
                               </button>
@@ -2719,7 +2719,7 @@ function OpportunityCard({
               {t("OutreachAI checks the website, contacts, AI scores, offer, first email and follow-ups. If a source cannot verify data, it shows exactly what is missing instead of inventing it.")}
             </p>
           </div>
-          <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">
+          <span className="w-fit rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">
             {completed}/{coverage.length} {t("ready")}
           </span>
         </div>
@@ -2729,10 +2729,10 @@ function OpportunityCard({
             <p className="mt-1 leading-6">{missingCoverage.slice(0, 4).map((item) => t(item)).join(", ")}{missingCoverage.length > 4 ? ` +${missingCoverage.length - 4}` : ""}</p>
           </div>
         ) : (
-          <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t("This opportunity has all required sales research.")}</p>
+          <p className="mt-4 rounded-xl bg-blue-50 p-3 text-sm font-bold text-brand">{t("This opportunity has all required sales research.")}</p>
         )}
         {(aiNextAction || aiRecommendedActions.length || aiMissingFields.length) ? (
-          <div className="mt-4 rounded-xl border border-teal-100 bg-white p-3 text-sm">
+          <div className="mt-4 rounded-xl border border-blue-100 bg-white p-3 text-sm">
             <p className="font-bold text-ink">{t("AI next action")}</p>
             {aiNextAction ? <p className="mt-1 leading-6 text-slate-700">{t(aiNextAction)}</p> : null}
             {aiMissingFields.length ? (
@@ -2743,7 +2743,7 @@ function OpportunityCard({
             {aiRecommendedActions.length ? (
               <ul className="mt-3 space-y-2">
                 {aiRecommendedActions.slice(0, 3).map((item) => (
-                  <li key={item} className="rounded-lg bg-teal-50 px-3 py-2 font-semibold text-brand">{t(item)}</li>
+                  <li key={item} className="rounded-lg bg-blue-50 px-3 py-2 font-semibold text-brand">{t(item)}</li>
                 ))}
               </ul>
             ) : null}
@@ -2763,7 +2763,7 @@ function OpportunityCard({
           </span>
         </div>
         <div className="mt-4 grid gap-3 lg:grid-cols-3">
-          <div className="rounded-xl bg-teal-50 p-3">
+          <div className="rounded-xl bg-blue-50 p-3">
             <p className="text-xs font-black uppercase text-brand">{t("Found")}</p>
             <p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{dataSummary.foundText}</p>
           </div>
@@ -2777,7 +2777,7 @@ function OpportunityCard({
           </div>
         </div>
         <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {dataFacts.map((fact) => <div key={fact.label} className={`rounded-xl border p-3 ${fact.ready ? "border-teal-100 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
+          {dataFacts.map((fact) => <div key={fact.label} className={`rounded-xl border p-3 ${fact.ready ? "border-blue-100 bg-blue-50" : "border-slate-200 bg-slate-50"}`}>
             <p className={`text-xs font-bold uppercase ${fact.ready ? "text-brand" : "text-slate-500"}`}>{t(fact.label)}</p>
             <p className="mt-1 break-words text-sm font-semibold text-slate-800">{t(fact.value)}</p>
           </div>)}
@@ -2799,7 +2799,7 @@ function OpportunityCard({
       </div>
 
       <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        {coverage.map(([label, done]) => <div key={label} className={`rounded-lg px-3 py-2 ${done ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-600"}`}>
+        {coverage.map(([label, done]) => <div key={label} className={`rounded-lg px-3 py-2 ${done ? "bg-blue-50 text-brand" : "bg-slate-100 text-slate-600"}`}>
           <span className="inline-flex items-center gap-2 text-xs font-bold"><CheckCircle2 size={15} />{t(label)}</span>
           {!done ? <p className="mt-1 text-xs leading-5 text-slate-500">{t(opportunityCoverageHint(label))}</p> : null}
         </div>)}
@@ -2813,13 +2813,13 @@ function OpportunityCard({
             <p className="mt-2 text-sm leading-6 text-slate-700">{t(contactSearch.message || "No verified business email was found. Add a decision maker manually or continue with research.")}</p>
             {contactSearch.roles.length ? <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">{t("Roles searched")}: <span className="normal-case tracking-normal text-slate-700">{contactSearch.roles.map((role) => t(role)).join(", ")}</span></p> : null}
           </div>
-          {companyId ? <a href={`#contacts-${companyId}`} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white"><Plus size={17} />{t("Add contact manually")}</a> : null}
+          {companyId ? <a href={`#contacts-${companyId}`} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><Plus size={17} />{t("Add contact manually")}</a> : null}
         </div>
       </section>}
 
       {draft && (readyToSend || draft.delivery_status === "approved" || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">{t("Personalized first email")}</p>
-        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Sent.") : draft.delivery_status === "approved" ? t("Email approved. Nothing was sent yet.") : t("Review this draft before sending. No email has been sent yet.")}</p>
+        <p className="mt-2 rounded-lg bg-blue-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Sent.") : draft.delivery_status === "approved" ? t("Email approved. Nothing was sent yet.") : t("Review this draft before sending. No email has been sent yet.")}</p>
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           <div className="rounded-lg bg-white p-3 text-sm">
             <span className="font-bold text-slate-700">{t("Recipient")}:</span>{" "}
@@ -2924,11 +2924,11 @@ function OpportunityCard({
         </div>
       </section>}
 
-      {visibleStatus && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
+      {visibleStatus && <p className="mt-4 rounded-xl bg-blue-50 p-3 text-sm font-semibold text-brand">{visibleStatus}</p>}
       {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
       {draft?.delivery_status === "approved" && senderStatus && !senderStatus.connected ? (
         <div className="mt-3 flex flex-col gap-2 min-[430px]:flex-row">
-          <Link href="/dashboard/settings#email-sending" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">
+          <Link href="/dashboard/settings#email-sending" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">
             {t("Set up sender")}
           </Link>
           <Link href="/dashboard/settings#email-sending" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">
@@ -3021,11 +3021,11 @@ export function DashboardHome() {
               <h2 className="ui-title mt-1 text-2xl">{t(nextStep.title)}</h2>
               <p className="ui-copy mt-2 max-w-2xl">{t(nextStep.copy)}</p>
             </div>
-            <Link href={nextStep.href} className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-full bg-[#101114] px-4 text-sm font-black text-white shadow-glow">
+            <Link href={nextStep.href} className="inline-flex min-h-11 w-fit items-center justify-center gap-2 rounded-full bg-brand px-4 text-sm font-black text-white shadow-sm">
               {t(nextStep.label)} <ArrowRight size={16} />
             </Link>
           </div>
-          <p className="mt-5 rounded-2xl border border-teal-100 bg-teal-50 p-4 text-sm font-semibold leading-6 text-brand">{manualSafety}</p>
+          <p className="mt-5 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm font-semibold leading-6 text-brand">{manualSafety}</p>
         </OperatingPanel>
 
         <OperatingPanel>
@@ -3057,9 +3057,9 @@ export function DashboardHome() {
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-3">
           {workflowSteps.map((step, index) => (
-            <Link key={step.label} href={step.href} className={`rounded-2xl border p-4 shadow-sm transition hover:-translate-y-0.5 ${step.status === "active" ? "border-teal-300 bg-teal-50" : step.status === "done" ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50"}`}>
+            <Link key={step.label} href={step.href} className={`rounded-2xl border p-4 shadow-sm transition hover:-translate-y-0.5 ${step.status === "active" ? "border-blue-300 bg-blue-50" : step.status === "done" ? "border-slate-200 bg-white" : "border-slate-200 bg-slate-50"}`}>
               <div className="flex items-center justify-between gap-3">
-                <span className={`grid size-9 place-items-center rounded-xl text-sm font-black ${step.status === "done" ? "bg-teal-50 text-brand" : step.status === "active" ? "bg-brand text-white" : "bg-white text-slate-500"}`}>
+                <span className={`grid size-9 place-items-center rounded-xl text-sm font-black ${step.status === "done" ? "bg-blue-50 text-brand" : step.status === "active" ? "bg-brand text-white" : "bg-white text-slate-500"}`}>
                   {step.status === "done" ? <CheckCircle2 size={17} /> : index + 1}
                 </span>
                 <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-slate-600">{t(step.status === "done" ? "Done" : step.status === "active" ? "Next" : "Waiting")}</span>
@@ -3676,7 +3676,7 @@ export function LeadFinderPage() {
             </div>
           )}
           <form id="lead-search-form" ref={leadSearchFormRef} aria-label="Lead search" onSubmit={submit} className="space-y-5">
-            <div className="mb-5 rounded-xl bg-teal-50 p-4">
+            <div className="mb-5 rounded-xl bg-blue-50 p-4">
               <p className="text-sm font-bold text-brand">{t("Step 1 of 3 · Choose a focused market")}</p>
               <p className="mt-1 text-sm leading-6 text-slate-700">{t("Use one country, one city and one industry. A narrower search creates better opportunities faster.")}</p>
             </div>
@@ -3715,7 +3715,7 @@ export function LeadFinderPage() {
               )}
             </div>}
             {searchSummary && <div className="mt-4 space-y-3" aria-label={t("Lead search summary")}>
-              <p className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-sm font-bold text-brand" aria-live="polite">
+              <p className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm font-bold text-brand" aria-live="polite">
                 {searchSummary.found > 0 && searchSummary.saved === 0 && searchSummary.duplicates > 0
                   ? t("Found companies already in CRM").replace("{count}", String(searchSummary.found))
                   : searchSummary.found > 0 && searchSummary.saved > 0 && searchSummary.duplicates > 0
@@ -3756,7 +3756,7 @@ export function LeadFinderPage() {
                     {t("Review one company, fill missing contact details if needed, then approve the email before anything is sent.")}
                   </p>
                 </div>
-                <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">
+                <span className="w-fit rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">
                   {opportunityReadiness.ready}/{opportunityReadiness.total} {t("ready for review")}
                 </span>
               </div>
@@ -3773,7 +3773,7 @@ export function LeadFinderPage() {
                 ))}
               </div>
             </section>}
-            {hasSearched && !searching && searchResults.length > 0 && <section className="mt-4 rounded-2xl border border-teal-200 bg-teal-50 p-4">
+            {hasSearched && !searching && searchResults.length > 0 && <section className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Next step")}</p>
@@ -3787,7 +3787,7 @@ export function LeadFinderPage() {
               </div>
             </section>}
             {searchSteps.length > 0 && <ol className="mt-4 grid gap-2 text-sm sm:grid-cols-3" aria-label="Lead search progress">
-              {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
+              {searchSteps.map((step, index) => <li key={`${step}-${index}`} className="flex items-center gap-2 rounded-xl bg-blue-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{step}</li>)}
             </ol>}
           </form>
           </ActionPanel>
@@ -3869,7 +3869,7 @@ function FirstCustomerResultCard({ result, saving, onSave, t }: { result: FirstC
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-lg font-black text-ink">{result.company_name}</h3>
-            <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">{result.ai_relevance_score} {t("fit score")}</span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">{result.ai_relevance_score} {t("fit score")}</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{t(result.verified_status)}</span>
           </div>
           <p className="mt-1 text-sm font-semibold text-slate-600">{result.industry || t("Industry unknown")} · {result.country || t("Country unknown")}</p>
@@ -3896,9 +3896,9 @@ function FirstCustomerResultCard({ result, saving, onSave, t }: { result: FirstC
           <p className="mt-1 font-semibold leading-6 text-ink">{result.fit_explanation || result.evidence_summary || result.signal_description}</p>
         </div>
       </div>
-      <div className="mt-4 rounded-2xl bg-slate-950 p-4 text-white">
-        <p className="text-xs font-black uppercase tracking-wide text-white/60">{t("Draft message")}</p>
-        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-white/90">{message || t("Message draft could not be created from verified evidence.")}</p>
+      <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-blue-950">
+        <p className="text-xs font-black uppercase tracking-wide text-slate-600">{t("Draft message")}</p>
+        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-blue-950">{message || t("Message draft could not be created from verified evidence.")}</p>
       </div>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm font-semibold text-slate-600">{t("Saving is manual. Sending still requires separate approval from the email workflow.")}</p>
@@ -4389,7 +4389,7 @@ function leadHasRunningWorkflow(lead: Lead) {
 }
 
 function workflowStatusTone(status: WorkflowStageStatus) {
-  if (status === "completed") return "bg-teal-50 text-brand border-teal-100";
+  if (status === "completed") return "bg-blue-50 text-brand border-blue-100";
   if (status === "running") return "bg-blue-50 text-blue-800 border-blue-100";
   if (status === "error") return "bg-amber-50 text-amber-900 border-amber-100";
   return "bg-slate-50 text-slate-500 border-slate-100";
@@ -4526,7 +4526,7 @@ function localizeLegacyCompanySalesFallbacks(company: CrmCompany, locale: Locale
 
 function stageTone(stage?: string | null) {
   const normalized = (stage || "").toLowerCase();
-  if (normalized.includes("won") || normalized.includes("meeting")) return "bg-teal-50 text-brand border-teal-200";
+  if (normalized.includes("won") || normalized.includes("meeting")) return "bg-blue-50 text-brand border-blue-200";
   if (normalized.includes("lost")) return "bg-red-50 text-red-700 border-red-200";
   if (normalized.includes("sent") || normalized.includes("replied") || normalized.includes("approved")) return "bg-blue-50 text-blue-700 border-blue-200";
   if (normalized.includes("draft") || normalized.includes("analyzed") || normalized.includes("contact")) return "bg-amber-50 text-amber-700 border-amber-200";
@@ -4535,7 +4535,7 @@ function stageTone(stage?: string | null) {
 
 function outreachTone(done: boolean, label: string) {
   if (!done) return "border-slate-200 bg-white text-slate-500";
-  if (["Meeting", "Won"].includes(label)) return "border-teal-200 bg-teal-50 text-brand";
+  if (["Meeting", "Won"].includes(label)) return "border-blue-200 bg-blue-50 text-brand";
   if (["Replied", "Opened", "Delivered"].includes(label)) return "border-blue-200 bg-blue-50 text-blue-700";
   return "border-amber-200 bg-amber-50 text-amber-700";
 }
@@ -4614,7 +4614,7 @@ function ActionProgress({ current, completed }: { current: string; completed: st
   const { t } = useI18n();
   if (!current && completed.length === 0) return null;
   return (
-    <div className="rounded-2xl border border-teal-100 bg-teal-50 p-4">
+    <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
       <p className="text-xs font-black uppercase tracking-wide text-brand">{t("AI is working")}</p>
       {current && (
         <p className="mt-2 inline-flex items-center gap-2 text-sm font-bold text-ink">
@@ -4949,7 +4949,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     {
       label: "AI Summary",
       value: executiveSummary,
-      tone: "teal"
+      tone: "blue"
     },
     {
       label: "Decision Maker",
@@ -4996,7 +4996,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
       ? { label: t("Error"), tone: "border-red-200 bg-red-50 text-red-800", detail: actionError }
       : !current.lead_id
         ? { label: t("Unavailable"), tone: "border-slate-200 bg-slate-100 text-slate-700", detail: t("This company is not connected to a lead yet. Reconnect it before AI actions.") }
-        : { label: t("Ready"), tone: "border-teal-200 bg-teal-50 text-brand", detail: t("Workspace is ready for the next step.") };
+        : { label: t("Ready"), tone: "border-blue-200 bg-blue-50 text-brand", detail: t("Workspace is ready for the next step.") };
   const nextActionText = String(
     nextAction
     || displayCurrent.ai_crm?.next_action
@@ -5389,13 +5389,13 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     }
   }
 
-  return <CompanyCardShell id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden bg-slate-50 ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
+  return <CompanyCardShell id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden bg-slate-50 ${highlighted ? "border-blue-300 ring-4 ring-blue-100" : "border-slate-200"}`}>
     <div className="border-b border-slate-200 bg-white p-5 sm:p-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
       <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f7fbff] to-[#edf6ff] p-5 shadow-sm sm:p-6">
         <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-[#b7e3ff] opacity-40 blur-3xl" />
         <div className="relative flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="flex min-w-0 gap-4">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-xl font-black text-white shadow-sm">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-brand text-xl font-black text-white shadow-sm">
               {current.name.slice(0, 2).toUpperCase()}
             </div>
             <div className="min-w-0">
@@ -5417,13 +5417,13 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
                 type="button"
                 onClick={runPrimaryAction}
                 disabled={(primaryAction.action === "prepare-company" && (actionBusy === "prepare-company" || !current.lead_id)) || (primaryAction.action === "discover-contact" && (actionBusy === "discover-contact" || !current.lead_id)) || (primaryAction.action === "move-stage" && actionBusy === "stage")}
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {(primaryAction.action === "prepare-company" && actionBusy === "prepare-company") || (primaryAction.action === "discover-contact" && actionBusy === "discover-contact") || (primaryAction.action === "move-stage" && actionBusy === "stage") ? <Loader2 className="animate-spin" size={17} /> : <PrimaryActionIcon size={17} />}
                 {t(primaryAction.label)}
               </button>
             ) : (
-              <a href={primaryAction.target} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">
+              <a href={primaryAction.target} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-bold text-white">
                 <PrimaryActionIcon size={17} />
                 {t(primaryAction.label)}
                 <ArrowRight size={16} />
@@ -5466,7 +5466,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               {workspaceFlow.map((step) => (
                 <span
                   key={step.label}
-                  className={`inline-flex min-h-9 items-center justify-center rounded-full border px-3 text-xs font-black ${step.status === "completed" ? "border-teal-200 bg-teal-50 text-brand" : step.status === "active" ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-500"}`}
+                  className={`inline-flex min-h-9 items-center justify-center rounded-full border px-3 text-xs font-black ${step.status === "completed" ? "border-blue-200 bg-blue-50 text-brand" : step.status === "active" ? "border-blue-200 bg-brand text-white" : "border-slate-200 bg-white text-slate-500"}`}
                 >
                   {t(step.label)}
                 </span>
@@ -5547,7 +5547,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
                   <div key={`${item.timestamp}-${index}`} className="rounded-lg bg-white p-3 text-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="font-black text-slate-900">{t(String(item.category))}</p>
-                      <span className={`rounded-full px-2 py-1 text-xs font-black ${Number(item.score_delta || 0) >= 0 ? "bg-teal-50 text-brand" : "bg-red-50 text-red-700"}`}>{Number(item.score_delta || 0) >= 0 ? "+" : ""}{item.score_delta}</span>
+                      <span className={`rounded-full px-2 py-1 text-xs font-black ${Number(item.score_delta || 0) >= 0 ? "bg-blue-50 text-brand" : "bg-red-50 text-red-700"}`}>{Number(item.score_delta || 0) >= 0 ? "+" : ""}{item.score_delta}</span>
                     </div>
                     <p className="mt-1 leading-6 text-slate-700">{String(item.evidence || revenueIntel.signal_summary)}</p>
                     <p className="mt-1 text-xs text-slate-500">{formatDateTime(String(item.timestamp || ""))} · {t("Intent")} {item.current_score}</p>
@@ -5589,15 +5589,15 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
 
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {autonomousDecisionCards.map((card) => {
-            const toneClass = card.tone === "teal"
-              ? "border-teal-100 bg-teal-50 text-brand"
+            const toneClass = card.tone === "blue"
+              ? "border-blue-100 bg-blue-50 text-brand"
               : card.tone === "ink"
-                ? "border-slate-900 bg-slate-900 text-white"
+                ? "border-blue-200 bg-brand text-white"
                 : "border-slate-200 bg-white text-slate-700";
             const bodyClass = card.tone === "ink" ? "text-white" : "text-slate-800";
             return (
               <article key={card.label} className={`rounded-2xl border p-4 shadow-sm ${toneClass}`}>
-                <p className={`text-xs font-black uppercase tracking-[0.16em] ${card.tone === "ink" ? "text-white/70" : ""}`}>{t(card.label)}</p>
+                <p className={`text-xs font-black uppercase tracking-[0.16em] ${card.tone === "ink" ? "text-slate-600" : ""}`}>{t(card.label)}</p>
                 <p className={`mt-2 line-clamp-4 text-sm font-semibold leading-6 ${bodyClass}`}>{t(card.value)}</p>
               </article>
             );
@@ -5621,7 +5621,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t("4. Decision Maker")}</p>
             <div className="mt-3 flex items-start gap-4">
-              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-slate-900 text-lg font-black text-white">
+              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-brand text-lg font-black text-white">
                 {String(decisionMaker.name || "DM").split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase()}
               </div>
               <div className="min-w-0">
@@ -5656,7 +5656,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             <h4 className="mt-2 text-base font-black text-slate-900">{readyEmailSubject || t("No email ready yet")}</h4>
             <p className="mt-3 line-clamp-5 whitespace-pre-line text-sm leading-6 text-slate-700">{readyEmailPreview || t("Generate or review the email to see the full preview.")}</p>
             <div className="mt-4 flex flex-wrap gap-2">
-              <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center rounded-xl bg-slate-900 px-4 text-sm font-bold text-white">{t("Review")}</a>
+              <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand px-4 text-sm font-bold text-white">{t("Review")}</a>
               <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800">{t("Send")}</a>
               {!current.generated_emails.length && <button type="button" onClick={generateEmailDraftForReview} disabled={actionBusy === "generate-email-draft" || !current.lead_id} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800 disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "generate-email-draft" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />}{t("Generate")}</button>}
             </div>
@@ -5744,11 +5744,11 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             <p className="mt-3 text-sm font-semibold leading-7 text-slate-700">{t(companyAiProfile)}</p>
           </div>
           <div className="grid min-w-0 gap-2 sm:grid-cols-3 xl:w-[28rem]">
-            <div className="rounded-2xl bg-slate-950 p-4 text-white">
-              <p className="text-xs font-black uppercase tracking-wide text-white/60">{t("Fit")}</p>
-              <p className="mt-1 text-3xl font-black">{opportunityScore}</p>
+            <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4 text-blue-950">
+              <p className="text-xs font-black uppercase tracking-wide text-slate-600">{t("Fit")}</p>
+              <p className="mt-1 text-3xl font-black text-ink">{opportunityScore}</p>
             </div>
-            <div className="rounded-2xl bg-teal-50 p-4 text-brand">
+            <div className="rounded-2xl bg-blue-50 p-4 text-brand">
               <p className="text-xs font-black uppercase tracking-wide">{t("Intent")}</p>
               <p className="mt-1 text-3xl font-black">{buyingIntentScore}</p>
             </div>
@@ -5794,7 +5794,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               type="button"
               onClick={prepareCompanyOpportunity}
               disabled={actionBusy === "prepare-company" || !current.lead_id}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-brand px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
             >
               {actionBusy === "prepare-company" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
               {t("Refresh research")}
@@ -5802,7 +5802,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {researchInputs.map((item) => (
-              <div key={item.label} className={`rounded-2xl border p-3 ${item.value ? "border-teal-100 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
+              <div key={item.label} className={`rounded-2xl border p-3 ${item.value ? "border-blue-100 bg-blue-50" : "border-slate-200 bg-slate-50"}`}>
                 <p className={`text-xs font-black uppercase tracking-[0.14em] ${item.value ? "text-brand" : "text-slate-500"}`}>{t(item.label)}</p>
                 <p className="mt-2 line-clamp-3 text-sm font-semibold leading-6 text-slate-800">{item.value ? t(String(item.value)) : t("Not detected yet")}</p>
               </div>
@@ -5817,9 +5817,9 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               <p className="text-6xl font-black tracking-[-0.06em] text-slate-950">{leadScoreV2Summary.score}</p>
               <p className="mt-1 text-sm font-bold text-slate-500">{t("Reply probability")}: {leadScoreV2Summary.replyProbability}%</p>
             </div>
-            <div className="rounded-2xl bg-slate-950 px-4 py-3 text-right text-white">
-              <p className="text-xs font-black uppercase text-white/60">{t("Signals impact")}</p>
-              <p className="mt-1 text-2xl font-black">+{Math.min(36, leadScoreV2Summary.signals.reduce((sum, signal) => sum + signal.weight, 0))}</p>
+            <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-right text-blue-950">
+              <p className="text-xs font-black uppercase text-slate-600">{t("Signals impact")}</p>
+              <p className="mt-1 text-2xl font-black text-ink">+{Math.min(36, leadScoreV2Summary.signals.reduce((sum, signal) => sum + signal.weight, 0))}</p>
             </div>
           </div>
           <div className="mt-5 grid gap-2">
@@ -5843,7 +5843,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("Buying Signal Engine")}</p>
               <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{t("Signals that change priority.")}</h3>
             </div>
-            <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-black text-white">{leadScoreV2Summary.signals.length} {t("active")}</span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">{leadScoreV2Summary.signals.length} {t("active")}</span>
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-2">
             {(leadScoreV2Summary.signals.length ? leadScoreV2Summary.signals : [{ label: "No strong buying signal yet", category: "Research", evidence: "Run AI research or collect fresher company data.", weight: 0 }]).map((signal) => (
@@ -5861,12 +5861,12 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           </div>
         </article>
 
-        <article className="rounded-[1.75rem] border border-slate-200 bg-slate-950 p-5 text-white shadow-sm">
-          <p className="text-xs font-black uppercase tracking-[0.16em] text-teal-200">{t("Next Best Action")}</p>
-          <h3 className="mt-3 text-4xl font-black tracking-[-0.05em]">{t(nextBestActionRecommendation.action)}</h3>
-          <p className="mt-2 text-sm font-bold text-white/60">{t(nextBestActionRecommendation.channel)}</p>
-          <p className="mt-5 text-sm font-semibold leading-7 text-white/80">{t(nextBestActionRecommendation.reason)}</p>
-          <a href={nextBestActionRecommendation.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-white px-4 text-sm font-black text-slate-950">
+        <article className="rounded-[1.75rem] border border-blue-100 bg-blue-50 p-5 text-blue-950 shadow-sm">
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-brand">{t("Next Best Action")}</p>
+          <h3 className="mt-3 text-4xl font-black text-ink">{t(nextBestActionRecommendation.action)}</h3>
+          <p className="mt-2 text-sm font-bold text-slate-600">{t(nextBestActionRecommendation.channel)}</p>
+          <p className="mt-5 text-sm font-semibold leading-7 text-slate-700">{t(nextBestActionRecommendation.reason)}</p>
+          <a href={nextBestActionRecommendation.href} className="mt-5 inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-brand px-4 text-sm font-black text-white">
             {t("Do this now")} <ArrowRight size={16} />
           </a>
         </article>
@@ -5883,7 +5883,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               type="button"
               onClick={generateEmailDraftForReview}
               disabled={actionBusy === "generate-email-draft" || !current.lead_id}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-brand px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
             >
               {actionBusy === "generate-email-draft" ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />}
               {t("Generate assets")}
@@ -5906,7 +5906,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           <div className="mt-5 space-y-3">
             {executiveTimelineItems.map((item, index) => (
               <div key={`${item.label}-${index}`} className="grid grid-cols-[2rem_1fr] gap-3">
-                <span className={`mt-1 grid size-8 place-items-center rounded-full text-xs font-black ${item.status === "Next" ? "bg-slate-950 text-white" : "bg-teal-50 text-brand"}`}>{index + 1}</span>
+                <span className={`mt-1 grid size-8 place-items-center rounded-full text-xs font-black ${item.status === "Next" ? "bg-brand text-white" : "bg-blue-50 text-brand"}`}>{index + 1}</span>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-black text-slate-950">{t(item.label)}</p>
@@ -5954,7 +5954,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
 
         <WorkspaceSection id={`insights-${current.id}`} title="AI Insights" copy="A sales-ready summary of why this company matters and what to do next.">
           <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <div className="rounded-2xl bg-teal-50 p-4">
+            <div className="rounded-2xl bg-blue-50 p-4">
               <p className="text-sm font-bold text-brand">{t("AI summary")}</p>
               <p className="mt-2 text-sm leading-6 text-slate-800">{t(displayCurrent.ai_summary || salesBrief.whatTheyDo)}</p>
               <p className="mt-4 text-sm font-bold text-ink">{t("Why this company is interesting")}</p>
@@ -5981,7 +5981,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-sm font-bold text-ink">{t("Buying signals")}</p>
-              <div className="mt-3 space-y-2">{buyingSignals.length ? buyingSignals.map((signal) => <p key={signal} className="flex items-center gap-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand"><ShieldCheck size={16} />{t(signal)}</p>) : <>
+              <div className="mt-3 space-y-2">{buyingSignals.length ? buyingSignals.map((signal) => <p key={signal} className="flex items-center gap-2 rounded-lg bg-blue-50 p-3 text-sm font-semibold text-brand"><ShieldCheck size={16} />{t(signal)}</p>) : <>
                 <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">{t("Not available. Analyze the website and find contacts to reveal buying signals.")}</p>
                 <button
                   type="button"
@@ -5996,13 +5996,13 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white p-4">
               <p className="text-sm font-bold text-ink">{t("Risks")}</p>
-              <div className="mt-3 space-y-2">{risks.length ? risks.map((risk) => <p key={risk} className="flex items-center gap-2 rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-800"><AlertTriangle size={16} />{t(risk)}</p>) : <p className="rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{t("No major missing steps detected for the current stage.")}</p>}</div>
+              <div className="mt-3 space-y-2">{risks.length ? risks.map((risk) => <p key={risk} className="flex items-center gap-2 rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-800"><AlertTriangle size={16} />{t(risk)}</p>) : <p className="rounded-lg bg-blue-50 p-3 text-sm font-semibold text-brand">{t("No major missing steps detected for the current stage.")}</p>}</div>
             </div>
           </div>
         </WorkspaceSection>
 
         <WorkspaceSection id={`contacts-${current.id}`} title="Contact Center" copy="Decision makers, verified contact details and confidence in one place.">
-          <div className={`mb-4 rounded-2xl border p-4 ${contactSearchEmpty ? "border-amber-200 bg-amber-50" : current.contacts.length ? "border-teal-200 bg-teal-50" : "border-slate-200 bg-slate-50"}`}>
+          <div className={`mb-4 rounded-2xl border p-4 ${contactSearchEmpty ? "border-amber-200 bg-amber-50" : current.contacts.length ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-slate-50"}`}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className={`text-xs font-black uppercase tracking-wide ${contactSearchEmpty ? "text-amber-700" : "text-brand"}`}>{t(contactSearchEmpty ? "Contact needed" : current.contacts.length ? "Contact ready" : "Find a decision maker")}</p>
@@ -6010,7 +6010,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
                 <p className="mt-2 text-sm leading-6 text-slate-700">{t(contactSearchEmpty ? (current.contact_search_message || "No verified business email was found. Add a decision maker manually or continue with research.") : current.contacts.length ? "A contact is saved in your private CRM. Review it before sending outreach." : "Search for decision makers first. If no verified email is available, add the contact manually and continue.")}</p>
                 {contactRolesSearched.length ? <p className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">{t("Roles searched")}: <span className="normal-case tracking-normal text-slate-700">{contactRolesSearched.map((role) => t(role)).join(", ")}</span></p> : null}
               </div>
-              <button type="button" onClick={discoverContacts} disabled={actionBusy === "discover-contact" || !current.lead_id} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
+              <button type="button" onClick={discoverContacts} disabled={actionBusy === "discover-contact" || !current.lead_id} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
                 {actionBusy === "discover-contact" ? <Loader2 className="animate-spin" size={17} /> : <UserRoundSearch size={17} />}
                 {t("Find contacts")}
               </button>
@@ -6060,7 +6060,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
                   {["apollo_company_profile", "apollo_people_search", "hunter_domain_search", "email_finder", "technographics"].map((stage) => (
                     <div key={stage} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-xs font-bold">
                       <span>{t(stage.replaceAll("_", " "))}</span>
-                      <span className={`rounded-full px-2 py-1 ${deepStages[stage] === "completed" ? "bg-teal-50 text-brand" : deepStages[stage] === "error" || deepStages[stage] === "missing_key" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{t(deepStages[stage] || "waiting")}</span>
+                      <span className={`rounded-full px-2 py-1 ${deepStages[stage] === "completed" ? "bg-blue-50 text-brand" : deepStages[stage] === "error" || deepStages[stage] === "missing_key" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{t(deepStages[stage] || "waiting")}</span>
                     </div>
                   ))}
                 </div>
@@ -6071,7 +6071,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
                   {(deepSources.length ? deepSources : [t("No source yet")]).map((source) => <span key={source} className="rounded-full bg-white px-2 py-1 text-xs font-bold text-slate-700">{t(source)}</span>)}
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {(deepTechnologies.length ? deepTechnologies.slice(0, 10) : [t("No technologies found yet")]).map((technology) => <span key={technology} className="rounded-full bg-teal-50 px-2 py-1 text-xs font-bold text-brand">{technology}</span>)}
+                  {(deepTechnologies.length ? deepTechnologies.slice(0, 10) : [t("No technologies found yet")]).map((technology) => <span key={technology} className="rounded-full bg-blue-50 px-2 py-1 text-xs font-bold text-brand">{technology}</span>)}
                 </div>
               </div>
             </div>
@@ -6097,7 +6097,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
                   <h4 className="break-words font-bold text-ink">{contact.name ? contact.name : t(contactDisplayName(contact))}</h4>
                   <p className="mt-1 text-sm text-slate-600">{t(contactRoleLine(contact))}</p>
                 </div>
-                <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{contactConfidenceLabel(contact.confidence, t)}</span>
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-brand">{contactConfidenceLabel(contact.confidence, t)}</span>
               </div>
               <div className="mt-4 grid gap-2 text-sm">
                 <p className="flex items-center gap-2 text-slate-700"><Mail size={16} />{contact.email || t("Not available")}</p>
@@ -6114,7 +6114,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
                 type="button"
                 onClick={discoverContacts}
                 disabled={actionBusy === "discover-contact" || !current.lead_id}
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {actionBusy === "discover-contact" ? <Loader2 className="animate-spin" size={17} /> : <UserRoundSearch size={17} />}
                 {t("Find contact")}
@@ -6214,7 +6214,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           <p className="mt-2 text-sm leading-6 text-slate-600">{t("Open this only when you need to audit what happened with the company.")}</p>
           <div className="mt-4 space-y-3">
             {lifecycle.map(([label, value, description]) => <div key={label} className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:grid-cols-[2rem_10rem_1fr]">
-              <div className={`flex h-8 w-8 items-center justify-center rounded-full ${value ? "bg-teal-50 text-brand" : "bg-slate-100 text-slate-400"}`}><Clock3 size={16} /></div>
+              <div className={`flex h-8 w-8 items-center justify-center rounded-full ${value ? "bg-blue-50 text-brand" : "bg-slate-100 text-slate-400"}`}><Clock3 size={16} /></div>
               <div>
                 <p className="font-bold text-ink">{t(label)}</p>
                 <p className="mt-1 text-xs text-slate-500">{t(formatDateTime(value))}</p>
@@ -6246,7 +6246,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Mail size={17} /> {t("Review Email")}</a>
             <button type="button" onClick={scheduleFollowUp} className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><CalendarDays size={17} /> {t("Schedule Follow-up")}</button>
             <Link href="/dashboard/campaigns" className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink"><Rocket size={17} /> {t("Add to Campaign")}</Link>
-            {onOpenNextLead ? <button type="button" onClick={onOpenNextLead} className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md bg-slate-900 px-4 text-sm font-bold text-white"><ArrowRight size={17} /> {t(nextLeadName ? `Open Next Lead: ${nextLeadName}` : "Open Next Lead")}</button> : null}
+            {onOpenNextLead ? <button type="button" onClick={onOpenNextLead} className="inline-flex min-h-11 scroll-mb-32 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white"><ArrowRight size={17} /> {t(nextLeadName ? `Open Next Lead: ${nextLeadName}` : "Open Next Lead")}</button> : null}
           </div>
         </section>
 
@@ -6257,7 +6257,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             <select aria-label={t("CRM stage")} value={stageValue} onChange={(event) => setStageValue(event.target.value)} className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm">
               {crmStages.map((stage) => <option key={stage} value={stage}>{t(stage)}</option>)}
             </select>
-            <button type="button" onClick={() => moveStage()} disabled={actionBusy === "stage"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
+            <button type="button" onClick={() => moveStage()} disabled={actionBusy === "stage"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-brand px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{actionBusy === "stage" && <Loader2 className="animate-spin" size={16} />} {t("Move stage")}</button>
           </div>
         </section>
 
@@ -6277,7 +6277,7 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
           </div>
         </section>
 
-        {actionNotice && <p role="status" className="rounded-2xl bg-teal-50 p-4 text-sm font-semibold text-brand">{actionNotice}</p>}
+        {actionNotice && <p role="status" className="rounded-2xl bg-blue-50 p-4 text-sm font-semibold text-brand">{actionNotice}</p>}
         {actionError && <p role="alert" className="rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-700">{actionError}</p>}
         <ActionProgress current={actionCurrentStep} completed={actionCompletedSteps} />
       </aside>
@@ -6377,7 +6377,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
   const compactFound = aiWorkPlan.filter((item) => item.status === "completed").map((item) => t(item.label));
   const compactMissing = aiWorkPlan.filter((item) => item.status !== "completed").map((item) => t(item.label));
 
-  return <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-md">
+  return <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-md">
     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
@@ -6392,7 +6392,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
           <span className="inline-flex min-w-0 items-center gap-1.5"><Mail className="shrink-0" size={16} /> <span className="truncate">{emailCount ? `${emailCount} ${t(emailCount === 1 ? "email draft" : "email drafts")}` : t("No email draft yet")}</span></span>
         </div>
         {website && <a className="mt-3 inline-flex max-w-full items-center gap-1.5 break-all text-sm font-bold text-brand hover:underline" href={website.startsWith("http") ? website : `https://${website}`} target="_blank" rel="noreferrer"><Globe2 className="shrink-0" size={16} />{website}</a>}
-        <div className="mt-4 rounded-xl border border-teal-100 bg-teal-50 p-3">
+        <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-3">
           <p className="text-xs font-bold uppercase text-slate-500">{t("Next recommended action")}</p>
           <p className="mt-1 text-sm font-semibold leading-6 text-ink">{t(nextAction)}</p>
           <p className="mt-1 text-xs leading-5 text-slate-600">{t(primaryAction.copy)}</p>
@@ -6424,7 +6424,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
             })}
           </div>
           <div className="mt-3 grid gap-2 md:grid-cols-3">
-            <div className="rounded-lg bg-teal-50 p-2">
+            <div className="rounded-lg bg-blue-50 p-2">
               <p className="text-[11px] font-black uppercase text-brand">{t("Found")}</p>
               <p className="mt-1 text-xs font-semibold leading-5 text-slate-800">{compactFound.length ? compactFound.slice(0, 3).join(", ") : t("Nothing verified yet")}</p>
             </div>
@@ -6466,7 +6466,7 @@ function CompactCompanyCard({ company, api }: { company: CrmCompany; api: ApiFn 
     <div className="mt-3">
       <ActionProgress current={currentStep} completed={completedSteps} />
     </div>
-    {notice && <p role="status" className="mt-3 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{notice}</p>}
+    {notice && <p role="status" className="mt-3 rounded-xl bg-blue-50 p-3 text-sm font-semibold text-brand">{notice}</p>}
     {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p>}
     {current.notes.length > 0 && <div className="mt-3 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{current.notes.slice(0, 2).map((note) => <p key={note.id}>{localizedLegacySalesFallback(note.body, current, locale)}</p>)}</div>}
     <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 text-sm sm:grid-cols-3">
@@ -6532,10 +6532,10 @@ export function CompaniesPage() {
         </label>
       </div>
     </section>}
-    {focusedCompany && <section className="rounded-2xl border border-teal-200 bg-teal-50 p-4 text-sm text-slate-700">
+    {focusedCompany && <section className="rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-slate-700">
       <p className="font-bold text-brand">{t("Opened from CRM pipeline")}</p>
       <p className="mt-1">{t("Continue with the highlighted company, or clear the focus to view the full CRM list.")}</p>
-      <Link href="/dashboard/companies" className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-teal-300 bg-white px-3 text-xs font-bold text-brand">{t("Clear focus")}</Link>
+      <Link href="/dashboard/companies" className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md border border-blue-300 bg-white px-3 text-xs font-bold text-brand">{t("Clear focus")}</Link>
     </section>}
     <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <summary className="cursor-pointer text-sm font-black text-slate-700">{t("Search and filters")}</summary>
@@ -6738,7 +6738,7 @@ export function CampaignsPage() {
     {notice && <p role="status" className="rounded-2xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-700 shadow-sm">{notice}</p>}
     {!loading && !error && <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="grid gap-3 md:grid-cols-[1.3fr_0.7fr]">
-        <div className="rounded-xl border border-teal-100 bg-teal-50 p-4">
+        <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
           <p className="text-xs font-black uppercase text-brand">{t("Decision now")}</p>
           <h2 className="mt-2 text-xl font-black text-ink">{campaignSummary.next ? t(campaignSummary.nextReadiness?.action || "Review campaigns") : t(leads.length ? "Create campaign" : "Find leads")}</h2>
           <p className="mt-2 text-sm leading-6 text-slate-700">
@@ -6766,7 +6766,7 @@ export function CampaignsPage() {
           <h2 className="mt-1 text-xl font-bold text-ink">{t("Create a campaign from saved leads")}</h2>
           <p className="mt-2 text-sm text-slate-600">{t("Expected time: 1 minute. You can review every email before anything is sent.")}</p>
         </div>
-        <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-bold text-brand">{t("Review before send")}</span>
+        <span className="w-fit rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-brand">{t("Review before send")}</span>
       </div>
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <label className="text-sm font-semibold text-slate-700">{t("Campaign name")}<input name="name" required placeholder={`${leads[0]?.industry || t("Outbound")} ${t("campaign")}`} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm" /></label>
@@ -6790,9 +6790,9 @@ export function CampaignsPage() {
             <h2 className="font-bold text-ink">{campaign.name}</h2>
             <p className="mt-2 text-sm text-slate-600">{campaign.leads} {t("leads")} · {campaign.sent} {t("sent")} · {campaign.replies} {t("replies")}</p>
           </div>
-          <span className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${readiness.variant === "ready" ? "bg-teal-50 text-brand" : "bg-amber-50 text-amber-800"}`}>{t(readiness.state)}</span>
+          <span className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${readiness.variant === "ready" ? "bg-blue-50 text-brand" : "bg-amber-50 text-amber-800"}`}>{t(readiness.state)}</span>
         </div>
-        <div className={`mt-4 rounded-2xl border p-4 ${readiness.variant === "ready" ? "border-teal-100 bg-teal-50" : "border-amber-100 bg-amber-50"}`}>
+        <div className={`mt-4 rounded-2xl border p-4 ${readiness.variant === "ready" ? "border-blue-100 bg-blue-50" : "border-amber-100 bg-amber-50"}`}>
           <p className="text-sm font-bold uppercase text-brand">{t("Next step")}</p>
           <p className="mt-2 text-lg font-black text-ink">{t(readiness.action)}</p>
           <p className="mt-2 text-sm leading-6 text-slate-700">{t(readiness.copy)}</p>
@@ -6841,7 +6841,7 @@ export function InboxPage() {
     {loadingInbox ? <EmptyState title="Loading reply workspace" copy="Reading campaigns and reply events." /> : inboxError ? <WidgetErrorCard title="Reply workspace unavailable" copy={inboxError} onRetry={inbox.refresh} /> : <>
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="grid gap-3 md:grid-cols-[1.4fr_0.6fr]">
-          <div className="rounded-xl border border-teal-100 bg-teal-50 p-4">
+          <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
             <p className="text-xs font-black uppercase text-brand">{t("Decision now")}</p>
             <h2 className="mt-2 text-xl font-black text-ink">{t(inboundMessages.length ? "Handle newest reply" : approvedOrSent.length ? "Keep campaign ready" : "Prepare first email")}</h2>
             <p className="mt-2 text-sm leading-6 text-slate-700">{t(nextReplyAction)}</p>
@@ -6862,13 +6862,13 @@ export function InboxPage() {
           <p className="text-xs font-bold uppercase text-brand">{t("Inbound reply")}</p>
           <h2 className="mt-2 text-lg font-black text-ink">{message.subject || t("Reply captured")}</h2>
           <p className="mt-2 line-clamp-3 text-sm leading-6 text-slate-600">{message.preview || message.body || t("Open the related company and decide the next CRM step.")}</p>
-          <Link href="/dashboard/companies" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Open companies")}</Link>
+          <Link href="/dashboard/companies" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Open companies")}</Link>
         </article>)}
         {repliedLeads.slice(0, 6).map((lead) => <article key={lead.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <p className="text-xs font-bold uppercase text-brand">{t("Reply received")}</p>
           <h2 className="mt-2 text-lg font-black text-ink">{lead.company}</h2>
           <p className="mt-2 text-sm leading-6 text-slate-600">{t("Review the reply, update CRM stage and decide the next follow-up.")}</p>
-          <Link href={lead.crm_company_id ? `/dashboard/companies?company=${encodeURIComponent(lead.crm_company_id)}` : "/dashboard/companies"} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Open company")}</Link>
+          <Link href={lead.crm_company_id ? `/dashboard/companies?company=${encodeURIComponent(lead.crm_company_id)}` : "/dashboard/companies"} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Open company")}</Link>
         </article>)}
       </section> : <EmptyState
         title={activeCampaigns.length ? "No replies yet" : "No active campaign replies yet"}
@@ -6891,17 +6891,17 @@ export function CrmPipelinePage() {
       eyebrow="CRM Pipeline"
       title="Move real leads from research to revenue."
       copy="Pipeline stages update from saved companies, AI research, email drafts and customer replies."
-      action={<Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Review companies")}</Link>}
+      action={<Link href="/dashboard/companies" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Review companies")}</Link>}
     />
     {loading ? <EmptyState title="Loading pipeline" copy="Reading CRM stages." /> : error ? <EmptyState title="Pipeline unavailable" copy={error} /> : totalCompanies ? <>
       <section className="grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
-        <article className="rounded-2xl border border-teal-200 bg-teal-50 p-5 shadow-sm">
+        <article className="rounded-2xl border border-blue-200 bg-blue-50 p-5 shadow-sm">
           <p className="text-xs font-bold uppercase tracking-wide text-brand">{t("Next sales action")}</p>
           <h2 className="mt-2 text-xl font-black text-ink">{nextCompany ? nextCompany.name : t("No company selected")}</h2>
           <p className="mt-2 text-sm leading-6 text-slate-700">{nextCompany ? t(companyNextAction(nextCompany)) : t("Find companies first, then move them through the CRM.")}</p>
           <div className="mt-4 flex flex-col gap-2 min-[430px]:flex-row">
             <Link href={nextCompany ? `/dashboard/companies?company=${encodeURIComponent(nextCompany.id)}` : "/dashboard/companies"} className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Open company workspace")}</Link>
-            <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md border border-teal-300 bg-white px-4 text-sm font-bold text-brand">{t("Find more leads")}</Link>
+            <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md border border-blue-300 bg-white px-4 text-sm font-bold text-brand">{t("Find more leads")}</Link>
           </div>
         </article>
         <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -6940,7 +6940,7 @@ export function CrmPipelinePage() {
 export function DealsPage() {
   const { deals, loading, error, filters, setFilters } = useCrmData();
   const { t } = useI18n();
-  return <div className="space-y-6"><PageHeader eyebrow="Deals" title="Revenue opportunities from saved companies." copy="Every saved company gets a CRM deal so you can track the next step toward a meeting or customer." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading deals" copy="Reading CRM opportunities." /> : error ? <EmptyState title="Deals unavailable" copy={error} /> : deals.length ? <section className="grid gap-4 lg:grid-cols-3">{deals.map((deal) => <article key={deal.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold uppercase text-brand">{t(deal.stage)}</p><h2 className="mt-2 font-bold text-ink">{deal.name}</h2><p className="mt-1 text-sm text-slate-600">{deal.company}</p><div className="mt-4 grid grid-cols-2 gap-2 text-sm"><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">{t("Value")}</span><br />€{Math.round(deal.value || 0).toLocaleString()}</p><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">{t("Probability")}</span><br />{deal.probability}%</p></div><p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">{t(deal.next_step || "Review the company and prepare outreach.")}</p></article>)}</section> : <EmptyState title="No deals yet" copy="Saved companies automatically create CRM deals. Start with Lead Finder to build your first opportunity list." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
+  return <div className="space-y-6"><PageHeader eyebrow="Deals" title="Revenue opportunities from saved companies." copy="Every saved company gets a CRM deal so you can track the next step toward a meeting or customer." /><CrmFilters filters={filters} setFilters={setFilters} />{loading ? <EmptyState title="Loading deals" copy="Reading CRM opportunities." /> : error ? <EmptyState title="Deals unavailable" copy={error} /> : deals.length ? <section className="grid gap-4 lg:grid-cols-3">{deals.map((deal) => <article key={deal.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold uppercase text-brand">{t(deal.stage)}</p><h2 className="mt-2 font-bold text-ink">{deal.name}</h2><p className="mt-1 text-sm text-slate-600">{deal.company}</p><div className="mt-4 grid grid-cols-2 gap-2 text-sm"><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">{t("Value")}</span><br />€{Math.round(deal.value || 0).toLocaleString()}</p><p className="rounded-xl bg-slate-50 p-3"><span className="font-bold">{t("Probability")}</span><br />{deal.probability}%</p></div><p className="mt-4 rounded-xl bg-blue-50 p-3 text-sm font-semibold text-brand">{t(deal.next_step || "Review the company and prepare outreach.")}</p></article>)}</section> : <EmptyState title="No deals yet" copy="Saved companies automatically create CRM deals. Start with Lead Finder to build your first opportunity list." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find companies")}</Link>} />}</div>;
 }
 
 export function AnalyticsPage() {
@@ -7101,7 +7101,7 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
     }
   }
 
-  const badgeClass = status?.connected ? "border-teal-200 bg-teal-50 text-brand" : "border-amber-200 bg-amber-50 text-amber-900";
+  const badgeClass = status?.connected ? "border-blue-200 bg-blue-50 text-brand" : "border-amber-200 bg-amber-50 text-amber-900";
   return (
     <section id="email-sending" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -7131,7 +7131,7 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
               <label className="text-sm font-bold text-ink">{t("Daily safety limit")}<input value={form.daily_send_limit} onChange={(event) => setForm((current) => ({ ...current, daily_send_limit: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" min={1} max={200} type="number" /></label>
               {form.provider === "smtp" && (
                 <>
-                  <p className="rounded-xl border border-teal-100 bg-teal-50 p-3 text-sm font-semibold leading-6 text-slate-700 sm:col-span-2">
+                  <p className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm font-semibold leading-6 text-slate-700 sm:col-span-2">
                     {t("When you save SMTP settings, OutreachAI verifies the mailbox login before enabling real sends. Use an app password when your provider requires it.")}
                   </p>
                   <label className="text-sm font-bold text-ink">{t("SMTP host")}<input value={form.smtp_host} onChange={(event) => setForm((current) => ({ ...current, smtp_host: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-3 text-sm font-semibold" placeholder="smtp.company.com" /></label>
@@ -7146,7 +7146,7 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
               )}
             </div>
             <button disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white disabled:opacity-60 sm:w-auto">{saving ? t("Saving...") : t("Save sending setup")}</button>
-            {saved && <p className="rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{saved}</p>}
+            {saved && <p className="rounded-xl bg-blue-50 p-3 text-sm font-bold text-brand">{saved}</p>}
             {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</p>}
           </form>
           <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">
@@ -7205,7 +7205,7 @@ export function SettingsPage() {
     <PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="grid gap-3 md:grid-cols-[1.3fr_0.7fr]">
-        <div className="rounded-xl border border-teal-100 bg-teal-50 p-4">
+        <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
           <p className="text-xs font-black uppercase text-brand">{t("Decision now")}</p>
           <h2 className="mt-2 text-xl font-black text-ink">{t(setupDecision)}</h2>
           <p className="mt-2 text-sm leading-6 text-slate-700">{t("Only setup that changes real outreach stays on this page.")}</p>
@@ -7218,12 +7218,12 @@ export function SettingsPage() {
       </div>
     </section>
     <section className="grid gap-4 lg:grid-cols-2">{readiness.map(([title, copy, status]) => <article key={title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="font-bold text-ink">{t(title)}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{t(copy)}</p><p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">{t(status)}</p></article>)}</section>
-    <section id="lead-search-key" className={`scroll-mt-24 rounded-2xl border p-5 shadow-sm ${leadSearchReady ? "border-teal-200 bg-teal-50" : "border-amber-200 bg-amber-50"}`}>
+    <section id="lead-search-key" className={`scroll-mt-24 rounded-2xl border p-5 shadow-sm ${leadSearchReady ? "border-blue-200 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
       <p className={`text-sm font-bold uppercase ${leadSearchReady ? "text-brand" : "text-amber-800"}`}>{t("Lead search key")}</p>
       {leadSearchStatusLoading ? <div className="mt-3 h-20 animate-pulse rounded-xl bg-white/70" /> : leadSearchReady ? <>
         <h2 className="mt-2 text-xl font-black text-ink">{t("Ready to find companies")}</h2>
         <p className="mt-2 text-sm leading-6 text-slate-700">{t("Your company search is connected. Start with one narrow market and save results to CRM.")}</p>
-        <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Search market")}</Link><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md border border-teal-300 bg-white px-4 text-sm font-bold text-brand">{t("Add company manually")}</Link></div>
+        <div className="mt-4 flex flex-col gap-3 min-[430px]:flex-row"><Link href="/dashboard/leads#lead-search-form" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Search market")}</Link><Link href="/dashboard/leads#manual-company" className="inline-flex min-h-11 items-center justify-center rounded-md border border-blue-300 bg-white px-4 text-sm font-bold text-brand">{t("Add company manually")}</Link></div>
       </> : <>
         <h2 className="mt-2 text-xl font-black text-ink">{t("Automatic company search needs one setup step")}</h2>
         <p className="mt-2 text-sm leading-6 text-amber-900">{t("Ask the workspace owner to connect automatic company search. Until then, add companies manually and continue with CRM, research and outreach review.")}</p>
@@ -7256,9 +7256,9 @@ export function BillingPage() {
   const nextBillingAction = billingNeedsAttention ? "Resolve billing before launching more outreach." : leadLimit && leadsUsed >= leadLimit ? "Upgrade before adding more leads." : emailLimit && emailsUsed >= emailLimit ? "Reduce sends or upgrade before the next campaign." : "Keep using the current plan.";
 
   return <div className="space-y-6">
-    <PageHeader eyebrow="Billing" title="Subscription and usage." copy="Plan, usage and limits come from billing state. No fake usage is displayed." action={<Link href="/pricing" className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Manage plan")}</Link>} />
+    <PageHeader eyebrow="Billing" title="Subscription and usage." copy="Plan, usage and limits come from billing state. No fake usage is displayed." action={<Link href="/pricing" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Manage plan")}</Link>} />
     {billing.loading ? <EmptyState title="Loading billing" copy="Reading subscription usage." /> : billing.error ? <EmptyState title="Billing unavailable" copy={billing.error} action={<button type="button" onClick={billing.refresh} className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Retry")}</button>} /> : <>
-      <section className={`rounded-2xl border p-5 shadow-sm ${billingNeedsAttention ? "border-amber-200 bg-amber-50" : "border-teal-200 bg-teal-50"}`}>
+      <section className={`rounded-2xl border p-5 shadow-sm ${billingNeedsAttention ? "border-amber-200 bg-amber-50" : "border-blue-200 bg-blue-50"}`}>
         <p className={`text-xs font-black uppercase ${billingNeedsAttention ? "text-amber-800" : "text-brand"}`}>{t("Decision now")}</p>
         <h2 className="mt-2 text-xl font-black text-ink">{t(nextBillingAction)}</h2>
         <p className="mt-2 text-sm leading-6 text-slate-700">{t(billingNeedsAttention ? (status?.last_failure_message || status?.last_payment_error || "Billing needs attention.") : "Current plan is available for the next customer workflow.")}</p>
@@ -7315,7 +7315,7 @@ export function ProfilePage() {
   return <div className="space-y-6">
     <PageHeader eyebrow="Profile" title="Set the workspace identity AI should use." copy="Profile fields are saved to the existing account profile and workspace. They shape timezone, language and company context for outreach." action={<Link href="/dashboard/settings" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Open settings")}</Link>} />
     {loading ? <EmptyState title="Loading profile" copy="Reading workspace identity." /> : error && !form ? <WidgetErrorCard title="Profile unavailable" copy={error} /> : form ? <>
-      <section className={`rounded-2xl border p-5 shadow-sm ${missing.length ? "border-amber-200 bg-amber-50" : "border-teal-200 bg-teal-50"}`}>
+      <section className={`rounded-2xl border p-5 shadow-sm ${missing.length ? "border-amber-200 bg-amber-50" : "border-blue-200 bg-blue-50"}`}>
         <p className={`text-xs font-black uppercase ${missing.length ? "text-amber-800" : "text-brand"}`}>{t("Decision now")}</p>
         <h2 className="mt-2 text-xl font-black text-ink">{t(missing.length ? "Complete workspace identity" : "Workspace identity is ready")}</h2>
         <p className="mt-2 text-sm leading-6 text-slate-700">{missing.length ? `${t("Missing")}: ${missing.map((item) => t(item)).join(", ")}` : t("AI can use this company context for customer-facing outreach.")}</p>
@@ -7347,7 +7347,7 @@ export function ProfilePage() {
           <PrimaryButton type="submit" disabled={saving}>{saving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {t("Save profile")}</PrimaryButton>
           <Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink">{t("Find leads")}</Link>
         </div>
-        {notice && <p className="mt-4 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{t(notice)}</p>}
+        {notice && <p className="mt-4 rounded-xl bg-blue-50 p-3 text-sm font-bold text-brand">{t(notice)}</p>}
         {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{t(error)}</p>}
       </form>
     </> : <EmptyState title="Profile unavailable" copy="Profile data was not returned." />}

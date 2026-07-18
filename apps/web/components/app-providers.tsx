@@ -41,7 +41,7 @@ function StabilityFallback({
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white"
+            className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white"
           >
             {t("common.refresh")}
           </button>

@@ -9,7 +9,7 @@ export default function BillingSuccessPage({ searchParams }: { searchParams: Pro
         <CheckCircle2 className="mx-auto text-brand" size={42} />
         <h1 className="mt-4 text-2xl font-bold text-ink">Subscription checkout complete</h1>
         <p className="mt-3 text-sm leading-6 text-slate-600">Your monthly subscription is activating. Your billing status will update automatically.</p>
-        <Link href="/dashboard/billing" className="focus-ring mt-6 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 py-3 text-sm font-semibold text-white">Open billing</Link>
+        <Link href="/dashboard/billing" className="focus-ring mt-6 inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-5 py-3 text-sm font-semibold text-white">Open billing</Link>
       </section>
     </main>
   );

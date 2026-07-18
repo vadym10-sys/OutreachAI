@@ -507,7 +507,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       <CheckoutContinuation />
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-72 border-r border-[var(--ui-border)] bg-white px-4 py-5 shadow-[12px_0_44px_rgba(16,17,20,0.05)] lg:block">
         <Link href="/dashboard" className="mb-6 flex min-h-12 items-center gap-3 rounded-2xl px-2 text-xl font-black tracking-tight text-ink">
-          <span className="grid size-10 place-items-center rounded-2xl bg-[linear-gradient(135deg,#111114,var(--ui-brand),var(--ui-accent))] text-sm text-white shadow-glow">OA</span>
+          <span className="grid size-10 place-items-center rounded-xl bg-brand text-sm text-white shadow-sm">OA</span>
           <span>
             OutreachAI
             <span className="block text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t("Find → CRM → Mail")}</span>
@@ -532,8 +532,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             const active = isNavItemActive(item, pathname);
             const label = t(item.labelKey);
             return (
-              <Link key={item.href} href={item.href} className={`group flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white shadow-glow" : "text-[var(--ui-text-soft)] hover:bg-white/80 hover:text-[var(--ui-text)]"}`}>
-                <span className={`grid size-8 place-items-center rounded-xl ${active ? "bg-white/15 text-white" : "bg-[var(--ui-surface-subtle)] text-[var(--ui-text-soft)] group-hover:text-[var(--ui-text)]"}`}>
+              <Link key={item.href} href={item.href} className={`group flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "border border-blue-100 bg-blue-50 text-brand shadow-sm" : "text-[var(--ui-text-soft)] hover:bg-slate-50 hover:text-[var(--ui-text)]"}`}>
+                <span className={`grid size-8 place-items-center rounded-xl ${active ? "bg-white text-brand" : "bg-[var(--ui-surface-subtle)] text-[var(--ui-text-soft)] group-hover:text-[var(--ui-text)]"}`}>
                   <Icon size={17} aria-hidden="true" />
                 </span>
                 <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -550,8 +550,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 const active = isNavItemActive(item, pathname);
                 const label = t(item.labelKey);
                 return (
-                  <Link key={item.href} href={item.href} className={`group flex min-h-11 items-center gap-3 rounded-xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white shadow-glow" : "text-[var(--ui-text-soft)] hover:bg-white hover:text-[var(--ui-text)]"}`}>
-                    <span className={`grid size-8 place-items-center rounded-xl ${active ? "bg-white/15 text-white" : "bg-[var(--ui-surface-subtle)] text-[var(--ui-text-soft)] group-hover:text-[var(--ui-text)]"}`}>
+                  <Link key={item.href} href={item.href} className={`group flex min-h-11 items-center gap-3 rounded-xl px-3 py-2 text-sm font-bold ${active ? "border border-blue-100 bg-blue-50 text-brand shadow-sm" : "text-[var(--ui-text-soft)] hover:bg-white hover:text-[var(--ui-text)]"}`}>
+                    <span className={`grid size-8 place-items-center rounded-xl ${active ? "bg-white text-brand" : "bg-[var(--ui-surface-subtle)] text-[var(--ui-text-soft)] group-hover:text-[var(--ui-text)]"}`}>
                       <Icon size={16} aria-hidden="true" />
                     </span>
                     <span className="min-w-0 flex-1 truncate">{label}</span>
@@ -581,7 +581,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 <Menu size={20} aria-hidden="true" />
               </button>
               <div className={`${mobileMenuOpen ? "block" : "hidden"} fixed inset-0 z-50 lg:hidden`}>
-                <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-950/45" onClick={closeMobileMenu} />
+                <button type="button" aria-label={t("nav.close")} className="absolute inset-0 z-0 bg-slate-500/20" onClick={closeMobileMenu} />
                 <div role="dialog" aria-label={t("nav.open")} className="absolute left-3 top-[4.25rem] z-10 max-h-[calc(100dvh-5rem)] w-[min(calc(100vw-1.5rem),22rem)] overflow-y-auto rounded-[1.6rem] border border-[var(--ui-border)] bg-white p-3 shadow-2xl">
                   <div className="mb-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-3">
                     <p className="truncate text-sm font-bold text-ink">{workspaceLabel}</p>
@@ -599,7 +599,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                           const active = isNavItemActive(item, pathname);
                           const label = t(item.labelKey);
                           return (
-                            <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white" : "text-[var(--ui-text-soft)] hover:bg-white"}`}>
+                            <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "border border-blue-100 bg-blue-50 text-brand" : "text-[var(--ui-text-soft)] hover:bg-white"}`}>
                               <Icon size={18} aria-hidden="true" />
                               {label}
                             </Link>
@@ -647,11 +647,11 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 }}
               />
             ) : qaAuthEnabled ? (
-              <button type="button" data-testid="qa-sign-out" onClick={signOutQaUser} className="grid size-10 place-items-center rounded-full bg-teal-50 text-xs font-black text-brand" aria-label={t("Sign out")} title={t("Sign out")}>
+              <button type="button" data-testid="qa-sign-out" onClick={signOutQaUser} className="grid size-10 place-items-center rounded-full bg-blue-50 text-xs font-black text-brand" aria-label={t("Sign out")} title={t("Sign out")}>
                 {accountInitials}
               </button>
             ) : (
-              <span className="grid size-10 place-items-center rounded-full bg-teal-50 text-xs font-black text-brand" aria-hidden="true">
+              <span className="grid size-10 place-items-center rounded-full bg-blue-50 text-xs font-black text-brand" aria-hidden="true">
                 {accountInitials}
               </span>
             )}
@@ -665,7 +665,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                 <h1 className="mt-2 text-2xl font-black tracking-tight text-ink sm:text-3xl">{workspaceLabel}</h1>
                 <p className="mt-2 text-sm leading-6 text-slate-600">{t("workspace.privateCopy")}</p>
                 <div className="mt-4 grid gap-2 text-sm">
-                  <div className="flex items-center gap-2 rounded-xl bg-teal-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{t("workspace.owner")}: {workspaceOwnerEmail || email || t("shell.account")}</div>
+                  <div className="flex items-center gap-2 rounded-xl bg-blue-50 p-3 font-semibold text-brand"><CheckCircle2 size={16} />{t("workspace.owner")}: {workspaceOwnerEmail || email || t("shell.account")}</div>
                   <div className="flex items-center gap-2 rounded-xl bg-slate-50 p-3 font-semibold text-slate-700"><CheckCircle2 size={16} />{t("workspace.dataIsolation")}</div>
                 </div>
               </div>
@@ -677,7 +677,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   </div>
                   <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-black text-brand shadow-sm">{workspaceReadyScore}/5</span>
                 </div>
-                <div className="mt-4 rounded-2xl border border-teal-100 bg-white p-3">
+                <div className="mt-4 rounded-2xl border border-blue-100 bg-white p-3">
                   <p className="text-xs font-black uppercase tracking-wide text-brand">{t("workspace.howItWorksTitle")}</p>
                   <ol className="mt-2 grid gap-2 text-sm font-semibold text-slate-700">
                     <li>{t("workspace.stepCompany")}</li>
@@ -692,10 +692,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   <label className="text-sm font-bold text-slate-700">{t("workspace.targetCountry")}<input name="target_country" defaultValue={workspace?.target_country || ""} placeholder={t("workspace.countryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.countryHelp")}</span></label>
                   <label className="text-sm font-bold text-slate-700 sm:col-span-2">{t("workspace.targetCustomer")}<input name="target_customer" defaultValue={workspace?.target_customer || ""} placeholder={t("workspace.customerPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.customerHelp")}</span></label>
                 </div>
-                {workspaceNotice && <p className="mt-3 rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{workspaceNotice}</p>}
+                {workspaceNotice && <p className="mt-3 rounded-xl bg-blue-50 p-3 text-sm font-bold text-brand">{workspaceNotice}</p>}
                 {workspaceError && <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{workspaceError}</p>}
                 <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <button type="submit" disabled={workspaceSaving} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-black text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60">
+                  <button type="submit" disabled={workspaceSaving} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-black text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">
                     {workspaceSaving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />}
                     {t("workspace.save")}
                   </button>
@@ -709,13 +709,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>
-      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-4 rounded-[1.6rem] border border-[var(--ui-border)] bg-white px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] lg:hidden">
+      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-4 rounded-[1.6rem] border border-[var(--ui-border)] bg-white px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_45px_rgba(15,23,42,0.12)] lg:hidden">
         {primaryMobileNav.map((item) => {
           const Icon = item.icon;
           const active = isNavItemActive(item, pathname);
           const label = t(item.labelKey);
           return (
-            <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-[11px] font-black ${active ? "bg-[#101114] text-white shadow-sm" : "text-[var(--ui-text-soft)]"}`}>
+            <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-[11px] font-black ${active ? "bg-brand text-white shadow-sm" : "text-[var(--ui-text-soft)]"}`}>
               <Icon size={18} aria-hidden="true" />
               <span className="max-w-full truncate">{label}</span>
             </Link>
@@ -737,7 +737,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             />
           );
         }) : (
-          <div className="rounded-2xl px-3 py-8 text-center text-sm font-semibold text-white/55">No matching workspace action.</div>
+          <div className="rounded-2xl px-3 py-8 text-center text-sm font-semibold text-slate-500">No matching workspace action.</div>
         )}
       </CommandDialog>
     </div>

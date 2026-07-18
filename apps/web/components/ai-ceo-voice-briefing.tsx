@@ -243,7 +243,7 @@ export function AICEOVoiceBriefing() {
         type="button"
         onClick={listenReport}
         disabled={!ready || busy === 'briefing'}
-        className="focus-ring fixed bottom-24 right-4 z-40 inline-flex min-h-12 items-center gap-2 rounded-full bg-ink px-4 py-3 text-sm font-bold text-white shadow-soft disabled:opacity-60 lg:bottom-6 lg:right-6"
+        className="focus-ring fixed bottom-24 right-4 z-40 inline-flex min-h-12 items-center gap-2 rounded-full bg-brand px-4 py-3 text-sm font-bold text-white shadow-soft disabled:opacity-60 lg:bottom-6 lg:right-6"
       >
         {busy === 'briefing' ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
         {voiceControlsEnabled ? t('aiCeo.button') : t('aiCeo.reportButton')}
@@ -268,7 +268,7 @@ export function AICEOVoiceBriefing() {
           {voiceControlsEnabled && briefing && <button type="button" onClick={async () => { setVoiceFallback(false); const ok = await speak(briefing.transcript, briefing.language); if (!ok) setVoiceFallback(true); }} className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold"><Play size={16} /> {t('aiCeo.replay')}</button>}
         </div>
 
-        {stage && <p className="mt-3 rounded-md bg-teal-50 p-3 text-sm font-semibold text-brand">{stage}</p>}
+        {stage && <p className="mt-3 rounded-md bg-blue-50 p-3 text-sm font-semibold text-brand">{stage}</p>}
         {error && <p className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         {voiceControlsEnabled && (!voiceAvailable || voiceFallback) && <p className="mt-3 rounded-md bg-amber-50 p-3 text-sm text-amber-800">{t('aiCeo.voiceUnavailable')}</p>}
 
@@ -282,10 +282,10 @@ export function AICEOVoiceBriefing() {
             <input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={t('aiCeo.placeholder')} className="min-h-11 rounded-md border border-slate-300 px-3 text-sm" />
             <div className="flex gap-2">
               {voiceControlsEnabled && <button type="button" onClick={startListening} disabled={!micAvailable || listening} className="focus-ring grid size-11 place-items-center rounded-md border border-slate-300" aria-label={t('aiCeo.askVoice')}><Mic size={16} /></button>}
-              <button type="button" onClick={askQuestion} disabled={busy === 'question'} className="focus-ring grid size-11 place-items-center rounded-md bg-ink text-white" aria-label={t('aiCeo.sendQuestion')}>{busy === 'question' ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}</button>
+              <button type="button" onClick={askQuestion} disabled={busy === 'question'} className="focus-ring grid size-11 place-items-center rounded-md bg-brand text-white" aria-label={t('aiCeo.sendQuestion')}>{busy === 'question' ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}</button>
             </div>
           </div>
-          {answer && <p className="mt-3 rounded-md bg-teal-50 p-3 text-sm text-brand">{answer}</p>}
+          {answer && <p className="mt-3 rounded-md bg-blue-50 p-3 text-sm text-brand">{answer}</p>}
         </div>
 
         <details className="mt-4 rounded-md border border-slate-200 p-3">

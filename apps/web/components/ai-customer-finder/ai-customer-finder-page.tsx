@@ -342,10 +342,10 @@ function LeadCard({ item, onDraft, onSend }: { item: FinderResult; onDraft: () =
         <Info label="Why this company" value={item.fit_explanation || item.signal_description || "Public source matched the customer description."} />
       </div>
 
-      <div className="mt-4 rounded-2xl bg-slate-950 p-4 text-white">
-        <p className="text-xs font-black uppercase tracking-wide text-white/60">First email</p>
-        <p className="mt-2 text-sm font-black">{item.email_subject || "Draft email"}</p>
-        <pre className="mt-3 whitespace-pre-wrap text-sm leading-6 text-white/90">{item.email_body || "Email draft is being prepared."}</pre>
+      <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-blue-950">
+        <p className="text-xs font-black uppercase tracking-wide text-slate-600">First email</p>
+        <p className="mt-2 text-sm font-black text-ink">{item.email_subject || "Draft email"}</p>
+        <pre className="mt-3 whitespace-pre-wrap text-sm leading-6 text-blue-950">{item.email_body || "Email draft is being prepared."}</pre>
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">

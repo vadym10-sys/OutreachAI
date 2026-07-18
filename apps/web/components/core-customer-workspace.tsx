@@ -160,7 +160,7 @@ function nextActionForCompany(company: CrmCompany) {
 }
 
 function integrationTone(status: WorkspaceIntegrationStatus["status"]) {
-  if (status === "connected") return "border-teal-200 bg-teal-50 text-teal-900";
+  if (status === "connected") return "border-blue-200 bg-blue-50 text-blue-950";
   if (status === "missing_key" || status === "needs_setup") return "border-amber-200 bg-amber-50 text-amber-950";
   return "border-red-200 bg-red-50 text-red-900";
 }
@@ -186,7 +186,7 @@ function Button({
     <button
       className={cx(
         "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-55",
-        variant === "primary" && "bg-brand text-white shadow-sm hover:bg-teal-700",
+        variant === "primary" && "bg-brand text-white shadow-sm hover:bg-blue-700",
         variant === "secondary" && "border border-slate-300 bg-white text-ink shadow-sm hover:bg-slate-50",
         variant === "danger" && "border border-red-200 bg-red-50 text-red-700 hover:bg-red-100",
         className
@@ -231,7 +231,7 @@ function StateBanner({ tone = "info", children }: { tone?: "info" | "success" | 
     <div className={cx(
       "rounded-2xl border p-4 text-sm font-semibold leading-6",
       tone === "info" && "border-slate-200 bg-white text-slate-700",
-      tone === "success" && "border-teal-200 bg-teal-50 text-teal-900",
+      tone === "success" && "border-blue-200 bg-blue-50 text-blue-950",
       tone === "warning" && "border-amber-200 bg-amber-50 text-amber-950",
       tone === "error" && "border-red-200 bg-red-50 text-red-800"
     )}>
@@ -408,7 +408,7 @@ export function CoreDashboardHome() {
           </div>
           <div className="mt-5 grid gap-3">
             {tasks.length ? tasks.map((task) => (
-              <Link key={task.title} href={task.href} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-teal-200 hover:bg-teal-50">
+              <Link key={task.title} href={task.href} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:border-blue-200 hover:bg-blue-50">
                 <p className="font-black text-ink">{t(task.title)}</p>
                 <p className="mt-1 text-sm font-semibold leading-6 text-slate-600">{t(task.copy)}</p>
                 <p className="mt-3 inline-flex items-center gap-2 text-sm font-black text-brand">{t(task.label)} <ArrowRight size={15} /></p>
@@ -458,7 +458,7 @@ function FirstCustomerCard({ result, saving, onSave }: { result: FirstCustomerRe
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-xl font-black text-ink">{result.company_name}</h2>
-            <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">{score}/100 {t("quality")}</span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">{score}/100 {t("quality")}</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{t(result.verified_status || "unknown")}</span>
           </div>
           <p className="mt-2 text-sm font-semibold text-slate-600">{result.industry || t("Industry unknown")} · {result.country || t("Country unknown")}</p>
@@ -490,9 +490,9 @@ function FirstCustomerCard({ result, saving, onSave }: { result: FirstCustomerRe
           <p className="mt-2 text-sm font-semibold leading-6 text-ink">{result.signal_type}: {result.signal_description}</p>
           <p className="mt-2 text-xs font-bold text-slate-500">{t("Date")}: {result.publication_date || result.signal_date || t("Unknown")}</p>
         </div>
-        <div className="rounded-2xl bg-slate-950 p-4 text-white">
-          <p className="text-xs font-black uppercase tracking-wide text-white/60">{t("Draft preview")}</p>
-          <p className="mt-2 whitespace-pre-wrap text-sm font-semibold leading-6 text-white/90">{result.email_body || result.draft_email || result.first_line_opener || t("Draft will be prepared after saving, if AI is connected.")}</p>
+        <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+          <p className="text-xs font-black uppercase tracking-wide text-brand">{t("Draft preview")}</p>
+          <p className="mt-2 whitespace-pre-wrap text-sm font-semibold leading-6 text-blue-950">{result.email_body || result.draft_email || result.first_line_opener || t("Draft will be prepared after saving, if AI is connected.")}</p>
         </div>
       </div>
     </article>
@@ -664,7 +664,7 @@ function CompanyMiniCard({ company, selected, onSelect }: { company: CrmCompany;
   const { t } = useI18n();
   const score = companyQualityScore(company);
   return (
-    <button type="button" onClick={onSelect} className={cx("w-full rounded-2xl border p-4 text-left shadow-sm transition", selected ? "border-teal-300 bg-teal-50" : "border-slate-200 bg-white hover:border-slate-300")}>
+    <button type="button" onClick={onSelect} className={cx("w-full rounded-2xl border p-4 text-left shadow-sm transition", selected ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300")}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate font-black text-ink">{company.name}</p>
@@ -731,7 +731,7 @@ function CompanyDetail({ company, api, onUpdated }: { company: CrmCompany; api: 
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-2xl font-black text-ink">{company.name}</h2>
-            <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">{companyQualityScore(company)}/100 {t("quality")}</span>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">{companyQualityScore(company)}/100 {t("quality")}</span>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{t(stage)}</span>
           </div>
           <p className="mt-2 text-sm font-semibold leading-6 text-slate-600">{company.ai_summary || company.reasoning || company.sales_angle || t("No AI summary yet. Prepare the company or add a note before outreach.")}</p>

@@ -163,9 +163,9 @@ export function MetricSurface({
 }) {
   return (
     <SurfaceCard as="article" className="rounded-[1.75rem]">
-      <p className="text-sm font-semibold text-slate-500 dark:text-slate-300">{label}</p>
-      <p className="mt-2 text-3xl font-black tracking-tight text-ink dark:text-white">{value}</p>
-      <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{detail}</p>
+      <p className="text-sm font-semibold text-slate-500">{label}</p>
+      <p className="mt-2 text-3xl font-black tracking-tight text-ink">{value}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-600">{detail}</p>
     </SurfaceCard>
   );
 }
@@ -256,7 +256,7 @@ export function EmptyStateView({
 }) {
   return (
     <SurfaceCard tone="dashed" padding="lg" className="ui-orbit-card rounded-[2rem] text-center">
-      <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-[linear-gradient(135deg,rgba(79,70,229,0.14),rgba(0,163,255,0.12))] text-brand dark:bg-slate-800 dark:text-teal-300">
+      <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-blue-50 text-brand">
         <Sparkles size={22} />
       </div>
       <h2 className="ui-title mt-4 text-xl">{title}</h2>
@@ -299,7 +299,7 @@ export function LoadingStateView({ title }: { title: ReactNode }) {
   return (
     <SurfaceCard padding="lg" className="rounded-[2rem]">
       <div className="flex items-center gap-3">
-        <div className="grid size-10 place-items-center rounded-2xl bg-slate-100 text-brand dark:bg-slate-800">
+        <div className="grid size-10 place-items-center rounded-2xl bg-slate-100 text-brand">
           <Loader2 size={18} className="animate-spin" />
         </div>
         <p className="ui-eyebrow">{title}</p>
@@ -338,7 +338,7 @@ export function TimelineRail({
           <p className="ui-eyebrow">{eyebrow}</p>
           <h2 className="ui-title mt-1 text-xl">{title}</h2>
         </div>
-        <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+        <p className="text-sm font-semibold text-slate-600">
           Current step: {activeStep}
         </p>
       </div>
@@ -352,14 +352,14 @@ export function TimelineRail({
               className={cx(
                 "rounded-xl border p-3 text-sm",
                 active
-                  ? "border-indigo-300 bg-[linear-gradient(135deg,rgba(79,70,229,0.14),rgba(0,163,255,0.12))] text-brand dark:border-indigo-500 dark:bg-slate-800"
+                  ? "border-blue-300 bg-blue-50 text-brand"
                   : done
-                    ? "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                    : "border-slate-200 bg-white text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400"
+                    ? "border-slate-200 bg-slate-50 text-slate-700"
+                    : "border-slate-200 bg-white text-slate-500"
               )}
             >
               <div className="flex items-center gap-2">
-                <CheckCircle2 size={16} className={done || active ? "text-brand" : "text-slate-300 dark:text-slate-600"} />
+                <CheckCircle2 size={16} className={done || active ? "text-brand" : "text-slate-300"} />
                 <span className="font-bold">{step}</span>
               </div>
             </div>
@@ -385,7 +385,7 @@ export function AiTimeline({
             <div className="flex flex-col items-center">
               <span className={cx(
                 "grid size-8 place-items-center rounded-full border text-xs font-black",
-                error ? "border-red-300 bg-red-50 text-red-700" : active ? "border-indigo-300 bg-white text-brand shadow-glow" : "border-[var(--ui-border)] bg-white/70 text-[var(--ui-text-soft)]"
+                error ? "border-red-300 bg-red-50 text-red-700" : active ? "border-blue-300 bg-white text-brand shadow-sm" : "border-[var(--ui-border)] bg-white/70 text-[var(--ui-text-soft)]"
               )}>
                 {index + 1}
               </span>
@@ -471,17 +471,17 @@ export function CommandDialog({
         role="dialog"
         aria-modal="true"
         aria-label="Command menu"
-        className="w-full max-w-2xl overflow-hidden rounded-[1.6rem] border border-white/20 bg-[#11131c]/95 text-white shadow-2xl backdrop-blur-2xl"
+        className="w-full max-w-2xl overflow-hidden rounded-[1.6rem] border border-slate-200 bg-white text-ink shadow-soft"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
-          <Search size={18} className="text-white/55" />
+        <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
+          <Search size={18} className="text-slate-500" />
           <input
             autoFocus
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder="Search routes, actions and workspace context..."
-            className="min-h-11 flex-1 border-0 bg-transparent text-sm font-semibold text-white outline-none placeholder:text-white/40"
+            className="min-h-11 flex-1 border-0 bg-transparent text-sm font-semibold text-ink outline-none placeholder:text-slate-400"
           />
           <Kbd>Esc</Kbd>
         </div>
@@ -510,12 +510,12 @@ export function CommandItem({
     <Link
       href={href}
       onClick={onSelect}
-      className="flex min-h-14 items-center gap-3 rounded-2xl px-3 py-2 text-left text-white/90 hover:bg-white/10"
+      className="flex min-h-14 items-center gap-3 rounded-2xl px-3 py-2 text-left text-slate-700 hover:bg-blue-50"
     >
-      <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-white/10 text-white">{icon || <Command size={17} />}</span>
+      <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-blue-50 text-brand">{icon || <Command size={17} />}</span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-black">{title}</span>
-        {detail ? <span className="block truncate text-xs font-semibold text-white/50">{detail}</span> : null}
+        <span className="block truncate text-sm font-black text-ink">{title}</span>
+        {detail ? <span className="block truncate text-xs font-semibold text-slate-500">{detail}</span> : null}
       </span>
       {shortcut ? <span className="shrink-0">{shortcut}</span> : null}
     </Link>
@@ -532,30 +532,30 @@ export function DataTable({
   empty?: ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
+    <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-sm">
       <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-          <thead className="bg-slate-50 dark:bg-slate-800">
+        <table className="min-w-full divide-y divide-slate-200">
+          <thead className="bg-slate-50">
             <tr>
               {columns.map((column) => (
-                <th key={column} className="px-4 py-3 text-left text-xs font-black uppercase tracking-[0.14em] text-slate-500 dark:text-slate-300">
+                <th key={column} className="px-4 py-3 text-left text-xs font-black uppercase tracking-[0.14em] text-slate-500">
                   {column}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+          <tbody className="divide-y divide-slate-100">
             {rows.length ? rows.map((row, rowIndex) => (
-              <tr key={`row-${rowIndex}`} className="bg-white dark:bg-slate-900">
+              <tr key={`row-${rowIndex}`} className="bg-white">
                 {row.map((cell, cellIndex) => (
-                  <td key={`cell-${rowIndex}-${cellIndex}`} className="px-4 py-3 text-sm text-slate-700 dark:text-slate-200">
+                  <td key={`cell-${rowIndex}-${cellIndex}`} className="px-4 py-3 text-sm text-slate-700">
                     {cell}
                   </td>
                 ))}
               </tr>
             )) : (
               <tr>
-                <td colSpan={columns.length} className="px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+                <td colSpan={columns.length} className="px-4 py-8 text-center text-sm text-slate-500">
                   {empty || "No rows available."}
                 </td>
               </tr>

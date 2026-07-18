@@ -24,7 +24,7 @@ export default function DashboardError({ error, reset }: { error: Error & { dige
         <h1 className="text-xl font-bold text-ink">{t("Something went wrong. Please refresh or sign in again.")}</h1>
         <p className="mt-3 text-sm leading-6 text-slate-600">{t("This dashboard view could not load. Other OutreachAI pages are still available.")}</p>
         <div className="mt-5 flex flex-col gap-2 min-[390px]:flex-row min-[390px]:justify-center">
-          <button onClick={reset} className="focus-ring min-h-11 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white">{t("common.tryAgain")}</button>
+          <button onClick={reset} className="focus-ring min-h-11 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white">{t("common.tryAgain")}</button>
           <Link href="/sign-in" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold">{t("common.signIn")}</Link>
         </div>
       </section>

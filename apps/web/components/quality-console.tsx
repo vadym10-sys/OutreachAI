@@ -55,7 +55,7 @@ async function qualityRequest<T>(path: string, token: string | null, init: Reque
 }
 
 function statusClass(status: string) {
-  if (status === "healthy") return "bg-teal-50 text-brand";
+  if (status === "healthy") return "bg-blue-50 text-brand";
   if (status === "broken") return "bg-red-50 text-red-700";
   if (status === "blocked") return "bg-orange-50 text-orange-700";
   return "bg-amber-50 text-amber-700";
@@ -258,7 +258,7 @@ export function QualityConsole() {
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <span className="inline-flex min-h-8 items-center gap-2 rounded-full bg-teal-50 px-3 text-xs font-bold text-brand"><Stethoscope size={14} />Internal only</span>
+            <span className="inline-flex min-h-8 items-center gap-2 rounded-full bg-blue-50 px-3 text-xs font-bold text-brand"><Stethoscope size={14} />Internal only</span>
             <h1 className="mt-3 text-2xl font-bold text-ink md:text-3xl">AI Quality & Self-Healing</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Detects production risks, creates repair tasks, and blocks unsafe fixes until tests and owner approval are complete.</p>
           </div>

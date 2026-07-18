@@ -210,7 +210,7 @@ export function OnboardingWorkspaceSetup() {
               <div className="rounded-xl bg-white p-3 font-semibold text-slate-800">{t("workspace.stepMarket")}</div>
               <div className="rounded-xl bg-white p-3 font-semibold text-slate-800">{t("workspace.stepLeads")}</div>
             </div>
-            <div className="mt-4 flex items-center gap-2 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">
+            <div className="mt-4 flex items-center gap-2 rounded-xl bg-blue-50 p-3 text-sm font-semibold text-brand">
               <ShieldCheck size={16} />
               {t("workspace.dataIsolation")}
             </div>
@@ -294,7 +294,7 @@ export function OnboardingWorkspaceSetup() {
                   <span className="mt-1 block text-xs font-medium text-slate-500">{t("workspace.customerHelp")}</span>
                 </label>
 
-                {notice ? <p className="rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{notice}</p> : null}
+                {notice ? <p className="rounded-xl bg-blue-50 p-3 text-sm font-bold text-brand">{notice}</p> : null}
                 {error ? (
                   <div className="rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">
                     <p>{error}</p>
@@ -325,7 +325,7 @@ export function OnboardingWorkspaceSetup() {
             )}
 
             {setupReady ? (
-              <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-3 text-sm text-brand">
+              <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-brand">
                 <p className="font-bold">{t("workspace.setupComplete")}</p>
                 <p className="mt-1">{t("You can now search companies, save CRM records, and review outreach from one private workspace.")}</p>
               </div>

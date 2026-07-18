@@ -98,12 +98,12 @@ function LivePasswordResetClient() {
   return (
     <div className="w-full max-w-[min(100%,28rem)] rounded-lg border border-slate-200 bg-white p-5 shadow-soft min-[360px]:p-6">
       <div className="mb-6">
-        <p className="inline-flex rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">Secure account recovery</p>
+        <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-brand">Secure account recovery</p>
         <h1 className="mt-4 text-2xl font-bold text-ink">Reset your password</h1>
         <p className="mt-2 text-sm leading-6 text-slate-600">Use the email connected to your OutreachAI account. We will send secure reset instructions.</p>
       </div>
 
-      {message && <div className="mb-4 rounded-md border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-brand">{message}</div>}
+      {message && <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-brand">{message}</div>}
       {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
       {step === 'request' && (
@@ -116,11 +116,11 @@ function LivePasswordResetClient() {
               autoComplete="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-teal-100"
+              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-blue-100"
               placeholder="you@company.com"
             />
           </label>
-          <button disabled={!isLoaded || busy} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 py-2 font-semibold text-white disabled:opacity-60">
+          <button disabled={!isLoaded || busy} className="focus-ring inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 font-semibold text-white disabled:opacity-60">
             {busy ? <Loader2 className="animate-spin" size={18} /> : <Mail size={18} />}
             Send reset instructions
           </button>
@@ -137,7 +137,7 @@ function LivePasswordResetClient() {
               autoComplete="one-time-code"
               value={code}
               onChange={(event) => setCode(event.target.value)}
-              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-teal-100"
+              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-blue-100"
               placeholder="Enter the code from your email"
             />
           </label>
@@ -150,7 +150,7 @@ function LivePasswordResetClient() {
               autoComplete="new-password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-teal-100"
+              className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 text-base outline-none transition focus:border-brand focus:ring-2 focus:ring-blue-100"
               placeholder="Create a new password"
             />
           </label>
@@ -165,10 +165,10 @@ function LivePasswordResetClient() {
       )}
 
       {step === 'success' && (
-        <div className="rounded-md border border-teal-200 bg-teal-50 p-4 text-center">
+        <div className="rounded-md border border-blue-200 bg-blue-50 p-4 text-center">
           <CheckCircle2 className="mx-auto text-brand" size={28} />
           <p className="mt-3 font-semibold text-ink">Password reset complete</p>
-          <Link href="/dashboard" className="focus-ring mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md bg-ink px-4 py-2 font-semibold text-white">
+          <Link href="/dashboard" className="focus-ring mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand px-4 py-2 font-semibold text-white">
             Continue to dashboard
           </Link>
         </div>
@@ -185,11 +185,11 @@ function PasswordResetUnavailable() {
   return (
     <div className="w-full max-w-[min(100%,28rem)] rounded-lg border border-slate-200 bg-white p-5 shadow-soft min-[360px]:p-6">
       <div className="mb-6">
-        <p className="inline-flex rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">Secure account recovery</p>
+        <p className="inline-flex rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-brand">Secure account recovery</p>
         <h1 className="mt-4 text-2xl font-bold text-ink">Reset your password</h1>
         <p className="mt-2 text-sm leading-6 text-slate-600">Secure password recovery is temporarily unavailable in this environment.</p>
       </div>
-      <Link href="/sign-in" className="focus-ring inline-flex min-h-11 w-full items-center justify-center rounded-md bg-ink px-4 py-2 font-semibold text-white">
+      <Link href="/sign-in" className="focus-ring inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand px-4 py-2 font-semibold text-white">
         Back to sign in
       </Link>
     </div>
