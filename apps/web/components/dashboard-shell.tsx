@@ -253,6 +253,7 @@ function profileInitials(email: string, workspaceLabel: string) {
 type ShellNavItem = (typeof primaryNav)[number] | (typeof utilityNav)[number];
 
 function isNavItemActive(item: ShellNavItem, pathname: string) {
+  if (item.href === "/dashboard") return pathname === "/dashboard";
   if (pathname === item.href || pathname.startsWith(`${item.href}/`)) return true;
   const aliases = "aliases" in item ? item.aliases || [] : [];
   return aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`));
