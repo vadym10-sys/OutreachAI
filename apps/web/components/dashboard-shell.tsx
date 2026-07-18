@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, LayoutDashboard, Loader2, MailSearch, Megaphone, Menu, Search, Settings, Shield, Sparkles, User, UserRoundSearch } from "lucide-react";
+import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, Loader2, Menu, Search, Settings, Shield, Sparkles, User } from "lucide-react";
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -18,39 +18,34 @@ import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { Breadcrumbs, CommandDialog, CommandItem, Kbd } from "@/components/design-system";
 
-const nav = [
-  { href: "/dashboard", labelKey: "nav.dashboard", icon: LayoutDashboard },
-  { href: "/dashboard/leads", labelKey: "nav.leads", icon: Search },
-  { href: "/dashboard/ai-customer-finder", labelKey: "nav.aiCustomerFinder", icon: UserRoundSearch },
-  { href: "/dashboard/companies", labelKey: "nav.companies", icon: Building2 },
-  { href: "/dashboard/campaigns", labelKey: "nav.campaigns", icon: Megaphone },
-  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox },
+const primaryNav = [
+  { href: "/dashboard/ai-customer-finder", labelKey: "nav.aiCustomerFinder", icon: Search, aliases: ["/dashboard"] },
+  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Building2, aliases: ["/dashboard/companies", "/dashboard/leads"] },
+  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, aliases: ["/dashboard/campaigns"] }
+] as const;
+
+const utilityNav = [
   { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
   { href: "/dashboard/profile", labelKey: "nav.profile", icon: User },
   { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
   { href: "/dashboard/owner", labelKey: "nav.owner", icon: Crown, ownerOnly: true },
   { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
-];
+] as const;
 
 const featureFlags = {
   NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
 };
 
 const navDescriptions: Record<string, string> = {
-  "/dashboard": "Executive AI command center",
-  "/dashboard/leads": "Find and prioritize real companies",
-  "/dashboard/ai-customer-finder": "Find customers from verified public signals",
-  "/dashboard/companies": "Research accounts and run AI analysis",
-  "/dashboard/campaigns": "Review and launch outreach",
-  "/dashboard/inbox": "Turn replies into meetings",
+  "/dashboard/ai-customer-finder": "Find companies, verified contacts and first emails",
+  "/dashboard/crm": "Saved leads, statuses and next company action",
+  "/dashboard/inbox": "Drafts, sent emails, replies and follow-up",
   "/dashboard/billing": "Plan, usage and invoices",
   "/dashboard/profile": "Workspace identity",
   "/dashboard/settings": "Integrations and readiness",
   "/dashboard/owner": "Owner controls",
   "/admin": "Administration"
 };
-
-const primaryMobileHrefs = new Set(["/dashboard", "/dashboard/leads", "/dashboard/companies", "/dashboard/campaigns"]);
 
 const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
   && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
@@ -253,16 +248,30 @@ function profileInitials(email: string, workspaceLabel: string) {
   return `${first || ""}${second || ""}`.toUpperCase();
 }
 
+type ShellNavItem = (typeof primaryNav)[number] | (typeof utilityNav)[number];
+
+function isNavItemActive(item: ShellNavItem, pathname: string) {
+  if (pathname === item.href || pathname.startsWith(`${item.href}/`)) return true;
+  const aliases = "aliases" in item ? item.aliases || [] : [];
+  return aliases.some((alias) => pathname === alias || pathname.startsWith(`${alias}/`));
+}
+
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { t } = useI18n();
   const { clerkEnabled } = useAuthRuntime();
   const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
-  const visibleNav = useMemo(
-    () => nav.filter((item) => (!item.featureFlag || featureFlags[item.featureFlag as keyof typeof featureFlags]) && (!item.ownerOnly || isOwner)),
+  const visiblePrimaryNav = useMemo(() => primaryNav, []);
+  const visibleUtilityNav = useMemo(
+    () => utilityNav.filter((item) => {
+      const featureFlag = "featureFlag" in item ? item.featureFlag : undefined;
+      const ownerOnly = "ownerOnly" in item ? item.ownerOnly : false;
+      return (!featureFlag || featureFlags[featureFlag]) && (!ownerOnly || isOwner);
+    }),
     [isOwner]
   );
-  const primaryMobileNav = visibleNav.filter((item) => primaryMobileHrefs.has(item.href));
+  const visibleNav = useMemo(() => [...visiblePrimaryNav, ...visibleUtilityNav], [visiblePrimaryNav, visibleUtilityNav]);
+  const primaryMobileNav = visiblePrimaryNav;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
@@ -355,7 +364,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const workspaceOwnerEmail = workspace?.members?.find((member) => member.role === "owner" && member.email)?.email || workspace?.members?.find((member) => member.email)?.email || email;
   const accountLabel = workspaceOwnerEmail ? `${t("shell.account")}: ${workspaceOwnerEmail}` : t("shell.privateWorkspace");
   const accountInitials = profileInitials(workspaceOwnerEmail || email, workspaceLabel);
-  const activeNavItem = visibleNav.find((item) => pathname === item.href) || visibleNav.find((item) => pathname.startsWith(`${item.href}/`));
+  const activeNavItem = visibleNav.find((item) => isNavItemActive(item, pathname));
   const activeLabel = activeNavItem ? t(activeNavItem.labelKey) : t("Workspace");
   const commandItems = useMemo(() => {
     const normalized = commandQuery.trim().toLowerCase();
@@ -499,7 +508,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <span className="grid size-10 place-items-center rounded-2xl bg-[linear-gradient(135deg,#111114,var(--ui-brand),var(--ui-accent))] text-sm text-white shadow-glow">OA</span>
           <span>
             OutreachAI
-            <span className="block text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">AI Operating System</span>
+            <span className="block text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">Search → CRM → Mail</span>
           </span>
         </Link>
         <div className="mb-4 rounded-[1.4rem] border border-[var(--ui-border)] bg-white/70 p-3 shadow-sm">
@@ -521,9 +530,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <Kbd>⌘K</Kbd>
         </button>
         <nav className="space-y-1">
-          {visibleNav.map((item) => {
+          {visiblePrimaryNav.map((item) => {
             const Icon = item.icon;
-            const active = pathname === item.href;
+            const active = isNavItemActive(item, pathname);
             const label = t(item.labelKey);
             return (
               <Link key={item.href} href={item.href} className={`group flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white shadow-glow" : "text-[var(--ui-text-soft)] hover:bg-white/80 hover:text-[var(--ui-text)]"}`}>
@@ -535,6 +544,26 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
+        {visibleUtilityNav.length ? (
+          <nav className="mt-5 border-t border-[var(--ui-border)] pt-4">
+            <p className="mb-2 px-3 text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">Account</p>
+            <div className="space-y-1">
+              {visibleUtilityNav.map((item) => {
+                const Icon = item.icon;
+                const active = isNavItemActive(item, pathname);
+                const label = t(item.labelKey);
+                return (
+                  <Link key={item.href} href={item.href} className={`group flex min-h-11 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white shadow-glow" : "text-[var(--ui-text-soft)] hover:bg-white/80 hover:text-[var(--ui-text)]"}`}>
+                    <span className={`grid size-8 place-items-center rounded-xl ${active ? "bg-white/15 text-white" : "bg-[var(--ui-surface-subtle)] text-[var(--ui-text-soft)] group-hover:text-[var(--ui-text)]"}`}>
+                      <Icon size={16} aria-hidden="true" />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </nav>
+        ) : null}
       </aside>
       <div className="min-w-0 max-w-[100vw] overflow-x-clip lg:pl-72">
         <NetworkStatusBanner />
@@ -565,9 +594,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     </div>
                   </div>
                   <nav className="space-y-1" aria-label={t("nav.open")}>
-                    {visibleNav.map((item) => {
+                    {visiblePrimaryNav.map((item) => {
                       const Icon = item.icon;
-                      const active = pathname === item.href;
+                      const active = isNavItemActive(item, pathname);
                       const label = t(item.labelKey);
                       return (
                         <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white" : "text-[var(--ui-text-soft)] hover:bg-white"}`}>
@@ -576,6 +605,22 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                         </Link>
                       );
                     })}
+                    {visibleUtilityNav.length ? (
+                      <div className="mt-3 border-t border-[var(--ui-border)] pt-3">
+                        <p className="mb-2 px-3 text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">Account</p>
+                        {visibleUtilityNav.map((item) => {
+                          const Icon = item.icon;
+                          const active = isNavItemActive(item, pathname);
+                          const label = t(item.labelKey);
+                          return (
+                            <Link key={item.href} href={item.href} onClick={closeMobileMenu} className={`flex min-h-12 items-center gap-3 rounded-2xl px-3 py-2 text-sm font-bold ${active ? "bg-[#101114] text-white" : "text-[var(--ui-text-soft)] hover:bg-white"}`}>
+                              <Icon size={18} aria-hidden="true" />
+                              {label}
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </nav>
                 </div>
               </div>
@@ -668,8 +713,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     {workspaceSaving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />}
                     {t("workspace.save")}
                   </button>
-                  <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
-                    {t("nav.leads")} <ArrowRight size={17} />
+                  <Link href="/dashboard/ai-customer-finder" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
+                    {t("nav.aiCustomerFinder")} <ArrowRight size={17} />
                   </Link>
                 </div>
               </form>
@@ -678,15 +723,15 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>
-      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-4 rounded-[1.6rem] border border-[var(--ui-border)] bg-white/90 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] backdrop-blur-2xl lg:hidden">
+      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-3 rounded-[1.6rem] border border-[var(--ui-border)] bg-white/90 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] backdrop-blur-2xl lg:hidden">
         {primaryMobileNav.map((item) => {
           const Icon = item.icon;
-          const active = pathname === item.href;
+          const active = isNavItemActive(item, pathname);
           const label = t(item.labelKey);
           return (
             <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-[11px] font-black ${active ? "bg-[#101114] text-white shadow-sm" : "text-[var(--ui-text-soft)]"}`}>
               <Icon size={18} aria-hidden="true" />
-              <span className="max-w-full truncate">{item.href === "/dashboard/leads" ? t("nav.leadsShort") : label}</span>
+              <span className="max-w-full truncate">{label}</span>
             </Link>
           );
         })}

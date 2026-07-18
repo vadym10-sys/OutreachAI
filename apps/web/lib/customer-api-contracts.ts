@@ -80,6 +80,60 @@ export const workspaceAppLeadCommandResponseSchema = workspaceAppLeadSearchRespo
 }).passthrough();
 export type WorkspaceAppLeadCommandResponse = z.infer<typeof workspaceAppLeadCommandResponseSchema>;
 
+export const firstCustomerResultSchema = z.object({
+  id: z.string(),
+  company_name: z.string(),
+  official_website: z.string(),
+  industry: z.string().optional(),
+  country: z.string().optional(),
+  company_size: z.string().optional(),
+  contact_name: z.string().optional(),
+  contact_title: z.string().optional(),
+  public_work_contact: z.string().optional(),
+  signal_type: z.string(),
+  signal_description: z.string(),
+  signal_date: z.string(),
+  source_url: z.string(),
+  source_title: z.string().optional(),
+  source_type: z.string().optional(),
+  evidence_summary: z.string().optional(),
+  evidence_excerpt: z.string().optional(),
+  fit_explanation: z.string().optional(),
+  ai_relevance_score: z.number(),
+  confidence_score: z.number(),
+  verified_status: z.string(),
+  checked_at: z.string(),
+  canonical_source_url: z.string().optional(),
+  publication_date: z.string().optional(),
+  first_line_opener: z.string().optional(),
+  draft_email: z.string().optional(),
+  lead_id: z.string().optional(),
+  company_id: z.string().optional(),
+  email_id: z.string().optional(),
+  email_subject: z.string().optional(),
+  email_body: z.string().optional()
+}).passthrough();
+export type FirstCustomerResult = z.infer<typeof firstCustomerResultSchema>;
+
+export const firstCustomerJobSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  progress: z.record(z.unknown()),
+  summary: z.record(z.unknown()).optional(),
+  error_message: z.string().optional(),
+  results: z.array(firstCustomerResultSchema),
+  created_at: z.string(),
+  completed_at: z.string().nullable().optional()
+}).passthrough();
+export type FirstCustomerJob = z.infer<typeof firstCustomerJobSchema>;
+
+export const firstCustomerSaveResponseSchema = z.object({
+  status: z.string(),
+  message: z.string(),
+  result: firstCustomerResultSchema
+}).passthrough();
+export type FirstCustomerSaveResponse = z.infer<typeof firstCustomerSaveResponseSchema>;
+
 export const workspaceAppCompanyCreateResponseSchema = z.object({
   status: z.enum(["created", "reused"]),
   message: z.string(),

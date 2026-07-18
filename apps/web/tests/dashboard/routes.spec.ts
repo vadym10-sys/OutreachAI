@@ -168,12 +168,12 @@ test.describe("customer workspace routes", () => {
     await expect(drawer).toBeVisible();
     await expect(drawer).toContainText("QA Private Workspace");
     await expect(drawer).toContainText("Account: qa@example.com");
-    await expect(drawer.getByRole("link", { name: "Companies" })).toBeVisible();
+    await expect(drawer.getByRole("link", { name: "CRM" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
 
-    await drawer.getByRole("link", { name: "Companies" }).click();
-    await expect(page).toHaveURL(/\/dashboard\/companies$/);
-    await expect(page.getByRole("heading", { name: "Open the next company to finish the opportunity." })).toBeVisible();
+    await drawer.getByRole("link", { name: "CRM" }).click();
+    await expect(page).toHaveURL(/\/dashboard\/crm$/);
+    await expect(page.getByRole("heading", { name: "Move real leads from research to revenue." })).toBeVisible();
     await expect(drawer).not.toBeVisible();
     await expectNoHorizontalOverflow(page);
     await guards.assertClean();
@@ -231,6 +231,33 @@ test.describe("customer workspace routes", () => {
     await expect(page.getByRole("heading", { name: "Hill Country Build Co", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Open company workspace" }).first()).toBeVisible();
     await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
+  });
+
+  test("Lead Finder first-customer mode prepares evidence and saves to CRM only after approval", async ({ page }, testInfo) => {
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/dashboard/leads");
+
+    const form = page.getByRole("form", { name: "Find First Customers" });
+    await form.getByLabel("Product website").fill("https://outreachaiaiai.com");
+    await form.getByLabel("Country").fill("Germany");
+    await form.getByLabel("Industry").fill("B2B SaaS");
+    await form.getByLabel("Number of leads").fill("5");
+    await form.getByRole("button", { name: "Find First Customers" }).click();
+
+    await expect(page.getByText("Review the evidence, then save only the leads you approve.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+    await expect(page.getByText("84 fit score")).toBeVisible();
+    await expect(page.getByText("sarah.meyer@euroscale-crm.co")).toBeVisible();
+    await expect(page.getByText("Source date")).toBeVisible();
+    await expect(page.getByText("Draft message", { exact: true })).toBeVisible();
+    await expect(page.getByText("Saving is manual. Sending still requires separate approval from the email workflow.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Save to CRM" }).click();
+    await expect(page.getByText("Lead saved to CRM. Outreach draft is ready for manual review.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Saved to CRM" })).toBeVisible();
+    await expect(page.locator("body")).not.toContainText("source_provider");
+    await expect(page.locator("body")).not.toContainText("raw prompt");
     await guards.assertClean();
   });
 

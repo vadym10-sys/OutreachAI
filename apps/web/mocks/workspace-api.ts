@@ -432,6 +432,21 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
         message: "Found 1 company. Saved to CRM."
       });
     }
+    if (apiPath === "/api/workspace-app/leads/first-customers/search" && route.request().method() === "POST") {
+      currentFinderJob = {
+        ...qaCustomerFinderJob,
+        status: "completed",
+        progress: { stage: "completed", message: "First-customer candidates are ready for review.", percent: 100, verified: 1, partially_verified: 0, unknown: 0, rejected: 0, saved: 0, candidates: 1 },
+        summary: { verified: 1, partially_verified: 0, unknown: 0, rejected: 0, saved_to_crm: 0, candidates: 1 },
+        results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "" }]
+      };
+      return fulfillJson(route, currentFinderJob);
+    }
+    if (apiPath === `/api/workspace-app/leads/first-customers/results/${qaCustomerFinderResult.id}/save`) {
+      const updated = { ...qaCustomerFinderResult, simple_status: "Письмо подготовлено", email_delivery_status: "draft" };
+      currentFinderJob = { ...currentFinderJob, results: [updated] };
+      return fulfillJson(route, { status: "success", message: "Lead saved to CRM. Outreach draft is ready for manual review.", result: updated });
+    }
     if (apiPath === "/api/workspace-app/ai-customer-finder/searches" && route.request().method() === "POST") {
       currentFinderJob = { ...qaCustomerFinderJob, status: "searching", progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 1, candidates: 3 } };
       return fulfillJson(route, currentFinderJob, 202);

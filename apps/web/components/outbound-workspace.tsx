@@ -16,7 +16,7 @@ import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
 import type { Activity, AISalesEmployee, BillingStatus, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, Profile, RevenueCompany, RevenueIntelligenceFeed, SalesCopilot, Usage, WebsiteAudit } from "@/lib/types";
-import type { AnalysisResult, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadCommandResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
+import type { AnalysisResult, FirstCustomerJob, FirstCustomerResult, FirstCustomerSaveResponse, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadCommandResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
 
@@ -3506,6 +3506,10 @@ export function LeadFinderPage() {
   const [lastSearchPayload, setLastSearchPayload] = useState<LeadSearchPayload | null>(null);
   const [manualBusy, setManualBusy] = useState(false);
   const [leadSearchStatus, setLeadSearchStatus] = useState<WorkspaceIntegrationStatus["status"] | "unknown">("unknown");
+  const [firstCustomerJob, setFirstCustomerJob] = useState<FirstCustomerJob | null>(null);
+  const [firstCustomerSearching, setFirstCustomerSearching] = useState(false);
+  const [firstCustomerSavingId, setFirstCustomerSavingId] = useState("");
+  const [firstCustomerMessage, setFirstCustomerMessage] = useState("");
   const [workflowCompanies, setWorkflowCompanies] = useState<CrmCompany[]>([]);
   const [activeWorkflowCompanyId, setActiveWorkflowCompanyId] = useState("");
   const [workflowLoading, setWorkflowLoading] = useState(false);
@@ -3928,6 +3932,90 @@ export function LeadFinderPage() {
     }
   }
 
+  async function runFirstCustomerSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!automaticSearchReady || firstCustomerSearching) return;
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const payload = {
+      product_site: String(data.get("product_site") || "").trim(),
+      country: String(data.get("first_customer_country") || "").trim(),
+      industry: String(data.get("first_customer_industry") || "").trim(),
+      results: Number(data.get("first_customer_results") || 5)
+    };
+    setFirstCustomerSearching(true);
+    setFirstCustomerMessage(t("Looking for public first-customer signals. Nothing will be saved to CRM until you approve a result."));
+    setFirstCustomerJob(null);
+    trackEvent("first_customer_search_started", {
+      country: payload.country,
+      industry: payload.industry,
+      results: payload.results
+    });
+    try {
+      const job = await withTimeout(
+        api<FirstCustomerJob>("/api/workspace-app/leads/first-customers/search", {
+          method: "POST",
+          body: JSON.stringify(payload),
+          timeoutMs: 45000
+        }),
+        46000,
+        "First-customer search timed out. Try fewer results or a broader industry."
+      );
+      setFirstCustomerJob(job);
+      const count = job.results.length;
+      setFirstCustomerMessage(
+        count
+          ? t("Review the evidence, then save only the leads you approve.")
+          : t(job.error_message || "No evidence-backed first customers were found. Try a broader industry or country.")
+      );
+      trackEvent(count ? "first_customer_search_completed" : "first_customer_search_empty", {
+        country: payload.country,
+        industry: payload.industry,
+        result_count: count,
+        status: job.status
+      });
+    } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = userMessage(err, "First-customer search could not be completed.", t);
+      setFirstCustomerMessage(reason);
+      setFirstCustomerJob(null);
+      trackEvent("first_customer_search_failed", { reason });
+    } finally {
+      setFirstCustomerSearching(false);
+    }
+  }
+
+  async function saveFirstCustomerResult(result: FirstCustomerResult) {
+    if (!result.id || firstCustomerSavingId) return;
+    setFirstCustomerSavingId(result.id);
+    setFirstCustomerMessage(t("Saving approved lead to CRM and creating a draft. No message will be sent."));
+    try {
+      const response = await api<FirstCustomerSaveResponse>(`/api/workspace-app/leads/first-customers/results/${result.id}/save`, { method: "POST" });
+      setFirstCustomerJob((current) => current
+        ? { ...current, results: current.results.map((item) => item.id === response.result.id ? response.result : item) }
+        : current);
+      setFirstCustomerMessage(t(response.message || "Lead saved to CRM. Outreach draft is ready for manual review."));
+      await syncWorkflowCompanies();
+      trackEvent("first_customer_result_saved", {
+        has_public_contact_route: Boolean(response.result.public_work_contact),
+        has_company_id: Boolean(response.result.company_id)
+      });
+    } catch (err) {
+      if (isSessionExpiredError(err)) {
+        redirectToSignIn();
+        return;
+      }
+      const reason = userMessage(err, "Lead could not be saved to CRM.", t);
+      setFirstCustomerMessage(reason);
+      trackEvent("first_customer_result_save_failed", { reason });
+    } finally {
+      setFirstCustomerSavingId("");
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     leadFinderDebug("FORM_VALID");
@@ -4004,7 +4092,48 @@ export function LeadFinderPage() {
             </div>
           </section>}
 
-          <ActionPanel eyebrow="Lead search" title="Start with one narrow market." copy="Use the required fields first. Advanced filters stay hidden until a search is too broad or too narrow. Every valid result is saved to your private CRM.">
+          <ActionPanel eyebrow="Find First Customers" title="Find evidence-backed first customers." copy="Enter your product site, country, industry and result count. OutreachAI reviews public sources, scores fit, drafts a short message and waits for your approval before saving anything to CRM.">
+          {!automaticSearchReady && (
+            <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm font-black uppercase text-amber-800">{t("Automatic search setup")}</p>
+              <p className="mt-2 text-sm leading-6 text-amber-900">{t("Automatic company search needs a key. Add one company manually and continue with CRM, research and outreach.")}</p>
+            </div>
+          )}
+          <form aria-label="Find First Customers" onSubmit={runFirstCustomerSearch} className="space-y-5">
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="text-sm font-semibold text-slate-700">{t("Product website")}<input name="product_site" type="url" required disabled={!automaticSearchReady || firstCustomerSearching} placeholder="https://yourproduct.com" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Country")}<input name="first_customer_country" required disabled={!automaticSearchReady || firstCustomerSearching} placeholder="Germany" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Industry")}<input name="first_customer_industry" required disabled={!automaticSearchReady || firstCustomerSearching} placeholder="B2B SaaS" className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+              <label className="text-sm font-semibold text-slate-700">{t("Number of leads")}<input name="first_customer_results" type="number" min="1" max="10" defaultValue="5" disabled={!automaticSearchReady || firstCustomerSearching} className="mt-2 min-h-11 w-full rounded-md border border-slate-300 px-3 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
+              <p className="font-bold text-ink">{t("Explicit authorization rule")}</p>
+              <p>{t("Search only prepares candidates. OutreachAI will not send messages, fill forms, perform LinkedIn actions, or create CRM records until you approve a specific result.")}</p>
+            </div>
+            <div className="flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-center">
+              <PrimaryButton type="submit" disabled={!automaticSearchReady || firstCustomerSearching}>{firstCustomerSearching ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {firstCustomerSearching ? t("Searching") : t("Find First Customers")}</PrimaryButton>
+              <p className="text-sm text-slate-600">{t("Results keep source URL, date, fit score, contact route and draft message.")}</p>
+            </div>
+          </form>
+          {firstCustomerMessage && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-semibold text-slate-700" aria-live="polite">{firstCustomerMessage}</p>}
+          {firstCustomerJob?.results.length ? (
+            <div className="mt-5 grid gap-4">
+              {firstCustomerJob.results.map((result) => (
+                <FirstCustomerResultCard
+                  key={result.id}
+                  result={result}
+                  saving={firstCustomerSavingId === result.id}
+                  onSave={() => saveFirstCustomerResult(result)}
+                  t={t}
+                />
+              ))}
+            </div>
+          ) : firstCustomerJob && !firstCustomerSearching ? (
+            <EmptyState title="No evidence-backed candidates" copy="No public source had enough evidence. Try a broader industry or country." />
+          ) : null}
+          </ActionPanel>
+
+          <ActionPanel eyebrow="Lead search" title="Classic market search." copy="Use this when you want OutreachAI to search a market and save valid results directly to your private CRM.">
           {!automaticSearchReady && (
             <div id="lead-search-setup" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
               <p className="text-sm font-black uppercase text-amber-800">{t("Automatic search setup")}</p>
@@ -4229,6 +4358,60 @@ export function LeadFinderPage() {
         </aside>
       </div>
     </div>
+  );
+}
+
+function FirstCustomerResultCard({ result, saving, onSave, t }: { result: FirstCustomerResult; saving: boolean; onSave: () => void; t: (key: string) => string }) {
+  const saved = Boolean(result.company_id || result.lead_id);
+  const contactRoute = result.public_work_contact || "";
+  const sourceDate = result.publication_date && result.publication_date !== "Unknown" ? result.publication_date : t("Date unknown");
+  const recommendedRole = result.contact_title || t("Recommended role not confirmed");
+  const message = result.email_body || result.draft_email || result.first_line_opener || "";
+  return (
+    <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-lg font-black text-ink">{result.company_name}</h3>
+            <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-brand">{result.ai_relevance_score} {t("fit score")}</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{t(result.verified_status)}</span>
+          </div>
+          <p className="mt-1 text-sm font-semibold text-slate-600">{result.industry || t("Industry unknown")} · {result.country || t("Country unknown")}</p>
+        </div>
+        <a href={result.source_url || result.official_website} target="_blank" rel="noreferrer" className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-full border border-slate-200 px-3 text-sm font-bold text-ink">
+          {t("Source")} <ExternalLink size={14} />
+        </a>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <div className="rounded-xl bg-slate-50 p-3 text-sm">
+          <p className="font-black text-slate-500">{t("Source date")}</p>
+          <p className="mt-1 font-semibold text-ink">{sourceDate}</p>
+        </div>
+        <div className="rounded-xl bg-slate-50 p-3 text-sm">
+          <p className="font-black text-slate-500">{t("Target role")}</p>
+          <p className="mt-1 font-semibold text-ink">{recommendedRole}</p>
+        </div>
+        <div className="rounded-xl bg-slate-50 p-3 text-sm">
+          <p className="font-black text-slate-500">{t("Public contact route")}</p>
+          <p className="mt-1 break-words font-semibold text-ink">{contactRoute || t("No public contact route found")}</p>
+        </div>
+        <div className="rounded-xl bg-slate-50 p-3 text-sm">
+          <p className="font-black text-slate-500">{t("Why this fits")}</p>
+          <p className="mt-1 font-semibold leading-6 text-ink">{result.fit_explanation || result.evidence_summary || result.signal_description}</p>
+        </div>
+      </div>
+      <div className="mt-4 rounded-2xl bg-slate-950 p-4 text-white">
+        <p className="text-xs font-black uppercase tracking-wide text-white/60">{t("Draft message")}</p>
+        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-white/90">{message || t("Message draft could not be created from verified evidence.")}</p>
+      </div>
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm font-semibold text-slate-600">{t("Saving is manual. Sending still requires separate approval from the email workflow.")}</p>
+        <PrimaryButton type="button" disabled={saved || saving} onClick={onSave}>
+          {saving ? <Loader2 className="animate-spin" size={17} /> : <Plus size={17} />}
+          {saved ? t("Saved to CRM") : t("Save to CRM")}
+        </PrimaryButton>
+      </div>
+    </article>
   );
 }
 

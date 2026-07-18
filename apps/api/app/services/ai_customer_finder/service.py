@@ -209,6 +209,178 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
         db.close()
 
 
+def search_first_customer_candidates(
+    db: Session,
+    *,
+    user_id: str,
+    workspace_id: UUID,
+    criteria: CustomerFinderCriteria,
+    request_id: str,
+) -> AICustomerFinderJob:
+    """Find evidence-backed candidates for Lead Finder without touching CRM.
+
+    This powers the Lead Finder "Find First Customers" mode. Search results are
+    persisted as an evidence ledger so source URLs, dates and score explanations
+    survive refreshes, but Lead/Company/Email records are created only by the
+    explicit save endpoint.
+    """
+    settings = get_settings()
+    max_results = max(1, min(criteria.max_results, int(settings.ai_customer_finder_max_results_per_job or 10)))
+    clean_criteria = criteria.model_copy(update={"max_results": max_results})
+    job = AICustomerFinderJob(
+        user_id=user_id,
+        workspace_id=workspace_id,
+        status="searching",
+        max_attempts=1,
+        request_id=request_id,
+        criteria_json=clean_criteria.model_dump(),
+        progress_json={"stage": "searching", "message": "Searching public first-customer signals.", "percent": 20},
+        started_at=datetime.utcnow(),
+        locked_by="lead-finder:first-customers",
+        locked_at=datetime.utcnow(),
+    )
+    db.add(job)
+    db.flush()
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            action="lead_finder.first_customers.search_started",
+            metadata_json={
+                "request_id": request_id,
+                "target_country": clean_criteria.target_country,
+                "target_industry": clean_criteria.target_industry,
+                "crm_write": False,
+                "outreach_action": False,
+            },
+        )
+    )
+    warnings: list[str] = []
+    quality_counts = {"verified": 0, "partially_verified": 0, "unknown": 0, "rejected": 0}
+    try:
+        provider = provider_for_key(settings.ai_customer_finder_provider)
+        candidates = provider.search(clean_criteria, max_candidates=max(clean_criteria.max_results, int(settings.ai_customer_finder_max_candidates_per_job or 25)))
+        seen_companies: set[str] = set()
+        persisted = 0
+        for index, candidate in enumerate(candidates):
+            if persisted >= clean_criteria.max_results:
+                break
+            dedupe = company_dedupe_key(website=candidate.website, company_name=candidate.company_name, country=candidate.country or clean_criteria.target_country)
+            if dedupe in seen_companies:
+                quality_counts["rejected"] += 1
+                warnings.append(f"{candidate.company_name}: Duplicate candidate skipped.")
+                continue
+            seen_companies.add(dedupe)
+            try:
+                signal = _verify_candidate(clean_criteria, candidate)
+            except (WebsiteFetchError, ValueError) as exc:
+                if isinstance(exc, WebsiteFetchError):
+                    quality_counts["unknown"] += 1
+                else:
+                    quality_counts["rejected"] += 1
+                warnings.append(f"{candidate.company_name}: {str(exc)[:180]}")
+                continue
+            result = _persist_signal(db, job, signal)
+            metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+            result.metadata_json = {
+                **metadata,
+                "source": "lead_finder_first_customers",
+                "authorization": {
+                    "crm_save_requires_user_action": True,
+                    "outreach_requires_user_action": True,
+                    "search_created_crm_record": False,
+                    "search_sent_message": False,
+                },
+            }
+            quality_counts[signal.verified_status] = quality_counts.get(signal.verified_status, 0) + 1
+            persisted += 1
+            job.progress_json = {
+                "stage": "verifying",
+                "message": f"Verified {persisted} first-customer candidates.",
+                "percent": min(90, 30 + index * 5),
+                "saved": 0,
+                "candidates": len(candidates),
+                **quality_counts,
+            }
+            db.flush()
+        final_status = "completed" if persisted > 0 and not warnings else ("partially_completed" if persisted > 0 else "failed")
+        message = "First-customer candidates are ready for review." if persisted else "No evidence-backed first customers were found."
+        job.status = final_status
+        job.summary_json = {
+            "results": persisted,
+            "saved_to_crm": 0,
+            "candidates": len(candidates),
+            "warnings": warnings[:10],
+            **quality_counts,
+        }
+        job.progress_json = {
+            "stage": final_status,
+            "message": message,
+            "percent": 100,
+            "saved": 0,
+            "candidates": len(candidates),
+            "warnings": warnings[:10],
+            **quality_counts,
+        }
+        job.error_message = "" if persisted else "; ".join(warnings[:3]) or "No evidence-backed first customers were found."
+    except Exception as exc:
+        job.status = "failed"
+        job.error_message = str(exc)[:2000]
+        job.progress_json = {"stage": "failed", "message": "First-customer search could not finish.", "percent": 100}
+        raise
+    finally:
+        job.locked_by = ""
+        job.locked_at = None
+        job.completed_at = datetime.utcnow()
+        job.updated_at = datetime.utcnow()
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            action="lead_finder.first_customers.search_completed",
+            metadata_json={
+                "job_id": str(job.id),
+                "status": job.status,
+                "crm_write": False,
+                "outreach_action": False,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def save_first_customer_result_to_crm(db: Session, *, workspace_id: UUID, result_id: UUID) -> AICustomerFinderResult:
+    result = db.scalar(
+        select(AICustomerFinderResult).where(
+            AICustomerFinderResult.id == result_id,
+            AICustomerFinderResult.workspace_id == workspace_id,
+        )
+    )
+    if result is None:
+        raise ValueError("First-customer result not found.")
+    job = db.scalar(select(AICustomerFinderJob).where(AICustomerFinderJob.id == result.job_id, AICustomerFinderJob.workspace_id == workspace_id))
+    if job is None:
+        raise ValueError("First-customer search not found.")
+    criteria = CustomerFinderCriteria.model_validate(job.criteria_json or {})
+    _save_signal_to_crm(db, job, result, criteria)
+    metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+    result.metadata_json = {
+        **metadata,
+        "authorization": {
+            **(metadata.get("authorization") if isinstance(metadata.get("authorization"), dict) else {}),
+            "crm_save_authorized_at": datetime.utcnow().isoformat(),
+            "crm_save_requires_user_action": True,
+            "outreach_requires_user_action": True,
+            "message_sent": False,
+        },
+    }
+    db.commit()
+    db.refresh(result)
+    return result
+
+
 def fail_or_retry_ai_customer_finder_job(db: Session, job: AICustomerFinderJob, exc: Exception, *, claim_token: str | None = None, retry_delay_seconds: int = 60) -> bool:
     if claim_token and job.locked_by != claim_token:
         return False

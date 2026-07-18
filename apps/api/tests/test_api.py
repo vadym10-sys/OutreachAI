@@ -48,7 +48,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -744,6 +744,110 @@ def test_ai_customer_finder_draft_action_keeps_email_unsent(monkeypatch) -> None
         db.close()
 
 
+def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach_draft_only(monkeypatch) -> None:
+    import app.services.ai_customer_finder.service as finder_service
+    from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "first-customers-mode@example.com"}
+
+    class FakeProvider:
+        key = "test_provider"
+
+        def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            return [
+                PublicCustomerCandidate(
+                    company_name="First Customer Signal Co",
+                    website="https://first-signal.example",
+                    industry=criteria.target_industry,
+                    country=criteria.target_country,
+                    source_provider=self.key,
+                ),
+                PublicCustomerCandidate(
+                    company_name="First Customer Signal Co",
+                    website="https://www.first-signal.example/",
+                    industry=criteria.target_industry,
+                    country=criteria.target_country,
+                    source_provider=self.key,
+                ),
+            ]
+
+    def fake_collect_website(url: str) -> WebsiteSnapshot:
+        return WebsiteSnapshot(
+            url=url,
+            title="First Customer Signal Co careers",
+            meta_description="B2B SaaS company hiring SDRs and replacing manual spreadsheet CRM workflows.",
+            text="First Customer Signal Co is a B2B SaaS company in Germany. We are hiring SDRs and replacing manual spreadsheet CRM workflows. Contact sales@first-signal.example for business requests.",
+            technologies=["CRM", "Automation"],
+        )
+
+    monkeypatch.setattr(finder_service, "provider_for_key", lambda _: FakeProvider())
+    monkeypatch.setattr(finder_service, "collect_website", fake_collect_website)
+
+    search = client.post(
+        "/api/workspace-app/leads/first-customers/search",
+        headers=headers,
+        json={
+            "product_site": "https://outreachaiaiai.com",
+            "country": "Germany",
+            "industry": "B2B SaaS",
+            "results": 5,
+        },
+    )
+    assert search.status_code == 200, search.text
+    payload = search.json()
+    assert payload["status"] in {"completed", "partially_completed"}
+    assert len(payload["results"]) == 1
+    result = payload["results"][0]
+    assert result["company_name"] == "First Customer Signal Co"
+    assert result["source_url"] == "https://first-signal.example"
+    assert result["publication_date"] == "Unknown"
+    assert result["public_work_contact"] == "sales@first-signal.example"
+    assert result["ai_relevance_score"] > 0
+    assert result["confidence_score"] > 0
+    assert result["contact_title"]
+    assert result["draft_email"]
+    assert result["company_id"] == ""
+    assert result["lead_id"] == ""
+    assert payload["summary"]["saved_to_crm"] == 0
+
+    db = get_sessionmaker()()
+    try:
+        assert db.scalar(select(func.count()).select_from(Lead).where(Lead.email == "sales@first-signal.example")) == 0
+        assert db.scalar(select(func.count()).select_from(Company).where(Company.website == "https://first-signal.example")) == 0
+        assert db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["result_id"].as_string() == result["id"])) == 0
+        source = db.scalar(select(AICustomerFinderSource).where(AICustomerFinderSource.source_url == "https://first-signal.example"))
+        assert source is not None
+        assert source.publication_date == "Unknown"
+    finally:
+        db.close()
+
+    save = client.post(f"/api/workspace-app/leads/first-customers/results/{result['id']}/save", headers=headers)
+    assert save.status_code == 200, save.text
+    saved = save.json()["result"]
+    assert saved["company_id"]
+    assert saved["lead_id"]
+    assert saved["email_delivery_status"] == "draft"
+    assert saved["can_send"] is True
+
+    duplicate_save = client.post(f"/api/workspace-app/leads/first-customers/results/{result['id']}/save", headers=headers)
+    assert duplicate_save.status_code == 200, duplicate_save.text
+
+    db = get_sessionmaker()()
+    try:
+        leads = list(db.scalars(select(Lead).where(Lead.email == "sales@first-signal.example")).all())
+        assert len(leads) == 1
+        company_count = db.scalar(select(func.count()).select_from(Company).where(Company.website == "https://first-signal.example"))
+        assert company_count == 1
+        emails = list(db.scalars(select(EmailMessage).where(EmailMessage.lead_id == leads[0].id)).all())
+        assert len(emails) == 1
+        assert emails[0].delivery_status == "draft"
+        assert emails[0].sent_at is None
+        assert emails[0].tags["draft_only"] is True
+        assert emails[0].tags["requires_review"] is True
+    finally:
+        db.close()
+
+
 def test_revenue_intelligence_feed_scores_watchlist_and_tenant_isolation() -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "revenue-intelligence@example.com"}
     company_response = client.post(
@@ -1089,6 +1193,7 @@ def test_serve_main_routes_worker_role_to_worker_entrypoint(monkeypatch) -> None
         called["uvicorn"] = True
 
     monkeypatch.setattr("app.jobs.worker.main", fake_worker_main)
+    monkeypatch.setattr(serve_module, "_start_worker_health_server", lambda *args, **kwargs: None)
     monkeypatch.setattr(serve_module.uvicorn, "run", fake_uvicorn_run)
 
     serve_module.main()
