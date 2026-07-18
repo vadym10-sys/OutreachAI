@@ -56,25 +56,25 @@ const productMoments = [
 const plans = [
   {
     name: "Starter",
-    price: "Billing",
+    price: 49,
     audience: "For the first customer workflow",
     cta: "Start free trial",
-    items: ["Customer search", "Manual CRM save", "Draft email", "Review mode"]
+    items: ["500 leads/month", "1,000 AI emails/month", "Manual CRM save", "Review mode"]
   },
   {
     name: "Pro",
-    price: "Billing",
+    price: 149,
     audience: "For teams with higher usage",
     cta: "Start Pro trial",
     featured: true,
-    items: ["Higher usage limits", "CRM stages and notes", "Manual sending", "Reply status"]
+    items: ["5,000 leads/month", "10,000 AI emails/month", "CRM stages and notes", "Reply status"]
   },
   {
     name: "Agency",
-    price: "Billing",
+    price: 499,
     audience: "For multi-workspace outbound teams",
     cta: "Start Agency trial",
-    items: ["Workspace controls", "Team setup", "Billing management", "Manual review workflow"]
+    items: ["50,000 leads/month", "100,000 AI emails/month", "Client workspaces", "Team members"]
   }
 ] as const;
 
@@ -121,14 +121,20 @@ function ProgressLine({ value }: { value: number }) {
 }
 
 export function LandingPage() {
-  const { t } = useI18n();
+  const { t, formatCurrency } = useI18n();
   const schema = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     name: "OutreachAI",
     applicationCategory: "SalesApplication",
     description: "AI customer finder for B2B teams: find public-source leads, save selected companies to CRM, draft email, and send only after review.",
-    offers: plans.map((plan) => ({ "@type": "Offer", name: `OutreachAI ${plan.name}` }))
+    offers: plans.map((plan) => ({
+      "@type": "Offer",
+      name: `OutreachAI ${plan.name}`,
+      price: plan.price,
+      priceCurrency: "EUR",
+      availability: "https://schema.org/InStock"
+    }))
   };
 
   return (
@@ -305,7 +311,7 @@ export function LandingPage() {
                 {featured && <p className="mb-4 w-fit rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-brand">{t("Most popular")}</p>}
                 <h3 className="text-2xl font-black text-ink">{t(plan.name)}</h3>
                 <p className="mt-2 text-sm text-[var(--ui-text-soft)]">{t(plan.audience)}</p>
-                <p className="mt-5 text-3xl font-black text-ink">{t(plan.price)}</p>
+                <p className="mt-5 text-3xl font-black text-ink">{formatCurrency(plan.price)}<span className="text-base font-bold text-slate-500">{t("/month")}</span></p>
                 <p className="mt-2 text-sm font-black text-brand">{t("Exact limits appear inside Billing.")}</p>
                 <ul className="mt-6 space-y-3 text-sm text-[var(--ui-text-soft)]">
                   {plan.items.map((item) => <li key={item} className="flex gap-2"><CheckCircle2 size={18} className="mt-0.5 shrink-0 text-brand" />{t(item)}</li>)}

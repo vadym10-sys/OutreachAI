@@ -15,8 +15,9 @@ test("landing explains the B2B outbound product and pricing", async ({ page }) =
   await expect(page.getByRole("heading", { name: "Manual CRM Save" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Starter" }).first()).toBeVisible();
   await expect(page.getByText("Exact limits appear inside Billing.").first()).toBeVisible();
-  await expect(main).not.toContainText("€149");
-  await expect(main).not.toContainText("€499");
+  await expect(main).toContainText("€49.00");
+  await expect(main).toContainText("€149.00");
+  await expect(main).toContainText("€499.00");
 });
 
 test("landing follows the selected language without mixed English hero copy", async ({ page }) => {
