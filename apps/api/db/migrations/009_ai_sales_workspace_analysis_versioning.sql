@@ -10,8 +10,17 @@ END;
 ALTER TABLE ai_sales_workspace_analyses
 DROP CONSTRAINT IF EXISTS uq_ai_sales_workspace_company;
 
-ALTER TABLE ai_sales_workspace_analyses
-ADD CONSTRAINT uq_ai_sales_workspace_company_version UNIQUE (workspace_id, company_id, version_number);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'uq_ai_sales_workspace_company_version'
+  ) THEN
+    ALTER TABLE ai_sales_workspace_analyses
+    ADD CONSTRAINT uq_ai_sales_workspace_company_version UNIQUE (workspace_id, company_id, version_number);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_ai_sales_workspace_company_version
 ON ai_sales_workspace_analyses(workspace_id, company_id, version_number DESC);
