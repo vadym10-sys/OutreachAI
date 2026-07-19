@@ -326,7 +326,7 @@ function AssistantSection() {
     const firstSafe = job.results.find((result) => safeToAutoSave(result));
     setBusy("campaign:allow");
     try {
-      const created = await api.createCampaign({
+      const created = campaign || await api.createCampaign({
         name: `AI Autopilot - ${criteria.targetCountry || "First customers"}`,
         industry: criteria.targetIndustry,
         countries: criteria.targetCountry && criteria.targetCountry !== "Any" ? [criteria.targetCountry] : [],
@@ -349,10 +349,48 @@ function AssistantSection() {
           delay_days: 0
         }]
       });
-      setCampaign(created);
-      setNotice("Campaign permission recorded in backend. Launch stays blocked until CRM leads and approved drafts match backend safety rules.");
+      const approved = await api.approveAutopilotCampaign(created.id, job.id);
+      setCampaign(approved);
+      setNotice("AI Autopilot approved. Backend queued safe jobs; staging mode blocks real-company sends unless the test mailbox domain is explicitly allowed.");
     } catch (err) {
       setError(friendlyErrorMessage(err, "Could not record campaign permission."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function connectMail() {
+    setBusy("mail:connect");
+    setError("");
+    try {
+      const response = await api.startGmailOAuth();
+      window.location.assign(response.auth_url);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not start secure Google mail connection."));
+      setBusy("");
+    }
+  }
+
+  async function disconnectMail() {
+    if (!window.confirm("Disconnect this Gmail mailbox from AI Autopilot?")) return;
+    setBusy("mail:disconnect");
+    try {
+      setSender(await api.disconnectGmail());
+      setNotice("Mail connection disconnected for this workspace.");
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not disconnect Gmail."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function syncReplies() {
+    setBusy("mail:sync");
+    try {
+      const result = await api.syncGmailReplies();
+      setNotice(`Replies synced: ${result.synced}. AI classified replies without sending automatic responses.`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not sync Gmail replies."));
     } finally {
       setBusy("");
     }
@@ -385,12 +423,13 @@ function AssistantSection() {
   const saved = job?.results.filter((result) => result.company_id || result.lead_id).length || Number(progress.saved || 0);
   const prepared = job?.results.filter((result) => result.email_id || result.email_body || result.draft_email).length || 0;
   const needsReview = job?.results.filter((result) => resultNeedsReview(result)).length || 0;
-  const sent = 0;
-  const replies = 0;
+  const sent = campaign?.sent || 0;
+  const replies = campaign?.replies || 0;
   const senderReady = Boolean(sender?.connected && sender.sender_email && sender.status === "connected");
   const canAllowAutopilot = Boolean(job && found > 0 && saved > 0 && prepared > 0 && senderReady && (sender?.remaining_today || 0) > 0);
   const sample = job?.results.find((result) => result.email_body || result.draft_email);
-  const progressText = job ? String(progress.message || job.error_message || "AI is checking backend progress.") : "Ожидаю сайт или описание бизнеса.";
+  const stage = campaign?.status === "Paused" || campaign?.status === "paused" ? "Приостановлен" : autoSaving ? "Сохраняет" : job?.status === "queued" ? "Анализирует" : job?.status === "running" ? "Ищет" : job?.results.length ? (campaign?.status === "Running" || campaign?.status === "running" ? "Отправляет" : "Готовит письма") : "Анализирует";
+  const progressText = job ? `${stage}: ${String(progress.message || job.error_message || "AI is checking backend progress.")}` : "Ожидаю сайт или описание бизнеса.";
 
   return (
     <Frame title="AI-помощник" copy="Вставьте сайт или опишите бизнес. OutreachAI сам соберет критерии, запустит First Customer Finder, сохранит проверенные компании в CRM и подготовит письма.">
@@ -436,6 +475,11 @@ function AssistantSection() {
             <p><span className="font-black text-ink">Аудитория:</span> {criteria.desiredCustomers}</p>
             <p><span className="font-black text-ink">Страны:</span> {criteria.targetCountry || "Auto"}</p>
             <p><span className="font-black text-ink">Дневной лимит:</span> {Math.min(sender?.remaining_today || 0, 10)} из {sender?.daily_send_limit || 0}</p>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {!senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void connectMail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> Подключить почту</button> : null}
+            {senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void syncReplies()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} /> Проверить ответы</button> : null}
+            {senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectMail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Отключить</button> : null}
           </div>
           <details className="mt-3 rounded-lg border border-slate-200"><summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Пример письма <ChevronDown size={16} /></summary><p className="whitespace-pre-wrap border-t border-slate-200 p-3 text-sm leading-6 text-slate-700">{sample?.email_body || sample?.draft_email || "Пример появится после первого найденного и сохраненного результата."}</p></details>
           <button type="button" disabled={!canAllowAutopilot || Boolean(busy)} onClick={() => void allowCampaign()} className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === "campaign:allow" ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} Разрешить эту кампанию</button>

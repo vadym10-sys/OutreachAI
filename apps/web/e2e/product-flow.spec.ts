@@ -19,7 +19,7 @@ test("AI-first workspace exposes four sections only", async ({ page }) => {
   }
 });
 
-test("AI assistant accepts one instruction and keeps autopilot gated", async ({ page }) => {
+test("AI assistant accepts one instruction and prepares Autopilot approval surface", async ({ page }) => {
   await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
   await page.getByRole("form", { name: "AI customer command" }).getByLabel("AI command").fill("https://outreachaiaiai.com");
   await page.getByRole("button", { name: "Запустить AI" }).click();
@@ -30,6 +30,6 @@ test("AI assistant accepts one instruction and keeps autopilot gated", async ({ 
   });
   await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
   await expect(page.getByText("Verified public website content")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeDisabled();
-  await expect(page.getByText("Autopilot включится только после")).toBeVisible();
+  await expect(page.getByText("qa.sender@example.com подтверждён")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
 });

@@ -22,6 +22,7 @@ from app.services.ai_customer_finder.service import (
     heartbeat_ai_customer_finder_job,
     process_ai_customer_finder_job,
 )
+from app.services.autopilot import AutopilotDeferred, process_autopilot_email_job
 from app.services.enrichment_queue import claim_next_enrichment_job, fail_or_retry_job, heartbeat_job_lock
 
 logger = logging.getLogger("outreachai.enrichment_worker")
@@ -97,12 +98,28 @@ def run_enrichment_worker_once(worker_id: str | None = None) -> bool:
             completed = process_ai_customer_finder_job(job_id, claim_token=claim_token)
         elif job.job_type == "deep_contact_search":
             completed = process_deep_contact_search_job(job_id, claim_token=claim_token)
+        elif job.job_type == "autopilot_email_send":
+            process_db = get_sessionmaker()()
+            try:
+                process_job = process_db.get(EnrichmentJob, job_id)
+                completed = process_autopilot_email_job(process_db, process_job, claim_token=claim_token) if process_job is not None else False
+            finally:
+                process_db.close()
         else:
             completed = process_enrichment_job(job_id, claim_token=claim_token)
         if completed:
             logger.info("Enrichment worker completed job_id=%s job_type=%s", job_id, "ai_customer_finder" if job_kind == "ai_customer_finder" else job.job_type)
         else:
             logger.info("Enrichment worker ignored stale claim job_id=%s claim_token=%s job_type=%s", job_id, claim_token, "ai_customer_finder" if job_kind == "ai_customer_finder" else job.job_type)
+        return True
+    except AutopilotDeferred as exc:
+        retry_db = get_sessionmaker()()
+        try:
+            retry_job = retry_db.get(EnrichmentJob, job_id)
+            if retry_job is not None:
+                fail_or_retry_job(retry_db, retry_job, exc, retry_delay_seconds=exc.delay_seconds, claim_token=claim_token)
+        finally:
+            retry_db.close()
         return True
     except Exception as exc:
         sentry_sdk.capture_exception(exc)

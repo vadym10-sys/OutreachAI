@@ -456,8 +456,8 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       currentFinderJob = {
         ...qaCustomerFinderJob,
         status: "searching",
-        progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 0, candidates: 3 },
-        results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "" }]
+        progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 1, candidates: 3 },
+        results: [qaCustomerFinderResult]
       };
       return fulfillJson(route, currentFinderJob, 202);
     }
@@ -666,6 +666,50 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: { ...qaCompany, crm_stage: "Approved", email_approved_at: now }, email: { ...qaCompany.generated_emails[0], delivery_status: "approved" } });
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: { ...qaCompany, crm_stage: "Sent", email_sent_at: now }, email: { ...qaCompany.generated_emails[0], delivery_status: "sent", sent_at: now } });
+    if (apiPath === "/api/outreach/sender/status") return fulfillJson(route, {
+      provider: "gmail",
+      connected: true,
+      status: "connected",
+      sender_name: "QA Sender",
+      sender_email: "qa.sender@example.com",
+      reply_to: "qa.sender@example.com",
+      daily_send_limit: 10,
+      sent_today: 0,
+      remaining_today: 10,
+      spf_status: "not_checked",
+      dkim_status: "not_checked",
+      dmarc_status: "not_checked",
+      next_action: "Ready to send through the connected Gmail mailbox.",
+      reason: "",
+      smtp_host: "",
+      smtp_port: 587,
+      smtp_username: "",
+      smtp_configured: false,
+      smtp_verified_at: ""
+    });
+    if (apiPath === "/api/outreach/oauth/gmail/start") return fulfillJson(route, { auth_url: "/dashboard/settings?mail=mock_connected" });
+    if (apiPath === "/api/outreach/oauth/gmail/sync") return fulfillJson(route, { synced: 1, classified: { "заинтересован": 1 } });
+    if (apiPath === "/api/outreach/oauth/gmail") return fulfillJson(route, {
+      provider: "gmail",
+      connected: false,
+      status: "needs_setup",
+      sender_name: "",
+      sender_email: null,
+      reply_to: null,
+      daily_send_limit: 10,
+      sent_today: 0,
+      remaining_today: 0,
+      spf_status: "not_checked",
+      dkim_status: "not_checked",
+      dmarc_status: "not_checked",
+      next_action: "Click Connect email and approve Gmail access.",
+      reason: "Gmail needs secure OAuth setup before sending.",
+      smtp_host: "",
+      smtp_port: 587,
+      smtp_username: "",
+      smtp_configured: false,
+      smtp_verified_at: ""
+    });
     if (apiPath === "/api/dashboard") return fulfillJson(route, { leads: 1, campaigns: 1, emails_sent: 0, delivered: 0, opened: 0, replies: 0, bounces: 0, open_rate: 0, reply_rate: 0, ctr: 0, conversion_rate: 0, meetings: 0, revenue: 0, revenue_forecast: 0, mrr: 0, arr: 0, revenue_series: [], funnel: [], pipeline: [], plan: "Starter", usage: { leads: 1, email_sends: 0 } });
     if (apiPath === "/api/campaigns") {
       if (route.request().method() === "POST") {
@@ -675,12 +719,20 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       }
       return fulfillJson(route, [currentCampaign]);
     }
+    if (apiPath === `/api/campaigns/${currentCampaign.id}/autopilot/approve`) {
+      currentCampaign = { ...currentCampaign, status: "Running", sent: 0, replies: 0 };
+      return fulfillJson(route, currentCampaign);
+    }
     if (apiPath === `/api/campaigns/${qaCampaign.id}/launch`) {
       currentCampaign = { ...currentCampaign, status: "Running" };
       return fulfillJson(route, currentCampaign);
     }
-    if (apiPath === `/api/campaigns/${qaCampaign.id}/pause`) {
+    if (apiPath === `/api/campaigns/${currentCampaign.id}/pause`) {
       currentCampaign = { ...currentCampaign, status: "Paused" };
+      return fulfillJson(route, currentCampaign);
+    }
+    if (apiPath === `/api/campaigns/${currentCampaign.id}/stop`) {
+      currentCampaign = { ...currentCampaign, status: "Stopped" };
       return fulfillJson(route, currentCampaign);
     }
     if (apiPath === "/api/crm/companies") return fulfillJson(route, [qaCompany]);

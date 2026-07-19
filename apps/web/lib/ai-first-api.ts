@@ -46,7 +46,11 @@ export type AiFirstApi = {
   updateWorkspace(payload: Partial<Workspace>): Promise<Workspace>;
   integrations(): Promise<WorkspaceIntegrationStatusResponse>;
   senderStatus(): Promise<OutreachSenderStatus>;
+  startGmailOAuth(): Promise<{ auth_url: string }>;
+  disconnectGmail(): Promise<OutreachSenderStatus>;
+  syncGmailReplies(): Promise<{ synced: number; classified: Record<string, number> }>;
   createCampaign(payload: Partial<Campaign>): Promise<Campaign>;
+  approveAutopilotCampaign(campaignId: string, jobId: string): Promise<Campaign>;
   campaignAction(campaignId: string, action: "launch" | "resume" | "pause" | "stop"): Promise<Campaign>;
 };
 
@@ -147,9 +151,16 @@ export function useAiFirstApi(): AiFirstApi {
     }),
     integrations: () => request<WorkspaceIntegrationStatusResponse>("/api/workspace-app/integrations/status"),
     senderStatus: () => request<OutreachSenderStatus>("/api/outreach/sender/status"),
+    startGmailOAuth: () => request<{ auth_url: string }>("/api/outreach/oauth/gmail/start"),
+    disconnectGmail: () => request<OutreachSenderStatus>("/api/outreach/oauth/gmail", { method: "DELETE" }),
+    syncGmailReplies: () => request<{ synced: number; classified: Record<string, number> }>("/api/outreach/oauth/gmail/sync", { method: "POST" }),
     createCampaign: (payload) => request<Campaign>("/api/campaigns", {
       method: "POST",
       body: JSON.stringify(payload)
+    }),
+    approveAutopilotCampaign: (campaignId, jobId) => request<Campaign>(`/api/campaigns/${campaignId}/autopilot/approve`, {
+      method: "POST",
+      body: JSON.stringify({ job_id: jobId })
     }),
     campaignAction: (campaignId, action) => request<Campaign>(`/api/campaigns/${campaignId}/${action}`, { method: "POST" })
   };

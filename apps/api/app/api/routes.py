@@ -5,15 +5,18 @@ import concurrent.futures
 import io
 import json
 import logging
+import secrets
 import time
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 from typing import Any, Optional
+from urllib.parse import urlencode
 from uuid import UUID
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+import httpx
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -27,6 +30,7 @@ from app.core.security import CurrentUser, CurrentUserContext, OwnerUser, Worksp
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
+    AICustomerFinderResult,
     AppSettings,
     AuditLog,
     BackupRun,
@@ -37,6 +41,7 @@ from app.models.entities import (
     Contact,
     Deal,
     EmailMessage,
+    EnrichmentJob,
     Lead,
     LeadStatus,
     Note,
@@ -181,6 +186,7 @@ from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email, verify_smtp_connection
+from app.services.enrichment_queue import enqueue_autopilot_email_job
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
 from app.services.apollo import (
@@ -443,6 +449,16 @@ def _settings_for_workspace(db: Session, user_id: str, workspace: Workspace) -> 
 
 
 SUPPORTED_OUTREACH_PROVIDERS = {"resend", "smtp", "gmail", "outlook"}
+GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+GMAIL_MESSAGES_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+GMAIL_OAUTH_SCOPES = [
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
 
 
 def _extract_email(value: str | None) -> str:
@@ -450,6 +466,54 @@ def _extract_email(value: str | None) -> str:
         return ""
     parsed = parseaddr(str(value))[1] or str(value).strip()
     return parsed.strip().lower()
+
+
+def _google_oauth_redirect_uri(settings) -> str:
+    return settings.google_oauth_redirect_uri.strip() or f"{settings.public_api_url.rstrip('/')}/api/outreach/oauth/gmail/callback"
+
+
+def _classify_reply(text: str) -> str:
+    lower = text.lower()
+    if any(item in lower for item in ["unsubscribe", "remove me", "stop emailing", "отпис", "abbestellen"]):
+        return "отписка"
+    if any(item in lower for item in ["not interested", "no thanks", "не интересно", "kein interesse"]):
+        return "не заинтересован"
+    if any(item in lower for item in ["later", "not now", "next quarter", "не сейчас", "später"]):
+        return "не сейчас"
+    if any(item in lower for item in ["interested", "tell me more", "let's talk", "demo", "заинтерес", "interessiert"]):
+        return "заинтересован"
+    return "не определено"
+
+
+def _gmail_access_token_from_sender(sender: dict[str, Any]) -> str:
+    app_settings = get_app_settings()
+    oauth = sender.get("oauth") if isinstance(sender.get("oauth"), dict) else {}
+    encrypted = str(oauth.get("refresh_token_encrypted") or "").strip()
+    if not encrypted:
+        raise HTTPException(status_code=409, detail="Connect Gmail before syncing replies.")
+    try:
+        refresh_token = decrypt_secret(encrypted, app_settings.encryption_key)
+    except SecretBoxError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        with httpx.Client(timeout=httpx.Timeout(12.0, connect=4.0)) as client:
+            response = client.post(
+                GOOGLE_OAUTH_TOKEN_URL,
+                data={
+                    "client_id": app_settings.google_oauth_client_id,
+                    "client_secret": app_settings.google_oauth_client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail="Gmail reply sync could not refresh OAuth access.") from exc
+    token = str(data.get("access_token") or "").strip()
+    if not token:
+        raise HTTPException(status_code=409, detail="Gmail did not return an access token.")
+    return token
 
 
 def _email_domain(value: str | None) -> str:
@@ -463,6 +527,7 @@ def _sender_settings(settings: AppSettings) -> dict[str, Any]:
     email_settings = settings.email if isinstance(settings.email, dict) else {}
     sender = email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}
     smtp = sender.get("smtp") if isinstance(sender.get("smtp"), dict) else {}
+    oauth = sender.get("oauth") if isinstance(sender.get("oauth"), dict) else {}
     try:
         daily_send_limit = int(sender.get("daily_send_limit") or email_settings.get("dailyLimit") or 25)
     except (TypeError, ValueError):
@@ -487,6 +552,13 @@ def _sender_settings(settings: AppSettings) -> dict[str, Any]:
             "password_encrypted": str(smtp.get("password_encrypted") or "").strip(),
             "use_tls": bool(smtp.get("use_tls", True)),
             "verified_at": str(smtp.get("verified_at") or "").strip(),
+        },
+        "oauth": {
+            "provider": str(oauth.get("provider") or "").strip().lower(),
+            "refresh_token_encrypted": str(oauth.get("refresh_token_encrypted") or "").strip(),
+            "scopes": oauth.get("scopes") if isinstance(oauth.get("scopes"), list) else [],
+            "verified_at": str(oauth.get("verified_at") or "").strip(),
+            "google_subject": str(oauth.get("google_subject") or "").strip(),
         },
     }
 
@@ -540,6 +612,8 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
     domain_checks = _domain_auth_status(_email_domain(configured_sender))
     smtp = sender["smtp"]
     smtp_configured = bool(smtp["host"] and smtp["username"] and smtp["password_encrypted"] and smtp["verified_at"])
+    oauth = sender["oauth"]
+    oauth_configured = bool(provider == "gmail" and configured_sender and oauth["refresh_token_encrypted"] and oauth["verified_at"])
 
     reason = ""
     connected = True
@@ -570,11 +644,18 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         status = "needs_setup"
         reason = "A custom encryption key is required before storing mailbox credentials."
         next_action = "Finish secure SMTP setup before sending."
-    elif provider in {"gmail", "outlook"}:
+    elif provider == "gmail" and oauth_configured:
+        next_action = "Ready to send through the connected Gmail mailbox."
+    elif provider == "gmail":
         connected = False
         status = "needs_setup"
-        reason = "Gmail and Outlook need secure OAuth setup before sending."
-        next_action = "Use the connected API sender now, or finish mailbox setup before sending."
+        reason = "Gmail needs secure OAuth setup before sending."
+        next_action = "Click Connect email and approve Gmail access."
+    elif provider == "outlook":
+        connected = False
+        status = "needs_setup"
+        reason = "Outlook OAuth is planned but not enabled yet."
+        next_action = "Connect Gmail now, or wait for Outlook support."
     elif not configured_sender:
         connected = False
         status = "needs_setup"
@@ -616,10 +697,23 @@ def _require_outreach_sender_ready(db: Session, user_id: str, workspace: Workspa
 
 def _outreach_sender_runtime_config(db: Session, user_id: str, workspace: Workspace) -> tuple[OutreachSenderStatusOut, dict[str, Any] | None]:
     status = _require_outreach_sender_ready(db, user_id, workspace)
-    if status.provider != "smtp":
+    if status.provider not in {"smtp", "gmail"}:
         return status, None
     settings = _settings_for_workspace(db, user_id, workspace)
-    smtp = _sender_settings(settings)["smtp"]
+    sender = _sender_settings(settings)
+    if status.provider == "gmail":
+        oauth = sender["oauth"]
+        try:
+            refresh_token = decrypt_secret(oauth["refresh_token_encrypted"], get_app_settings().encryption_key)
+        except SecretBoxError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        app_settings = get_app_settings()
+        return status, {
+            "refresh_token": refresh_token,
+            "client_id": app_settings.google_oauth_client_id,
+            "client_secret": app_settings.google_oauth_client_secret,
+        }
+    smtp = sender["smtp"]
     try:
         password = decrypt_secret(smtp["password_encrypted"], get_app_settings().encryption_key)
     except SecretBoxError as exc:
@@ -3989,8 +4083,106 @@ def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: C
         if approved_count == 0:
             raise HTTPException(status_code=400, detail="Approve at least one email draft before launching this campaign.")
     campaign.status = mapping[action]
+    if action == "stop":
+        jobs = db.scalars(
+            select(EnrichmentJob).where(
+                EnrichmentJob.workspace_id == workspace.id,
+                EnrichmentJob.user_id == user_id,
+                EnrichmentJob.job_type == "autopilot_email_send",
+                EnrichmentJob.status.in_(["pending", "retrying"]),
+                EnrichmentJob.payload_json["campaign_id"].as_string() == str(campaign.id),
+            )
+        ).all()
+        for job in jobs:
+            job.cancel_requested = True
+            job.status = "cancelled"
+            job.completed_at = datetime.utcnow()
+            job.progress_json = {**(job.progress_json or {}), "stage": "cancelled", "message": "Campaign was stopped.", "terminal_state": "cancelled"}
     log_event(db, request, user_id, f"campaign.{action}", {"campaign_id": str(campaign.id)})
     _notify(db, user_id, NotificationKind.info, "Campaign updated", f"{campaign.name} is now {campaign.status.value}.")
+    db.commit()
+    db.refresh(campaign)
+    return _campaign_out(db, campaign)
+
+
+@router.post("/campaigns/{campaign_id}/autopilot/approve", response_model=CampaignOut)
+def approve_autopilot_campaign(
+    campaign_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+) -> CampaignOut:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace)
+    sender_status = _require_outreach_sender_ready(db, user_id, workspace)
+    if sender_status.provider != "gmail":
+        raise HTTPException(status_code=409, detail="Connect Gmail/Google Workspace before enabling AI Autopilot.")
+    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    finder_job_id = str(payload.get("job_id") or "").strip()
+    if not finder_job_id:
+        raise HTTPException(status_code=400, detail="AI Autopilot approval requires the current finder job.")
+    result_rows = db.scalars(
+        select(AICustomerFinderResult).where(
+            AICustomerFinderResult.workspace_id == workspace.id,
+            AICustomerFinderResult.user_id == user_id,
+            AICustomerFinderResult.job_id == UUID(finder_job_id),
+            AICustomerFinderResult.lead_id.is_not(None),
+            AICustomerFinderResult.verified_status == "verified",
+        )
+    ).all()
+    lead_ids = [row.lead_id for row in result_rows if row.lead_id]
+    if not lead_ids:
+        raise HTTPException(status_code=400, detail="Save verified companies to CRM before enabling AI Autopilot.")
+    leads = db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.user_id == user_id, Lead.id.in_(lead_ids))).all()
+    queued = 0
+    approved = 0
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    for lead in leads:
+        lead.campaign_id = campaign.id
+        email = db.scalar(
+            select(EmailMessage)
+            .where(EmailMessage.workspace_id == workspace.id, EmailMessage.user_id == user_id, EmailMessage.lead_id == lead.id, EmailMessage.delivery_status.in_(["draft", "approved", "needs_review"]))
+            .order_by(EmailMessage.created_at.desc())
+        )
+        if not email:
+            continue
+        email.campaign_id = campaign.id
+        if email.delivery_status == "draft":
+            email.delivery_status = "approved"
+            approved += 1
+        email.tags = {
+            **(email.tags if isinstance(email.tags, dict) else {}),
+            "autopilot_approved": True,
+            "autopilot_approved_at": datetime.utcnow().isoformat(),
+            "autopilot_sender_email": sender_status.sender_email,
+            "autopilot_finder_job_id": finder_job_id,
+        }
+        enqueue_autopilot_email_job(
+            db,
+            user_id=user_id,
+            workspace_id=workspace.id,
+            lead=lead,
+            campaign_id=campaign.id,
+            email_id=email.id,
+            request_id=request_id,
+            language=campaign.language,
+            max_attempts=get_app_settings().enrichment_max_retries + 1,
+        )
+        queued += 1
+    if queued == 0:
+        raise HTTPException(status_code=400, detail="No eligible email drafts were available for this campaign.")
+    campaign.status = CampaignStatus.running
+    log_event(
+        db,
+        request,
+        user_id,
+        "autopilot.campaign.approved",
+        {"campaign_id": str(campaign.id), "finder_job_id": finder_job_id, "queued": queued, "approved_drafts": approved, "sender_email": sender_status.sender_email},
+    )
+    _notify(db, user_id, NotificationKind.info, "AI Autopilot enabled", f"{queued} safe send jobs were queued for {campaign.name}.")
     db.commit()
     db.refresh(campaign)
     return _campaign_out(db, campaign)
@@ -5010,6 +5202,188 @@ def outreach_sender_status(user_id: CurrentUser, db: Session = Depends(get_db)) 
     return _outreach_sender_status(db, user_id, workspace)
 
 
+@router.get("/outreach/oauth/gmail/start")
+def start_gmail_oauth(user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, str]:
+    workspace = _current_workspace(db, user_id)
+    app_settings = get_app_settings()
+    if not app_settings.google_oauth_client_id or not app_settings.google_oauth_client_secret:
+        raise HTTPException(status_code=409, detail="Google OAuth client is not configured for this environment.")
+    state_payload = {
+        "user_id": user_id,
+        "workspace_id": str(workspace.id),
+        "nonce": secrets.token_urlsafe(16),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        state = encrypt_secret(json.dumps(state_payload), app_settings.encryption_key)
+    except SecretBoxError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    params = {
+        "client_id": app_settings.google_oauth_client_id,
+        "redirect_uri": _google_oauth_redirect_uri(app_settings),
+        "response_type": "code",
+        "scope": " ".join(GMAIL_OAUTH_SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "false",
+        "state": state,
+    }
+    return {"auth_url": f"{GOOGLE_OAUTH_AUTH_URL}?{urlencode(params)}"}
+
+
+@router.get("/outreach/oauth/gmail/callback")
+def gmail_oauth_callback(request: Request, code: str = "", state: str = "", error: str = "", db: Session = Depends(get_db)) -> RedirectResponse:
+    app_settings = get_app_settings()
+    redirect_target = f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=connected"
+    if error:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=error")
+    try:
+        state_payload = json.loads(decrypt_secret(state, app_settings.encryption_key))
+    except Exception:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
+    user_id = str(state_payload.get("user_id") or "")
+    workspace_id = str(state_payload.get("workspace_id") or "")
+    if not user_id or not workspace_id or not code:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
+    try:
+        with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
+            token_response = client.post(
+                GOOGLE_OAUTH_TOKEN_URL,
+                data={
+                    "client_id": app_settings.google_oauth_client_id,
+                    "client_secret": app_settings.google_oauth_client_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": _google_oauth_redirect_uri(app_settings),
+                },
+            )
+            token_response.raise_for_status()
+            token_data = token_response.json()
+            access_token = str(token_data.get("access_token") or "")
+            refresh_token = str(token_data.get("refresh_token") or "")
+            scope = str(token_data.get("scope") or "")
+            userinfo_response = client.get(GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
+            userinfo_response.raise_for_status()
+            userinfo = userinfo_response.json()
+    except Exception as exc:
+        capture_provider_exception(exc, provider="google_oauth", endpoint="outreach.oauth.gmail.callback", extra={"workspace_id": workspace_id})
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=oauth_failed")
+    email = _extract_email(str(userinfo.get("email") or ""))
+    if not email or not refresh_token:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=missing_refresh")
+    allowed_test_users = app_settings.google_oauth_test_users
+    if app_settings.app_env != "production" and allowed_test_users and email.lower() not in allowed_test_users:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=test_user_required")
+    workspace = db.get(Workspace, UUID(workspace_id))
+    if workspace is None or workspace.owner_user_id != user_id:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=workspace_error")
+    settings = _settings_for_workspace(db, user_id, workspace)
+    email_settings = settings.email if isinstance(settings.email, dict) else {}
+    current_sender = _sender_settings(settings)
+    try:
+        encrypted_refresh = encrypt_secret(refresh_token, app_settings.encryption_key)
+    except SecretBoxError:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=encryption_required")
+    email_settings["sender"] = {
+        **(email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}),
+        "provider": "gmail",
+        "sender_name": current_sender["sender_name"] or str(userinfo.get("name") or "").strip(),
+        "sender_email": email,
+        "reply_to": email,
+        "daily_send_limit": max(1, min(int(current_sender["daily_send_limit"] or 25), 200)),
+        "enabled": True,
+        "smtp": current_sender["smtp"],
+        "oauth": {
+            "provider": "gmail",
+            "refresh_token_encrypted": encrypted_refresh,
+            "scopes": [item for item in scope.split(" ") if item],
+            "verified_at": datetime.utcnow().isoformat(),
+            "google_subject": str(userinfo.get("sub") or ""),
+        },
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    settings.email = email_settings
+    flag_modified(settings, "email")
+    db.add(settings)
+    log_event(db, request, user_id, "outreach.gmail.connected", {"workspace_id": str(workspace.id), "sender_email": email, "scopes": email_settings["sender"]["oauth"]["scopes"]})
+    db.commit()
+    return RedirectResponse(redirect_target)
+
+
+@router.delete("/outreach/oauth/gmail", response_model=OutreachSenderStatusOut)
+def disconnect_gmail_oauth(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    email_settings = settings.email if isinstance(settings.email, dict) else {}
+    sender = email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}
+    sender["provider"] = "gmail"
+    sender["enabled"] = False
+    sender["oauth"] = {}
+    sender["updated_at"] = datetime.utcnow().isoformat()
+    email_settings["sender"] = sender
+    settings.email = email_settings
+    flag_modified(settings, "email")
+    db.add(settings)
+    log_event(db, request, user_id, "outreach.gmail.disconnected", {"workspace_id": str(workspace.id)})
+    db.commit()
+    return _outreach_sender_status(db, user_id, workspace)
+
+
+@router.post("/outreach/oauth/gmail/sync")
+def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    sender = _sender_settings(settings)
+    if sender["provider"] != "gmail":
+        raise HTTPException(status_code=409, detail="Connect Gmail before syncing replies.")
+    token = _gmail_access_token_from_sender(settings.email.get("sender", {}) if isinstance(settings.email, dict) else {})
+    sent_emails = db.scalars(
+        select(EmailMessage)
+        .where(EmailMessage.workspace_id == workspace.id, EmailMessage.user_id == user_id, EmailMessage.delivery_status == "sent", EmailMessage.replied_at.is_(None))
+        .order_by(EmailMessage.sent_at.desc())
+        .limit(50)
+    ).all()
+    synced = 0
+    classified: dict[str, int] = {}
+    with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0), headers={"Authorization": f"Bearer {token}"}) as client:
+        for email in sent_emails:
+            lead = db.get(Lead, email.lead_id) if email.lead_id else None
+            if not lead or not lead.email:
+                continue
+            query = f'from:{lead.email} newer_than:30d'
+            list_response = client.get(GMAIL_MESSAGES_URL, params={"q": query, "maxResults": 3})
+            list_response.raise_for_status()
+            messages = list_response.json().get("messages") or []
+            if not messages:
+                continue
+            message_id = str(messages[0].get("id") or "")
+            if not message_id:
+                continue
+            message_response = client.get(f"{GMAIL_MESSAGES_URL}/{message_id}", params={"format": "full"})
+            message_response.raise_for_status()
+            message = message_response.json()
+            snippet = str(message.get("snippet") or "")
+            category = _classify_reply(snippet)
+            now = datetime.utcnow()
+            email.replied_at = now
+            email.reply_body = snippet[:4000]
+            email.delivery_status = "replied"
+            email.reply_assistant = {
+                "classification": category,
+                "suggested_response": "",
+                "auto_reply_allowed": False,
+                "synced_at": now.isoformat(),
+                "gmail_message_id": message_id,
+            }
+            lead.status = LeadStatus.replied if category != "отписка" else LeadStatus.archive
+            lead.notes = json.dumps({**(_lead_metadata(lead) if "_lead_metadata" in globals() else {}), "last_reply_classification": category, "last_reply_at": now.isoformat()})
+            db.add(AuditLog(user_id=user_id, workspace_id=workspace.id, action="outreach.gmail.reply_synced", metadata_json={"email_id": str(email.id), "lead_id": str(lead.id), "classification": category, "gmail_message_id": message_id}))
+            synced += 1
+            classified[category] = classified.get(category, 0) + 1
+    db.commit()
+    return {"synced": synced, "classified": classified}
+
+
 @router.put("/outreach/sender", response_model=OutreachSenderStatusOut)
 def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
     workspace = _current_workspace(db, user_id)
@@ -5070,6 +5444,7 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
             "use_tls": payload.smtp_use_tls,
             "verified_at": smtp_verified_at,
         },
+        "oauth": current_sender["oauth"] if provider == "gmail" else {},
         "updated_at": datetime.utcnow().isoformat(),
     }
     settings.email = email_settings

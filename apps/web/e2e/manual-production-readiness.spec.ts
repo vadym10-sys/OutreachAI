@@ -59,7 +59,8 @@ test.describe("manual production-readiness journey", () => {
       if (node.parentElement instanceof HTMLDetailsElement) node.parentElement.open = true;
     });
     await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeDisabled();
+    await expect(page.getByText("qa.sender@example.com подтверждён")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Остановить" })).toBeVisible();
     await guards.assertClean();
   });

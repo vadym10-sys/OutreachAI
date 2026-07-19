@@ -48,7 +48,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, UsageCounter, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -57,6 +57,9 @@ from app.services.ai import ProviderRequestError, ProviderResponseValidationErro
 from app.services.backups import backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
 from app.services.emailer import EmailProviderRequestError  # noqa: E402
+from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
+from app.services.autopilot import process_autopilot_email_job  # noqa: E402
+from app.services.secret_box import encrypt_secret  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
 import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
@@ -7313,3 +7316,137 @@ def test_ai_team_router_splits_multi_employee_task_and_requires_approval(monkeyp
     assert {"Sales", "Marketing", "Support", "Operations"}.issubset(employees)
     assert employees["Sales"]["completed_tasks"] >= 1
     assert employees["Marketing"]["completed_tasks"] >= 1
+
+
+def _autopilot_fixture(user_id: str = "autopilot-owner", workspace_name: str = "Autopilot Workspace", recipient: str = "buyer@testmail.local"):
+    settings = get_settings()
+    settings.encryption_key = "autopilot-test-encryption-key"
+    settings.google_oauth_client_id = "google-client"
+    settings.google_oauth_client_secret = "google-secret"
+    settings.autopilot_test_mode = True
+    settings.autopilot_safe_recipient_domain = "testmail.local"
+    db = get_sessionmaker()()
+    workspace = Workspace(owner_user_id=user_id, name=workspace_name, timezone="UTC")
+    db.add(workspace)
+    db.flush()
+    db.add(
+        AppSettings(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            email={
+                "sender": {
+                    "provider": "gmail",
+                    "sender_name": "QA Sender",
+                    "sender_email": "qa.sender@testmail.local",
+                    "reply_to": "qa.sender@testmail.local",
+                    "daily_send_limit": 2,
+                    "enabled": True,
+                    "oauth": {
+                        "provider": "gmail",
+                        "refresh_token_encrypted": encrypt_secret("refresh-token", settings.encryption_key),
+                        "verified_at": datetime.utcnow().isoformat(),
+                        "scopes": ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"],
+                    },
+                    "smtp": {},
+                },
+                "suppression": {"emails": [], "domains": [], "bounced": [], "unsubscribed": []},
+            },
+            billing={"plan": "Starter"},
+        )
+    )
+    campaign = Campaign(user_id=user_id, workspace_id=workspace.id, name=f"{workspace_name} Campaign", status=CampaignStatus.running, timezone="UTC")
+    db.add(campaign)
+    db.flush()
+    lead = Lead(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        campaign_id=campaign.id,
+        company="Autopilot Buyer",
+        website="https://buyer.example",
+        email=recipient,
+        status=LeadStatus.email_generated,
+        notes=json.dumps({"confidence_score": 88, "source_url": "https://buyer.example/contact"}),
+    )
+    db.add(lead)
+    db.flush()
+    db.add(Company(user_id=user_id, workspace_id=workspace.id, lead_id=lead.id, name=lead.company, website=lead.website, source="ai_customer_finder", metadata_json={"public_source": "https://buyer.example/contact"}))
+    email = EmailMessage(user_id=user_id, workspace_id=workspace.id, campaign_id=campaign.id, lead_id=lead.id, subject="Autopilot test", body="Hello from test", delivery_status="approved", tags={"autopilot_approved": True})
+    db.add(email)
+    db.flush()
+    job = enqueue_autopilot_email_job(db, user_id=user_id, workspace_id=workspace.id, lead=lead, campaign_id=campaign.id, email_id=email.id, request_id=f"request-{user_id}", language="English")
+    db.commit()
+    return db, workspace, campaign, lead, email, job
+
+
+def test_autopilot_worker_sends_once_and_survives_reprocessing(monkeypatch) -> None:
+    sent = []
+    monkeypatch.setattr("app.services.autopilot.send_email", lambda **kwargs: sent.append(kwargs) or {"id": "gmail-msg-1", "thread_id": "thread-1"})
+    monkeypatch.setattr("app.services.autopilot._within_working_hours", lambda campaign: True)
+    db, workspace, _campaign, _lead, email, job = _autopilot_fixture("autopilot-idempotent")
+    try:
+        assert process_autopilot_email_job(db, job)
+        db.refresh(email)
+        assert email.delivery_status == "sent"
+        assert email.provider_message_id == "gmail-msg-1"
+        assert len(sent) == 1
+        retry_job = db.get(EnrichmentJob, job.id)
+        assert process_autopilot_email_job(db, retry_job)
+        assert len(sent) == 1
+        assert db.query(AuditLog).filter(AuditLog.workspace_id == workspace.id, AuditLog.action == "autopilot.email.sent").count() == 1
+    finally:
+        db.close()
+
+
+def test_autopilot_pause_stop_and_workspace_isolation(monkeypatch) -> None:
+    sent = []
+    monkeypatch.setattr("app.services.autopilot.send_email", lambda **kwargs: sent.append(kwargs) or {"id": f"gmail-msg-{len(sent)}"})
+    monkeypatch.setattr("app.services.autopilot._within_working_hours", lambda campaign: True)
+    db, workspace_a, campaign_a, _lead_a, email_a, job_a = _autopilot_fixture("autopilot-tenant-a", "Tenant A", "a@testmail.local")
+    db_b, workspace_b, campaign_b, _lead_b, email_b, job_b = _autopilot_fixture("autopilot-tenant-b", "Tenant B", "b@testmail.local")
+    workspace_b_id = workspace_b.id
+    email_b_id = email_b.id
+    job_b_id = job_b.id
+    db_b.close()
+    try:
+        campaign_a.status = CampaignStatus.paused
+        db.commit()
+        assert process_autopilot_email_job(db, job_a)
+        db.refresh(job_a)
+        assert job_a.status == "pending"
+        assert email_a.delivery_status == "approved"
+
+        campaign_a.status = CampaignStatus.stopped
+        db.commit()
+        assert process_autopilot_email_job(db, job_a)
+        db.refresh(job_a)
+        assert job_a.status == "cancelled"
+        assert not sent
+
+        email_b = db.get(EmailMessage, email_b_id)
+        job_b = db.get(EnrichmentJob, job_b_id)
+        assert process_autopilot_email_job(db, job_b)
+        db.refresh(email_b)
+        assert email_b.delivery_status == "sent"
+        assert len(sent) == 1
+        assert db.query(EmailMessage).filter(EmailMessage.workspace_id == workspace_a.id, EmailMessage.delivery_status == "sent").count() == 0
+        assert db.query(EmailMessage).filter(EmailMessage.workspace_id == workspace_b_id, EmailMessage.delivery_status == "sent").count() == 1
+    finally:
+        db.close()
+
+
+def test_autopilot_suppression_and_staging_domain_block_keep_crm_review(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.autopilot.send_email", lambda **kwargs: {"id": "should-not-send"})
+    monkeypatch.setattr("app.services.autopilot._within_working_hours", lambda campaign: True)
+    db, workspace, _campaign, lead, email, job = _autopilot_fixture("autopilot-suppression", "Suppression", "blocked@real-company.com")
+    try:
+        assert process_autopilot_email_job(db, job)
+        db.refresh(email)
+        db.refresh(lead)
+        company = db.query(Company).filter(Company.workspace_id == workspace.id, Company.lead_id == lead.id).one()
+        assert email.delivery_status == "needs_review"
+        assert lead.status == LeadStatus.qualified
+        assert "requires_review" in (lead.notes or "")
+        assert company.crm_stage != "Contacted"
+        assert db.query(AuditLog).filter(AuditLog.workspace_id == workspace.id, AuditLog.action == "autopilot.requires_review").count() == 1
+    finally:
+        db.close()

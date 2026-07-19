@@ -14,6 +14,6 @@ test("settings show real workspace, integration, and sender readiness", async ({
   await expect(page.getByRole("heading", { name: "Integrations" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Email sender" })).toBeVisible();
   await expect(page.getByText("Lead search")).toBeVisible();
-  await expect(page.getByText(/sender not configured|Sender status is unavailable/i)).toBeVisible();
+  await expect(page.getByText(/connected: qa.sender@example.com|Ready to send through the connected Gmail mailbox/i)).toBeVisible();
   await guards.assertClean();
 });
