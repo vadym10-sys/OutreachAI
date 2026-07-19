@@ -1,5 +1,5 @@
-import { WebsiteAnalyzerPage } from "@/components/outbound-workspace";
+import { redirect } from "next/navigation";
 
 export default function WebsiteAnalyzerRoute() {
-  return <WebsiteAnalyzerPage />;
+  redirect("/dashboard");
 }

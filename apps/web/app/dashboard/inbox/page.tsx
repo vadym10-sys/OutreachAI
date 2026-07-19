@@ -1,5 +1,5 @@
-import { InboxPage as InboxWorkspacePage } from '@/components/outbound-workspace';
+import { redirect } from "next/navigation";
 
 export default function InboxPage() {
-  return <InboxWorkspacePage />;
+  redirect("/dashboard/emails");
 }

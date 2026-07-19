@@ -46,7 +46,7 @@ test("mobile navigation exposes touch-friendly primary routes", async ({ page },
   const guards = installQaGuards(page, testInfo);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/dashboard");
-  for (const label of ["Search", "CRM", "Mail"]) {
+  for (const label of ["AI-помощник", "Клиенты", "Письма", "Настройки"]) {
     await expect(page.getByRole("link", { name: label }).last()).toBeVisible();
   }
   await guards.assertClean();

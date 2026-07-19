@@ -1,5 +1,5 @@
-import { ContactsPage } from "@/components/outbound-workspace";
+import { redirect } from "next/navigation";
 
 export default function ContactsRoute() {
-  return <ContactsPage />;
+  redirect("/dashboard/clients");
 }

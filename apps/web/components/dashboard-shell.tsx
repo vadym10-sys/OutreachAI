@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, Building2, CheckCircle2, Command, CreditCard, Crown, Inbox, Loader2, Menu, Search, Settings, Shield, Sparkles, User } from "lucide-react";
+import { ArrowRight, CheckCircle2, Command, Crown, Loader2, Mail, Menu, Search, Settings, Shield, Sparkles, UsersRound } from "lucide-react";
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -19,15 +19,13 @@ import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { Breadcrumbs, CommandDialog, CommandItem, Kbd } from "@/components/design-system";
 
 const primaryNav = [
-  { href: "/dashboard/leads", labelKey: "nav.aiCustomerFinder", icon: Search, aliases: ["/dashboard", "/dashboard/ai-customer-finder"] },
-  { href: "/dashboard/crm", labelKey: "nav.crm", icon: Building2, aliases: ["/dashboard/companies"] },
-  { href: "/dashboard/inbox", labelKey: "nav.inbox", icon: Inbox, aliases: ["/dashboard/campaigns"] }
+  { href: "/dashboard", labelKey: "AI-помощник", icon: Sparkles, aliases: ["/dashboard/leads", "/dashboard/ai-customer-finder"] },
+  { href: "/dashboard/clients", labelKey: "Клиенты", icon: UsersRound, aliases: ["/dashboard/crm", "/dashboard/companies", "/dashboard/contacts", "/dashboard/deals"] },
+  { href: "/dashboard/emails", labelKey: "Письма", icon: Mail, aliases: ["/dashboard/inbox", "/dashboard/campaigns"] },
+  { href: "/dashboard/settings", labelKey: "Настройки", icon: Settings, aliases: ["/dashboard/profile", "/dashboard/billing"] }
 ] as const;
 
 const utilityNav = [
-  { href: "/dashboard/billing", labelKey: "nav.billing", icon: CreditCard },
-  { href: "/dashboard/profile", labelKey: "nav.profile", icon: User },
-  { href: "/dashboard/settings", labelKey: "nav.settings", icon: Settings },
   { href: "/dashboard/owner", labelKey: "nav.owner", icon: Crown, ownerOnly: true },
   { href: "/admin", labelKey: "nav.admin", icon: Shield, featureFlag: "NEXT_PUBLIC_SHOW_ADMIN_NAV" }
 ] as const;
@@ -37,12 +35,10 @@ const featureFlags = {
 };
 
 const navDescriptions: Record<string, string> = {
-  "/dashboard/leads": "Find companies, verified contacts and first emails",
-  "/dashboard/crm": "Saved leads, statuses and next company action",
-  "/dashboard/inbox": "Drafts, sent emails, replies and follow-up",
-  "/dashboard/billing": "Plan, usage and invoices",
-  "/dashboard/profile": "Workspace identity",
-  "/dashboard/settings": "Integrations and readiness",
+  "/dashboard": "Ask AI to find first customers with public sources",
+  "/dashboard/clients": "Saved CRM clients and source-backed details",
+  "/dashboard/emails": "Drafts, approvals and manually confirmed sending",
+  "/dashboard/settings": "Workspace, integrations and sender readiness",
   "/dashboard/owner": "Owner controls",
   "/admin": "Administration"
 };
@@ -508,7 +504,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <span className="grid size-10 place-items-center rounded-2xl bg-[linear-gradient(135deg,#111114,var(--ui-brand),var(--ui-accent))] text-sm text-white shadow-glow">OA</span>
           <span>
             OutreachAI
-            <span className="block text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t("Find → CRM → Mail")}</span>
+            <span className="block text-[11px] font-black uppercase tracking-[0.14em] text-[var(--ui-text-soft)]">{t("AI → Clients → Mail")}</span>
           </span>
         </Link>
         <div className="mb-4 rounded-[1.4rem] border border-[var(--ui-border)] bg-white p-3 shadow-sm">
@@ -655,7 +651,20 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
         </header>
-        <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 pb-[calc(9rem+env(safe-area-inset-bottom))] min-[360px]:px-5 lg:p-8">
+        <nav className="sticky top-16 z-20 grid grid-cols-4 border-b border-[var(--ui-border)] bg-white px-2 py-2 shadow-sm lg:hidden">
+          {primaryMobileNav.map((item) => {
+            const Icon = item.icon;
+            const active = isNavItemActive(item, pathname);
+            const label = t(item.labelKey);
+            return (
+              <Link key={item.href} href={item.href} className={`flex min-h-12 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-[11px] font-black ${active ? "bg-[#101114] text-white shadow-sm" : "text-[var(--ui-text-soft)]"}`}>
+                <Icon size={18} aria-hidden="true" />
+                <span className="max-w-full truncate">{label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+        <main className="min-w-0 max-w-[100vw] overflow-x-clip px-4 py-5 min-[360px]:px-5 lg:p-8">
           {showWorkspaceSetupPanel && <section className="mb-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <div className="grid gap-5 lg:grid-cols-[1.1fr_1.4fr] lg:items-start">
               <div className="min-w-0">
@@ -697,8 +706,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     {workspaceSaving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />}
                     {t("workspace.save")}
                   </button>
-                  <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
-                    {t("nav.aiCustomerFinder")} <ArrowRight size={17} />
+                  <Link href="/dashboard" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
+                    {t("AI-помощник")} <ArrowRight size={17} />
                   </Link>
                 </div>
               </form>
@@ -707,19 +716,6 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <DashboardContentBoundary pathname={pathname}>{children}</DashboardContentBoundary>
         </main>
       </div>
-      <nav className="fixed inset-x-3 bottom-3 z-30 grid grid-cols-3 rounded-[1.6rem] border border-[var(--ui-border)] bg-white px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_18px_60px_rgba(16,17,20,0.18)] lg:hidden">
-        {primaryMobileNav.map((item) => {
-          const Icon = item.icon;
-          const active = isNavItemActive(item, pathname);
-          const label = t(item.labelKey);
-          return (
-            <Link key={item.href} href={item.href} className={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-[11px] font-black ${active ? "bg-[#101114] text-white shadow-sm" : "text-[var(--ui-text-soft)]"}`}>
-              <Icon size={18} aria-hidden="true" />
-              <span className="max-w-full truncate">{label}</span>
-            </Link>
-          );
-        })}
-      </nav>
       <CommandDialog open={commandOpen} query={commandQuery} onQueryChange={setCommandQuery} onClose={() => setCommandOpen(false)}>
         {commandItems.length ? commandItems.map((item, index) => {
           const Icon = item.icon;

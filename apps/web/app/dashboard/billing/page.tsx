@@ -1,5 +1,5 @@
-import { BillingPage as BillingWorkspacePage } from '@/components/outbound-workspace';
+import { redirect } from "next/navigation";
 
 export default function BillingPage() {
-  return <BillingWorkspacePage />;
+  redirect("/dashboard/settings");
 }

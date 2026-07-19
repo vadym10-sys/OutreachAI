@@ -1,5 +1,5 @@
-import { SettingsPage as SettingsWorkspacePage } from '@/components/outbound-workspace';
+import { AiFirstWorkspace } from "@/components/ai-first-workspace";
 
 export default function SettingsPage() {
-  return <SettingsWorkspacePage />;
+  return <AiFirstWorkspace section="settings" />;
 }

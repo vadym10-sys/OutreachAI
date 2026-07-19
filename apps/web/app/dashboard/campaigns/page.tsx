@@ -1,5 +1,5 @@
-import { CampaignsPage as CampaignsWorkspacePage } from '@/components/outbound-workspace';
+import { redirect } from "next/navigation";
 
 export default function CampaignsPage() {
-  return <CampaignsWorkspacePage />;
+  redirect("/dashboard/emails");
 }

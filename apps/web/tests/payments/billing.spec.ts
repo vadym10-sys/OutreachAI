@@ -6,10 +6,11 @@ test.beforeEach(async ({ page }) => {
   await mockWorkspaceApi(page);
 });
 
-test("billing page loads plan and usage without exposing payment internals", async ({ page }, testInfo) => {
+test("billing route redirects to settings without exposing payment internals", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/billing");
-  await expect(page.getByRole("heading", { name: "Subscription and usage." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Настройки" })).toBeVisible();
+  await expect(page.getByText("Billing", { exact: true })).toBeVisible();
   await expect(page.getByRole("main")).not.toContainText(/Stripe|webhook|secret|price id/i);
   await guards.assertClean();
 });

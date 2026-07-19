@@ -1,5 +1,5 @@
-import { CrmPipelinePage } from '@/components/outbound-workspace';
+import { redirect } from "next/navigation";
 
 export default function CrmPage() {
-  return <CrmPipelinePage />;
+  redirect("/dashboard/clients");
 }

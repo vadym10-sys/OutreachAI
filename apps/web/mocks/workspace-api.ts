@@ -184,7 +184,7 @@ const qaCustomerFinderResult = {
   buying_intent_score: 84,
   revenue_opportunity_score: 79,
   first_line_opener: "I noticed EuroScale CRM Co's public site shows hiring-related workflow evidence tied to SDR growth.",
-  email_id: "55555555-5555-5555-5555-555555555555",
+  email_id: "33333333-3333-3333-3333-333333333333",
   email_subject: "Quick idea for EuroScale CRM Co",
   email_body: "Hi Sarah,\n\nI noticed EuroScale CRM Co is hiring SDRs while replacing manual spreadsheet CRM workflows.\n\nOutreachAI helps sales teams find verified companies, save them to CRM, and prepare short personalized first emails.\n\nWorth a quick fit review?",
   email_delivery_status: "draft",
@@ -334,7 +334,12 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
   let currentAnalysis: any = { ...qaSalesAnalysisV2 };
   let analysisHistory: any[] = [{ ...qaSalesAnalysisV2 }, { ...qaSalesAnalysisV1 }];
   let currentProfile = { workspace: "QA Private Workspace", company: "QA Private Workspace", avatar_url: null, timezone: "UTC", language: "en" };
-  let currentFinderJob: any = { ...qaCustomerFinderJob, status: "completed", progress: { ...qaCustomerFinderJob.progress, stage: "completed", message: "AI Customer Finder completed." } };
+  let currentFinderJob: any = {
+    ...qaCustomerFinderJob,
+    status: "completed",
+    progress: { ...qaCustomerFinderJob.progress, stage: "completed", message: "AI Customer Finder completed." },
+    results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "" }]
+  };
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
@@ -448,12 +453,16 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, { status: "success", message: "Lead saved to CRM. Outreach draft is ready for manual review.", result: updated });
     }
     if (apiPath === "/api/workspace-app/ai-customer-finder/searches" && route.request().method() === "POST") {
-      currentFinderJob = { ...qaCustomerFinderJob, status: "searching", progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 1, candidates: 3 } };
+      currentFinderJob = {
+        ...qaCustomerFinderJob,
+        status: "searching",
+        progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 0, candidates: 3 },
+        results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "" }]
+      };
       return fulfillJson(route, currentFinderJob, 202);
     }
     if (apiPath === "/api/workspace-app/ai-customer-finder/searches") return fulfillJson(route, [currentFinderJob]);
     if (apiPath === `/api/workspace-app/ai-customer-finder/searches/${currentFinderJob.id}`) {
-      currentFinderJob = { ...qaCustomerFinderJob };
       return fulfillJson(route, currentFinderJob);
     }
     if (apiPath === `/api/workspace-app/ai-customer-finder/searches/${currentFinderJob.id}/cancel`) {
