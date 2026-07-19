@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
 import { AppProviders } from "@/components/app-providers";
-import { appUrl, clerkPublishableKey, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
+import { appUrl, clerkProxyUrl, clerkPublishableKey, hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { isLocale } from "@/lib/i18n/translations";
 import "./globals.css";
 
@@ -38,7 +38,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang={initialLocale} data-scroll-behavior="smooth">
       <body>
-        <AppProviders clerkPublishableKey={clerkPublishableKey} clerkEnabled={!isClerkE2EBypass && hasClerkPublishableKey} initialLocale={initialLocale}>
+        <AppProviders clerkProxyUrl={clerkProxyUrl} clerkPublishableKey={clerkPublishableKey} clerkEnabled={!isClerkE2EBypass && hasClerkPublishableKey} initialLocale={initialLocale}>
           {children}
         </AppProviders>
       </body>

@@ -47,22 +47,29 @@ function missingClerkMiddleware(req: NextRequest) {
   return securityHeaders();
 }
 
-const protectedMiddleware = clerkMiddleware(async (auth, req) => {
-  const res = securityHeaders();
-  if (isProtectedRoute(req)) {
-    if (isBackgroundRouteFetch(req) || !isDocumentNavigation(req)) {
-      const authState = await auth();
-      if (!authState.userId) {
-        return signedOutBackgroundResponse(res.headers);
+const protectedMiddleware = clerkMiddleware(
+  async (auth, req) => {
+    const res = securityHeaders();
+    if (isProtectedRoute(req)) {
+      if (isBackgroundRouteFetch(req) || !isDocumentNavigation(req)) {
+        const authState = await auth();
+        if (!authState.userId) {
+          return signedOutBackgroundResponse(res.headers);
+        }
+        return res;
       }
-      return res;
+
+      await auth.protect();
     }
 
-    await auth.protect();
+    return res;
+  },
+  {
+    frontendApiProxy: {
+      enabled: true
+    }
   }
-
-  return res;
-});
+);
 
 export default isClerkE2EBypass
   ? bypassMiddleware
@@ -71,5 +78,9 @@ export default isClerkE2EBypass
     : missingClerkMiddleware;
 
 export const config = {
-  matcher: ["/((?!.*\\..*|_next).*)", "/", "/(api|trpc)(.*)"]
+  matcher: [
+    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    "/(api|trpc)(.*)",
+    "/__clerk/(.*)"
+  ]
 };

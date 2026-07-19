@@ -380,11 +380,13 @@ function PostHogIdentityContext() {
 
 export function AppProviders({
   children,
+  clerkProxyUrl,
   clerkPublishableKey,
   clerkEnabled,
   initialLocale = "en"
 }: {
   children: ReactNode;
+  clerkProxyUrl?: string;
   clerkPublishableKey?: string;
   clerkEnabled: boolean;
   initialLocale?: Locale;
@@ -421,7 +423,7 @@ export function AppProviders({
   return (
     <AuthRuntimeContext.Provider value={{ clerkEnabled: true }}>
       <I18nProvider initialLocale={initialLocale}>
-        <LocaleAwareClerkProvider clerkPublishableKey={clerkPublishableKey}>
+        <LocaleAwareClerkProvider clerkProxyUrl={clerkProxyUrl} clerkPublishableKey={clerkPublishableKey}>
           {children}
         </LocaleAwareClerkProvider>
       </I18nProvider>
@@ -431,15 +433,17 @@ export function AppProviders({
 
 function LocaleAwareClerkProvider({
   children,
+  clerkProxyUrl,
   clerkPublishableKey
 }: {
   children: ReactNode;
+  clerkProxyUrl?: string;
   clerkPublishableKey: string;
 }) {
   const { locale } = useI18n();
 
   return (
-    <ClerkProvider publishableKey={clerkPublishableKey} localization={getClerkLocalization(locale)}>
+    <ClerkProvider publishableKey={clerkPublishableKey} proxyUrl={clerkProxyUrl || undefined} localization={getClerkLocalization(locale)} dynamic>
       <SilentIntegrationBoundary area="sentry-page-context">
         <SentryPageContext />
       </SilentIntegrationBoundary>
