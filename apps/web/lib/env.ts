@@ -37,7 +37,7 @@ export const posthogKey = analyticsEnabled ? process.env.NEXT_PUBLIC_POSTHOG_KEY
 export const posthogHost = normalizeUrl(process.env.NEXT_PUBLIC_POSTHOG_HOST, "https://app.posthog.com");
 export const logRocketAppId = sessionReplayEnabled ? process.env.NEXT_PUBLIC_LOGROCKET_APP_ID || "" : "";
 export const runtimeEnvironment = process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development";
-const isClerkDevelopmentPreview = clerkPublishableKey?.startsWith("pk_test_") && (runtimeEnvironment === "staging" || runtimeEnvironment === "preview" || process.env.VERCEL_ENV === "preview");
+const isClerkDevelopmentPreview = clerkPublishableKey?.startsWith("pk_test_") ?? false;
 export const isClerkMiddlewareRouteProtectionEnabled = !isClerkDevelopmentPreview;
 export const isProductionRuntime = process.env.NODE_ENV === "production" || runtimeEnvironment === "production";
 const clerkE2EBypassRequested = process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true";

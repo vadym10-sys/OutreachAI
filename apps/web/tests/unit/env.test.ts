@@ -95,6 +95,18 @@ describe("environment safety", () => {
     expect(env.hasClerkMiddlewareConfig).toBe(true);
   });
 
+  it("treats pk_test Clerk keys as development auth even when preview env metadata is unavailable", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.NEXT_PUBLIC_APP_ENV = "";
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_Y2xlcmsuZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk";
+
+    const env = await loadEnv();
+
+    expect(env.hasClerkPublishableKey).toBe(true);
+    expect(env.isClerkMiddlewareRouteProtectionEnabled).toBe(false);
+    expect(env.hasClerkMiddlewareConfig).toBe(true);
+  });
+
   it("requires the Clerk secret for live production middleware protection", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("VERCEL_ENV", "production");
