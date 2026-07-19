@@ -166,6 +166,58 @@ def test_ai_customer_finder_provider_bounds_google_places_payload(monkeypatch) -
     assert all(len(keyword) <= 160 for keyword in captured["payload"].keywords)
 
 
+def test_ai_customer_finder_provider_falls_back_to_broader_google_queries(monkeypatch) -> None:
+    import app.services.ai_customer_finder.providers as providers
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+
+    captured: list[LeadFinderRequest] = []
+
+    def fake_search_google_places(payload: LeadFinderRequest) -> GooglePlacesSearchResult:
+        captured.append(payload)
+        if len(captured) == 1:
+            return GooglePlacesSearchResult(leads=[], raw_count=0, duration_ms=1)
+        return GooglePlacesSearchResult(
+            leads=[
+                LeadOut(
+                    company="Fallback Software Co",
+                    website="https://fallback-software.example",
+                    industry="Software",
+                    country="Germany",
+                ),
+                LeadOut(
+                    company="Fallback Software Co",
+                    website="https://www.fallback-software.example/",
+                    industry="Software",
+                    country="Germany",
+                ),
+            ],
+            raw_count=2,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(providers, "search_google_places", fake_search_google_places)
+    criteria = CustomerFinderCriteria(
+        company_website="https://outreachaiaiai.com",
+        company_description="AI sales research and outreach platform",
+        product_or_service="AI sales research and outreach platform",
+        desired_customers="B2B SaaS founders and sales leaders hiring SDRs in Europe",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200 employees",
+        contact_titles=["Founder or Head of Sales"],
+        keywords=["Founder or Head of Sales", "manual CRM workflow"],
+    )
+
+    results = providers.GooglePlacesCustomerSearchProvider().search(criteria, max_candidates=5)
+
+    assert [result.company_name for result in results] == ["Fallback Software Co"]
+    assert len(captured) >= 2
+    assert captured[0].keyword == "B2B SaaS"
+    assert captured[1].keyword == "software company"
+    assert all(payload.keywords == [] for payload in captured)
+    assert all("Founder" not in payload.keyword for payload in captured)
+
+
 def test_ai_customer_finder_scoring_and_dedupe_require_public_evidence() -> None:
     from app.services.ai_customer_finder.dedupe import company_dedupe_key, signal_fingerprint
     from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
