@@ -2,11 +2,11 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, RefreshCw, Send, Settings, Sparkles, UsersRound } from "lucide-react";
+import { CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, PauseCircle, RefreshCw, Send, Settings, Sparkles, Square, UsersRound } from "lucide-react";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand } from "@/lib/ai-first-api";
-import type { FirstCustomerJob, FirstCustomerResult, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
-import type { CrmCompany, Email, Workspace } from "@/lib/types";
+import type { FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
+import type { Campaign, CrmCompany, Email, Workspace } from "@/lib/types";
 
 type Section = "assistant" | "clients" | "emails" | "settings";
 
@@ -25,13 +25,97 @@ const blankCommand: AiAssistantCommand = {
   maxResults: 10
 };
 
-function csv(value: string) {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
-}
-
 function pretty(value: string) {
   const text = value.replace(/_/g, " ");
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function isWebsiteInput(value: string) {
+  return /^https?:\/\/\S+$/i.test(value.trim()) || /^[\w.-]+\.[a-z]{2,}(\/\S*)?$/i.test(value.trim());
+}
+
+function normalizeWebsite(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function inferCountry(command: string) {
+  const normalized = command.toLowerCase();
+  if (/germany|германи|deutschland|немец/i.test(normalized)) return "Germany";
+  if (/poland|польш|polska/i.test(normalized)) return "Poland";
+  if (/united states|usa|сша/i.test(normalized)) return "United States";
+  if (/uk|united kingdom|britain|британ/i.test(normalized)) return "United Kingdom";
+  return "Any";
+}
+
+function inferIndustry(command: string) {
+  const normalized = command.toLowerCase();
+  if (/saas|software|crm|b2b|ai|sales|outbound/i.test(normalized)) return "B2B SaaS";
+  if (/строитель|construction|renovation/i.test(normalized)) return "Construction";
+  if (/clinic|health|medical|healthcare/i.test(normalized)) return "Healthcare";
+  return "B2B";
+}
+
+function inferProduct(command: string) {
+  const text = command.trim();
+  if (isWebsiteInput(text)) return "Business described by the submitted website";
+  const cleaned = text.replace(/^мы\s+прода[её]м\s+/i, "").replace(/^we\s+sell\s+/i, "");
+  return cleaned.slice(0, 220) || "B2B product or service";
+}
+
+function inferAudience(command: string) {
+  const country = inferCountry(command);
+  const industry = inferIndustry(command);
+  const suffix = country === "Any" ? "" : ` in ${country}`;
+  return `${industry} companies${suffix} with public timing, hiring, growth, or workflow pain signals.`;
+}
+
+function commandToCriteria(command: string, advanced: Pick<AiAssistantCommand, "targetCountry" | "targetIndustry" | "companySize" | "contactTitles" | "keywords" | "exclusions" | "maxResults">): AiAssistantCommand {
+  const input = command.trim();
+  const website = isWebsiteInput(input) ? normalizeWebsite(input) : "";
+  const targetCountry = advanced.targetCountry || inferCountry(input);
+  const targetIndustry = advanced.targetIndustry || inferIndustry(input);
+  const desiredCustomers = inferAudience(`${input} ${targetCountry} ${targetIndustry}`);
+  return {
+    command: input,
+    companyWebsite: website,
+    companyDescription: website || input,
+    productOrService: inferProduct(input),
+    desiredCustomers,
+    targetCountry,
+    targetIndustry,
+    companySize: advanced.companySize,
+    contactTitles: advanced.contactTitles.length ? advanced.contactTitles : ["Founder", "Head of Sales", "Revenue Operations"],
+    keywords: advanced.keywords,
+    exclusions: advanced.exclusions,
+    maxResults: advanced.maxResults
+  };
+}
+
+function understandingFor(command: string, criteria: AiAssistantCommand) {
+  const source = criteria.companyWebsite ? `сайт ${criteria.companyWebsite}` : "описание бизнеса";
+  return `Я понял ваш бизнес так: ${criteria.productOrService}. Сначала проанализирую ${source}, затем буду искать ${criteria.desiredCustomers} Подходящие роли: ${criteria.contactTitles.join(", ")}.`;
+}
+
+function missingQuestion(command: string) {
+  const text = command.trim();
+  if (!text) return "Вставьте сайт или одним предложением опишите бизнес и кого хотите найти.";
+  if (!isWebsiteInput(text) && text.length < 18) return "Что вы продаёте и кому?";
+  return "";
+}
+
+function safeToAutoSave(result: FirstCustomerResult) {
+  return Boolean(sourceUrl(result)) && ["verified", "partially_verified"].includes(result.verified_status) && result.confidence_score >= 60 && result.ai_relevance_score >= 60;
+}
+
+function resultNeedsReview(result: FirstCustomerResult) {
+  if (!sourceUrl(result)) return "нет публичного источника";
+  if (!result.public_work_contact) return "нет подтверждённого публичного делового контакта";
+  if (result.confidence_score < 60) return "низкий confidence";
+  if (result.ai_relevance_score < 60) return "низкий fit score";
+  if (!["verified", "partially_verified"].includes(result.verified_status)) return "статус проверки недостаточен";
+  return "";
 }
 
 function latestEmail(company: CrmCompany) {
@@ -71,13 +155,15 @@ function ResultCard({
   busy,
   onSave,
   onApprove,
-  onSend
+  onSend,
+  hideActions = false
 }: {
   result: FirstCustomerResult;
   busy: string;
   onSave(result: FirstCustomerResult): void;
   onApprove(result: FirstCustomerResult): void;
   onSend(result: FirstCustomerResult): void;
+  hideActions?: boolean;
 }) {
   const saved = Boolean(result.company_id || result.lead_id);
   const emailId = latestDraftForResult(result);
@@ -93,7 +179,7 @@ function ResultCard({
           </div>
           <p className="mt-1 text-sm text-slate-600">{[result.industry, result.country, result.company_size].filter(Boolean).join(" · ") || "Company profile fields were not found yet."}</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        {!hideActions ? <div className="flex flex-wrap gap-2">
           <button type="button" disabled={Boolean(busy) || saved} onClick={() => onSave(result)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">
             {busy === `save:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} {saved ? "Saved" : "Save to CRM"}
           </button>
@@ -103,7 +189,7 @@ function ResultCard({
           <button type="button" disabled={Boolean(busy) || !canSend} onClick={() => onSend(result)} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">
             {busy === `send:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send approved
           </button>
-        </div>
+        </div> : null}
       </div>
       <div className="mt-4 grid gap-3 lg:grid-cols-3">
         <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-black uppercase text-slate-500">Why it fits</p><p className="mt-2 text-sm leading-6 text-slate-700">{result.fit_explanation || result.signal_description || "No fit explanation returned."}</p></div>
@@ -131,10 +217,15 @@ function ResultCard({
 
 function AssistantSection() {
   const api = useAiFirstApi();
-  const [form, setForm] = useState(blankCommand);
+  const [command, setCommand] = useState("");
+  const [advanced, setAdvanced] = useState(blankCommand);
+  const [understanding, setUnderstanding] = useState("");
   const [job, setJob] = useState<FirstCustomerJob | null>(null);
   const [jobs, setJobs] = useState<FirstCustomerJob[]>([]);
+  const [sender, setSender] = useState<OutreachSenderStatus | null>(null);
+  const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loading, setLoading] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -155,6 +246,17 @@ function AssistantSection() {
     return () => window.clearTimeout(timer);
   }, [loadJobs]);
   useEffect(() => {
+    if (!api.ready) return undefined;
+    const timer = window.setTimeout(async () => {
+      try {
+        setSender(await api.senderStatus());
+      } catch {
+        setSender(null);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [api]);
+  useEffect(() => {
     if (!job || ["completed", "partially_completed", "failed"].includes(job.status)) return undefined;
     const timer = window.setInterval(async () => {
       try {
@@ -165,25 +267,52 @@ function AssistantSection() {
     }, 2500);
     return () => window.clearInterval(timer);
   }, [api, job]);
-
-  function update<K extends keyof AiAssistantCommand>(key: K, value: AiAssistantCommand[K]) {
-    setForm((current) => ({ ...current, [key]: value }));
-  }
+  useEffect(() => {
+    if (!job || !["completed", "partially_completed"].includes(job.status) || autoSaving) return;
+    const unsaved = job.results.filter((result) => !result.company_id && !result.lead_id && safeToAutoSave(result));
+    if (!unsaved.length) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => void (async () => {
+      setAutoSaving(true);
+      let saved = 0;
+      for (const result of unsaved) {
+        if (cancelled) return;
+        try {
+          await api.saveFinderResult(result.id);
+          saved += 1;
+        } catch (err) {
+          setError(friendlyErrorMessage(err, "Could not automatically save one verified company."));
+        }
+      }
+      if (!cancelled) {
+        setNotice(`${saved} verified compan${saved === 1 ? "y was" : "ies were"} saved to CRM. Drafts are ready for review.`);
+        setJob(await api.getCustomerFinderJob(job.id));
+        setAutoSaving(false);
+      }
+    })(), 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [api, autoSaving, job]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setNotice("");
-    if (!form.command.trim() || !form.companyDescription.trim() || !form.productOrService.trim()) {
-      setError("Describe your business, the task, and the customer you want OutreachAI to find.");
+    const question = missingQuestion(command);
+    if (question) {
+      setError(question);
       return;
     }
+    const criteria = commandToCriteria(command, advanced);
+    setUnderstanding(understandingFor(command, criteria));
     setLoading(true);
     try {
-      const next = await api.startCustomerFinder(form);
+      const next = await api.startCustomerFinder(criteria);
       setJob(next);
       setJobs((current) => [next, ...current.filter((item) => item.id !== next.id)]);
-      setNotice("AI customer search started. Results appear only after backend verifies public sources.");
+      setNotice("First Customer Finder started. Verified results will be saved to CRM automatically; unsafe results stay as Требует проверки.");
     } catch (err) {
       setError(friendlyErrorMessage(err, "AI customer search could not start."));
     } finally {
@@ -191,82 +320,129 @@ function AssistantSection() {
     }
   }
 
-  async function refreshCurrent() {
+  async function allowCampaign() {
     if (!job) return;
-    setJob(await api.getCustomerFinderJob(job.id));
-  }
-
-  async function save(result: FirstCustomerResult) {
-    setBusy(`save:${result.id}`);
+    const criteria = commandToCriteria(command || "Find first customers", advanced);
+    const firstSafe = job.results.find((result) => safeToAutoSave(result));
+    setBusy("campaign:allow");
     try {
-      const response = await api.saveFinderResult(result.id);
-      setNotice(response.message);
-      await refreshCurrent();
+      const created = await api.createCampaign({
+        name: `AI Autopilot - ${criteria.targetCountry || "First customers"}`,
+        industry: criteria.targetIndustry,
+        countries: criteria.targetCountry && criteria.targetCountry !== "Any" ? [criteria.targetCountry] : [],
+        company_size: criteria.companySize || null,
+        keywords: criteria.keywords,
+        website_filters: criteria.companyWebsite ? [criteria.companyWebsite] : [],
+        language: "Auto by recipient",
+        offer: criteria.productOrService,
+        cta: "Book a quick fit review",
+        email_tone: "Personal and concise",
+        signature: "OutreachAI",
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+        working_hours: "09:00-17:00",
+        daily_send_limit: Math.min(sender?.remaining_today || 10, 10),
+        sequence: [{
+          step_order: 1,
+          name: "Autopilot first email",
+          subject: firstSafe?.email_subject || "Personalized first email",
+          body: firstSafe?.email_body || firstSafe?.draft_email || "Generated per recipient after CRM save.",
+          delay_days: 0
+        }]
+      });
+      setCampaign(created);
+      setNotice("Campaign permission recorded in backend. Launch stays blocked until CRM leads and approved drafts match backend safety rules.");
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not save this client."));
+      setError(friendlyErrorMessage(err, "Could not record campaign permission."));
     } finally {
       setBusy("");
     }
   }
 
-  async function approve(result: FirstCustomerResult) {
-    if (!result.email_id) return;
-    setBusy(`approve:${result.id}`);
+  async function autopilotAction(action: "pause" | "stop") {
+    if (!campaign) {
+      setNotice(action === "pause" ? "AI Autopilot paused locally. No emails will be sent." : "AI Autopilot stopped locally. No emails will be sent.");
+      return;
+    }
+    setBusy(`campaign:${action}`);
     try {
-      const response = await api.approveEmail(result.email_id);
-      setNotice(response.message);
-      await refreshCurrent();
+      const updated = await api.campaignAction(campaign.id, action);
+      setCampaign(updated);
+      setNotice(action === "pause" ? "Campaign paused in backend." : "Campaign stopped in backend.");
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not approve the draft."));
+      setError(friendlyErrorMessage(err, `Could not ${action} this campaign.`));
     } finally {
       setBusy("");
     }
   }
 
-  async function send(result: FirstCustomerResult) {
-    if (!result.email_id) return;
-    if (!window.confirm("Send this approved email now? OutreachAI will not send anything without this confirmation.")) return;
-    setBusy(`send:${result.id}`);
-    try {
-      const response = await api.sendApprovedEmail(result.email_id);
-      setNotice(response.message);
-      await refreshCurrent();
-    } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not send the approved email."));
-    } finally {
-      setBusy("");
-    }
+  function updateAdvanced<K extends keyof AiAssistantCommand>(key: K, value: AiAssistantCommand[K]) {
+    setAdvanced((current) => ({ ...current, [key]: value }));
   }
 
-  const progressText = job ? Object.values(job.progress || {}).map(String).filter(Boolean).join(" · ") : "";
+  const criteria = commandToCriteria(command || "Find first customers", advanced);
+  const progress = job?.progress || {};
+  const found = job?.results.length || 0;
+  const saved = job?.results.filter((result) => result.company_id || result.lead_id).length || Number(progress.saved || 0);
+  const prepared = job?.results.filter((result) => result.email_id || result.email_body || result.draft_email).length || 0;
+  const needsReview = job?.results.filter((result) => resultNeedsReview(result)).length || 0;
+  const sent = 0;
+  const replies = 0;
+  const senderReady = Boolean(sender?.connected && sender.sender_email && sender.status === "connected");
+  const canAllowAutopilot = Boolean(job && found > 0 && saved > 0 && prepared > 0 && senderReady && (sender?.remaining_today || 0) > 0);
+  const sample = job?.results.find((result) => result.email_body || result.draft_email);
+  const progressText = job ? String(progress.message || job.error_message || "AI is checking backend progress.") : "Ожидаю сайт или описание бизнеса.";
 
   return (
-    <Frame title="AI-помощник" copy="Один помощник принимает задачу обычным языком, запускает реальный First Customer Finder и показывает только backend-результаты с публичными источниками.">
+    <Frame title="AI-помощник" copy="Вставьте сайт или опишите бизнес. OutreachAI сам соберет критерии, запустит First Customer Finder, сохранит проверенные компании в CRM и подготовит письма.">
       <form aria-label="AI customer command" onSubmit={submit} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-        <label className="block text-sm font-black text-ink">AI command<textarea value={form.command} onChange={(event) => update("command", event.target.value)} className="mt-2 min-h-28 w-full rounded-md border border-slate-300 p-3 text-sm leading-6" placeholder="Find first customers for our B2B sales tool among companies with public hiring or growth signals." /></label>
-        <div className="mt-4 grid gap-3 lg:grid-cols-3">
-          <label className="text-sm font-bold text-slate-700">Company website<input value={form.companyWebsite} onChange={(event) => update("companyWebsite", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="https://yourcompany.com" /></label>
-          <label className="text-sm font-bold text-slate-700 lg:col-span-2">Business description<input value={form.companyDescription} onChange={(event) => update("companyDescription", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Describe your real business." /></label>
-          <label className="text-sm font-bold text-slate-700">Product or service<input value={form.productOrService} onChange={(event) => update("productOrService", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="What you sell." /></label>
-          <label className="text-sm font-bold text-slate-700">Desired customers<input value={form.desiredCustomers} onChange={(event) => update("desiredCustomers", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Who should be found." /></label>
-          <label className="text-sm font-bold text-slate-700">Country<input value={form.targetCountry} onChange={(event) => update("targetCountry", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Any" /></label>
-          <label className="text-sm font-bold text-slate-700">Industry<input value={form.targetIndustry} onChange={(event) => update("targetIndustry", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="B2B" /></label>
-          <label className="text-sm font-bold text-slate-700">Contact titles<input value={form.contactTitles.join(", ")} onChange={(event) => update("contactTitles", csv(event.target.value))} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label>
-          <label className="text-sm font-bold text-slate-700">Keywords<input value={form.keywords.join(", ")} onChange={(event) => update("keywords", csv(event.target.value))} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Optional public signals" /></label>
-        </div>
+        <label className="block text-sm font-black text-ink">AI command<textarea value={command} onChange={(event) => setCommand(event.target.value)} className="mt-2 min-h-32 w-full rounded-md border border-slate-300 p-4 text-base leading-7" placeholder="Вставьте сайт или опишите свой бизнес и кого хотите найти" /></label>
         <div className="mt-4 flex flex-wrap gap-2">
-          <button type="submit" disabled={loading || !api.ready} className="inline-flex min-h-11 items-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Run First Customer Finder</button>
-          <button type="button" onClick={() => void loadJobs()} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-4 text-sm font-black text-ink"><RefreshCw size={17} /> Refresh</button>
+          <button type="submit" disabled={loading || !api.ready} className="inline-flex min-h-11 items-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Запустить AI</button>
+          <button type="button" onClick={() => void loadJobs()} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-4 text-sm font-black text-ink"><RefreshCw size={17} /> Обновить</button>
+          <button type="button" onClick={() => void autopilotAction("pause")} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-amber-300 px-4 text-sm font-black text-amber-800"><PauseCircle size={17} /> Пауза</button>
+          <button type="button" onClick={() => void autopilotAction("stop")} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-red-300 px-4 text-sm font-black text-red-700"><Square size={17} /> Остановить</button>
         </div>
+        <details className="mt-4 rounded-lg border border-slate-200">
+          <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Расширенные настройки <ChevronDown size={16} /></summary>
+          <div className="grid gap-3 border-t border-slate-200 p-3 lg:grid-cols-3">
+            <label className="text-sm font-bold text-slate-700">Страна<input value={advanced.targetCountry} onChange={(event) => updateAdvanced("targetCountry", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Auto" /></label>
+            <label className="text-sm font-bold text-slate-700">Отрасль<input value={advanced.targetIndustry} onChange={(event) => updateAdvanced("targetIndustry", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Auto" /></label>
+            <label className="text-sm font-bold text-slate-700">Дневной лимит<input type="number" min={1} max={50} value={advanced.maxResults} onChange={(event) => updateAdvanced("maxResults", Number(event.target.value || 10))} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label>
+          </div>
+        </details>
       </form>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
-      {job ? (
-        <section className="grid gap-4">
-          <div className="rounded-lg border border-slate-200 bg-white p-4"><p className="text-sm font-black text-ink">Search status: {pretty(job.status)}</p><p className="mt-1 text-sm text-slate-600">{progressText || job.error_message || "Waiting for backend progress."}</p></div>
-          {job.results.length ? job.results.map((result) => <ResultCard key={result.id} result={result} busy={busy} onSave={save} onApprove={approve} onSend={send} />) : <Notice>Backend has not returned verified companies for this search yet.</Notice>}
-        </section>
-      ) : <Notice>No AI customer search has been run in this workspace yet.</Notice>}
+      <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-sm font-black text-ink">Понимание задачи</p>
+          <p className="mt-2 text-sm leading-6 text-slate-700">{understanding || understandingFor(command || "https://outreachaiaiai.com", criteria)}</p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-5">
+            {[["Найдено", found], ["CRM", saved], ["Подготовлено", prepared], ["Отправлено", sent], ["Ответы", replies]].map(([label, value]) => <div key={String(label)} className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-black uppercase text-slate-500">{label}</p><p className="mt-1 text-2xl font-black text-ink">{value}</p></div>)}
+          </div>
+          <div className="mt-4 rounded-lg bg-slate-50 p-3">
+            <p className="text-xs font-black uppercase text-slate-500">Что AI делает сейчас</p>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{autoSaving ? "Сохраняю проверенные компании в CRM и создаю черновики через backend." : progressText}</p>
+            {needsReview ? <p className="mt-2 text-sm font-bold text-amber-700">{needsReview} лид(ов) оставлены со статусом «Требует проверки».</p> : null}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-black text-ink">AI Autopilot</h2>
+            <span className={`rounded-full px-2 py-1 text-xs font-black ${campaign?.status === "Running" || campaign?.status === "running" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{campaign?.status || "needs approval"}</span>
+          </div>
+          <div className="mt-3 grid gap-2 text-sm leading-6 text-slate-700">
+            <p><span className="font-black text-ink">Почта:</span> {senderReady ? `${sender?.sender_email} подтверждён` : "подключите и подтвердите рабочую почту/OAuth перед автономной отправкой"}</p>
+            <p><span className="font-black text-ink">Аудитория:</span> {criteria.desiredCustomers}</p>
+            <p><span className="font-black text-ink">Страны:</span> {criteria.targetCountry || "Auto"}</p>
+            <p><span className="font-black text-ink">Дневной лимит:</span> {Math.min(sender?.remaining_today || 0, 10)} из {sender?.daily_send_limit || 0}</p>
+          </div>
+          <details className="mt-3 rounded-lg border border-slate-200"><summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Пример письма <ChevronDown size={16} /></summary><p className="whitespace-pre-wrap border-t border-slate-200 p-3 text-sm leading-6 text-slate-700">{sample?.email_body || sample?.draft_email || "Пример появится после первого найденного и сохраненного результата."}</p></details>
+          <button type="button" disabled={!canAllowAutopilot || Boolean(busy)} onClick={() => void allowCampaign()} className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === "campaign:allow" ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} Разрешить эту кампанию</button>
+          {!canAllowAutopilot ? <p className="mt-2 text-xs font-bold leading-5 text-slate-500">Autopilot включится только после verified sender, CRM-save, черновиков, публичных источников, лимитов тарифа и дневного лимита.</p> : null}
+        </div>
+      </section>
+      {job?.results.length ? <details className="rounded-lg border border-slate-200 bg-white"><summary className="flex cursor-pointer items-center justify-between p-4 text-sm font-black text-ink">Подробнее по найденным компаниям <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-slate-200 p-3">{job.results.map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</div></details> : null}
       {jobs.length > 1 ? <details className="rounded-lg border border-slate-200 bg-white"><summary className="flex cursor-pointer items-center justify-between p-4 text-sm font-black text-ink">Previous searches <ChevronDown size={16} /></summary><div className="border-t border-slate-200 p-2">{jobs.slice(1).map((item) => <button key={item.id} type="button" onClick={() => setJob(item)} className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50"><span>{pretty(item.status)}</span><span className="font-bold">{item.results.length} result(s)</span></button>)}</div></details> : null}
     </Frame>
   );

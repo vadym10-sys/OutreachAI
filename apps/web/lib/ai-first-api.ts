@@ -14,7 +14,7 @@ import type {
   WorkspaceAppBootstrapResponse,
   WorkspaceIntegrationStatusResponse
 } from "@/lib/customer-api-contracts";
-import type { CrmCompany, Email, Workspace } from "@/lib/types";
+import type { Campaign, CrmCompany, Email, Workspace } from "@/lib/types";
 
 export type AiAssistantCommand = {
   command: string;
@@ -46,6 +46,8 @@ export type AiFirstApi = {
   updateWorkspace(payload: Partial<Workspace>): Promise<Workspace>;
   integrations(): Promise<WorkspaceIntegrationStatusResponse>;
   senderStatus(): Promise<OutreachSenderStatus>;
+  createCampaign(payload: Partial<Campaign>): Promise<Campaign>;
+  campaignAction(campaignId: string, action: "launch" | "resume" | "pause" | "stop"): Promise<Campaign>;
 };
 
 function redirectToSignIn() {
@@ -144,7 +146,12 @@ export function useAiFirstApi(): AiFirstApi {
       body: JSON.stringify(payload)
     }),
     integrations: () => request<WorkspaceIntegrationStatusResponse>("/api/workspace-app/integrations/status"),
-    senderStatus: () => request<OutreachSenderStatus>("/api/outreach/sender/status")
+    senderStatus: () => request<OutreachSenderStatus>("/api/outreach/sender/status"),
+    createCampaign: (payload) => request<Campaign>("/api/campaigns", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+    campaignAction: (campaignId, action) => request<Campaign>(`/api/campaigns/${campaignId}/${action}`, { method: "POST" })
   };
 }
 

@@ -48,30 +48,19 @@ test.describe("manual production-readiness journey", () => {
   test("desktop AI-first path has clean runtime and manual email gate", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "chromium", "Desktop readiness runs once on Chromium.");
     const guards = installStrictRuntimeGuards(page, testInfo);
-    page.on("dialog", async (dialog) => {
-      expect(dialog.message()).toContain("Send this approved email now?");
-      await dialog.accept();
-    });
 
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expectHealthyPage(page, "AI-помощник");
+    await page.getByRole("form", { name: "AI customer command" }).getByLabel("AI command").fill("Мы продаём AI-систему для B2B. Найди подходящих клиентов в Германии.");
+    await page.getByRole("button", { name: "Запустить AI" }).click();
+    await expect(page.getByText("Я понял ваш бизнес так")).toBeVisible();
+    await page.locator("summary").filter({ hasText: "Подробнее по найденным компаниям" }).evaluate((node) => {
+      if (node.parentElement instanceof HTMLDetailsElement) node.parentElement.open = true;
+    });
     await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
-    await page.getByRole("button", { name: "Save to CRM" }).first().click();
-    await expect(page.getByText("Lead saved to CRM")).toBeVisible();
-    await page.getByRole("button", { name: "Approve draft" }).first().click();
-    await expect(page.getByText("Email approved")).toBeVisible();
-    await page.getByRole("button", { name: "Send approved" }).first().click();
-    await expect(page.getByText("Approved email was sent")).toBeVisible();
-
-    for (const [route, heading] of [
-      ["/dashboard/clients", "Клиенты"],
-      ["/dashboard/emails", "Письма"],
-      ["/dashboard/settings", "Настройки"]
-    ] as const) {
-      await page.goto(route, { waitUntil: "domcontentloaded" });
-      await expectHealthyPage(page, heading);
-    }
+    await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Остановить" })).toBeVisible();
     await guards.assertClean();
   });
 

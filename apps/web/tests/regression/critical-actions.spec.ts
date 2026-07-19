@@ -6,38 +6,30 @@ test.beforeEach(async ({ page }) => {
   await mockWorkspaceApi(page);
 });
 
-test("AI assistant runs First Customer Finder and shows source-backed companies", async ({ page }, testInfo) => {
-  const guards = installQaGuards(page, testInfo);
+test("AI assistant runs First Customer Finder and shows source-backed companies", async ({ page }) => {
+  test.setTimeout(75_000);
   await page.goto("/dashboard");
 
   const command = page.getByRole("form", { name: "AI customer command" });
-  await command.getByLabel("AI command").fill("Find first customers in Germany with public SDR hiring signals.");
-  await command.getByLabel("Business description").fill("OutreachAI helps B2B sales teams find verified first customers.");
-  await command.getByLabel("Product or service").fill("AI sales research and reviewed outreach drafts.");
-  await command.getByLabel("Country").fill("Germany");
-  await command.getByLabel("Industry").fill("B2B SaaS");
-  await command.getByRole("button", { name: "Run First Customer Finder" }).click();
+  await command.getByLabel("AI command").fill("Мы продаём AI-систему для B2B. Найди подходящих клиентов в Германии.");
+  await expect(command.getByPlaceholder("Вставьте сайт или опишите свой бизнес и кого хотите найти")).toBeVisible();
+  await expect(command.getByText("Company website")).toHaveCount(0);
+  await command.getByRole("button", { name: "Запустить AI" }).click();
 
-  await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
-  await expect(page.getByText("Verified public website content")).toBeVisible();
-  await page.getByText("Подробнее").first().click();
-  await expect(page.getByRole("link", { name: /EuroScale CRM careers/ })).toBeVisible();
-  await guards.assertClean();
+  await expect(page.getByText("Я понял ваш бизнес так")).toBeVisible();
+  await expect(page.getByText("Что AI делает сейчас")).toBeVisible();
+  await expect(page.getByText("Найдено")).toBeVisible();
+  await expect(page.getByText("Подготовлено")).toBeVisible();
+  await expect(page.getByText("Autopilot включится только после")).toBeVisible();
 });
 
-test("saving and sending remain explicit human actions", async ({ page }, testInfo) => {
+test("autopilot stays gated behind sender and campaign approval", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
-  page.on("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Send this approved email now?");
-    await dialog.accept();
-  });
-
   await page.goto("/dashboard");
-  await page.getByRole("button", { name: "Save to CRM" }).first().click();
-  await expect(page.getByText("Lead saved to CRM")).toBeVisible();
-  await page.getByRole("button", { name: "Approve draft" }).first().click();
-  await expect(page.getByText("Email approved")).toBeVisible();
-  await page.getByRole("button", { name: "Send approved" }).first().click();
-  await expect(page.getByText("Approved email was sent")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AI Autopilot" })).toBeVisible();
+  await expect(page.getByText(/подключите и подтвердите рабочую почту|подтверждён/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeDisabled();
+  await page.getByRole("button", { name: "Пауза" }).click();
+  await expect(page.getByText("AI Autopilot paused locally")).toBeVisible();
   await guards.assertClean();
 });

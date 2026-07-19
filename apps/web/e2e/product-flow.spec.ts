@@ -19,19 +19,17 @@ test("AI-first workspace exposes four sections only", async ({ page }) => {
   }
 });
 
-test("AI assistant finds real-source candidates and requires manual send confirmation", async ({ page }) => {
-  page.on("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Send this approved email now?");
-    await dialog.accept();
-  });
+test("AI assistant accepts one instruction and keeps autopilot gated", async ({ page }) => {
   await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+  await page.getByRole("form", { name: "AI customer command" }).getByLabel("AI command").fill("https://outreachaiaiai.com");
+  await page.getByRole("button", { name: "Запустить AI" }).click();
+  await expect(page.getByText("Я понял ваш бизнес так")).toBeVisible();
+  await expect(page.getByText("Что AI делает сейчас")).toBeVisible();
+  await page.locator("summary").filter({ hasText: "Подробнее по найденным компаниям" }).evaluate((node) => {
+    if (node.parentElement instanceof HTMLDetailsElement) node.parentElement.open = true;
+  });
   await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
-  await page.getByText("Подробнее").first().click();
-  await expect(page.getByRole("link", { name: /EuroScale CRM careers/ })).toBeVisible();
-  await page.getByRole("button", { name: "Save to CRM" }).first().click();
-  await expect(page.getByText("Lead saved to CRM")).toBeVisible();
-  await page.getByRole("button", { name: "Approve draft" }).first().click();
-  await expect(page.getByText("Email approved")).toBeVisible();
-  await page.getByRole("button", { name: "Send approved" }).first().click();
-  await expect(page.getByText("Approved email was sent")).toBeVisible();
+  await expect(page.getByText("Verified public website content")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeDisabled();
+  await expect(page.getByText("Autopilot включится только после")).toBeVisible();
 });
