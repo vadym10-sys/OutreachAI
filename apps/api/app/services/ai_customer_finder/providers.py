@@ -21,11 +21,11 @@ class GooglePlacesCustomerSearchProvider:
         payload = LeadFinderRequest(
             industry=criteria.target_industry,
             category=criteria.target_industry,
-            keyword=" ".join(criteria.keywords[:4]) or criteria.target_industry,
+            keyword=_bounded_keyword(criteria),
             country=criteria.target_country,
             city="",
             company_size=criteria.company_size or None,
-            keywords=criteria.keywords,
+            keywords=_bounded_keywords(criteria.keywords),
             technologies=[],
             limit=max(1, min(25, max_candidates)),
         )
@@ -50,6 +50,29 @@ class GooglePlacesCustomerSearchProvider:
                 )
             )
         return candidates
+
+
+def _bounded_keywords(values: list[str]) -> list[str]:
+    bounded: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            bounded.append(text[:160])
+        if len(bounded) >= 8:
+            break
+    return bounded
+
+
+def _bounded_keyword(criteria: CustomerFinderCriteria) -> str:
+    compact_terms = [
+        criteria.target_industry,
+        criteria.target_country,
+        *criteria.contact_titles[:2],
+        "hiring",
+        "growth",
+    ]
+    keyword = " ".join(term.strip() for term in compact_terms if term and term.strip())
+    return (keyword or criteria.target_industry or "B2B companies")[:160]
 
 
 def provider_for_key(key: str) -> CustomerSearchProvider:

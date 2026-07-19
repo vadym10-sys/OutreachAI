@@ -119,6 +119,53 @@ def test_deep_contact_cache_is_fresh_for_recent_result() -> None:
     assert deep_contact_cache_is_fresh(metadata) is True
 
 
+def test_ai_customer_finder_provider_bounds_google_places_payload(monkeypatch) -> None:
+    import app.services.ai_customer_finder.providers as providers
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+
+    captured: dict[str, LeadFinderRequest] = {}
+
+    def fake_search_google_places(payload: LeadFinderRequest) -> GooglePlacesSearchResult:
+        captured["payload"] = payload
+        return GooglePlacesSearchResult(
+            leads=[
+                LeadOut(
+                    company="Bounded Keyword Co",
+                    website="https://bounded-keyword.example",
+                    industry="B2B SaaS",
+                    country="Germany",
+                )
+            ],
+            raw_count=1,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(providers, "search_google_places", fake_search_google_places)
+    criteria = CustomerFinderCriteria(
+        company_website="https://outreachaiaiai.com",
+        company_description="AI sales research and outreach platform",
+        product_or_service="AI sales research and outreach platform",
+        desired_customers="B2B SaaS founders and sales leaders hiring SDRs in Europe " * 8,
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200 employees",
+        contact_titles=["Founder or Head of Sales"],
+        keywords=[
+            "B2B SaaS",
+            "Germany",
+            "B2B SaaS founders and sales leaders hiring SDRs in Europe " * 8,
+            "Companies expanding sales teams or hiring SDRs in Germany " * 8,
+            "Founder or Head of Sales",
+        ],
+    )
+
+    results = providers.GooglePlacesCustomerSearchProvider().search(criteria, max_candidates=1)
+
+    assert results[0].company_name == "Bounded Keyword Co"
+    assert len(captured["payload"].keyword) <= 160
+    assert all(len(keyword) <= 160 for keyword in captured["payload"].keywords)
+
+
 def test_ai_customer_finder_scoring_and_dedupe_require_public_evidence() -> None:
     from app.services.ai_customer_finder.dedupe import company_dedupe_key, signal_fingerprint
     from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
