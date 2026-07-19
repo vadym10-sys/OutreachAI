@@ -11,7 +11,7 @@ const pages = [
   ["/dashboard/crm", "CRM"],
   ["/dashboard/deals", "CRM"],
   ["/dashboard/analytics", "What should I do now?"],
-  ["/dashboard/settings", "Make the workspace ready for your first campaign."],
+  ["/dashboard/settings", "Prepare the workspace for the first customer workflow."],
   ["/dashboard/billing", "Subscription and usage."],
   ["/dashboard/sales-employees", "What should I do now?"],
   ["/dashboard/admin/quality", "AI Quality & Self-Healing"]

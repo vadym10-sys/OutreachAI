@@ -19,6 +19,7 @@ from app.services.ai_customer_finder.service import (
     enqueue_ai_customer_finder_job,
     job_out,
     result_out,
+    save_first_customer_result_to_crm,
 )
 
 router = APIRouter()
@@ -100,6 +101,12 @@ def save_customer_finder_email_draft(
     if result is None:
         raise HTTPException(status_code=404, detail="AI Customer Finder result not found.")
     email = _result_email(db, result)
+    if email is None:
+        try:
+            result = save_first_customer_result_to_crm(db, workspace_id=workspace.id, result_id=result.id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        email = _result_email(db, result)
     if email is None:
         raise HTTPException(status_code=409, detail="Email draft is not ready yet.")
     if email.delivery_status != "sent":

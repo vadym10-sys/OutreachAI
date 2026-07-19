@@ -13,7 +13,7 @@ const customerRoutes = [
   ["/dashboard/analytics", "What should I do now?"],
   ["/dashboard/crm", "CRM"],
   ["/dashboard/billing", "Subscription and usage."],
-  ["/dashboard/settings", "Make the workspace ready for your first campaign."]
+  ["/dashboard/settings", "Prepare the workspace for the first customer workflow."]
 ] as const;
 
 const setupRoutes = [
@@ -179,7 +179,7 @@ test.describe("customer workspace routes", () => {
 
     await drawer.getByRole("link", { name: "Settings" }).click();
     await expect(page).toHaveURL(/\/dashboard\/settings$/);
-    await expect(page.getByRole("heading", { name: "Make the workspace ready for your first campaign." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Prepare the workspace for the first customer workflow." })).toBeVisible();
     await expect(drawer).not.toBeVisible();
     await expectNoHorizontalOverflow(page);
     await guards.assertClean();
@@ -391,6 +391,7 @@ test.describe("customer workspace routes", () => {
       await expect(body).not.toContainText("Move real leads from research to revenue.");
       await expect(body).not.toContainText("Subscription and usage.");
       await expect(body).not.toContainText("Make the workspace ready for your first campaign.");
+      await expect(body).not.toContainText("Prepare the workspace for the first customer workflow.");
       await expect(body).not.toContainText("Your session has expired. Please sign in again.");
       await expect(body).not.toContainText("Next step");
       await expect(body).not.toContainText("Create a campaign from saved leads");

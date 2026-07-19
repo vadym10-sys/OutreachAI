@@ -426,7 +426,12 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   }, [t, workspaceOwnerEmail, email]);
   const workspaceReadyScore = useMemo(() => {
     if (!workspace) return 0;
-    return [isGenericWorkspaceName ? "" : workspace.name, workspace.company, workspace.industry, workspace.target_country, workspace.target_customer].filter((item) => String(item || "").trim()).length;
+    return [
+      workspace.company || (isGenericWorkspaceName ? "" : workspace.name),
+      workspace.industry && workspace.target_country,
+      workspace.target_customer,
+      workspace.onboarding_completed ? "first-search-complete" : "",
+    ].filter((item) => String(item || "").trim()).length;
   }, [isGenericWorkspaceName, workspace]);
   const workspaceNeedsSetup = Boolean(workspace && workspaceReadyScore < 4);
   const showWorkspaceSetupPanel = workspaceNeedsSetup;
@@ -676,7 +681,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     <p className="text-sm font-black text-ink">{t(workspaceNeedsSetup ? "workspace.finishSetup" : "workspace.setupComplete")}</p>
                     <p className="mt-1 text-sm leading-6 text-slate-600">{t("workspace.setupCopy")}</p>
                   </div>
-                  <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-black text-brand shadow-sm">{workspaceReadyScore}/5</span>
+                  <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-black text-brand shadow-sm">{workspaceReadyScore}/4</span>
                 </div>
                 <div className="mt-4 rounded-2xl border border-blue-100 bg-white p-3">
                   <p className="text-xs font-black uppercase tracking-wide text-brand">{t("workspace.howItWorksTitle")}</p>
@@ -692,7 +697,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                   <label className="text-sm font-bold text-slate-700">{t("workspace.company")}<input name="company" defaultValue={workspace?.company || ""} placeholder={t("workspace.companyPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.companyHelp")}</span></label>
                   <label className="text-sm font-bold text-slate-700">{t("workspace.industry")}<input name="industry" defaultValue={workspace?.industry || ""} placeholder={t("workspace.industryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.industryHelp")}</span></label>
                   <label className="text-sm font-bold text-slate-700">{t("workspace.targetCountry")}<input name="target_country" defaultValue={workspace?.target_country || ""} placeholder={t("workspace.countryPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.countryHelp")}</span></label>
-                  <label className="text-sm font-bold text-slate-700 sm:col-span-2">{t("workspace.targetCustomer")}<input name="target_customer" defaultValue={workspace?.target_customer || ""} placeholder={t("workspace.customerPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.customerHelp")}</span></label>
+                  <label className="text-sm font-bold text-slate-700 sm:col-span-2">{t("workspace.setupTargetCustomer")}<input name="target_customer" defaultValue={workspace?.target_customer || ""} placeholder={t("workspace.customerPlaceholder")} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" /><span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{t("workspace.customerHelp")}</span></label>
                 </div>
                 {workspaceNotice && <p className="mt-3 rounded-xl bg-blue-50 p-3 text-sm font-bold text-brand">{workspaceNotice}</p>}
                 {workspaceError && <p className="mt-3 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{workspaceError}</p>}
@@ -702,7 +707,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     {t("workspace.save")}
                   </button>
                   <Link href="/dashboard/leads" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
-                    {t("nav.aiCustomerFinder")} <ArrowRight size={17} />
+                    {t("Open customer search")} <ArrowRight size={17} />
                   </Link>
                 </div>
               </form>

@@ -1,6 +1,5 @@
 "use client";
 
-import LogRocket from "logrocket";
 import { clientApi } from "@/lib/client-api";
 import { shouldUseHeavyClientTelemetry } from "@/lib/client-runtime";
 import { logRocketAppId } from "@/lib/env";
@@ -21,6 +20,40 @@ type RuntimeConfig = {
 };
 
 type LogRocketProperties = Record<string, string | number | boolean | null | undefined>;
+type LogRocketRequest = {
+  url: string;
+  headers: Record<string, string | null | undefined>;
+  body?: string;
+};
+type LogRocketResponse = {
+  body?: string;
+};
+type LogRocketClient = {
+  init: (
+    appId: string,
+    options: {
+      release: string;
+      rootHostname?: string;
+      console: { shouldAggregateConsoleErrors: boolean };
+      network: {
+        requestSanitizer: (request: LogRocketRequest) => LogRocketRequest;
+        responseSanitizer: (response: LogRocketResponse) => LogRocketResponse;
+      };
+      dom: {
+        inputSanitizer: boolean;
+        textSanitizer: boolean;
+        privateClassNameBlocklist: string[];
+        baseHref?: string;
+      };
+    }
+  ) => void;
+  track: (name: string, properties: LogRocketProperties) => void;
+  identify: (userId: string, traits: Record<string, string | number | boolean>) => void;
+  captureException: (
+    error: Error,
+    options: { tags: Record<string, string | number | boolean>; extra: LogRocketProperties }
+  ) => void;
+};
 
 const ignoredErrorPatterns = [
   /chrome-extension:\/\//i,
@@ -37,6 +70,8 @@ let runtimeAppId = logRocketAppId;
 let runtimeRelease = process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0";
 let runtimeEnvironment = process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || "development";
 let configPromise: Promise<boolean> | null = null;
+let logRocketClient: LogRocketClient | null = null;
+let logRocketClientPromise: Promise<LogRocketClient | null> | null = null;
 
 declare global {
   interface Window {
@@ -103,23 +138,42 @@ async function loadRuntimeConfig() {
   return false;
 }
 
+async function loadLogRocketClient() {
+  if (!shouldUseHeavyClientTelemetry()) return null;
+  if (logRocketClient) return logRocketClient;
+  if (!logRocketClientPromise) {
+    logRocketClientPromise = import("logrocket")
+      .then((module) => {
+        const candidate = module as unknown as { default?: LogRocketClient } & LogRocketClient;
+        logRocketClient = candidate.default || candidate;
+        return logRocketClient;
+      })
+      .catch((error) => {
+        if (process.env.NODE_ENV !== "production" && !isBenignRuntimeConfigFailure(error)) {
+          console.error("Session replay client could not be loaded", error);
+        }
+        return null;
+      });
+  }
+  return logRocketClientPromise;
+}
+
 export function bootLogRocket() {
   if (typeof window === "undefined" || !shouldUseHeavyClientTelemetry()) {
     return Promise.resolve(false);
   }
 
-  if (initializeLogRocket()) {
-    return Promise.resolve(true);
-  }
-
   if (!configPromise) {
-    configPromise = loadRuntimeConfig().then(() => initializeLogRocket());
+    configPromise = initializeLogRocket().then((ready) => {
+      if (ready) return true;
+      return loadRuntimeConfig().then(() => initializeLogRocket());
+    });
   }
 
   return configPromise;
 }
 
-export function initializeLogRocket() {
+export async function initializeLogRocket() {
   if (typeof window === "undefined" || !runtimeAppId) {
     return false;
   }
@@ -138,6 +192,9 @@ export function initializeLogRocket() {
   if (initialized) {
     return true;
   }
+
+  const LogRocket = await loadLogRocketClient();
+  if (!LogRocket) return false;
 
   LogRocket.init(runtimeAppId, {
     release: runtimeRelease,
@@ -201,6 +258,8 @@ export function identifyLogRocketUser({
   if (!userId) return;
   void bootLogRocket().then((ready) => {
     if (!ready) return;
+    const LogRocket = logRocketClient;
+    if (!LogRocket) return;
     LogRocket.identify(userId, {
       email: email || "",
       workspace_id: workspaceId || "unknown-workspace",
@@ -213,6 +272,8 @@ export function identifyLogRocketUser({
 export function trackLogRocketEvent(name: string, properties: LogRocketProperties = {}) {
   void bootLogRocket().then((ready) => {
     if (!ready) return;
+    const LogRocket = logRocketClient;
+    if (!LogRocket) return;
     LogRocket.track(name, {
       ...properties,
       current_route: typeof window !== "undefined" ? window.location.pathname : "",
@@ -228,6 +289,8 @@ export function captureLogRocketException(error: unknown, properties: LogRocketP
   if (ignoredErrorPatterns.some((pattern) => pattern.test(message) || pattern.test(stack))) return;
   void bootLogRocket().then((ready) => {
     if (!ready) return;
+    const LogRocket = logRocketClient;
+    if (!LogRocket) return;
     const exception = error instanceof Error ? error : new Error(message);
     LogRocket.captureException(exception, {
       tags: {

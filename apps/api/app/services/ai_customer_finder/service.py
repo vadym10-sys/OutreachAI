@@ -141,10 +141,10 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
         _set_progress(db, job, "verifying", "Verifying source URLs and evidence.", 40, claim_token=claim_token)
         warnings: list[str] = []
         quality_counts = {"verified": 0, "partially_verified": 0, "unknown": 0, "rejected": 0}
-        saved = 0
+        persisted = 0
         seen_companies: set[str] = set()
         for index, candidate in enumerate(candidates):
-            if saved >= criteria.max_results:
+            if persisted >= criteria.max_results:
                 break
             db.refresh(job)
             if job.cancel_requested:
@@ -172,26 +172,36 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
                     f"Rejected weak or unverified source for {candidate.company_name}.",
                     min(85, 45 + index * 5),
                     claim_token=claim_token,
-                    summary={"candidates": len(candidates), "saved": saved, **quality_counts, "warnings": warnings[:10]},
+                    summary={"candidates": len(candidates), "results": persisted, "saved_to_crm": 0, **quality_counts, "warnings": warnings[:10]},
                 )
                 continue
-            _set_progress(db, job, "enriching", f"Saving verified result for {signal.company_name}.", min(85, 45 + index * 5), claim_token=claim_token)
+            _set_progress(db, job, "enriching", f"Recording verified result for {signal.company_name}.", min(85, 45 + index * 5), claim_token=claim_token)
             result = _persist_signal(db, job, signal)
-            _save_signal_to_crm(db, job, result, criteria)
+            metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+            result.metadata_json = {
+                **metadata,
+                "authorization": {
+                    **(metadata.get("authorization") if isinstance(metadata.get("authorization"), dict) else {}),
+                    "crm_save_requires_user_action": True,
+                    "outreach_requires_user_action": True,
+                    "search_created_crm_record": False,
+                    "search_sent_message": False,
+                },
+            }
             quality_counts[signal.verified_status] = quality_counts.get(signal.verified_status, 0) + 1
-            saved += 1
+            persisted += 1
             db.commit()
-        final_status = "completed" if saved > 0 and not warnings else ("partially_completed" if saved > 0 else "failed")
-        message = "AI Customer Finder completed." if final_status == "completed" else ("AI Customer Finder saved partial verified results." if saved else "No verified public-source results were found.")
+        final_status = "completed" if persisted > 0 and not warnings else ("partially_completed" if persisted > 0 else "failed")
+        message = "AI Customer Finder completed." if final_status == "completed" else ("AI Customer Finder recorded partial verified results." if persisted else "No verified public-source results were found.")
         job.status = final_status
-        job.summary_json = {"saved": saved, "candidates": len(candidates), **quality_counts, "warnings": warnings[:10]}
-        job.progress_json = {"stage": final_status, "message": message, "percent": 100, "warnings": warnings[:10], **quality_counts, "saved": saved, "candidates": len(candidates)}
-        job.error_message = "" if saved else "; ".join(warnings[:3]) or "No verified public-source results were found."
+        job.summary_json = {"results": persisted, "saved_to_crm": 0, "candidates": len(candidates), **quality_counts, "warnings": warnings[:10]}
+        job.progress_json = {"stage": final_status, "message": message, "percent": 100, "warnings": warnings[:10], **quality_counts, "results": persisted, "saved_to_crm": 0, "candidates": len(candidates)}
+        job.error_message = "" if persisted else "; ".join(warnings[:3]) or "No verified public-source results were found."
         job.locked_by = ""
         job.locked_at = None
         job.completed_at = datetime.utcnow()
         job.updated_at = datetime.utcnow()
-        db.add(AuditLog(user_id=job.user_id, workspace_id=job.workspace_id, action="ai_customer_finder.completed", metadata_json={"job_id": str(job.id), "status": final_status, "saved": saved}))
+        db.add(AuditLog(user_id=job.user_id, workspace_id=job.workspace_id, action="ai_customer_finder.completed", metadata_json={"job_id": str(job.id), "status": final_status, "results": persisted, "saved_to_crm": 0}))
         db.commit()
         return True
     except Exception as exc:

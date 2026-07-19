@@ -156,7 +156,7 @@ test.describe("manual production-readiness journey", () => {
     await expect(page.getByText("Keep using the current plan.")).toBeVisible();
 
     await page.getByRole("link", { name: "Settings" }).click();
-    await expectHealthyPage(page, "Make the workspace ready for your first campaign.");
+    await expectHealthyPage(page, "Prepare the workspace for the first customer workflow.");
     await expect(page.getByText("Search one focused market.")).toBeVisible();
 
     await page.getByRole("link", { name: "Profile", exact: true }).click();
@@ -215,7 +215,7 @@ test.describe("manual production-readiness journey", () => {
       ["/dashboard/campaigns", "Mail"],
       ["/dashboard/inbox", "Mail"],
       ["/dashboard/billing", "Subscription and usage."],
-      ["/dashboard/settings", "Make the workspace ready for your first campaign."],
+      ["/dashboard/settings", "Prepare the workspace for the first customer workflow."],
       ["/dashboard/profile", "Set the workspace identity AI should use."]
     ] as const) {
       await page.goto(route, { waitUntil: "domcontentloaded" });

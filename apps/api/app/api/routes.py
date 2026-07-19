@@ -248,7 +248,38 @@ def _private_workspace_name(email: str = "") -> str:
     return "Private workspace"
 
 
+def _normalize_member_email(email: str = "") -> str:
+    return (email or "").strip().lower()
+
+
+def _workspace_role_from_input(value: str) -> WorkspaceRole:
+    normalized = (value or "").strip().lower()
+    if normalized in {"owner"}:
+        return WorkspaceRole.owner
+    if normalized in {"admin"}:
+        return WorkspaceRole.admin
+    if normalized in {"manager"}:
+        return WorkspaceRole.manager
+    return WorkspaceRole.member
+
+
+def _workspace_membership_for_user(db: Session, workspace_id: UUID, user_id: str, email: str = "") -> WorkspaceMember | None:
+    clauses = [
+        WorkspaceMember.workspace_id == workspace_id,
+        WorkspaceMember.status.in_(["active", "invited"]),
+        WorkspaceMember.user_id == user_id,
+    ]
+    if email:
+        clauses = [
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.status.in_(["active", "invited"]),
+            or_(WorkspaceMember.user_id == user_id, func.lower(WorkspaceMember.email) == _normalize_member_email(email)),
+        ]
+    return db.scalar(select(WorkspaceMember).where(*clauses).order_by(WorkspaceMember.created_at.asc()).limit(1))
+
+
 def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
+    clean_email = _normalize_member_email(email)
     workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
     if workspace is not None:
         if workspace.name in {"Outreach workspace", "Private workspace"}:
@@ -257,28 +288,52 @@ def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
             db.flush()
         existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
         if existing_member:
-            existing_member.email = email or existing_member.email
+            existing_member.email = clean_email or existing_member.email
             existing_member.role = WorkspaceRole.owner
             existing_member.status = "active"
             db.add(existing_member)
         else:
-            db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=email, role=WorkspaceRole.owner, status="active"))
+            db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=clean_email, role=WorkspaceRole.owner, status="active"))
         db.commit()
         db.refresh(workspace)
         set_workspace_context(workspace.id)
         return workspace
+
+    member = db.scalar(
+        select(WorkspaceMember)
+        .where(
+            WorkspaceMember.status.in_(["active", "invited"]),
+            or_(
+                WorkspaceMember.user_id == user_id,
+                func.lower(WorkspaceMember.email) == clean_email if clean_email else WorkspaceMember.user_id == user_id,
+            ),
+        )
+        .order_by(WorkspaceMember.created_at.asc())
+        .limit(1)
+    )
+    if member is not None:
+        workspace = db.get(Workspace, member.workspace_id)
+        if workspace is not None:
+            member.user_id = user_id
+            member.email = clean_email or member.email
+            member.status = "active"
+            db.add(member)
+            db.commit()
+            db.refresh(workspace)
+            set_workspace_context(workspace.id)
+            return workspace
 
     workspace = Workspace(owner_user_id=user_id, name=_private_workspace_name(email))
     db.add(workspace)
     db.flush()
     existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
     if existing_member:
-        existing_member.email = email or existing_member.email
+        existing_member.email = clean_email or existing_member.email
         existing_member.role = WorkspaceRole.owner
         existing_member.status = "active"
         db.add(existing_member)
     else:
-        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=email, role=WorkspaceRole.owner, status="active"))
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=clean_email, role=WorkspaceRole.owner, status="active"))
     db.commit()
     db.refresh(workspace)
     set_workspace_context(workspace.id)
@@ -294,11 +349,9 @@ def _workspace_members(db: Session, workspace_id: UUID) -> list[WorkspaceMember]
             select(WorkspaceMember)
             .where(
                 WorkspaceMember.workspace_id == workspace_id,
-                WorkspaceMember.user_id == workspace.owner_user_id,
-                WorkspaceMember.role == WorkspaceRole.owner,
-                WorkspaceMember.status == "active",
+                WorkspaceMember.status.in_(["active", "invited"]),
             )
-            .order_by(WorkspaceMember.created_at.asc())
+            .order_by(WorkspaceMember.role.asc(), WorkspaceMember.created_at.asc())
         ).all()
     )
 
@@ -320,9 +373,8 @@ def _workspace_out(db: Session, workspace: Workspace) -> WorkspaceOut:
 
 
 def _workspace_stmt(model, workspace: Workspace, user_id: str):
+    del user_id
     workspace_scope = model.workspace_id == workspace.id
-    if hasattr(model, "user_id"):
-        return and_(workspace_scope, model.user_id == user_id)
     return workspace_scope
 
 
@@ -5159,9 +5211,42 @@ def update_workspace(payload: WorkspaceUpdate, request: Request, user: Workspace
 
 
 @router.post("/workspace/members", response_model=WorkspaceMemberOut)
-def invite_member(payload: MemberInvite, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> WorkspaceMember:
-    del payload, request, user_id, db
-    raise HTTPException(status_code=403, detail="Workspaces are private to one user. Team access is not enabled.")
+def invite_member(payload: MemberInvite, request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> WorkspaceMember:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    current_member = _workspace_membership_for_user(db, workspace.id, user.user_id, user.email)
+    if current_member is None or current_member.role not in {WorkspaceRole.owner, WorkspaceRole.admin}:
+        raise HTTPException(status_code=403, detail="Only workspace owners and admins can invite team members.")
+
+    role = _workspace_role_from_input(payload.role)
+    if role == WorkspaceRole.owner:
+        raise HTTPException(status_code=400, detail="Invite admins or members. Ownership transfer is not available.")
+
+    email = _normalize_member_email(str(payload.email))
+    active_count = db.scalar(select(func.count()).select_from(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.status.in_(["active", "invited"]))) or 0
+    existing = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, func.lower(WorkspaceMember.email) == email).limit(1))
+    if existing is None and active_count >= _team_limit(db, user.user_id, workspace):
+        raise HTTPException(status_code=402, detail="Team member limit reached for the current plan. Upgrade in Billing to invite more people.")
+
+    if existing is None:
+        member = WorkspaceMember(
+            workspace_id=workspace.id,
+            user_id=f"invite:{email}",
+            email=email,
+            role=role,
+            status="invited",
+        )
+        db.add(member)
+    else:
+        member = existing
+        member.email = email
+        member.role = role
+        member.status = member.status or "invited"
+        db.add(member)
+
+    log_event(db, request, user.user_id, "workspace.member_invited", {"workspace_id": str(workspace.id), "member_email": email, "role": role.value})
+    db.commit()
+    db.refresh(member)
+    return member
 
 
 @router.get("/onboarding", response_model=WorkspaceOut)
@@ -5228,6 +5313,118 @@ def update_profile(payload: ProfileUpdate, request: Request, user_id: CurrentUse
     db.commit()
     db.refresh(profile)
     return profile
+
+
+@router.get("/profile/export")
+def export_workspace_data(request: Request, user: CurrentUserContext, db: Session = Depends(get_db)) -> dict:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    membership = _workspace_membership_for_user(db, workspace.id, user.user_id, user.email)
+    if membership is None or membership.role not in {WorkspaceRole.owner, WorkspaceRole.admin}:
+        raise HTTPException(status_code=403, detail="Only workspace owners and admins can export workspace data.")
+
+    companies = list(db.scalars(select(Company).where(_workspace_stmt(Company, workspace, user.user_id)).order_by(Company.created_at.asc())).all())
+    leads = list(db.scalars(select(Lead).where(_workspace_stmt(Lead, workspace, user.user_id)).order_by(Lead.created_at.asc())).all())
+    contacts = list(db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user.user_id)).order_by(Contact.created_at.asc())).all())
+    notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user.user_id)).order_by(Note.created_at.asc())).all())
+    emails = list(db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user.user_id)).order_by(EmailMessage.created_at.asc())).all())
+    audit_logs = list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id).order_by(AuditLog.created_at.asc()).limit(1000)).all())
+
+    def iso(value: Any) -> str:
+        return value.isoformat() if isinstance(value, datetime) else ""
+
+    payload = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "workspace": {
+            "id": str(workspace.id),
+            "name": workspace.name,
+            "company": workspace.company,
+            "industry": workspace.industry,
+            "target_country": workspace.target_country,
+            "target_customer": workspace.target_customer,
+            "timezone": workspace.timezone,
+            "language": workspace.language,
+        },
+        "members": [
+            {"email": member.email, "role": member.role.value if hasattr(member.role, "value") else str(member.role), "status": member.status, "created_at": iso(member.created_at)}
+            for member in _workspace_members(db, workspace.id)
+        ],
+        "companies": [
+            {
+                "id": str(company.id),
+                "name": company.name,
+                "website": company.website,
+                "industry": company.industry,
+                "country": company.country,
+                "crm_stage": company.crm_stage,
+                "source": company.source,
+                "created_at": iso(company.created_at),
+                "updated_at": iso(company.updated_at),
+            }
+            for company in companies
+        ],
+        "leads": [
+            {
+                "id": str(lead.id),
+                "company": lead.company,
+                "website": lead.website,
+                "industry": lead.industry,
+                "country": lead.country,
+                "contact": lead.contact,
+                "email": lead.email,
+                "source": lead.source,
+                "status": lead.status.value if hasattr(lead.status, "value") else str(lead.status),
+                "created_at": iso(lead.created_at),
+                "updated_at": iso(lead.updated_at),
+            }
+            for lead in leads
+        ],
+        "contacts": [
+            {
+                "id": str(contact.id),
+                "company_id": str(contact.company_id) if contact.company_id else "",
+                "lead_id": str(contact.lead_id) if contact.lead_id else "",
+                "name": contact.name,
+                "title": contact.title,
+                "email": contact.email,
+                "source": contact.source,
+                "created_at": iso(contact.created_at),
+            }
+            for contact in contacts
+        ],
+        "notes": [
+            {
+                "id": str(note.id),
+                "company_id": str(note.company_id) if note.company_id else "",
+                "lead_id": str(note.lead_id) if note.lead_id else "",
+                "kind": note.kind,
+                "body": note.body,
+                "created_at": iso(note.created_at),
+            }
+            for note in notes
+        ],
+        "emails": [
+            {
+                "id": str(email.id),
+                "lead_id": str(email.lead_id) if email.lead_id else "",
+                "direction": email.direction,
+                "subject": email.subject,
+                "preview": email.preview,
+                "body": email.body,
+                "delivery_status": email.delivery_status,
+                "sent_at": iso(email.sent_at),
+                "replied_at": iso(email.replied_at),
+                "created_at": iso(email.created_at),
+            }
+            for email in emails
+        ],
+        "audit_log": [
+            {"action": log.action, "created_at": iso(log.created_at), "metadata": log.metadata_json if isinstance(log.metadata_json, dict) else {}}
+            for log in audit_logs
+        ],
+    }
+    log_event(db, request, user.user_id, "profile.data_exported", {"workspace_id": str(workspace.id)})
+    db.commit()
+    return payload
 
 
 @router.delete("/profile")

@@ -1269,7 +1269,15 @@ function useProfileData() {
     }
   }, [api]);
 
-  return { profile, loading, saving, error, notice, saveProfile };
+  const exportWorkspaceData = useCallback(async () => {
+    return api<Record<string, unknown>>("/api/profile/export", { timeoutMs: 30000 });
+  }, [api]);
+
+  const requestAccountDeletion = useCallback(async () => {
+    return api<{ status: string }>("/api/profile", { method: "DELETE", timeoutMs: 15000 });
+  }, [api]);
+
+  return { profile, loading, saving, error, notice, saveProfile, exportWorkspaceData, requestAccountDeletion };
 }
 
 function IntegrationStatusPanel({ api, ready }: { api: ApiFn; ready: boolean }) {
@@ -7150,7 +7158,7 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
             {error && <p className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</p>}
           </form>
           <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">
-            <p className="font-black text-ink">{t(status?.next_action || "Connect sending before launching campaigns.")}</p>
+            <p className="font-black text-ink">{t(status?.next_action || "Connect sending before manually sending email.")}</p>
             {status?.reason && <p className="mt-2 leading-6">{t(status.reason)}</p>}
             <div className="mt-4 grid gap-2">
               {[["SPF", status?.spf_status], ["DKIM", status?.dkim_status], ["DMARC", status?.dmarc_status]].map(([label, value]) => <p key={label} className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{label}</span><span>{t(String(value || "not_checked"))}</span></p>)}
@@ -7171,7 +7179,7 @@ export function SettingsPage() {
   const [leadSearchStatus, setLeadSearchStatus] = useState<WorkspaceIntegrationStatus["status"] | "unknown">("unknown");
   const [leadSearchStatusLoading, setLeadSearchStatusLoading] = useState(true);
   const readiness = [
-    ["Company setup", "Tell OutreachAI what you sell so lead research and emails match your offer.", "Complete this before your first campaign."],
+    ["Company setup", "Tell OutreachAI what you sell so lead research and emails match your offer.", "Complete this before the first customer search."],
     ["Lead readiness", "Find or add companies, then save each valid opportunity into CRM.", "Missing data is shown clearly instead of guessed."],
     ["Outreach safety", "Every email stays in review until a person approves the send.", "Nothing external happens automatically."],
     ["Plan and limits", "Your plan controls how many leads, emails and workspaces can be used this month.", "Upgrade only when you hit a real limit."]
@@ -7202,7 +7210,7 @@ export function SettingsPage() {
   const leadSearchReady = leadSearchStatus === "connected";
   const setupDecision = leadSearchReady ? "Search one focused market." : "Use manual company entry until automatic search is connected.";
   return <div className="space-y-6">
-    <PageHeader eyebrow="Settings" title="Make the workspace ready for your first campaign." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve outreach." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />
+    <PageHeader eyebrow="Settings" title="Prepare the workspace for the first customer workflow." copy="Keep setup simple: confirm your company, find leads, review AI work, then approve any save or send action." action={<Link href="/dashboard/leads" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Find leads")}</Link>} />
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="grid gap-3 md:grid-cols-[1.3fr_0.7fr]">
         <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
@@ -7253,7 +7261,7 @@ export function BillingPage() {
   const emailLimit = Number(limits.email_sends || 0);
   const aiLimit = Number(limits.ai_generations || 0);
   const billingNeedsAttention = Boolean(status?.last_payment_error || status?.last_failure_message || ["inactive", "past_due", "unpaid", "expired"].includes(String(status?.status || "").toLowerCase()));
-  const nextBillingAction = billingNeedsAttention ? "Resolve billing before launching more outreach." : leadLimit && leadsUsed >= leadLimit ? "Upgrade before adding more leads." : emailLimit && emailsUsed >= emailLimit ? "Reduce sends or upgrade before the next campaign." : "Keep using the current plan.";
+  const nextBillingAction = billingNeedsAttention ? "Resolve billing before finding or sending more leads." : leadLimit && leadsUsed >= leadLimit ? "Upgrade before adding more leads." : emailLimit && emailsUsed >= emailLimit ? "Reduce sends or upgrade before the next manual send." : "Keep using the current plan.";
 
   return <div className="space-y-6">
     <PageHeader eyebrow="Billing" title="Subscription and usage." copy="Plan, usage and limits come from billing state. No fake usage is displayed." action={<Link href="/pricing" className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t("Manage plan")}</Link>} />
@@ -7285,9 +7293,13 @@ export function BillingPage() {
 }
 
 export function ProfilePage() {
-  const { profile, loading, saving, error, notice, saveProfile } = useProfileData();
+  const { profile, loading, saving, error, notice, saveProfile, exportWorkspaceData, requestAccountDeletion } = useProfileData();
   const { t } = useI18n();
   const [form, setForm] = useState<Profile | null>(null);
+  const [accountBusy, setAccountBusy] = useState("");
+  const [accountNotice, setAccountNotice] = useState("");
+  const [accountError, setAccountError] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (!profile) return;
@@ -7303,6 +7315,48 @@ export function ProfilePage() {
     event.preventDefault();
     if (!form) return;
     await saveProfile(form);
+  }
+
+  async function downloadWorkspaceExport() {
+    setAccountBusy("export");
+    setAccountNotice("");
+    setAccountError("");
+    try {
+      const payload = await exportWorkspaceData();
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `outreachai-workspace-export-${new Date().toISOString().slice(0, 10)}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setAccountNotice(t("Workspace export downloaded. Secrets are not included."));
+    } catch (err) {
+      setAccountError(friendlyErrorMessage(err, t("Workspace export could not be created.")));
+    } finally {
+      setAccountBusy("");
+    }
+  }
+
+  async function requestDeletion() {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      setAccountNotice(t("Confirm once more to request account deletion. No data has been deleted yet."));
+      setAccountError("");
+      return;
+    }
+    setAccountBusy("delete");
+    setAccountNotice("");
+    setAccountError("");
+    try {
+      await requestAccountDeletion();
+      setAccountNotice(t("Account deletion request was queued for processing."));
+      setConfirmDelete(false);
+    } catch (err) {
+      setAccountError(friendlyErrorMessage(err, t("Account deletion request could not be created.")));
+    } finally {
+      setAccountBusy("");
+    }
   }
 
   const missing = [
@@ -7350,6 +7404,23 @@ export function ProfilePage() {
         {notice && <p className="mt-4 rounded-xl bg-blue-50 p-3 text-sm font-bold text-brand">{t(notice)}</p>}
         {error && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{t(error)}</p>}
       </form>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="text-sm font-black uppercase text-brand">{t("Account controls")}</p>
+        <h2 className="mt-2 text-xl font-black text-ink">{t("Export or delete your workspace data")}</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">{t("Owners can export workspace CRM, email and activity data. Deletion is queued for safe processing.")}</p>
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+          <button type="button" onClick={downloadWorkspaceExport} disabled={accountBusy === "export"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink disabled:opacity-60">
+            {accountBusy === "export" ? <Loader2 className="animate-spin" size={17} /> : <Download size={17} />}
+            {t("Export data")}
+          </button>
+          <button type="button" onClick={requestDeletion} disabled={accountBusy === "delete"} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-red-200 bg-red-50 px-4 text-sm font-bold text-red-700 disabled:opacity-60">
+            {accountBusy === "delete" ? <Loader2 className="animate-spin" size={17} /> : <AlertTriangle size={17} />}
+            {t(confirmDelete ? "Confirm deletion request" : "Request account deletion")}
+          </button>
+        </div>
+        {accountNotice && <p className="mt-4 rounded-xl bg-blue-50 p-3 text-sm font-bold text-brand">{accountNotice}</p>}
+        {accountError && <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{accountError}</p>}
+      </section>
     </> : <EmptyState title="Profile unavailable" copy="Profile data was not returned." />}
   </div>;
 }

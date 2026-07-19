@@ -94,7 +94,7 @@ function safeApiMessage(status: number, detail: string) {
   const backendDetail = parsed && typeof parsed === 'object' && 'detail' in parsed ? String((parsed as { detail?: unknown }).detail || '') : detail;
   const lower = backendDetail.toLowerCase();
   if (status === 401 || lower.includes('invalid token') || lower.includes('missing bearer')) return 'Your session has expired. Please sign in again.';
-  if (status === 403 || lower.includes('forbidden') || lower.includes('permission')) return 'Your session has expired. Please sign in again.';
+  if (status === 403) return 'You do not have permission to perform this action in this workspace.';
   if (status === 402) return 'Your plan needs attention before you can continue.';
   if (status === 429 || lower.includes('rate limit')) return 'This action is temporarily limited. Please try again later.';
   return sanitizeUserMessage(backendDetail, 'Something went wrong while processing your request. Please try again.');

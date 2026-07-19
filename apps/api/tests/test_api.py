@@ -48,7 +48,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -368,7 +368,7 @@ def test_deep_contact_search_endpoint_saves_verified_decision_maker(monkeypatch)
     assert "Next.js" in job_payload["company"]["technologies"]
 
 
-def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch) -> None:
+def test_ai_customer_finder_job_records_verified_results_until_explicit_crm_save(monkeypatch) -> None:
     import app.services.ai_customer_finder.service as finder_service
     from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
 
@@ -437,9 +437,11 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert payload["results"][0]["company_name"] == "Verified Finder Co"
     assert payload["results"][0]["source_url"] == "https://verified-finder.example"
     assert payload["results"][0]["verified_status"] == "verified"
-    assert payload["results"][0]["company_id"]
+    assert payload["results"][0]["company_id"] == ""
+    assert payload["results"][0]["lead_id"] == ""
     assert payload["summary"]["verified"] == 1
     assert payload["summary"]["rejected"] == 0
+    assert payload["summary"]["saved_to_crm"] == 0
     assert payload["results"][0]["canonical_source_url"] == "https://verified-finder.example"
     assert payload["results"][0]["publication_date"] == "Unknown"
     assert payload["results"][0]["observed_fact"]
@@ -450,13 +452,23 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert payload["results"][0]["first_line_opener"]
     assert payload["results"][0]["draft_email"]
     assert payload["results"][0]["public_work_contact"] == "sales@verified-finder.example"
-    assert payload["results"][0]["simple_status"] == "Письмо подготовлено"
-    assert payload["results"][0]["email_id"]
-    assert payload["results"][0]["email_subject"] == "Quick idea for Verified Finder Co"
-    assert payload["results"][0]["email_body"]
-    assert payload["results"][0]["email_delivery_status"] == "draft"
-    assert payload["results"][0]["can_send"] is True
     assert "Draft only" in payload["results"][0]["draft_email"]
+
+    crm_before = client.get("/api/workspace-app/companies?search=Verified%20Finder", headers=headers)
+    assert crm_before.status_code == 200, crm_before.text
+    assert crm_before.json() == []
+
+    action = client.post(f"/api/workspace-app/ai-customer-finder/results/{payload['results'][0]['id']}/draft", headers=headers)
+    assert action.status_code == 200, action.text
+    saved_result = action.json()["result"]
+    assert saved_result["company_id"]
+    assert saved_result["lead_id"]
+    assert saved_result["simple_status"] == "Письмо подготовлено"
+    assert saved_result["email_id"]
+    assert saved_result["email_subject"] == "Quick idea for Verified Finder Co"
+    assert saved_result["email_body"]
+    assert saved_result["email_delivery_status"] == "draft"
+    assert saved_result["can_send"] is True
 
     crm = client.get("/api/workspace-app/companies?search=Verified%20Finder", headers=headers)
     assert crm.status_code == 200, crm.text
@@ -472,7 +484,7 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
         metadata = company.metadata_json or {}
         assert metadata["simple_customer_finder"]["source_url"] == "https://verified-finder.example"
         assert metadata["simple_customer_finder"]["simple_status"] == "Письмо подготовлено"
-        email = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == UUID(payload["results"][0]["lead_id"])))
+        email = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == UUID(saved_result["lead_id"])))
         assert email is not None
         assert email.delivery_status == "draft"
         assert email.tags["draft_only"] is True
@@ -540,11 +552,13 @@ def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monk
     assert payload["status"] == "partially_completed"
     assert len(payload["results"]) == 1
     assert payload["results"][0]["company_name"] == "Partial Good Co"
+    assert payload["results"][0]["company_id"] == ""
     assert payload["summary"]["unknown"] == 1
-    assert payload["summary"]["saved"] == 1
+    assert payload["summary"]["results"] == 1
+    assert payload["summary"]["saved_to_crm"] == 0
 
 
-def test_ai_customer_finder_saves_public_icp_fit_without_high_intent(monkeypatch) -> None:
+def test_ai_customer_finder_records_public_icp_fit_without_high_intent(monkeypatch) -> None:
     import app.services.ai_customer_finder.service as finder_service
     from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
 
@@ -600,7 +614,9 @@ def test_ai_customer_finder_saves_public_icp_fit_without_high_intent(monkeypatch
     assert payload["results"][0]["company_name"] == "Weak ICP Only Co"
     assert payload["results"][0]["verified_status"] == "partially_verified"
     assert payload["results"][0]["public_work_contact"] == "hello@weak-icp.example"
-    assert payload["summary"]["saved"] == 1
+    assert payload["results"][0]["company_id"] == ""
+    assert payload["summary"]["results"] == 1
+    assert payload["summary"]["saved_to_crm"] == 0
 
 
 def test_ai_customer_finder_repeat_search_deduplicates_company_lead_and_draft(monkeypatch) -> None:
@@ -662,7 +678,14 @@ def test_ai_customer_finder_repeat_search_deduplicates_company_lead_and_draft(mo
     result = refreshed.json()["results"][0]
     assert result["company_name"] == "Repeat Finder Co"
     assert result["public_work_contact"] == "sales@repeat-finder.example"
-    assert result["email_delivery_status"] == "draft"
+    assert result["email_delivery_status"] == ""
+
+    for job_id in job_ids:
+        current = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
+        result_id = current.json()["results"][0]["id"]
+        action = client.post(f"/api/workspace-app/ai-customer-finder/results/{result_id}/draft", headers=headers)
+        assert action.status_code == 200, action.text
+        assert action.json()["result"]["email_delivery_status"] == "draft"
 
     crm = client.get("/api/workspace-app/companies?search=Repeat%20Finder", headers=headers)
     assert crm.status_code == 200, crm.text
@@ -822,6 +845,12 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
 
     db = get_sessionmaker()()
     try:
+        workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == headers["X-Test-User-Email"]))
+        assert workspace is not None
+        usage = db.scalar(select(UsageCounter).where(UsageCounter.workspace_id == workspace.id))
+        assert usage is not None
+        assert usage.ai_generations == 1
+        assert usage.leads == 0
         assert db.scalar(select(func.count()).select_from(Lead).where(Lead.email == "sales@first-signal.example")) == 0
         assert db.scalar(select(func.count()).select_from(Company).where(Company.website == "https://first-signal.example")) == 0
         assert db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["result_id"].as_string() == result["id"])) == 0
@@ -862,6 +891,10 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
         assert emails[0].sent_at is None
         assert emails[0].tags["draft_only"] is True
         assert emails[0].tags["requires_review"] is True
+        usage = db.scalar(select(UsageCounter).where(UsageCounter.workspace_id == leads[0].workspace_id))
+        assert usage is not None
+        assert usage.ai_generations == 1
+        assert usage.leads == 1
     finally:
         db.close()
 
@@ -1797,7 +1830,7 @@ def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> N
     assert any(member["email"] == user_email and member["role"].lower() == "owner" for member in data["members"])
 
 
-def test_workspace_me_ignores_shared_membership_without_owned_workspace() -> None:
+def test_workspace_me_activates_invited_membership_without_owned_workspace() -> None:
     SessionLocal = get_sessionmaker()
     user_email = "isolated-member@example.com"
     with SessionLocal() as db:
@@ -1811,19 +1844,30 @@ def test_workspace_me_ignores_shared_membership_without_owned_workspace() -> Non
     response = client.get("/api/workspace/me", headers={"Authorization": "Bearer dev", "X-Test-User-Email": user_email})
     assert response.status_code == 200
     data = response.json()
-    assert data["id"] != shared_id
-    assert data["name"] == "isolated-member's workspace"
-    assert len(data["members"]) == 1
-    assert data["members"][0]["email"] == user_email
-    assert data["members"][0]["role"].lower() == "owner"
+    assert data["id"] == shared_id
+    assert data["name"] == "Shared Legacy Workspace"
+    assert any(member["email"] == user_email and member["role"].lower() == "member" for member in data["members"])
 
 
-def test_workspace_member_invites_are_disabled_for_private_accounts(monkeypatch) -> None:
+def test_workspace_owner_can_invite_member_and_member_shares_isolated_workspace(monkeypatch) -> None:
     SessionLocal = get_sessionmaker()
     app_settings = get_settings()
     original_env = app_settings.app_env
     monkeypatch.setattr(app_settings, "app_env", "development")
     try:
+        workspace_response = client.get("/api/workspace/me", headers=OWNER_AUTH)
+        assert workspace_response.status_code == 200
+        workspace_id = workspace_response.json()["id"]
+        with SessionLocal() as db:
+            workspace = db.get(Workspace, UUID(workspace_id))
+            assert workspace is not None
+            settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace_id)))
+            if settings is None:
+                settings = AppSettings(user_id=workspace.owner_user_id, workspace_id=workspace.id)
+            settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+            db.add(settings)
+            db.commit()
+
         response = client.post(
             "/api/workspace/members",
             headers=OWNER_AUTH,
@@ -1831,10 +1875,35 @@ def test_workspace_member_invites_are_disabled_for_private_accounts(monkeypatch)
         )
     finally:
         monkeypatch.setattr(app_settings, "app_env", original_env)
-    assert response.status_code == 403
-    with SessionLocal() as db:
-        member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.email == "teammate@example.com"))
-        assert member is None
+    assert response.status_code == 200, response.text
+    invited = response.json()
+    assert invited["email"] == "teammate@example.com"
+    assert invited["role"].lower() == "member"
+    assert invited["status"] == "invited"
+
+    company = client.post(
+        "/api/workspace-app/companies",
+        headers=OWNER_AUTH,
+        json={"name": "Shared Member CRM Co", "website": "https://shared-member.example", "country": "Germany", "industry": "B2B SaaS"},
+    )
+    assert company.status_code == 200, company.text
+
+    member_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "teammate@example.com"}
+    member_workspace = client.get("/api/workspace/me", headers=member_headers)
+    assert member_workspace.status_code == 200, member_workspace.text
+    assert member_workspace.json()["id"] == workspace_id
+    assert any(member["email"] == "teammate@example.com" and member["status"] == "active" for member in member_workspace.json()["members"])
+
+    visible_companies = client.get("/api/workspace-app/companies?search=Shared%20Member", headers=member_headers)
+    assert visible_companies.status_code == 200, visible_companies.text
+    assert len(visible_companies.json()) == 1
+
+    blocked_invite = client.post(
+        "/api/workspace/members",
+        headers=member_headers,
+        json={"email": "second-teammate@example.com", "role": "Member"},
+    )
+    assert blocked_invite.status_code == 403
 
 
 def test_current_user_context_with_email_claim_skips_clerk_lookup(monkeypatch) -> None:

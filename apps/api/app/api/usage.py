@@ -41,12 +41,13 @@ from app.api.routes import (
     _sync_lead_to_crm,
     _workspace_out,
     _enforce_usage,
+    _require_active_subscription,
 )
 from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
-from app.models.entities import AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
+from app.models.entities import AICustomerFinderResult, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.ai_sales_workspace import build_ai_sales_workspace_analysis, read_cached_analysis
@@ -7120,6 +7121,8 @@ def search_leads(payload: LeadFinderRequest, request: Request, user: WorkspaceUs
 @router.post("/leads/first-customers/search", response_model=CustomerFinderJobOut)
 def search_first_customers(payload: FirstCustomerSearchIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> CustomerFinderJobOut:
     workspace = _current_workspace(db, user.user_id, user.email)
+    _require_active_subscription(db, workspace)
+    _enforce_usage(db, user.user_id, workspace, "ai_generations")
     request_id = request.headers.get("x-request-id") or str(uuid4())
     product_site = str(payload.product_site).strip()
     industry = str(payload.industry).strip()
@@ -7172,6 +7175,12 @@ def search_first_customers(payload: FirstCustomerSearchIn, request: Request, use
 @router.post("/leads/first-customers/results/{result_id}/save", response_model=CustomerFinderResultActionOut)
 def save_first_customer_result(result_id: UUID, user: WorkspaceUserContext, payload: Optional[FirstCustomerSaveIn] = None, db: Session = Depends(get_db)) -> CustomerFinderResultActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
+    existing_result = db.scalar(select(AICustomerFinderResult).where(AICustomerFinderResult.id == result_id, AICustomerFinderResult.workspace_id == workspace.id))
+    if existing_result is None:
+        raise HTTPException(status_code=404, detail="First-customer result not found.")
+    if not existing_result.lead_id:
+        _require_active_subscription(db, workspace)
+        _enforce_usage(db, user.user_id, workspace, "leads")
     try:
         result = save_first_customer_result_to_crm(
             db,

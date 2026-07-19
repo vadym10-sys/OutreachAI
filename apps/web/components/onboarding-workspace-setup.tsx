@@ -34,10 +34,6 @@ async function resolveWorkspaceToken(getAuthToken: () => Promise<string | null>,
   return null;
 }
 
-function setupCompleteness(form: WorkspaceSetupForm) {
-  return [form.name, form.company, form.industry, form.target_country, form.target_customer].filter((item) => String(item || "").trim()).length;
-}
-
 function useWorkspaceApi() {
   if (!hasClerkPublishableKey || isClerkE2EBypass) {
     return {
@@ -92,8 +88,32 @@ export function OnboardingWorkspaceSetup() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const completion = useMemo(() => setupCompleteness(form), [form]);
-  const setupReady = completion >= 4;
+  const setupSteps = useMemo(() => [
+    {
+      title: "Tell us about your company",
+      copy: "AI uses this to understand what you sell.",
+      done: Boolean(form.company.trim() || form.name.trim())
+    },
+    {
+      title: "Describe the ideal buyer",
+      copy: "Country, industry and buyer profile keep the first search focused.",
+      done: Boolean(form.industry.trim() && form.target_country.trim() && form.target_customer.trim())
+    },
+    {
+      title: "Connect work email",
+      copy: "Drafts can be reviewed now. Sending unlocks after a verified sender is configured.",
+      done: false,
+      href: "/dashboard/settings#email-sending"
+    },
+    {
+      title: "Run the first search",
+      copy: "Review public-source companies before saving anything to CRM.",
+      done: false,
+      href: "/dashboard/leads"
+    }
+  ], [form]);
+  const completion = setupSteps.filter((step) => step.done).length;
+  const setupReady = completion >= 2;
 
   const loadWorkspace = useCallback(async () => {
     if (!ready) return;
@@ -196,7 +216,7 @@ export function OnboardingWorkspaceSetup() {
         <p className="text-sm font-semibold text-brand">{t("Setup")}</p>
         <h1 className="mt-2 text-3xl font-black tracking-tight text-ink">{t("Set up OutreachAI")}</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-          {t("Create your private workspace once. OutreachAI then uses your company and market context for lead search, CRM, and reviewed outreach.")}
+          {t("Follow four setup steps. You can continue later, and every step explains why it matters before OutreachAI searches or sends anything.")}
         </p>
 
       <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
@@ -206,9 +226,15 @@ export function OnboardingWorkspaceSetup() {
             <h2 className="mt-2 text-xl font-black text-ink">{workspace?.name || t("shell.privateWorkspace")}</h2>
             <p className="mt-2 text-sm leading-6 text-slate-700">{t("workspace.privateCopy")}</p>
             <div className="mt-4 space-y-2 text-sm">
-              <div className="rounded-xl bg-white p-3 font-semibold text-slate-800">{t("workspace.stepCompany")}</div>
-              <div className="rounded-xl bg-white p-3 font-semibold text-slate-800">{t("workspace.stepMarket")}</div>
-              <div className="rounded-xl bg-white p-3 font-semibold text-slate-800">{t("workspace.stepLeads")}</div>
+              {setupSteps.map((step, index) => (
+                <Link key={step.title} href={step.href || "#workspace-form"} className="flex items-start gap-3 rounded-xl bg-white p-3 font-semibold text-slate-800">
+                  <span className={`mt-0.5 grid size-6 shrink-0 place-items-center rounded-full text-xs font-black ${step.done ? "bg-brand text-white" : "bg-slate-100 text-slate-600"}`}>{step.done ? <CheckCircle2 size={14} /> : index + 1}</span>
+                  <span>
+                    <span className="block font-black text-ink">{t(step.title)}</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-600">{t(step.copy)}</span>
+                  </span>
+                </Link>
+              ))}
             </div>
             <div className="mt-4 flex items-center gap-2 rounded-xl bg-blue-50 p-3 text-sm font-semibold text-brand">
               <ShieldCheck size={16} />
@@ -220,10 +246,10 @@ export function OnboardingWorkspaceSetup() {
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm font-black text-ink">{t("workspace.finishSetup")}</p>
-                <p className="mt-1 text-sm text-slate-600">{t("workspace.setupCopy")}</p>
+                <p className="mt-1 text-sm text-slate-600">{t("Add the company and buyer context now. Email setup and first search can happen next.")}</p>
               </div>
               <span className="inline-flex w-fit items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
-                <CheckCircle2 size={14} /> {completion}/5
+                <CheckCircle2 size={14} /> {completion}/4
               </span>
             </div>
 
@@ -236,7 +262,7 @@ export function OnboardingWorkspaceSetup() {
                 <div className="h-11 animate-pulse rounded-xl bg-slate-200" />
               </div>
             ) : (
-              <form aria-label={t("Workspace setup form")} onSubmit={saveWorkspace} className="mt-5 space-y-3">
+              <form id="workspace-form" aria-label={t("Workspace setup form")} onSubmit={saveWorkspace} className="mt-5 space-y-3">
                 <label className="block text-sm font-bold text-slate-700">
                   {t("workspace.name")}
                   <input
@@ -319,6 +345,9 @@ export function OnboardingWorkspaceSetup() {
                   </button>
                   <Link href={setupReady ? "/dashboard/leads" : "/dashboard"} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink">
                     {setupReady ? t("workspace.nextLeadFinder") : t("nav.dashboard")} <ArrowRight size={16} />
+                  </Link>
+                  <Link href="/dashboard" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl px-5 text-sm font-black text-slate-600">
+                    {t("Continue later")}
                   </Link>
                 </div>
               </form>
