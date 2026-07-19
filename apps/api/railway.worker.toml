@@ -2,17 +2,17 @@
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 watchPatterns = [
-	"/apps/api/Dockerfile",
-	"/apps/api/db/**",
-	"/apps/api/requirements.txt",
-	"/apps/api/railway.worker.toml",
-	"/apps/api/app/jobs/**",
-	"/apps/api/app/api/routes.py",
-	"/apps/api/app/api/usage.py",
-	"/apps/api/app/core/**",
-	"/apps/api/app/models/**",
-	"/apps/api/app/schemas/**",
-	"/apps/api/app/services/**"
+	"/Dockerfile",
+	"/db/**",
+	"/requirements.txt",
+	"/railway.worker.toml",
+	"/app/jobs/**",
+	"/app/api/routes.py",
+	"/app/api/usage.py",
+	"/app/core/**",
+	"/app/models/**",
+	"/app/schemas/**",
+	"/app/services/**"
 ]
 
 [deploy]
