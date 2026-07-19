@@ -3,13 +3,16 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
 import { ArrowRight, CheckCircle2, Clock3, ExternalLink, FileText, Inbox, Loader2, Mail, MapPin, Plus, RefreshCw, Save, Search, Send, Sparkles, XCircle } from "lucide-react";
+import { useAuthRuntime } from "@/components/app-providers";
 import { useI18n } from "@/lib/i18n/provider";
 import { clientApi, friendlyErrorMessage, type ClientApiInit } from "@/lib/client-api";
 import type { CrmCompany, CrmContact, Email } from "@/lib/types";
 import type { FirstCustomerJob, FirstCustomerResult, FirstCustomerSaveResponse, OutreachSenderStatus, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
 
 type CoreApi = <T>(path: string, init?: ClientApiInit) => Promise<T>;
+type ClerkGetToken = (options?: { skipCache?: boolean }) => Promise<string | null>;
 
 type CoreWorkspaceState = {
   bootstrap: WorkspaceAppBootstrapResponse | null;
@@ -30,16 +33,6 @@ type ActionState = {
   notice: string;
   error: string;
 };
-
-declare global {
-  interface Window {
-    Clerk?: {
-      session?: {
-        getToken?: () => Promise<string | null>;
-      };
-    };
-  }
-}
 
 const localQaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
   && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
@@ -97,22 +90,41 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function resolveToken() {
+async function resolveToken(getToken: ClerkGetToken) {
   if (localQaAuthEnabled) return "dev";
-  if (typeof window === "undefined") return null;
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const token = await window.Clerk?.session?.getToken?.();
+    const token = await getToken({ skipCache: true });
     if (token) return token;
     await sleep(100);
   }
   return null;
 }
 
+function useCoreClerkAuth(clerkEnabled: boolean) {
+  const fallbackGetToken = useCallback(async () => localQaAuthEnabled ? "dev" : null, []);
+
+  if (!clerkEnabled || localQaAuthEnabled) {
+    return {
+      getToken: fallbackGetToken,
+      isLoaded: !clerkEnabled || localQaAuthEnabled,
+      isSignedIn: localQaAuthEnabled
+    };
+  }
+  // The no-Clerk branch above is required for local/E2E builds where ClerkProvider is intentionally not mounted.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return useAuth();
+}
+
 function useCoreApi(): CoreApi {
+  const { clerkEnabled } = useAuthRuntime();
+  const { getToken, isLoaded, isSignedIn } = useCoreClerkAuth(clerkEnabled);
   return useCallback(async <T,>(path: string, init: ClientApiInit = {}) => {
-    const token = await resolveToken();
+    if (clerkEnabled && (!isLoaded || !isSignedIn)) {
+      throw new Error("REQUEST_FAILED:Your session has expired. Please sign in again.");
+    }
+    const token = await resolveToken(getToken);
     return clientApi<T>(path, token, init);
-  }, []);
+  }, [clerkEnabled, getToken, isLoaded, isSignedIn]);
 }
 
 function safeArray<T>(value: T[] | null | undefined): T[] {
