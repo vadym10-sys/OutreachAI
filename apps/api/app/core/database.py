@@ -19,9 +19,14 @@ logger = logging.getLogger("outreachai.database")
 
 def _resolve_repo_root() -> Path:
     current = Path(__file__).resolve()
+    packaged_candidate: Path | None = None
     for candidate in current.parents:
         if (candidate / "db" / "schema.sql").exists() and (candidate / "db" / "migrations").exists():
-            return candidate
+            packaged_candidate = packaged_candidate or candidate
+            if (candidate / ".git").exists() or (candidate / "package.json").exists():
+                return candidate
+    if packaged_candidate is not None:
+        return packaged_candidate
     # Fallback keeps the app bootable even if schema files are missing in a custom runtime image.
     return current.parents[-1]
 

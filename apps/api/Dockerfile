@@ -19,6 +19,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY db ./db
 COPY app ./app
 
 CMD ["python", "-m", "app.serve"]

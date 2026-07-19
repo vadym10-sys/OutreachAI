@@ -3,6 +3,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 watchPatterns = [
 	"/apps/api/Dockerfile",
+	"/apps/api/db/**",
 	"/apps/api/requirements.txt",
 	"/apps/api/railway.worker.toml",
 	"/apps/api/app/jobs/**",
