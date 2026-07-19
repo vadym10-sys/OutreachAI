@@ -25,9 +25,11 @@ export const publicBackendApiUrl = normalizeUrl(process.env.NEXT_PUBLIC_API_URL,
 export const clerkPublishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || process.env.CLERK_PUBLISHABLE_KEY;
 export const clerkSecretKey = process.env.CLERK_SECRET_KEY;
 const configuredClerkProxyUrl = process.env.NEXT_PUBLIC_CLERK_PROXY_URL || process.env.NEXT_PUBLIC_CLERK_FRONTEND_API_PROXY || "";
-export const clerkProxyUrl = configuredClerkProxyUrl.startsWith("https://") || configuredClerkProxyUrl.startsWith("/")
+const isLiveClerkKey = clerkPublishableKey?.startsWith("pk_live_") ?? false;
+export const clerkProxyUrl = isLiveClerkKey && (configuredClerkProxyUrl.startsWith("https://") || configuredClerkProxyUrl.startsWith("/"))
   ? configuredClerkProxyUrl
   : "";
+export const isClerkFrontendApiProxyEnabled = Boolean(isLiveClerkKey && clerkProxyUrl);
 export const stripePublishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 export const analyticsEnabled = process.env.NEXT_PUBLIC_ANALYTICS_ENABLED === "true";
 export const sessionReplayEnabled = process.env.NEXT_PUBLIC_SESSION_REPLAY_ENABLED === "true";
