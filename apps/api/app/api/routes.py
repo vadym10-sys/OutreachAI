@@ -472,6 +472,18 @@ def _google_oauth_redirect_uri(settings) -> str:
     return settings.google_oauth_redirect_uri.strip() or f"{settings.public_api_url.rstrip('/')}/api/outreach/oauth/gmail/callback"
 
 
+def _google_oauth_start_status(settings) -> tuple[bool, str, str]:
+    if not settings.google_oauth_client_id:
+        return False, "missing_client_id", "OAuth Client ID missing"
+    if not settings.google_oauth_client_secret:
+        return False, "missing_client_secret", "OAuth Client Secret missing"
+    if settings.encryption_key == "replace-with-32-byte-url-safe-key":
+        return False, "missing_encryption_key", "Encryption key missing"
+    if settings.app_env != "production" and not settings.google_oauth_test_users:
+        return False, "missing_test_users", "OAuth allowed test users missing"
+    return True, "ready", ""
+
+
 def _classify_reply(text: str) -> str:
     lower = text.lower()
     if any(item in lower for item in ["unsubscribe", "remove me", "stop emailing", "отпис", "abbestellen"]):
@@ -617,6 +629,7 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
     oauth_provider = oauth["provider"] if oauth["provider"] in {"gmail"} else ""
     oauth_connected = bool(oauth_provider == "gmail" and configured_sender and oauth["refresh_token_encrypted"] and oauth["verified_at"])
     oauth_status = "connected" if oauth_connected else "not_connected"
+    oauth_start_ready, oauth_start_status, oauth_start_reason = _google_oauth_start_status(app_settings)
 
     reason = ""
     connected = True
@@ -687,6 +700,9 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         oauth_mailbox=configured_sender if oauth_connected else None,
         oauth_connected_at=oauth["verified_at"] if oauth_connected else "",
         oauth_scopes=[str(item) for item in oauth["scopes"] if isinstance(item, str)] if oauth_connected else [],
+        oauth_start_ready=oauth_start_ready,
+        oauth_start_status=oauth_start_status,
+        oauth_start_reason=oauth_start_reason,
         next_action=next_action,
         reason=reason,
         smtp_host=smtp["host"],
@@ -5216,8 +5232,9 @@ def outreach_sender_status(user_id: CurrentUser, db: Session = Depends(get_db)) 
 def start_gmail_oauth(user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, str]:
     workspace = _current_workspace(db, user_id)
     app_settings = get_app_settings()
-    if not app_settings.google_oauth_client_id or not app_settings.google_oauth_client_secret:
-        raise HTTPException(status_code=409, detail="Google OAuth client is not configured for this environment.")
+    oauth_start_ready, _oauth_start_status, oauth_start_reason = _google_oauth_start_status(app_settings)
+    if not oauth_start_ready:
+        raise HTTPException(status_code=409, detail=oauth_start_reason or "Google OAuth client is not configured for this environment.")
     state_payload = {
         "user_id": user_id,
         "workspace_id": str(workspace.id),

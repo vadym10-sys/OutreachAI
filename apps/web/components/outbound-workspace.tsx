@@ -7103,6 +7103,10 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
   }
 
   async function connectGmailOAuth() {
+    if (!status?.oauth_start_ready) {
+      setError(t(status?.oauth_start_reason || "Google OAuth is not configured for this environment."));
+      return;
+    }
     setOauthBusy(true);
     setError("");
     setSaved("");
@@ -7135,6 +7139,7 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
 
   const badgeClass = status?.connected ? "border-teal-200 bg-teal-50 text-brand" : "border-amber-200 bg-amber-50 text-amber-900";
   const gmailOauthConnected = Boolean(status?.oauth_connected && status.oauth_provider === "gmail" && status.oauth_status === "connected");
+  const gmailOauthStartReady = Boolean(status?.oauth_start_ready);
   const oauthConnectedAt = status?.oauth_connected_at ? new Date(status.oauth_connected_at) : null;
   const oauthConnectedAtLabel = oauthConnectedAt && !Number.isNaN(oauthConnectedAt.getTime()) ? oauthConnectedAt.toLocaleString() : (status?.oauth_connected_at || t("Not connected"));
   return (
@@ -7198,9 +7203,10 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
               {status?.provider === "smtp" && <p className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Mailbox verified")}</span><span className="text-right">{status.smtp_verified_at ? new Date(status.smtp_verified_at).toLocaleString() : t("Not verified yet")}</span></p>}
               <p className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Sent today")}</span><span>{status?.sent_today || 0}/{status?.daily_send_limit || 25}</span></p>
             </div>
+            {!gmailOauthConnected && !gmailOauthStartReady ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{t(status?.oauth_start_reason || "Google OAuth is not configured for this environment.")}</p> : null}
             <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" disabled={oauthBusy} onClick={() => void connectGmailOAuth()} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">
-                <Mail size={16} /> {gmailOauthConnected ? t("Reconnect Gmail") : t("Connect Gmail")}
+              <button type="button" disabled={oauthBusy || !gmailOauthStartReady} onClick={() => void connectGmailOAuth()} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">
+                <Mail size={16} /> {oauthBusy ? t("Opening Gmail...") : gmailOauthConnected ? t("Reconnect Gmail") : t("Connect Gmail")}
               </button>
               {gmailOauthConnected ? <button type="button" disabled={oauthBusy} onClick={() => void disconnectGmailOAuth()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">{t("Disconnect")}</button> : null}
             </div>

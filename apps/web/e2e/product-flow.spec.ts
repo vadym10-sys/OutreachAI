@@ -22,14 +22,13 @@ test("AI-first workspace exposes four sections only", async ({ page }) => {
 test("AI assistant accepts one instruction and prepares Autopilot approval surface", async ({ page }) => {
   await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
   await page.getByRole("form", { name: "AI customer command" }).getByLabel("AI command").fill("https://outreachaiaiai.com");
-  await page.getByRole("button", { name: "Запустить AI" }).click();
+  await expect(page.getByRole("button", { name: "Запустить AI" })).toBeEnabled({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Запустить AI" }).click({ force: true });
   await expect(page.getByText("Я понял ваш бизнес так")).toBeVisible();
   await expect(page.getByText("Что AI делает сейчас")).toBeVisible();
-  await page.locator("summary").filter({ hasText: "Подробнее по найденным компаниям" }).evaluate((node) => {
-    if (node.parentElement instanceof HTMLDetailsElement) node.parentElement.open = true;
-  });
+  await page.locator("summary").filter({ hasText: "Подробнее по найденным компаниям" }).click();
   await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
   await expect(page.getByText("Verified public website content")).toBeVisible();
-  await expect(page.getByText("qa.sender@example.com подтверждён")).toBeVisible();
+  await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
   await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
 });

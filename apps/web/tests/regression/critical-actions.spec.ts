@@ -17,7 +17,7 @@ test("AI assistant runs First Customer Finder and shows source-backed companies"
   await expect(page.getByText("Что AI делает сейчас")).toBeVisible();
   await expect(page.getByText("Найдено")).toBeVisible();
   await expect(page.getByText("Подготовлено")).toBeVisible();
-  await expect(page.getByText("qa.sender@example.com подтверждён")).toBeVisible();
+  await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
   await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
 });
 
@@ -25,7 +25,7 @@ test("autopilot approval queues backend campaign and supports pause", async ({ p
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard");
   await expect(page.getByRole("heading", { name: "AI Autopilot" })).toBeVisible();
-  await expect(page.getByText("qa.sender@example.com подтверждён")).toBeVisible();
+  await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
   await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeEnabled();
   await page.getByRole("button", { name: "Разрешить эту кампанию" }).click();
   await expect(page.getByText("AI Autopilot approved")).toBeVisible();

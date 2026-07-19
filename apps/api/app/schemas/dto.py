@@ -1316,6 +1316,9 @@ class OutreachSenderStatusOut(BaseModel):
     oauth_mailbox: Optional[str] = None
     oauth_connected_at: str = ""
     oauth_scopes: list[str] = Field(default_factory=list)
+    oauth_start_ready: bool = False
+    oauth_start_status: str = "not_configured"
+    oauth_start_reason: str = ""
     spf_status: str = "not_checked"
     dkim_status: str = "not_checked"
     dmarc_status: str = "not_checked"

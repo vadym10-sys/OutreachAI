@@ -33,13 +33,21 @@ function pretty(value: string) {
 function providerLabel(provider?: string) {
   if (provider === "gmail") return "Gmail OAuth";
   if (provider === "smtp") return "SMTP";
-  if (provider === "resend") return "Resend";
+  if (provider === "resend") return "Connected API sender";
   if (provider === "outlook") return "Outlook";
   return provider ? pretty(provider) : "Not configured";
 }
 
 function gmailOAuthReady(sender: OutreachSenderStatus | null) {
   return Boolean(sender?.oauth_connected && sender.oauth_provider === "gmail" && sender.oauth_status === "connected" && sender.oauth_mailbox);
+}
+
+function gmailOAuthStartReady(sender: OutreachSenderStatus | null) {
+  return Boolean(sender?.oauth_start_ready);
+}
+
+function gmailOAuthStartReason(sender: OutreachSenderStatus | null) {
+  return sender?.oauth_start_reason || "Google OAuth is not configured for this environment.";
 }
 
 function formatDateTime(value?: string) {
@@ -378,6 +386,10 @@ function AssistantSection() {
   }
 
   async function connectMail() {
+    if (!gmailOAuthStartReady(sender)) {
+      setError(gmailOAuthStartReason(sender));
+      return;
+    }
     setBusy("mail:connect");
     setError("");
     try {
@@ -444,6 +456,7 @@ function AssistantSection() {
   const sent = campaign?.sent || 0;
   const replies = campaign?.replies || 0;
   const senderReady = gmailOAuthReady(sender);
+  const canStartGmailOAuth = gmailOAuthStartReady(sender);
   const canAllowAutopilot = Boolean(job && found > 0 && saved > 0 && prepared > 0 && senderReady && (sender?.remaining_today || 0) > 0);
   const sample = job?.results.find((result) => result.email_body || result.draft_email);
   const stage = campaign?.status === "Paused" || campaign?.status === "paused" ? "Приостановлен" : autoSaving ? "Сохраняет" : job?.status === "queued" ? "Анализирует" : job?.status === "running" ? "Ищет" : job?.results.length ? (campaign?.status === "Running" || campaign?.status === "running" ? "Отправляет" : "Готовит письма") : "Анализирует";
@@ -495,10 +508,11 @@ function AssistantSection() {
             <p><span className="font-black text-ink">Дневной лимит:</span> {Math.min(sender?.remaining_today || 0, 10)} из {sender?.daily_send_limit || 0}</p>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
-            {!senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void connectMail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> Connect Gmail</button> : null}
+            {!senderReady ? <button type="button" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectMail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> {busy === "mail:connect" ? "Opening Gmail..." : "Connect Gmail"}</button> : null}
             {senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void syncReplies()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} /> Проверить ответы</button> : null}
             {senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectMail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Отключить</button> : null}
           </div>
+          {!senderReady && !canStartGmailOAuth ? <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}
           <details className="mt-3 rounded-lg border border-slate-200"><summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Пример письма <ChevronDown size={16} /></summary><p className="whitespace-pre-wrap border-t border-slate-200 p-3 text-sm leading-6 text-slate-700">{sample?.email_body || sample?.draft_email || "Пример появится после первого найденного и сохраненного результата."}</p></details>
           <button type="button" disabled={!canAllowAutopilot || Boolean(busy)} onClick={() => void allowCampaign()} className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === "campaign:allow" ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} Разрешить эту кампанию</button>
           {!canAllowAutopilot ? <p className="mt-2 text-xs font-bold leading-5 text-slate-500">Autopilot включится только после verified sender, CRM-save, черновиков, публичных источников, лимитов тарифа и дневного лимита.</p> : null}
@@ -660,6 +674,10 @@ function SettingsSection() {
   }
 
   async function connectGmail() {
+    if (!gmailOAuthStartReady(sender)) {
+      setError(gmailOAuthStartReason(sender));
+      return;
+    }
     setBusy("connect");
     setError("");
     try {
@@ -672,7 +690,7 @@ function SettingsSection() {
   }
 
   async function disconnectGmail() {
-    if (!window.confirm("Disconnect this Gmail OAuth mailbox? SMTP/Resend settings will not be treated as Gmail OAuth.")) return;
+    if (!window.confirm("Disconnect this Gmail OAuth mailbox? Other sender settings will not be treated as Gmail OAuth.")) return;
     setBusy("disconnect");
     setError("");
     try {
@@ -686,6 +704,7 @@ function SettingsSection() {
   }
 
   const gmailReady = gmailOAuthReady(sender);
+  const canStartGmailOAuth = gmailOAuthStartReady(sender);
   const currentProvider = providerLabel(sender?.provider);
   const oauthProvider = gmailReady ? "Gmail OAuth" : "Not connected";
 
@@ -695,7 +714,7 @@ function SettingsSection() {
       {error ? <Notice tone="bad">{error}</Notice> : null}
       <section className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
         <form onSubmit={save} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><h2 className="text-lg font-black text-ink">Workspace</h2><div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-slate-700">Name<input name="name" defaultValue={workspace?.name || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Company<input name="company" defaultValue={workspace?.company || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Industry<input name="industry" defaultValue={workspace?.industry || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700 sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label></div><button type="submit" className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white"><CheckCircle2 size={16} /> Save workspace</button></form>
-        <div className="grid gap-4"><section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-md border border-slate-200 p-3"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><span className={`rounded-full px-2 py-1 text-xs font-black ${item.status === "connected" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{item.status}</span></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></section><section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from SMTP/Resend staging senders.</p></div><span className={`rounded-full px-2 py-1 text-xs font-black ${gmailReady ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{gmailReady ? "connected" : "needs OAuth"}</span></div><div className="mt-3 grid gap-2 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div><div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={Boolean(busy)} onClick={() => void connectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> {gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</button>{gmailReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Disconnect</button> : null}<button type="button" disabled={Boolean(busy)} onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} /> Refresh</button></div></section></div>
+        <div className="grid gap-4"><section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-md border border-slate-200 p-3"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><span className={`rounded-full px-2 py-1 text-xs font-black ${item.status === "connected" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{item.status}</span></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></section><section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><span className={`rounded-full px-2 py-1 text-xs font-black ${gmailReady ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{gmailReady ? "connected" : "needs OAuth"}</span></div><div className="mt-3 grid gap-2 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</button>{gmailReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Disconnect</button> : null}<button type="button" disabled={Boolean(busy)} onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} /> Refresh</button></div></section></div>
       </section>
     </Frame>
   );

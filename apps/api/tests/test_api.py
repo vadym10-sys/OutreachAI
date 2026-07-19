@@ -5764,6 +5764,30 @@ def test_outreach_sender_status_and_update() -> None:
     assert "OAuth" in updated.json()["reason"]
 
 
+def test_gmail_oauth_start_reports_missing_secret_without_treating_resend_as_oauth(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "gmail-oauth-missing-secret@example.com"}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", "gmail-oauth-missing-secret@example.com")
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+
+    status = client.get("/api/outreach/sender/status", headers=headers)
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["provider"] == "resend"
+    assert payload["connected"] is True
+    assert payload["oauth_connected"] is False
+    assert payload["oauth_status"] == "not_connected"
+    assert payload["oauth_start_ready"] is False
+    assert payload["oauth_start_reason"] == "OAuth Client Secret missing"
+
+    start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
+    assert start.status_code == 409
+    assert start.json()["detail"] == "OAuth Client Secret missing"
+
+
 def test_approved_email_uses_workspace_sender(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "sender-send@example.com"}
     monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)

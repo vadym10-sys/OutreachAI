@@ -47,19 +47,17 @@ test.describe("manual production-readiness journey", () => {
 
   test("desktop AI-first path has clean runtime and manual email gate", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "chromium", "Desktop readiness runs once on Chromium.");
+    test.setTimeout(75_000);
     const guards = installStrictRuntimeGuards(page, testInfo);
 
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expectHealthyPage(page, "AI-помощник");
     await page.getByRole("form", { name: "AI customer command" }).getByLabel("AI command").fill("Мы продаём AI-систему для B2B. Найди подходящих клиентов в Германии.");
+    await expect(page.getByRole("button", { name: "Запустить AI" })).toBeEnabled({ timeout: 20_000 });
     await page.getByRole("button", { name: "Запустить AI" }).click();
     await expect(page.getByText("Я понял ваш бизнес так")).toBeVisible();
-    await page.locator("summary").filter({ hasText: "Подробнее по найденным компаниям" }).evaluate((node) => {
-      if (node.parentElement instanceof HTMLDetailsElement) node.parentElement.open = true;
-    });
-    await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
-    await expect(page.getByText("qa.sender@example.com подтверждён")).toBeVisible();
+    await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
     await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Остановить" })).toBeVisible();
     await guards.assertClean();

@@ -55,6 +55,13 @@ def _safe_error_message(status_code: int, detail: object) -> str:
         return "Your plan needs attention before you can continue."
     if status_code == 429 or "rate limit" in lower or "quota" in lower:
         return "This action is temporarily limited. Please try again later."
+    if lower in {
+        "oauth client id missing",
+        "oauth client secret missing",
+        "oauth allowed test users missing",
+        "encryption key missing",
+    }:
+        return str(raw)
     if "no companies" in lower or "no matching" in lower:
         return "No companies were found. Try a broader location, industry, or company size."
     if any(term in lower for term in ["google", "places", "apollo", "hunter", "lead search"]):
