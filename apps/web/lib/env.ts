@@ -55,5 +55,6 @@ function isUsableClerkPublishableKey(value: string | undefined) {
 
 export const hasClerkPublishableKey = isUsableClerkPublishableKey(clerkPublishableKey);
 export const hasClerkRuntimeConfig = Boolean(hasClerkPublishableKey && clerkSecretKey);
+export const hasClerkMiddlewareConfig = Boolean(hasClerkRuntimeConfig || (hasClerkPublishableKey && !isClerkMiddlewareRouteProtectionEnabled));
 export const hasPostHog = Boolean(analyticsEnabled && posthogKey);
 export const hasLogRocket = Boolean(sessionReplayEnabled && logRocketAppId);

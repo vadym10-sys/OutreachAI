@@ -1,6 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
-import { hasClerkRuntimeConfig, isClerkE2EBypass, isClerkFrontendApiProxyEnabled, isClerkMiddlewareRouteProtectionEnabled } from "@/lib/env";
+import { hasClerkMiddlewareConfig, isClerkE2EBypass, isClerkFrontendApiProxyEnabled, isClerkMiddlewareRouteProtectionEnabled } from "@/lib/env";
 
 const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/admin(.*)", "/onboarding(.*)"]);
 
@@ -73,7 +73,7 @@ const protectedMiddleware = clerkMiddleware(
 
 export default isClerkE2EBypass
   ? bypassMiddleware
-  : hasClerkRuntimeConfig
+  : hasClerkMiddlewareConfig
     ? protectedMiddleware
     : missingClerkMiddleware;
 

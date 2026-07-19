@@ -78,6 +78,35 @@ describe("environment safety", () => {
 
     expect(env.hasClerkPublishableKey).toBe(true);
     expect(env.hasClerkRuntimeConfig).toBe(true);
+    expect(env.hasClerkMiddlewareConfig).toBe(true);
+  });
+
+  it("allows Clerk development Preview middleware without weakening live production keys", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "preview");
+    process.env.NEXT_PUBLIC_APP_ENV = "staging";
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_Y2xlcmsuZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk";
+
+    const env = await loadEnv();
+
+    expect(env.hasClerkPublishableKey).toBe(true);
+    expect(env.isClerkMiddlewareRouteProtectionEnabled).toBe(false);
+    expect(env.hasClerkRuntimeConfig).toBe(false);
+    expect(env.hasClerkMiddlewareConfig).toBe(true);
+  });
+
+  it("requires the Clerk secret for live production middleware protection", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL_ENV", "production");
+    process.env.NEXT_PUBLIC_APP_ENV = "production";
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_live_Y2xlcmsuZXhhbXBsZS5jbGVyay5hY2NvdW50cy5kZXYk";
+
+    const env = await loadEnv();
+
+    expect(env.hasClerkPublishableKey).toBe(true);
+    expect(env.isClerkMiddlewareRouteProtectionEnabled).toBe(true);
+    expect(env.hasClerkRuntimeConfig).toBe(false);
+    expect(env.hasClerkMiddlewareConfig).toBe(false);
   });
 
   it("keeps product analytics and session replay disabled unless explicit flags are enabled", async () => {
