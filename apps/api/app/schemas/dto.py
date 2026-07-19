@@ -1305,10 +1305,17 @@ class OutreachSenderStatusOut(BaseModel):
     status: str
     sender_name: str = ""
     sender_email: Optional[str] = None
+    mailbox: Optional[str] = None
     reply_to: Optional[str] = None
     daily_send_limit: int = 25
     sent_today: int = 0
     remaining_today: int = 0
+    oauth_provider: str = ""
+    oauth_connected: bool = False
+    oauth_status: str = "not_connected"
+    oauth_mailbox: Optional[str] = None
+    oauth_connected_at: str = ""
+    oauth_scopes: list[str] = Field(default_factory=list)
     spf_status: str = "not_checked"
     dkim_status: str = "not_checked"
     dmarc_status: str = "not_checked"

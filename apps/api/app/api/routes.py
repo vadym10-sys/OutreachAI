@@ -560,6 +560,7 @@ def _sender_settings(settings: AppSettings) -> dict[str, Any]:
             "verified_at": str(oauth.get("verified_at") or "").strip(),
             "google_subject": str(oauth.get("google_subject") or "").strip(),
         },
+        "updated_at": str(sender.get("updated_at") or "").strip(),
     }
 
 
@@ -613,7 +614,9 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
     smtp = sender["smtp"]
     smtp_configured = bool(smtp["host"] and smtp["username"] and smtp["password_encrypted"] and smtp["verified_at"])
     oauth = sender["oauth"]
-    oauth_configured = bool(provider == "gmail" and configured_sender and oauth["refresh_token_encrypted"] and oauth["verified_at"])
+    oauth_provider = oauth["provider"] if oauth["provider"] in {"gmail"} else ""
+    oauth_connected = bool(oauth_provider == "gmail" and configured_sender and oauth["refresh_token_encrypted"] and oauth["verified_at"])
+    oauth_status = "connected" if oauth_connected else "not_connected"
 
     reason = ""
     connected = True
@@ -644,7 +647,7 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         status = "needs_setup"
         reason = "A custom encryption key is required before storing mailbox credentials."
         next_action = "Finish secure SMTP setup before sending."
-    elif provider == "gmail" and oauth_configured:
+    elif provider == "gmail" and oauth_connected:
         next_action = "Ready to send through the connected Gmail mailbox."
     elif provider == "gmail":
         connected = False
@@ -673,10 +676,17 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         status=status,
         sender_name=sender["sender_name"],
         sender_email=configured_sender or None,
+        mailbox=configured_sender or None,
         reply_to=sender["reply_to"] or _extract_email(app_settings.resend_reply_to) or None,
         daily_send_limit=daily_limit,
         sent_today=sent_today,
         remaining_today=remaining_today,
+        oauth_provider="gmail" if oauth_provider == "gmail" else "",
+        oauth_connected=oauth_connected,
+        oauth_status=oauth_status,
+        oauth_mailbox=configured_sender if oauth_connected else None,
+        oauth_connected_at=oauth["verified_at"] if oauth_connected else "",
+        oauth_scopes=[str(item) for item in oauth["scopes"] if isinstance(item, str)] if oauth_connected else [],
         next_action=next_action,
         reason=reason,
         smtp_host=smtp["host"],
