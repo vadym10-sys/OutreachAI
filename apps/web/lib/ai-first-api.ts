@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuth } from "@clerk/nextjs";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useAuthRuntime } from "@/components/app-providers";
 import { clientApi, type ClientApiInit } from "@/lib/client-api";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
@@ -68,13 +68,21 @@ async function devRequest<T>(path: string, init: ClientApiInit = {}) {
   return clientApi<T>(path, "dev", init);
 }
 
+const e2eTokenApi = {
+  getToken: async () => "dev",
+  isLoaded: true,
+  isSignedIn: true
+};
+
+const disabledTokenApi = {
+  getToken: async () => null,
+  isLoaded: true,
+  isSignedIn: false
+};
+
 function useClerkTokenApi(clerkEnabled: boolean) {
   if (!clerkEnabled || isClerkE2EBypass) {
-    return {
-      getToken: async () => isClerkE2EBypass ? "dev" : null,
-      isLoaded: !clerkEnabled || isClerkE2EBypass,
-      isSignedIn: isClerkE2EBypass
-    };
+    return isClerkE2EBypass ? e2eTokenApi : disabledTokenApi;
   }
   // Clerk is only called when AppProviders mounted ClerkProvider.
   // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -96,6 +104,13 @@ function finderPayload(command: AiAssistantCommand) {
     keywords: command.keywords,
     exclusions: command.exclusions
   };
+}
+
+function requireSuccessfulAction(response: WorkspaceAppActionResponse) {
+  if (response.status !== "success" && response.status !== "partial_success") {
+    throw new Error(response.message || "This action could not be completed.");
+  }
+  return response;
 }
 
 export function useAiFirstApi(): AiFirstApi {
@@ -129,7 +144,7 @@ export function useAiFirstApi(): AiFirstApi {
 
   const ready = ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) || (clerkEnabled && isLoaded && Boolean(isSignedIn));
 
-  return {
+  return useMemo(() => ({
     ready,
     bootstrap: () => request<WorkspaceAppBootstrapResponse>("/api/workspace-app/bootstrap"),
     listCompanies: () => request<CrmCompany[]>("/api/workspace-app/companies"),
@@ -141,8 +156,8 @@ export function useAiFirstApi(): AiFirstApi {
     listCustomerFinderJobs: () => request<FirstCustomerJob[]>("/api/workspace-app/ai-customer-finder/searches"),
     getCustomerFinderJob: (jobId) => request<FirstCustomerJob>(`/api/workspace-app/ai-customer-finder/searches/${jobId}`),
     saveFinderResult: (resultId) => request<FirstCustomerSaveResponse>(`/api/workspace-app/leads/first-customers/results/${resultId}/save`, { method: "POST" }),
-    approveEmail: (emailId) => request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, { method: "POST" }),
-    sendApprovedEmail: (emailId) => request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, { method: "POST" }),
+    approveEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, { method: "POST" })),
+    sendApprovedEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, { method: "POST" })),
     listEmails: () => request<Email[]>("/api/inbox"),
     getWorkspace: () => request<Workspace>("/api/workspace/me"),
     updateWorkspace: (payload) => request<Workspace>("/api/workspace", {
@@ -163,7 +178,7 @@ export function useAiFirstApi(): AiFirstApi {
       body: JSON.stringify({ job_id: jobId })
     }),
     campaignAction: (campaignId, action) => request<Campaign>(`/api/campaigns/${campaignId}/${action}`, { method: "POST" })
-  };
+  }), [ready, request]);
 }
 
 export function latestDraftForResult(result: FirstCustomerResult) {

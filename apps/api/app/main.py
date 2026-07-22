@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from app.api.routes import router as api_router
 from app.api.ai_customer_finder import router as ai_customer_finder_router
@@ -23,7 +23,7 @@ from app.core.config import get_settings
 from app.core.database import ensure_runtime_schema, get_db, get_engine, get_sessionmaker
 from app.core.observability import init_sentry, sentry_transaction_name, set_request_context
 from app.core.reliability import required_environment_issues, required_environment_status, validate_database_connectivity, validate_required_environment
-from app.core.security import OwnerUser, QueueHealthUser, authenticated_user_id_from_authorization, rate_limit
+from app.core.security import QueueHealthUser, authenticated_user_id_from_authorization, rate_limit
 from app.models.entities import AuditLog, Workspace
 from app.services.backups import database_backups_operational
 from app.services.enrichment_queue import queue_health_summary
@@ -91,9 +91,9 @@ def _is_enrichment_restart_path(request: Request) -> bool:
 def _enrichment_restart_fallback_response(request: Request) -> JSONResponse:
     message = "AI enrichment restart is temporarily unavailable. Saved company data remains available."
     return JSONResponse(
-        status_code=200,
+        status_code=503,
         content={
-            "status": "partial_success",
+            "status": "error",
             "message": message,
             "company": None,
             "warnings": [message],

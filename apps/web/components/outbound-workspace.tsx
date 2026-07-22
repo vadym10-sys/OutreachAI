@@ -1986,7 +1986,7 @@ function OpportunityCard({
         15000,
         "Email approval timed out. Please try again before sending."
       );
-      if (!approved.email) {
+      if (!approved.email || approved.status !== "success") {
         throw new Error(approved.message || "Email approval could not be completed.");
       }
       setDraft(approved.email);

@@ -8423,7 +8423,7 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
     if not email:
         raise HTTPException(status_code=404, detail="Email draft not found.")
     if email.delivery_status == "sent":
-        return UsageActionOut(status="error", message="This email has already been sent.", email=EmailOut.model_validate(email))
+        raise HTTPException(status_code=409, detail="This email has already been sent.")
     email.delivery_status = "approved"
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     company = None
@@ -8449,14 +8449,14 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     if not email:
         raise HTTPException(status_code=404, detail="Email draft not found.")
     if email.delivery_status == "sent":
-        return UsageActionOut(status="error", message="This email has already been sent.", email=EmailOut.model_validate(email))
+        raise HTTPException(status_code=409, detail="This email has already been sent.")
     if email.delivery_status != "approved":
-        return UsageActionOut(status="error", message="Approve the email before sending.", email=EmailOut.model_validate(email))
+        raise HTTPException(status_code=409, detail="Approve the email before sending.")
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     if not lead or not lead.email:
-        return UsageActionOut(status="error", message="Add a verified recipient email before sending.", email=EmailOut.model_validate(email))
+        raise HTTPException(status_code=409, detail="Add a verified recipient email before sending.")
     if _is_placeholder_recipient(lead.email):
-        return UsageActionOut(status="error", message="Use a real recipient email before sending.", email=EmailOut.model_validate(email))
+        raise HTTPException(status_code=400, detail="Use a real recipient email before sending.")
 
     try:
         sender_status, smtp_config = _outreach_sender_runtime_config(db, user.user_id, workspace)
@@ -8472,19 +8472,25 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
             smtp_config=smtp_config,
         )
     except HTTPException as exc:
-        return UsageActionOut(status="provider_unavailable", message=str(exc.detail), email=EmailOut.model_validate(email))
-    except (EmailProviderConfigurationError, EmailProviderRequestError) as exc:
+        raise HTTPException(status_code=exc.status_code if exc.status_code >= 400 else 409, detail=str(exc.detail)) from exc
+    except EmailProviderConfigurationError as exc:
         email.delivery_status = "failed"
         _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id), "reason": str(exc)})
         db.commit()
         capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
-        return UsageActionOut(status="provider_unavailable", message="Email sending needs setup or is temporarily unavailable. The approved draft is still saved.", email=EmailOut.model_validate(email))
+        raise HTTPException(status_code=409, detail="Email sending needs setup. The approved draft is still saved.") from exc
+    except EmailProviderRequestError as exc:
+        email.delivery_status = "failed"
+        _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id), "reason": str(exc)})
+        db.commit()
+        capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
+        raise HTTPException(status_code=502, detail="Email sending is temporarily unavailable. The approved draft is still saved.") from exc
     except Exception as exc:
         email.delivery_status = "failed"
         _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id)})
         db.commit()
         capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
-        return UsageActionOut(status="provider_unavailable", message="Email sending is temporarily unavailable. The approved draft is still saved.", email=EmailOut.model_validate(email))
+        raise HTTPException(status_code=500, detail="Email sending failed. The approved draft is still saved.") from exc
 
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))

@@ -27,7 +27,7 @@ from app.models.entities import (
 )
 from app.schemas.dto import LeadOut
 from app.services.ai_customer_finder.dedupe import canonical_url, company_dedupe_key, content_hash, normalized_domain, signal_fingerprint
-from app.services.ai_customer_finder.providers import GoogleMapsConfigurationError, GoogleMapsRequestError, provider_for_key
+from app.services.ai_customer_finder.providers import provider_for_key
 from app.services.ai_customer_finder.schemas import CustomerFinderCriteria, CustomerFinderJobOut, CustomerFinderResultOut, PublicCustomerCandidate, VerifiedCustomerSignal
 from app.services.ai_customer_finder.scoring import meaningful_signal_present, score_candidate, signal_type_from_text
 from app.services.website import WebsiteFetchError, collect_website, normalize_website_url
@@ -511,6 +511,8 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
     signal_type = signal_type_from_text(text)
     has_timing_signal = meaningful_signal_present(text)
     score = score_candidate(criteria, text=text, industry=candidate.industry, country=candidate.country, source_verified=True, source_type="official_website", publication_date="Unknown")
+    if not score.has_meaningful_signal:
+        raise ValueError("Rejected: public source confirms ICP fit but has no buying, pain, growth, hiring, or timing signal.")
     excerpt = _evidence_excerpt(text, criteria)
     source_url = canonical_url(snapshot.url or website)
     if not source_url or not normalized_domain(source_url):

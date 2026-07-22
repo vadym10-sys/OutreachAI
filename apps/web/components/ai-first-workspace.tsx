@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, PauseCircle, RefreshCw, Send, Settings, Sparkles, Square, UsersRound } from "lucide-react";
 import { friendlyErrorMessage } from "@/lib/client-api";
@@ -252,25 +252,35 @@ function AssistantSection() {
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loading, setLoading] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const autoSaveJobIds = useRef(new Set<string>());
+  const mounted = useRef(true);
 
   const loadJobs = useCallback(async () => {
     if (!api.ready) return;
     try {
       const loaded = await api.listCustomerFinderJobs();
       setJobs(loaded);
-      if (!job && loaded[0]) setJob(loaded[0]);
+      setJob((current) => current || loaded[0] || null);
     } catch (err) {
       setError(friendlyErrorMessage(err, "Could not load AI customer searches."));
     }
-  }, [api, job]);
+  }, [api]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadJobs(), 0);
     return () => window.clearTimeout(timer);
   }, [loadJobs]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setHydrated(true), 0);
+    return () => {
+      window.clearTimeout(timer);
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!api.ready) return undefined;
     const timer = window.setTimeout(async () => {
@@ -294,32 +304,31 @@ function AssistantSection() {
     return () => window.clearInterval(timer);
   }, [api, job]);
   useEffect(() => {
-    if (!job || !["completed", "partially_completed"].includes(job.status) || autoSaving) return;
+    if (!job || !["completed", "partially_completed"].includes(job.status) || autoSaving || autoSaveJobIds.current.has(job.id)) return;
     const unsaved = job.results.filter((result) => !result.company_id && !result.lead_id && safeToAutoSave(result));
     if (!unsaved.length) return;
-    let cancelled = false;
-    const timer = window.setTimeout(() => void (async () => {
+    autoSaveJobIds.current.add(job.id);
+    void (async () => {
       setAutoSaving(true);
       let saved = 0;
-      for (const result of unsaved) {
-        if (cancelled) return;
-        try {
+      try {
+        for (const result of unsaved) {
           await api.saveFinderResult(result.id);
           saved += 1;
-        } catch (err) {
-          setError(friendlyErrorMessage(err, "Could not automatically save one verified company."));
         }
-      }
-      if (!cancelled) {
+        if (!mounted.current) return;
         setNotice(`${saved} verified compan${saved === 1 ? "y was" : "ies were"} saved to CRM. Drafts are ready for review.`);
         setJob(await api.getCustomerFinderJob(job.id));
-        setAutoSaving(false);
+      } catch (err) {
+        if (mounted.current) {
+          setError(friendlyErrorMessage(err, "Could not automatically save one verified company."));
+        }
+      } finally {
+        if (mounted.current) {
+          setAutoSaving(false);
+        }
       }
-    })(), 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
+    })();
   }, [api, autoSaving, job]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -431,9 +440,10 @@ function AssistantSection() {
       setNotice(action === "pause" ? "AI Autopilot paused locally. No emails will be sent." : "AI Autopilot stopped locally. No emails will be sent.");
       return;
     }
-    setBusy(`campaign:${action}`);
     try {
-      const updated = await api.campaignAction(campaign.id, action);
+      const actionRequest = api.campaignAction(campaign.id, action);
+      setBusy(`campaign:${action}`);
+      const updated = await actionRequest;
       setCampaign(updated);
       setNotice(action === "pause" ? "Campaign paused in backend." : "Campaign stopped in backend.");
     } catch (err) {
@@ -457,7 +467,12 @@ function AssistantSection() {
   const replies = campaign?.replies || 0;
   const senderReady = gmailOAuthReady(sender);
   const canStartGmailOAuth = gmailOAuthStartReady(sender);
-  const canAllowAutopilot = Boolean(job && found > 0 && saved > 0 && prepared > 0 && senderReady && (sender?.remaining_today || 0) > 0);
+  const campaignApproved = Boolean(campaign);
+  const aiControlsReady = Boolean(hydrated && api.ready && sender && job);
+  const canAllowAutopilot = Boolean(aiControlsReady && found > 0 && saved > 0 && prepared > 0 && senderReady && (sender?.remaining_today || 0) > 0 && !campaignApproved);
+  const campaignControlBusy = busy === "campaign:pause" || busy === "campaign:stop";
+  const canControlAutopilot = Boolean(aiControlsReady && campaignApproved && !campaignControlBusy);
+  const autopilotControlState = !aiControlsReady ? "loading" : campaignApproved ? "ready_to_control" : canAllowAutopilot ? "ready_to_approve" : "blocked";
   const sample = job?.results.find((result) => result.email_body || result.draft_email);
   const stage = campaign?.status === "Paused" || campaign?.status === "paused" ? "Приостановлен" : autoSaving ? "Сохраняет" : job?.status === "queued" ? "Анализирует" : job?.status === "running" ? "Ищет" : job?.results.length ? (campaign?.status === "Running" || campaign?.status === "running" ? "Отправляет" : "Готовит письма") : "Анализирует";
   const progressText = job ? `${stage}: ${String(progress.message || job.error_message || "AI is checking backend progress.")}` : "Ожидаю сайт или описание бизнеса.";
@@ -466,11 +481,9 @@ function AssistantSection() {
     <Frame title="AI-помощник" copy="Вставьте сайт или опишите бизнес. OutreachAI сам соберет критерии, запустит First Customer Finder, сохранит проверенные компании в CRM и подготовит письма.">
       <form aria-label="AI customer command" onSubmit={submit} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
         <label className="block text-sm font-black text-ink">AI command<textarea value={command} onChange={(event) => setCommand(event.target.value)} className="mt-2 min-h-32 w-full rounded-md border border-slate-300 p-4 text-base leading-7" placeholder="Вставьте сайт или опишите свой бизнес и кого хотите найти" /></label>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button type="submit" disabled={loading || !api.ready} className="inline-flex min-h-11 items-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Запустить AI</button>
-          <button type="button" onClick={() => void loadJobs()} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-300 px-4 text-sm font-black text-ink"><RefreshCw size={17} /> Обновить</button>
-          <button type="button" onClick={() => void autopilotAction("pause")} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-amber-300 px-4 text-sm font-black text-amber-800"><PauseCircle size={17} /> Пауза</button>
-          <button type="button" onClick={() => void autopilotAction("stop")} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-red-300 px-4 text-sm font-black text-red-700"><Square size={17} /> Остановить</button>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button type="submit" disabled={loading || !hydrated || !api.ready} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Запустить AI</button>
+          <button type="button" onClick={() => void loadJobs()} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 px-4 text-sm font-black text-ink"><RefreshCw size={17} /> Обновить</button>
         </div>
         <details className="mt-4 rounded-lg border border-slate-200">
           <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Расширенные настройки <ChevronDown size={16} /></summary>
@@ -481,6 +494,10 @@ function AssistantSection() {
           </div>
         </details>
       </form>
+      <div data-ai-controls-ready={aiControlsReady ? "true" : "false"} data-autopilot-state={autopilotControlState} className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+        <button type="button" disabled={!canControlAutopilot} onClick={() => void autopilotAction("pause")} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-amber-300 px-4 text-sm font-black text-amber-800 disabled:cursor-not-allowed disabled:opacity-50"><PauseCircle size={17} /> Пауза</button>
+        <button type="button" disabled={!canControlAutopilot} onClick={() => void autopilotAction("stop")} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-red-300 px-4 text-sm font-black text-red-700 disabled:cursor-not-allowed disabled:opacity-50"><Square size={17} /> Остановить</button>
+      </div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
       <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
@@ -572,7 +589,8 @@ function EmailsSection() {
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [inbox, setInbox] = useState<Email[]>([]);
   const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
   const emails = useMemo(() => uniqueEmails(companies, inbox), [companies, inbox]);
   const load = useCallback(async () => {
@@ -581,9 +599,9 @@ function EmailsSection() {
       const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails()]);
       setCompanies(nextCompanies);
       setInbox(nextInbox);
-      setError("");
+      setLoadError("");
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not load emails."));
+      setLoadError(friendlyErrorMessage(err, "Could not load emails."));
     }
   }, [api]);
   useEffect(() => {
@@ -593,12 +611,14 @@ function EmailsSection() {
 
   async function approve(email: Email) {
     setBusy(`approve:${email.id}`);
+    setNotice("");
+    setActionError("");
     try {
       const response = await api.approveEmail(email.id);
       setNotice(response.message);
       await load();
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not approve this draft."));
+      setActionError(friendlyErrorMessage(err, "Could not approve this draft."));
     } finally {
       setBusy("");
     }
@@ -607,12 +627,14 @@ function EmailsSection() {
   async function send(email: Email) {
     if (!window.confirm("Send this approved email now? OutreachAI will not send automatically.")) return;
     setBusy(`send:${email.id}`);
+    setNotice("");
+    setActionError("");
     try {
       const response = await api.sendApprovedEmail(email.id);
       setNotice(response.message);
       await load();
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not send this email."));
+      setActionError(friendlyErrorMessage(err, "Could not send this email."));
     } finally {
       setBusy("");
     }
@@ -622,7 +644,8 @@ function EmailsSection() {
     <Frame title="Письма" copy="Черновики и отправленные письма из backend. Отправка доступна только после ручного approve и отдельного подтверждения send.">
       <div className="flex justify-end"><button type="button" onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink"><RefreshCw size={16} /> Refresh</button></div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
-      {error ? <Notice tone="bad">{error}</Notice> : null}
+      {actionError ? <Notice tone="bad">{actionError}</Notice> : null}
+      {loadError ? <Notice tone="bad">{loadError}</Notice> : null}
       {emails.length ? <section className="grid gap-3">{emails.map((email) => <article key={email.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div><h2 className="text-lg font-black text-ink">{email.subject || "No subject"}</h2><p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p><p className="mt-3 max-w-3xl whitespace-pre-wrap text-sm leading-6 text-slate-700">{email.body || email.preview || "No email body returned."}</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void approve(email)} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</button><button type="button" disabled={Boolean(busy) || email.delivery_status !== "approved"} onClick={() => void send(email)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</button></div></div></article>)}</section> : <Notice>No email drafts yet. Save a verified customer result to CRM to create a draft.</Notice>}
     </Frame>
   );
