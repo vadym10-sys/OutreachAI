@@ -55,7 +55,7 @@ from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: 
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
 from app.services.ai import ProviderRequestError, ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
-from app.services.backups import backup_archive_is_readable  # noqa: E402
+from app.services.backups import _verify_restore, backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
 from app.services.emailer import EmailProviderRequestError  # noqa: E402
 from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
@@ -1353,6 +1353,56 @@ def test_backup_archive_integrity_check_accepts_readable_gzip(tmp_path: Path) ->
     with gzip.open(archive, "wb") as handle:
         handle.write(b"CREATE TABLE restore_probe(id integer);\n")
     assert backup_archive_is_readable(archive) is True
+
+
+def test_restore_verification_resets_restore_database_before_import(monkeypatch, tmp_path: Path) -> None:
+    archive = tmp_path / "backup.sql.gz"
+    import gzip
+    with gzip.open(archive, "wb") as handle:
+        handle.write(b"CREATE TABLE restore_probe(id integer);\n")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        del kwargs
+        commands.append(command)
+        if "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';" in command:
+            return SimpleNamespace(returncode=0, stdout="29\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("app.services.backups.shutil.which", lambda name: "/usr/bin/psql" if name == "psql" else None)
+    monkeypatch.setattr("app.services.backups.subprocess.run", fake_run)
+
+    verified, metadata = _verify_restore(
+        Settings(
+            database_url="postgresql://prod.example/outreachai",
+            backup_restore_test_database_url="postgresql://restore.example/outreachai_restore_test",
+        ),
+        archive,
+    )
+
+    assert verified is True
+    assert metadata == {"mode": "postgres", "result": "restore_succeeded", "table_count": 29}
+    assert commands[0][-1] == "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"
+    assert commands[1][1] == "postgresql://restore.example/outreachai_restore_test"
+
+
+def test_restore_verification_refuses_source_database(monkeypatch, tmp_path: Path) -> None:
+    archive = tmp_path / "backup.sql.gz"
+    import gzip
+    with gzip.open(archive, "wb") as handle:
+        handle.write(b"CREATE TABLE restore_probe(id integer);\n")
+    monkeypatch.setattr("app.services.backups.shutil.which", lambda name: "/usr/bin/psql" if name == "psql" else None)
+
+    verified, metadata = _verify_restore(
+        Settings(
+            database_url="postgresql+psycopg://prod.example/outreachai",
+            backup_restore_test_database_url="postgresql://prod.example/outreachai",
+        ),
+        archive,
+    )
+
+    assert verified is False
+    assert metadata == {"mode": "postgres", "result": "restore_database_matches_source"}
 
 
 def test_request_id_is_echoed_for_traceability() -> None:

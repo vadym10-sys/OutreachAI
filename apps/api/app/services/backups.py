@@ -98,6 +98,10 @@ def _postgres_url_for_tools(settings: Settings) -> str:
     return settings.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
+def _same_database_url(left: str, right: str) -> bool:
+    return left.replace("postgresql+psycopg://", "postgresql://", 1).rstrip("/") == right.replace("postgresql+psycopg://", "postgresql://", 1).rstrip("/")
+
+
 def _require_configured(settings: Settings) -> str:
     provider = normalized_provider(settings)
     if provider not in {"aws_s3", "cloudflare_r2", "backblaze_b2", "gcs", "local"}:
@@ -175,6 +179,25 @@ def _verify_restore(settings: Settings, archive: Path) -> tuple[bool, dict[str, 
     if not shutil.which("psql"):
         return False, {"mode": "postgres", "result": "psql_missing"}
     restore_url = settings.backup_restore_test_database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    source_url = _postgres_url_for_tools(settings)
+    if _same_database_url(source_url, restore_url):
+        return False, {"mode": "postgres", "result": "restore_database_matches_source"}
+    reset = subprocess.run(
+        [
+            "psql",
+            restore_url,
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--command",
+            "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=settings.backup_restore_timeout_seconds,
+        check=False,
+    )
+    if reset.returncode != 0:
+        return False, {"mode": "postgres", "result": "restore_reset_failed", "stderr": reset.stderr[-800:]}
     with tempfile.NamedTemporaryFile(suffix=".sql") as sql_file:
         with gzip.open(archive, "rb") as source:
             shutil.copyfileobj(source, sql_file)
@@ -187,7 +210,24 @@ def _verify_restore(settings: Settings, archive: Path) -> tuple[bool, dict[str, 
             check=False,
         )
     if completed.returncode == 0:
-        return True, {"mode": "postgres", "result": "restore_succeeded"}
+        count = subprocess.run(
+            [
+                "psql",
+                restore_url,
+                "--tuples-only",
+                "--no-align",
+                "--set",
+                "ON_ERROR_STOP=1",
+                "--command",
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE';",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=settings.backup_restore_timeout_seconds,
+            check=False,
+        )
+        table_count = int(count.stdout.strip() or "0") if count.returncode == 0 else 0
+        return True, {"mode": "postgres", "result": "restore_succeeded", "table_count": table_count}
     return False, {"mode": "postgres", "result": "restore_failed", "stderr": completed.stderr[-800:]}
 
 
