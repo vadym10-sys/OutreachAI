@@ -55,7 +55,7 @@ from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: 
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
 from app.services.ai import ProviderRequestError, ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
-from app.services.backups import _verify_restore, backup_archive_is_readable  # noqa: E402
+from app.services.backups import _is_past_retention, _verify_restore, backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
 from app.services.emailer import EmailProviderRequestError  # noqa: E402
 from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
@@ -1353,6 +1353,15 @@ def test_backup_archive_integrity_check_accepts_readable_gzip(tmp_path: Path) ->
     with gzip.open(archive, "wb") as handle:
         handle.write(b"CREATE TABLE restore_probe(id integer);\n")
     assert backup_archive_is_readable(archive) is True
+
+
+def test_cloud_backup_retention_respects_age_and_count() -> None:
+    settings = Settings(backup_retention_days=30, backup_retention_count=2)
+    now = datetime(2026, 7, 22, tzinfo=datetime.now().astimezone().tzinfo)
+
+    assert _is_past_retention(settings, index=0, last_modified=now - timedelta(days=1), now=now) is False
+    assert _is_past_retention(settings, index=2, last_modified=now - timedelta(days=1), now=now) is True
+    assert _is_past_retention(settings, index=0, last_modified=now - timedelta(days=31), now=now) is True
 
 
 def test_restore_verification_resets_restore_database_before_import(monkeypatch, tmp_path: Path) -> None:

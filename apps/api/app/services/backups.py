@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +137,46 @@ def _object_key(settings: Settings, created_at: datetime) -> str:
     return f"{prefix}/outreachai-postgres-{timestamp}.sql.gz" if prefix else f"outreachai-postgres-{timestamp}.sql.gz"
 
 
+def _retention_cutoff(settings: Settings, now: datetime | None = None) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current - timedelta(days=max(1, settings.backup_retention_days))
+
+
+def _is_past_retention(settings: Settings, *, index: int, last_modified: datetime, now: datetime | None = None) -> bool:
+    modified = last_modified if last_modified.tzinfo else last_modified.replace(tzinfo=timezone.utc)
+    return index >= max(1, settings.backup_retention_count) or modified < _retention_cutoff(settings, now)
+
+
+def _prune_s3_backups(client: Any, settings: Settings) -> None:
+    prefix = settings.backup_prefix.strip("/ ")
+    list_prefix = f"{prefix}/" if prefix else ""
+    paginator = client.get_paginator("list_objects_v2")
+    objects: list[dict[str, Any]] = []
+    for page in paginator.paginate(Bucket=settings.backup_bucket, Prefix=list_prefix):
+        objects.extend(item for item in page.get("Contents", []) if str(item.get("Key", "")).endswith(".sql.gz"))
+    objects.sort(key=lambda item: item.get("LastModified") or datetime.fromtimestamp(0, timezone.utc), reverse=True)
+    delete_batch = [
+        {"Key": item["Key"]}
+        for index, item in enumerate(objects)
+        if item.get("Key") and item.get("LastModified") and _is_past_retention(settings, index=index, last_modified=item["LastModified"])
+    ]
+    for index in range(0, len(delete_batch), 1000):
+        client.delete_objects(Bucket=settings.backup_bucket, Delete={"Objects": delete_batch[index : index + 1000], "Quiet": True})
+
+
+def _prune_gcs_backups(client: Any, settings: Settings) -> None:
+    prefix = settings.backup_prefix.strip("/ ")
+    list_prefix = f"{prefix}/" if prefix else ""
+    bucket = client.bucket(settings.backup_bucket)
+    blobs = [blob for blob in client.list_blobs(settings.backup_bucket, prefix=list_prefix) if blob.name.endswith(".sql.gz")]
+    blobs.sort(key=lambda blob: blob.updated or datetime.fromtimestamp(0, timezone.utc), reverse=True)
+    for index, blob in enumerate(blobs):
+        if blob.updated and _is_past_retention(settings, index=index, last_modified=blob.updated):
+            bucket.blob(blob.name).delete()
+
+
 def _store_backup(settings: Settings, provider: str, archive: Path, object_key: str) -> str:
     if provider == "local":
         target = Path(settings.backup_local_dir) / object_key
@@ -156,6 +196,7 @@ def _store_backup(settings: Settings, provider: str, archive: Path, object_key: 
             aws_secret_access_key=settings.aws_secret_access_key,
         )
         client.upload_file(str(archive), settings.backup_bucket, object_key)
+        _prune_s3_backups(client, settings)
         return f"s3://{settings.backup_bucket}/{object_key}"
     if provider == "gcs":
         try:
@@ -167,6 +208,7 @@ def _store_backup(settings: Settings, provider: str, archive: Path, object_key: 
         bucket = client.bucket(settings.backup_bucket)
         blob = bucket.blob(object_key)
         blob.upload_from_filename(str(archive))
+        _prune_gcs_backups(client, settings)
         return f"gs://{settings.backup_bucket}/{object_key}"
     raise RuntimeError("Unsupported backup provider.")
 
