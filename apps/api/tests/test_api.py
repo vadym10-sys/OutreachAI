@@ -150,6 +150,10 @@ def test_ai_customer_finder_scoring_and_dedupe_require_public_evidence() -> None
     assert score.buying_intent_score >= 50
     assert score.icp_fit_score >= 50
     assert score.revenue_opportunity_score >= 50
+    assert score.overall_lead_score >= 50
+    assert score.growth_signal_score > 0
+    assert score.technology_fit_score > 0
+    assert score.lead_intelligence["components"]["buying_intent"] == score.buying_intent_score
     assert score.scoring_version
     assert company_dedupe_key(website="https://www.Example.com/about", company_name="Example", country="Germany") == "domain:example.com"
     assert signal_fingerprint(source_url="https://example.com", signal_type="manual_workaround", evidence="Manual spreadsheet workflow", company_name="Example")
@@ -258,6 +262,65 @@ def test_ai_customer_finder_scoring_handles_quality_edge_cases() -> None:
     assert multi_source.factors["source_diversity"] > unknown_date.factors["source_diversity"]
     assert contradictory.buying_intent_score < multi_source.buying_intent_score
     assert weak_source.buying_intent_score <= 45
+
+
+def test_ai_customer_finder_lead_intelligence_does_not_invent_missing_signals() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates outbound research and CRM workflows",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200",
+    )
+    weak_public_profile = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany builds collaboration software for sales teams.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+    )
+    missing = weak_public_profile.lead_intelligence["insufficient_data"]
+
+    assert weak_public_profile.overall_lead_score < 55
+    assert weak_public_profile.growth_signal_score == 0
+    assert weak_public_profile.contact_confidence_score < 50
+    assert "buying_intent" in missing
+    assert "growth_signal" in missing
+    assert "public_work_contact" in missing
+
+
+def test_ai_customer_finder_lead_intelligence_uses_verified_contact_and_growth() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates outbound research and CRM workflows",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200",
+    )
+    strong_public_profile = score_candidate(
+        criteria,
+        text=(
+            "B2B SaaS company in Germany is hiring revenue operations roles, replacing manual spreadsheet CRM workflows, "
+            "and launched new integrations for sales automation. Contact sales@example.com for partnerships."
+        ),
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+        public_work_contact="sales@example.com",
+        contact_title="Head of Sales",
+    )
+
+    assert strong_public_profile.overall_lead_score >= 55
+    assert strong_public_profile.outreach_readiness_score >= 60
+    assert strong_public_profile.contact_confidence_score >= 80
+    assert strong_public_profile.lead_intelligence["evidence"]["growth_terms"]
+    assert "public_work_contact" not in strong_public_profile.lead_intelligence["insufficient_data"]
 
 
 def test_ai_customer_finder_rejects_result_without_source_url() -> None:
@@ -450,7 +513,9 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert payload["results"][0]["model_inference"]
     assert payload["results"][0]["score_factors"]["signal_strength"] > 0
     assert payload["results"][0]["score_penalties"]["stale_or_unknown_publication_date"] > 0
-    assert payload["results"][0]["buying_intent_score"] == payload["results"][0]["ai_relevance_score"]
+    assert payload["results"][0]["overall_lead_score"] == payload["results"][0]["ai_relevance_score"]
+    assert payload["results"][0]["buying_intent_score"] >= payload["results"][0]["overall_lead_score"]
+    assert payload["results"][0]["lead_intelligence"]["components"]["outreach_readiness"] > 0
     assert payload["results"][0]["first_line_opener"]
     assert payload["results"][0]["draft_email"]
     assert payload["results"][0]["public_work_contact"] == "sales@verified-finder.example"

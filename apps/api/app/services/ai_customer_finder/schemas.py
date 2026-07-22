@@ -175,6 +175,13 @@ class CustomerFinderResultOut(BaseModel):
     icp_fit_score: int = 0
     buying_intent_score: int = 0
     revenue_opportunity_score: int = 0
+    overall_lead_score: int = 0
+    growth_signal_score: int = 0
+    website_quality_score: int = 0
+    technology_fit_score: int = 0
+    contact_confidence_score: int = 0
+    outreach_readiness_score: int = 0
+    lead_intelligence: Dict = Field(default_factory=dict)
     first_line_opener: str = ""
     draft_email: str = ""
     lead_id: str = ""
