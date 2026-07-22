@@ -160,7 +160,58 @@ def enqueue_deep_contact_search_job(
     return job
 
 
-def claim_next_enrichment_job(db: Session, *, worker_id: str | None = None, stale_after_seconds: int = 900, job_types: tuple[str, ...] = ("company_enrichment", "deep_contact_search")) -> EnrichmentJob | None:
+def enqueue_autopilot_email_job(
+    db: Session,
+    *,
+    user_id: str,
+    workspace_id: UUID,
+    lead: Lead,
+    campaign_id: UUID,
+    email_id: UUID,
+    request_id: str,
+    language: str,
+    run_after: datetime | None = None,
+    max_attempts: int = 3,
+    priority: int = 2,
+) -> EnrichmentJob:
+    idempotency_key = f"autopilot:{campaign_id}:{email_id}"
+    existing = db.scalar(
+        select(EnrichmentJob)
+        .where(
+            EnrichmentJob.workspace_id == workspace_id,
+            EnrichmentJob.job_type == "autopilot_email_send",
+            EnrichmentJob.status.in_(tuple(ACTIVE_JOB_STATUSES)),
+            EnrichmentJob.cancel_requested.is_(False),
+            EnrichmentJob.payload_json["idempotency_key"].as_string() == idempotency_key,
+        )
+        .order_by(EnrichmentJob.created_at.desc())
+    )
+    if existing:
+        return existing
+    job = EnrichmentJob(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        lead_id=lead.id,
+        job_type="autopilot_email_send",
+        status="pending",
+        priority=priority,
+        max_attempts=max(1, int(max_attempts or 3)),
+        request_id=request_id,
+        language=language,
+        payload_json={
+            "campaign_id": str(campaign_id),
+            "email_id": str(email_id),
+            "idempotency_key": idempotency_key,
+            "source": "ai_autopilot",
+        },
+        progress_json={"stage": "queued", "message": "Autopilot email is queued.", "percent": 5},
+        run_after=run_after or datetime.utcnow(),
+    )
+    db.add(job)
+    return job
+
+
+def claim_next_enrichment_job(db: Session, *, worker_id: str | None = None, stale_after_seconds: int = 900, job_types: tuple[str, ...] = ("company_enrichment", "deep_contact_search", "autopilot_email_send")) -> EnrichmentJob | None:
     now = datetime.utcnow()
     stale_before = now - timedelta(seconds=stale_after_seconds)
     stmt = (
@@ -187,7 +238,12 @@ def claim_next_enrichment_job(db: Session, *, worker_id: str | None = None, stal
     job.locked_at = now
     job.started_at = job.started_at or now
     job.attempts = int(job.attempts or 0) + 1
-    running_message = "AI enrichment is running." if job.job_type == "company_enrichment" else "Deep contact search is running."
+    running_messages = {
+        "company_enrichment": "AI enrichment is running.",
+        "deep_contact_search": "Deep contact search is running.",
+        "autopilot_email_send": "Autopilot is preparing a safe email send.",
+    }
+    running_message = running_messages.get(job.job_type, "Worker job is running.")
     job.progress_json = {**(job.progress_json or {}), "stage": "running", "message": running_message, "percent": max(10, int((job.progress_json or {}).get("percent") or 10))}
     job.updated_at = now
     db.commit()

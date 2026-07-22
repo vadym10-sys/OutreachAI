@@ -1,5 +1,5 @@
-import { AiCustomerFinderPage } from "@/components/ai-customer-finder/ai-customer-finder-page";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <AiCustomerFinderPage />;
+  redirect("/dashboard");
 }

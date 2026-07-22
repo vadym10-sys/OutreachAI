@@ -1,5 +1,5 @@
-import { DealsPage } from "@/components/outbound-workspace";
+import { redirect } from "next/navigation";
 
 export default function Page() {
-  return <DealsPage />;
+  redirect("/dashboard/clients");
 }

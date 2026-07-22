@@ -1,5 +1,5 @@
-import { AiEmployeesPage } from '@/components/outbound-workspace';
+import { redirect } from "next/navigation";
 
 export default function SalesEmployeesPage() {
-  return <AiEmployeesPage />;
+  redirect("/dashboard");
 }

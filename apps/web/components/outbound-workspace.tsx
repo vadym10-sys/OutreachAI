@@ -1986,7 +1986,7 @@ function OpportunityCard({
         15000,
         "Email approval timed out. Please try again before sending."
       );
-      if (!approved.email) {
+      if (!approved.email || approved.status !== "success") {
         throw new Error(approved.message || "Email approval could not be completed.");
       }
       setDraft(approved.email);
@@ -6959,6 +6959,7 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
   const [status, setStatus] = useState<OutreachSenderStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [oauthBusy, setOauthBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const [form, setForm] = useState({
@@ -7101,7 +7102,46 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
     }
   }
 
+  async function connectGmailOAuth() {
+    if (!status?.oauth_start_ready) {
+      setError(t(status?.oauth_start_reason || "Google OAuth is not configured for this environment."));
+      return;
+    }
+    setOauthBusy(true);
+    setError("");
+    setSaved("");
+    try {
+      const response = await api<{ auth_url: string }>("/api/outreach/oauth/gmail/start");
+      window.location.assign(response.auth_url);
+    } catch (err) {
+      reportWidgetFailure(err, "outreach-gmail-oauth-start", { endpoint: "/api/outreach/oauth/gmail/start" });
+      setError(userMessage(err, "Could not start secure Google OAuth.", t));
+      setOauthBusy(false);
+    }
+  }
+
+  async function disconnectGmailOAuth() {
+    if (!window.confirm(t("Disconnect this Gmail mailbox?"))) return;
+    setOauthBusy(true);
+    setError("");
+    setSaved("");
+    try {
+      const next = await api<OutreachSenderStatus>("/api/outreach/oauth/gmail", { method: "DELETE" });
+      setStatus(next);
+      setSaved(t("Gmail OAuth disconnected"));
+    } catch (err) {
+      reportWidgetFailure(err, "outreach-gmail-oauth-disconnect", { endpoint: "/api/outreach/oauth/gmail" });
+      setError(userMessage(err, "Could not disconnect Gmail OAuth.", t));
+    } finally {
+      setOauthBusy(false);
+    }
+  }
+
   const badgeClass = status?.connected ? "border-teal-200 bg-teal-50 text-brand" : "border-amber-200 bg-amber-50 text-amber-900";
+  const gmailOauthConnected = Boolean(status?.oauth_connected && status.oauth_provider === "gmail" && status.oauth_status === "connected");
+  const gmailOauthStartReady = Boolean(status?.oauth_start_ready);
+  const oauthConnectedAt = status?.oauth_connected_at ? new Date(status.oauth_connected_at) : null;
+  const oauthConnectedAtLabel = oauthConnectedAt && !Number.isNaN(oauthConnectedAt.getTime()) ? oauthConnectedAt.toLocaleString() : (status?.oauth_connected_at || t("Not connected"));
   return (
     <section id="email-sending" className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -7153,10 +7193,22 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
             <p className="font-black text-ink">{t(status?.next_action || "Connect sending before launching campaigns.")}</p>
             {status?.reason && <p className="mt-2 leading-6">{t(status.reason)}</p>}
             <div className="mt-4 grid gap-2">
+              <p className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Provider")}</span><span className="text-right">{status?.provider === "gmail" ? "Gmail OAuth" : status?.provider === "smtp" ? "SMTP" : status?.provider === "resend" ? "Resend" : t(status?.provider || "Not configured")}</span></p>
+              <p className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Mailbox")}</span><span className="text-right">{status?.mailbox || status?.sender_email || t("Not connected")}</span></p>
+              <p className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("OAuth status")}</span><span className="text-right">{status?.oauth_status || "not_connected"}</span></p>
+              <p className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Gmail OAuth mailbox")}</span><span className="text-right">{status?.oauth_mailbox || t("Not connected")}</span></p>
+              <p className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Connected at")}</span><span className="text-right">{oauthConnectedAtLabel}</span></p>
               {[["SPF", status?.spf_status], ["DKIM", status?.dkim_status], ["DMARC", status?.dmarc_status]].map(([label, value]) => <p key={label} className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{label}</span><span>{t(String(value || "not_checked"))}</span></p>)}
               {status?.provider === "smtp" && <p className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("SMTP configured")}</span><span>{t(status.smtp_configured ? "Connected" : "Needs setup")}</span></p>}
               {status?.provider === "smtp" && <p className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Mailbox verified")}</span><span className="text-right">{status.smtp_verified_at ? new Date(status.smtp_verified_at).toLocaleString() : t("Not verified yet")}</span></p>}
               <p className="flex items-center justify-between rounded-xl bg-white px-3 py-2"><span className="font-bold">{t("Sent today")}</span><span>{status?.sent_today || 0}/{status?.daily_send_limit || 25}</span></p>
+            </div>
+            {!gmailOauthConnected && !gmailOauthStartReady ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{t(status?.oauth_start_reason || "Google OAuth is not configured for this environment.")}</p> : null}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button type="button" disabled={oauthBusy || !gmailOauthStartReady} onClick={() => void connectGmailOAuth()} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">
+                <Mail size={16} /> {oauthBusy ? t("Opening Gmail...") : gmailOauthConnected ? t("Reconnect Gmail") : t("Connect Gmail")}
+              </button>
+              {gmailOauthConnected ? <button type="button" disabled={oauthBusy} onClick={() => void disconnectGmailOAuth()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">{t("Disconnect")}</button> : null}
             </div>
           </div>
         </div>

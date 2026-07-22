@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     hunter_api_key: str = ""
     builtwith_api_key: str = ""
     google_maps_api_key: str = Field(default_factory=_google_maps_api_key_default)
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = ""
+    google_oauth_allowed_test_users: str = ""
     clay_api_key: str = ""
     clay_workspace_id: str = ""
     crm_sync_webhook_url: str = ""
@@ -91,6 +95,8 @@ class Settings(BaseSettings):
     ai_customer_finder_max_results_per_job: int = 10
     ai_customer_finder_max_candidates_per_job: int = 25
     ai_customer_finder_ai_classification_enabled: bool = False
+    autopilot_test_mode: bool = True
+    autopilot_safe_recipient_domain: str = ""
     debug: bool = False
     encryption_key: str = "replace-with-32-byte-url-safe-key"
     auto_create_tables: bool = True
@@ -116,6 +122,10 @@ class Settings(BaseSettings):
     @property
     def allowed_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def google_oauth_test_users(self) -> list[str]:
+        return [item.strip().lower() for item in self.google_oauth_allowed_test_users.split(",") if item.strip()]
 
     @property
     def stripe_starter_price_id(self) -> str:

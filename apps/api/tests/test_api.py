@@ -8,6 +8,7 @@ import logging
 import tempfile
 import os
 import time
+from typing import Any
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -41,14 +42,14 @@ os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 os.environ["CLERK_SECRET_KEY"] = "clerk_test"
 os.environ["CLERK_JWT_ISSUER"] = "https://example.clerk.accounts.dev"
 
-from app.core.database import Base, get_engine, get_sessionmaker, initialize_database_schema  # noqa: E402
+from app.core.database import get_engine, get_sessionmaker, initialize_database_schema  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.reliability import database_backup_configured, validate_database_connectivity, validate_required_environment  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -57,6 +58,9 @@ from app.services.ai import ProviderRequestError, ProviderResponseValidationErro
 from app.services.backups import backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
 from app.services.emailer import EmailProviderRequestError  # noqa: E402
+from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
+from app.services.autopilot import process_autopilot_email_job  # noqa: E402
+from app.services.secret_box import encrypt_secret  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
 import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
@@ -544,7 +548,7 @@ def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monk
     assert payload["summary"]["saved"] == 1
 
 
-def test_ai_customer_finder_saves_public_icp_fit_without_high_intent(monkeypatch) -> None:
+def test_ai_customer_finder_rejects_public_icp_fit_without_buying_signal(monkeypatch) -> None:
     import app.services.ai_customer_finder.service as finder_service
     from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
 
@@ -596,11 +600,11 @@ def test_ai_customer_finder_saves_public_icp_fit_without_high_intent(monkeypatch
     refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
     assert refreshed.status_code == 200, refreshed.text
     payload = refreshed.json()
-    assert payload["status"] == "completed"
-    assert payload["results"][0]["company_name"] == "Weak ICP Only Co"
-    assert payload["results"][0]["verified_status"] == "partially_verified"
-    assert payload["results"][0]["public_work_contact"] == "hello@weak-icp.example"
-    assert payload["summary"]["saved"] == 1
+    assert payload["status"] == "failed"
+    assert payload["results"] == []
+    assert payload["summary"]["saved"] == 0
+    assert payload["summary"]["rejected"] == 1
+    assert "no buying" in payload["error_message"]
 
 
 def test_ai_customer_finder_repeat_search_deduplicates_company_lead_and_draft(monkeypatch) -> None:
@@ -2530,6 +2534,10 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     email = draft.json()["email"]
     assert email["delivery_status"] == "draft"
 
+    send_before_approval = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert send_before_approval.status_code == 409
+    assert "Approve the email before sending" in send_before_approval.json()["detail"]
+
     approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
     assert approved.status_code == 200
     assert approved.json()["email"]["delivery_status"] == "approved"
@@ -2564,6 +2572,65 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent_payload["from_email"] == "sales@usage-email.example"
     assert sent_payload["from_name"] == "Usage Sales"
     assert sent_payload["reply_to"] == "reply@usage-email.example"
+
+    send_again = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert send_again.status_code == 409
+    assert "already been sent" in send_again.json()["detail"]
+
+    approve_sent = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approve_sent.status_code == 409
+    assert "already been sent" in approve_sent.json()["detail"]
+
+
+def test_workspace_app_email_provider_failure_uses_non_200_http_status(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-provider-send-error@example.com"}
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": "Provider Error Build", "website": "https://provider-error.example", "country": "Germany", "city": "Berlin", "industry": "Construction", "email": "buyer@provider-error.example"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+
+    monkeypatch.setattr(
+        "app.api.usage.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Idea for Provider Error Build",
+            preview="Quick idea",
+            full_email="Hi, I found a relevant opportunity for your team.",
+            cta="Book a quick call",
+            cold_email="Hi, I found a relevant opportunity for your team.",
+            follow_ups=["Following up once.", "Following up twice."],
+        ),
+    )
+    draft = client.post(f"/api/workspace-app/companies/{company_id}/email-draft", headers=headers)
+    assert draft.status_code == 200
+    email = draft.json()["email"]
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Usage Sales",
+            "sender_email": "sales@provider-error.example",
+            "reply_to": "reply@provider-error.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: (_ for _ in ()).throw(EmailProviderRequestError("provider unavailable")))
+    sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert sent.status_code == 502
+    assert "Email sending is temporarily unavailable" in sent.json()["detail"]
+
+    refreshed = client.get(f"/api/workspace-app/companies/{company_id}", headers=headers)
+    assert refreshed.status_code == 200
+    assert refreshed.json()["generated_emails"][0]["delivery_status"] == "failed"
 
 
 def test_workspace_app_company_creation_queues_enrichment_job() -> None:
@@ -2810,9 +2877,9 @@ def test_workspace_app_company_enrichment_restart_downgrades_dependency_runtime_
     finally:
         app.dependency_overrides.pop(security.get_current_workspace_user_context, None)
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     payload = response.json()
-    assert payload["status"] == "partial_success"
+    assert payload["status"] == "error"
     assert payload["warnings"]
 
 
@@ -2830,9 +2897,9 @@ def test_workspace_app_company_enrichment_restart_downgrades_dependency_http_500
     finally:
         app.dependency_overrides.pop(security.get_current_workspace_user_context, None)
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     payload = response.json()
-    assert payload["status"] == "partial_success"
+    assert payload["status"] == "error"
     assert payload["warnings"]
 
 
@@ -3066,7 +3133,7 @@ def test_enrichment_queue_reclaims_stale_job_and_blocks_old_claim_completion() -
 
 
 def test_enrichment_queue_retry_uses_exponential_backoff_and_dead_letters() -> None:
-    from app.services.enrichment_queue import claim_next_enrichment_job, enqueue_company_enrichment_job, fail_or_retry_job
+    from app.services.enrichment_queue import enqueue_company_enrichment_job, fail_or_retry_job
 
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-enrichment-retry@example.com"}
     company_response = client.post(
@@ -4067,10 +4134,8 @@ def test_workspace_app_blocks_placeholder_recipient_before_send(monkeypatch) -> 
 
     monkeypatch.setattr("app.api.usage.send_email", fail_send)
     sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
-    assert sent.status_code == 200
-    assert sent.json()["status"] == "error"
-    assert sent.json()["message"] == "Use a real recipient email before sending."
-    assert sent.json()["email"]["delivery_status"] == "approved"
+    assert sent.status_code == 400
+    assert sent.json()["detail"] == "Use a real recipient email before sending."
 
 
 def test_ai_sales_analysis_generate_success(monkeypatch) -> None:
@@ -5761,6 +5826,30 @@ def test_outreach_sender_status_and_update() -> None:
     assert "OAuth" in updated.json()["reason"]
 
 
+def test_gmail_oauth_start_reports_missing_secret_without_treating_resend_as_oauth(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "gmail-oauth-missing-secret@example.com"}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", "gmail-oauth-missing-secret@example.com")
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+
+    status = client.get("/api/outreach/sender/status", headers=headers)
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["provider"] == "resend"
+    assert payload["connected"] is True
+    assert payload["oauth_connected"] is False
+    assert payload["oauth_status"] == "not_connected"
+    assert payload["oauth_start_ready"] is False
+    assert payload["oauth_start_reason"] == "OAuth Client Secret missing"
+
+    start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
+    assert start.status_code == 409
+    assert start.json()["detail"] == "OAuth Client Secret missing"
+
+
 def test_approved_email_uses_workspace_sender(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "sender-send@example.com"}
     monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
@@ -7313,3 +7402,137 @@ def test_ai_team_router_splits_multi_employee_task_and_requires_approval(monkeyp
     assert {"Sales", "Marketing", "Support", "Operations"}.issubset(employees)
     assert employees["Sales"]["completed_tasks"] >= 1
     assert employees["Marketing"]["completed_tasks"] >= 1
+
+
+def _autopilot_fixture(user_id: str = "autopilot-owner", workspace_name: str = "Autopilot Workspace", recipient: str = "buyer@testmail.local"):
+    settings = get_settings()
+    settings.encryption_key = "autopilot-test-encryption-key"
+    settings.google_oauth_client_id = "google-client"
+    settings.google_oauth_client_secret = "google-secret"
+    settings.autopilot_test_mode = True
+    settings.autopilot_safe_recipient_domain = "testmail.local"
+    db = get_sessionmaker()()
+    workspace = Workspace(owner_user_id=user_id, name=workspace_name, timezone="UTC")
+    db.add(workspace)
+    db.flush()
+    db.add(
+        AppSettings(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            email={
+                "sender": {
+                    "provider": "gmail",
+                    "sender_name": "QA Sender",
+                    "sender_email": "qa.sender@testmail.local",
+                    "reply_to": "qa.sender@testmail.local",
+                    "daily_send_limit": 2,
+                    "enabled": True,
+                    "oauth": {
+                        "provider": "gmail",
+                        "refresh_token_encrypted": encrypt_secret("refresh-token", settings.encryption_key),
+                        "verified_at": datetime.utcnow().isoformat(),
+                        "scopes": ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"],
+                    },
+                    "smtp": {},
+                },
+                "suppression": {"emails": [], "domains": [], "bounced": [], "unsubscribed": []},
+            },
+            billing={"plan": "Starter"},
+        )
+    )
+    campaign = Campaign(user_id=user_id, workspace_id=workspace.id, name=f"{workspace_name} Campaign", status=CampaignStatus.running, timezone="UTC")
+    db.add(campaign)
+    db.flush()
+    lead = Lead(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        campaign_id=campaign.id,
+        company="Autopilot Buyer",
+        website="https://buyer.example",
+        email=recipient,
+        status=LeadStatus.email_generated,
+        notes=json.dumps({"confidence_score": 88, "source_url": "https://buyer.example/contact"}),
+    )
+    db.add(lead)
+    db.flush()
+    db.add(Company(user_id=user_id, workspace_id=workspace.id, lead_id=lead.id, name=lead.company, website=lead.website, source="ai_customer_finder", metadata_json={"public_source": "https://buyer.example/contact"}))
+    email = EmailMessage(user_id=user_id, workspace_id=workspace.id, campaign_id=campaign.id, lead_id=lead.id, subject="Autopilot test", body="Hello from test", delivery_status="approved", tags={"autopilot_approved": True})
+    db.add(email)
+    db.flush()
+    job = enqueue_autopilot_email_job(db, user_id=user_id, workspace_id=workspace.id, lead=lead, campaign_id=campaign.id, email_id=email.id, request_id=f"request-{user_id}", language="English")
+    db.commit()
+    return db, workspace, campaign, lead, email, job
+
+
+def test_autopilot_worker_sends_once_and_survives_reprocessing(monkeypatch) -> None:
+    sent = []
+    monkeypatch.setattr("app.services.autopilot.send_email", lambda **kwargs: sent.append(kwargs) or {"id": "gmail-msg-1", "thread_id": "thread-1"})
+    monkeypatch.setattr("app.services.autopilot._within_working_hours", lambda campaign: True)
+    db, workspace, _campaign, _lead, email, job = _autopilot_fixture("autopilot-idempotent")
+    try:
+        assert process_autopilot_email_job(db, job)
+        db.refresh(email)
+        assert email.delivery_status == "sent"
+        assert email.provider_message_id == "gmail-msg-1"
+        assert len(sent) == 1
+        retry_job = db.get(EnrichmentJob, job.id)
+        assert process_autopilot_email_job(db, retry_job)
+        assert len(sent) == 1
+        assert db.query(AuditLog).filter(AuditLog.workspace_id == workspace.id, AuditLog.action == "autopilot.email.sent").count() == 1
+    finally:
+        db.close()
+
+
+def test_autopilot_pause_stop_and_workspace_isolation(monkeypatch) -> None:
+    sent = []
+    monkeypatch.setattr("app.services.autopilot.send_email", lambda **kwargs: sent.append(kwargs) or {"id": f"gmail-msg-{len(sent)}"})
+    monkeypatch.setattr("app.services.autopilot._within_working_hours", lambda campaign: True)
+    db, workspace_a, campaign_a, _lead_a, email_a, job_a = _autopilot_fixture("autopilot-tenant-a", "Tenant A", "a@testmail.local")
+    db_b, workspace_b, campaign_b, _lead_b, email_b, job_b = _autopilot_fixture("autopilot-tenant-b", "Tenant B", "b@testmail.local")
+    workspace_b_id = workspace_b.id
+    email_b_id = email_b.id
+    job_b_id = job_b.id
+    db_b.close()
+    try:
+        campaign_a.status = CampaignStatus.paused
+        db.commit()
+        assert process_autopilot_email_job(db, job_a)
+        db.refresh(job_a)
+        assert job_a.status == "pending"
+        assert email_a.delivery_status == "approved"
+
+        campaign_a.status = CampaignStatus.stopped
+        db.commit()
+        assert process_autopilot_email_job(db, job_a)
+        db.refresh(job_a)
+        assert job_a.status == "cancelled"
+        assert not sent
+
+        email_b = db.get(EmailMessage, email_b_id)
+        job_b = db.get(EnrichmentJob, job_b_id)
+        assert process_autopilot_email_job(db, job_b)
+        db.refresh(email_b)
+        assert email_b.delivery_status == "sent"
+        assert len(sent) == 1
+        assert db.query(EmailMessage).filter(EmailMessage.workspace_id == workspace_a.id, EmailMessage.delivery_status == "sent").count() == 0
+        assert db.query(EmailMessage).filter(EmailMessage.workspace_id == workspace_b_id, EmailMessage.delivery_status == "sent").count() == 1
+    finally:
+        db.close()
+
+
+def test_autopilot_suppression_and_staging_domain_block_keep_crm_review(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.autopilot.send_email", lambda **kwargs: {"id": "should-not-send"})
+    monkeypatch.setattr("app.services.autopilot._within_working_hours", lambda campaign: True)
+    db, workspace, _campaign, lead, email, job = _autopilot_fixture("autopilot-suppression", "Suppression", "blocked@real-company.com")
+    try:
+        assert process_autopilot_email_job(db, job)
+        db.refresh(email)
+        db.refresh(lead)
+        company = db.query(Company).filter(Company.workspace_id == workspace.id, Company.lead_id == lead.id).one()
+        assert email.delivery_status == "needs_review"
+        assert lead.status == LeadStatus.qualified
+        assert "requires_review" in (lead.notes or "")
+        assert company.crm_stage != "Contacted"
+        assert db.query(AuditLog).filter(AuditLog.workspace_id == workspace.id, AuditLog.action == "autopilot.requires_review").count() == 1
+    finally:
+        db.close()

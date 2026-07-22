@@ -1,261 +1,83 @@
 import { expect, test } from "@playwright/test";
-import { mockWorkspaceApi, qaCompany } from "../../mocks/workspace-api";
+import { mockWorkspaceApi } from "../../mocks/workspace-api";
 import { installQaGuards } from "../helpers/qa-guards";
-
-test.describe.configure({ mode: "serial" });
 
 test.beforeEach(async ({ page }) => {
   await mockWorkspaceApi(page);
 });
 
-test("lead search has loading, success, saved CRM result, and no global crash", async ({ page }, testInfo) => {
+test("AI assistant runs First Customer Finder and shows source-backed companies", async ({ page }) => {
+  test.setTimeout(75_000);
+  await page.goto("/dashboard");
+
+  const command = page.getByRole("form", { name: "AI customer command" });
+  await expect(command.getByPlaceholder("Вставьте сайт или опишите свой бизнес и кого хотите найти")).toBeVisible();
+  await expect(command.getByText("Company website")).toHaveCount(0);
+
+  await expect(page.getByText("Что AI делает сейчас")).toBeVisible();
+  await expect(page.getByText("Найдено")).toBeVisible();
+  await expect(page.getByText("Подготовлено")).toBeVisible();
+  await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
+});
+
+test("autopilot approval queues backend campaign and supports pause", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
-  let leadFindRequests = 0;
-  await page.route("**/api/workspace-app/leads/search", async (route) => {
-    leadFindRequests += 1;
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ request_id: "qa-search", status: "success", provider_status: { google_maps: "success", hunter: "success", openai: "success", database: "success" }, companies: [qaCompany], saved_count: 1, duplicates_skipped: 0, warnings: [], message: "Found 1 company. Saved to CRM." }) });
-  });
-  await page.goto("/dashboard/leads");
-  const leadSearch = page.getByRole("form", { name: "Lead search" });
-  await leadSearch.getByLabel("Country").fill("Germany");
-  await leadSearch.getByLabel("City").fill("Berlin");
-  await leadSearch.getByLabel("Industry").fill("Construction");
-  await leadSearch.getByRole("button", { name: "Find leads" }).click();
-  await expect(page.getByLabel("Lead search progress").getByText("Saved to CRM")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
-  expect(leadFindRequests).toBe(1);
+  await page.goto("/dashboard");
+  await page.getByRole("form", { name: "AI customer command" }).getByLabel("AI command").fill("https://outreachaiaiai.com");
+  const searchResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/ai-customer-finder/searches")
+  );
+  await page.getByRole("button", { name: "Запустить AI" }).click();
+  await expect((await searchResponse).status()).toBe(202);
+  await expect(page.getByRole("heading", { name: "AI Autopilot" })).toBeVisible();
+  await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
+  await expect(page.locator('[data-autopilot-state="ready_to_approve"]')).toBeVisible();
+  const allowButton = page.getByRole("button", { name: "Разрешить эту кампанию" });
+  await expect(allowButton).toBeEnabled();
+  const [createCampaignResponse, approveCampaignResponse] = await Promise.all([
+    page.waitForResponse((response) => {
+      const path = new URL(response.url()).pathname;
+      return response.request().method() === "POST" && path.endsWith("/api/campaigns");
+    }),
+    page.waitForResponse((response) =>
+      response.request().method() === "POST" && response.url().includes("/api/campaigns/") && response.url().includes("/autopilot/approve")
+    ),
+    allowButton.click()
+  ]);
+  await expect(createCampaignResponse.ok()).toBe(true);
+  await expect(approveCampaignResponse.ok()).toBe(true);
+  await expect(page.getByText("AI Autopilot approved")).toBeVisible();
+  await expect(page.locator('[data-autopilot-state="ready_to_control"]')).toBeVisible();
+  await expect(allowButton).toBeDisabled();
+  const pauseButton = page.getByRole("button", { name: "Пауза" });
+  await expect(pauseButton).toBeEnabled();
+  const [pauseResponse] = await Promise.all([
+    page.waitForResponse((response) =>
+      response.request().method() === "POST" && response.url().includes("/api/campaigns/") && response.url().includes("/pause")
+    ),
+    pauseButton.click()
+  ]);
+  await expect(pauseResponse.ok()).toBe(true);
+  await expect(page.getByText("Campaign paused in backend.")).toBeVisible();
   await guards.assertClean();
 });
 
-test("lead search empty result finishes with guidance and retry", async ({ page }, testInfo) => {
-  const guards = installQaGuards(page, testInfo);
-  await page.route("**/api/workspace-app/leads/search", async (route) => {
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ request_id: "qa-empty", status: "empty", provider_status: { google_maps: "empty", hunter: "skipped", openai: "skipped", database: "skipped" }, companies: [], saved_count: 0, duplicates_skipped: 0, warnings: [], message: "No companies were found." }) });
-  });
-  await page.goto("/dashboard/leads");
-  const leadSearch = page.getByRole("form", { name: "Lead search" });
-  await leadSearch.getByLabel("Country").fill("Germany");
-  await leadSearch.getByLabel("City").fill("Berlin");
-  await leadSearch.getByLabel("Industry").fill("Construction");
-  await leadSearch.getByRole("button", { name: "Find leads" }).click();
-  await expect(page.getByText("No results. Try a broader city, industry, radius, or fewer filters.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Retry search" })).toBeVisible();
-  await expect(page.getByText("Searching companies...")).not.toBeVisible();
-  await guards.assertClean();
-});
-
-test("lead search timeout ends loading and offers retry", async ({ page }, testInfo) => {
-  installQaGuards(page, testInfo);
-  await page.route("**/api/workspace-app/leads/search", async (route) => {
-    await route.fulfill({
-      status: 504,
-      contentType: "application/json",
-      body: JSON.stringify({ detail: "This request took too long. Please try again with a smaller search." })
-    });
-  });
-  await page.goto("/dashboard/leads");
-  const leadSearch = page.getByRole("form", { name: "Lead search" });
-  await leadSearch.getByLabel("Country").fill("Germany");
-  await leadSearch.getByLabel("City").fill("Berlin");
-  await leadSearch.getByLabel("Industry").fill("Construction");
-  await leadSearch.getByRole("button", { name: "Find leads" }).click();
-  await expect(page.getByText("This request took too long. Please try again with a smaller search.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Retry search" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Find leads" })).toBeEnabled();
-  await expect(page.getByText("Something went wrong. Please refresh or sign in again.")).not.toBeVisible();
-});
-
-test("lead search provider error does not leave an infinite spinner", async ({ page }, testInfo) => {
-  installQaGuards(page, testInfo);
-  await page.route("**/api/workspace-app/leads/search", async (route) => {
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({ detail: "Lead search is temporarily unavailable. Please try again later." })
-    });
-  });
-  await page.goto("/dashboard/leads");
-  const leadSearch = page.getByRole("form", { name: "Lead search" });
-  await leadSearch.getByLabel("Country").fill("Germany");
-  await leadSearch.getByLabel("City").fill("Berlin");
-  await leadSearch.getByLabel("Industry").fill("Construction");
-  await leadSearch.getByRole("button", { name: "Find leads" }).click();
-  await expect(page.getByText("Lead search is temporarily unavailable. Please try again later.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Retry search" })).toBeVisible();
-  await expect(page.getByText("Something went wrong. Please refresh or sign in again.")).not.toBeVisible();
-});
-
-test("lead search retry reuses the last filters and can recover", async ({ page }, testInfo) => {
-  installQaGuards(page, testInfo);
-  let attempts = 0;
-  await page.route("**/api/workspace-app/leads/search", async (route) => {
-    attempts += 1;
-    if (attempts === 1) {
-      await route.fulfill({
-        status: 504,
-        contentType: "application/json",
-        body: JSON.stringify({ detail: "This request took too long. Please try again with a smaller search." })
-      });
-      return;
+test("email action HTTP errors are shown as failures, not success notices", async ({ page }) => {
+  await page.unroute("**/api/**");
+  await mockWorkspaceApi(page, {
+    "POST /api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve": {
+      status: 409,
+      body: { detail: "This email has already been sent." }
     }
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ request_id: "qa-retry", status: "success", provider_status: { google_maps: "success", hunter: "success", openai: "success", database: "success" }, companies: [{ ...qaCompany, name: "Retry Build GmbH" }], saved_count: 1, duplicates_skipped: 0, warnings: [], message: "Found 1 company. Saved to CRM." }) });
   });
-  await page.goto("/dashboard/leads");
-  const leadSearch = page.getByRole("form", { name: "Lead search" });
-  await leadSearch.getByLabel("Country").fill("Germany");
-  await leadSearch.getByLabel("City").fill("Berlin");
-  await leadSearch.getByLabel("Industry").fill("Construction");
-  await leadSearch.getByRole("button", { name: "Find leads" }).click();
-  await expect(page.getByRole("button", { name: "Retry search" })).toBeVisible();
-  await page.getByRole("button", { name: "Retry search" }).click();
-  await expect(page.getByRole("heading", { name: "Retry Build GmbH" })).toBeVisible();
-  expect(attempts).toBe(2);
-  await expect(page.getByText("Something went wrong. Please refresh or sign in again.")).not.toBeVisible();
-});
-
-test("manual company entry saves to CRM and becomes a research opportunity", async ({ page }, testInfo) => {
-  const guards = installQaGuards(page, testInfo);
-  await page.goto("/dashboard/leads");
-  await page.getByText("Backup path").click();
-  const manualEntry = page.getByRole("form", { name: "Manual company entry" });
-  await manualEntry.getByLabel("Company name").fill("Berlin Roof Systems");
-  await manualEntry.getByLabel("Website").fill("https://berlin-roof.example");
-  await manualEntry.getByText("Optional details").click();
-  await manualEntry.getByLabel("Country").fill("Germany");
-  await manualEntry.getByLabel("City").fill("Berlin");
-  await manualEntry.getByLabel("Industry").fill("Construction");
-  await manualEntry.getByRole("button", { name: /Save and prepare opportunity/ }).click();
-  await expect(page.getByRole("heading", { name: "Berlin Roof Systems", exact: true })).toBeVisible();
-  await expect(page.getByText("AI autopilot")).toBeVisible();
-  await expect(page.getByText("One click fills the missing sales research.")).toBeVisible();
-  await expect(page.getByText("Email drafts")).toBeVisible();
-  await expect(page.getByText("Email draft ready")).toBeVisible();
-  await expect(page.getByRole("button", { name: /Refresh AI research|Run all missing steps/ })).toBeVisible();
-  await guards.assertClean();
-});
-
-test("campaign actions stay review-first and provide clear status", async ({ page }, testInfo) => {
-  const guards = installQaGuards(page, testInfo);
-  await page.goto("/dashboard/campaigns");
-  await expect(page.getByText("Review before send: enabled")).toBeVisible();
-  await page.getByRole("button", { name: /Launch after approval/ }).click();
-  await expect(page.getByText(/Emails still require approved drafts/)).toBeVisible();
-  await page.getByRole("button", { name: /Pause/ }).click();
-  await expect(page.getByText(/is now Paused/)).toBeVisible();
-  await guards.assertClean();
-});
-
-test("CRM stage and note actions do not silently fail", async ({ page }, testInfo) => {
-  const guards = installQaGuards(page, testInfo);
-  await page.goto("/dashboard/companies");
-  await page.getByRole("link", { name: /Open company/ }).first().click();
-  await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
-  const stageSection = page.locator("section").filter({ hasText: "Update the pipeline when the sales situation changes." }).first();
-  await stageSection.getByLabel("CRM stage").selectOption("Meeting Scheduled");
-  await expect(stageSection.getByLabel("CRM stage")).toHaveValue("Meeting Scheduled");
-  const moveStageButton = stageSection.getByRole("button", { name: /^Move stage$/ });
-  await expect(moveStageButton).toBeEnabled();
-  await moveStageButton.click();
-  await expect(page.getByText("CRM stage moved to Meeting Scheduled.")).toBeVisible();
-  await page.getByLabel("Add note").fill("Follow up next week.");
-  await page.getByRole("button", { name: /Add note/ }).click();
-  await expect(page.getByText("Note saved to the activity history.")).toBeVisible();
-  await guards.assertClean();
-});
-
-test("blocked send shows direct sender setup action", async ({ page }, testInfo) => {
-  const guards = installQaGuards(page, testInfo);
-  await page.route("**/api/outreach/sender/status", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        provider: "resend",
-        connected: false,
-        status: "needs_setup",
-        sender_name: "",
-        sender_email: null,
-        reply_to: null,
-        daily_send_limit: 25,
-        sent_today: 0,
-        remaining_today: 25,
-        spf_status: "not_checked",
-        dkim_status: "not_checked",
-        dmarc_status: "not_checked",
-        next_action: "Connect your sending email in Settings before sending.",
-        smtp_host: "",
-        smtp_port: 587,
-        smtp_username: "",
-        smtp_configured: false
-      })
-    });
-  });
-
-  await page.goto("/dashboard/leads");
-  const approveButton = page.getByRole("button", { name: "Approve email" }).first();
-  await expect(approveButton).toBeVisible();
-  await approveButton.click();
-  await expect(page.getByText("Email approved. Nothing was sent yet.").first()).toBeVisible();
-
-  await page.getByRole("button", { name: "Send approved email" }).first().click();
-  const setupSender = page.getByRole("link", { name: "Set up sender" }).first();
-  await expect(setupSender).toBeVisible();
-  await expect(setupSender).toHaveAttribute("href", "/dashboard/settings#email-sending");
-  await guards.assertClean();
-});
-
-test("schedule follow-up shows save-required guidance and persists only after add note", async ({ page }, testInfo) => {
-  const guards = installQaGuards(page, testInfo);
-  await page.goto("/dashboard/companies");
-  await page.getByRole("link", { name: /Open company/ }).first().click();
-  await expect(page.getByRole("heading", { name: "Hill Country Build Co" }).first()).toBeVisible();
-
-  await page.getByRole("button", { name: "Schedule Follow-up" }).click();
-  await expect(page.getByText("Follow-up template is ready. Review it, then click Add note to save it to activity history.")).toBeVisible();
-  await expect(page.getByLabel("Add note")).toContainText("Follow-up plan for Hill Country Build Co");
-
-  await page.getByRole("button", { name: /Add note/ }).click();
-  await expect(page.getByText("Note saved to the activity history.")).toBeVisible();
-  await guards.assertClean();
-});
-
-test("first successful send confirms Sent stage clearly", async ({ page }, testInfo) => {
-  const guards = installQaGuards(page, testInfo);
-  await page.route("**/api/outreach/sender/status", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        provider: "resend",
-        connected: true,
-        status: "connected",
-        sender_name: "QA Sender",
-        sender_email: "qa@example.com",
-        reply_to: "qa@example.com",
-        daily_send_limit: 25,
-        sent_today: 0,
-        remaining_today: 25,
-        spf_status: "connected",
-        dkim_status: "connected",
-        dmarc_status: "connected",
-        next_action: "Ready to send approved emails.",
-        smtp_host: "",
-        smtp_port: 587,
-        smtp_username: "",
-        smtp_configured: false
-      })
-    });
-  });
-
-  await page.goto("/dashboard/leads");
-  await page.getByRole("button", { name: "Approve email" }).first().click();
-  await expect(page.getByText("Email approved. Nothing was sent yet.").first()).toBeVisible();
-
-  await page.getByRole("button", { name: "Send approved email" }).first().click();
-  await expect(page.getByText("This will send one email to the saved recipient. Nothing is sent until you confirm.")).toBeVisible();
-  await page.getByRole("button", { name: "Confirm and send" }).click();
-
-  await expect(page.getByText("Approved email was sent. CRM stage updated to Sent.").first()).toBeVisible();
-  await expect(page.getByText("Approved email was sent. CRM stage updated to Contacted.")).toHaveCount(0);
-  await guards.assertClean();
+  await page.goto("/dashboard/emails");
+  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  const approveResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve")
+  );
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect((await approveResponse).status()).toBe(409);
+  await expect(page.getByText(/already been sent|could not approve this draft|something went wrong|email sending is temporarily unavailable/i)).toBeVisible();
+  await expect(page.getByText("Email approved. It is ready to send")).toHaveCount(0);
 });

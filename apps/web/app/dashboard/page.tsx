@@ -1,5 +1,5 @@
-import { DashboardHome } from '@/components/outbound-workspace';
+import { AiFirstWorkspace } from "@/components/ai-first-workspace";
 
 export default function DashboardPage() {
-  return <DashboardHome />;
+  return <AiFirstWorkspace section="assistant" />;
 }

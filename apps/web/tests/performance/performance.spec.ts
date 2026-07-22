@@ -9,7 +9,7 @@ test.beforeEach(async ({ page }) => {
 test("dashboard has stable layout and no long first paint regression in test mode", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
-  await expect(page.getByRole("heading", { name: "Find customers → CRM → first email." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AI-помощник" })).toBeVisible();
   const metrics = await page.evaluate(() => {
     const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     return {
