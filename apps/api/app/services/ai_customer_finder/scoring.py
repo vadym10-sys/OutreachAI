@@ -131,7 +131,10 @@ NEGATIVE_TERMS = {
 }
 
 SCORING_VERSION = "lead-intelligence-v4"
+RESEARCH_ENGINE_VERSION = "ai-research-engine-v1"
+INSUFFICIENT_DATA = "Недостаточно данных."
 LeadReasoning = dict[str, object]
+ResearchProfile = dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -157,6 +160,7 @@ class ScoreResult:
     ai_confidence_score: int = 0
     lead_intelligence: dict[str, object] = field(default_factory=dict)
     lead_reasoning: LeadReasoning = field(default_factory=dict)
+    ai_research_profile: ResearchProfile = field(default_factory=dict)
     passes_quality_gate: bool = False
     rejection_reason: str = ""
     weights: dict[str, int] = field(default_factory=dict)
@@ -179,6 +183,7 @@ def score_candidate(
     industry: str,
     country: str,
     source_verified: bool,
+    company_name: str = "",
     source_type: str = "official_website",
     publication_date: str = "Unknown",
     independent_source_count: int = 1,
@@ -354,6 +359,35 @@ def score_candidate(
         rejection_reason=rejection_reason,
         passes_quality_gate=passes_quality_gate,
     )
+    ai_research_profile = _ai_research_profile(
+        criteria=criteria,
+        company_name=company_name,
+        text=text,
+        industry=industry,
+        country=country,
+        source_verified=source_verified,
+        source_type=source_type,
+        publication_date=publication_date,
+        public_work_contact=public_work_contact,
+        contact_title=contact_title,
+        icp_fit=icp_fit,
+        buying_intent=buying_intent,
+        growth_signal=growth_signal,
+        hiring_signal=hiring_signal,
+        funding_signal=funding_signal,
+        expansion_signal=expansion_signal,
+        website_quality=website_quality,
+        technology_fit=technology_fit,
+        contact_confidence=contact_confidence,
+        outreach_readiness=outreach_readiness,
+        company_momentum=company_momentum,
+        urgency=urgency,
+        overall_lead_score=overall_lead_score,
+        confidence=confidence,
+        evidence=evidence,
+        insufficient_data=insufficient_data,
+        negative_penalty=negative_penalty,
+    )
     lead_intelligence = {
         "overall_lead_score": overall_lead_score,
         "score_model": "outreach_success_probability",
@@ -377,6 +411,7 @@ def score_candidate(
         "evidence": evidence,
         "insufficient_data": insufficient_data,
         "reasoning": lead_reasoning,
+        "research_profile": ai_research_profile,
     }
     explanation = (
         "Scores are deterministic: Overall Lead Score blends ICP match, public buying intent, growth, website evidence, technology fit, "
@@ -405,6 +440,7 @@ def score_candidate(
         ai_confidence_score=ai_confidence,
         lead_intelligence=lead_intelligence,
         lead_reasoning=lead_reasoning,
+        ai_research_profile=ai_research_profile,
         passes_quality_gate=passes_quality_gate,
         rejection_reason=rejection_reason,
         weights=weights,
@@ -444,6 +480,486 @@ def meaningful_signal_present(text: str) -> bool:
         | set(TECHNOLOGY_CHANGE_TERMS)
     )
     return any(term in lower for term in signal_terms)
+
+
+def _ai_research_profile(
+    *,
+    criteria: CustomerFinderCriteria,
+    company_name: str,
+    text: str,
+    industry: str,
+    country: str,
+    source_verified: bool,
+    source_type: str,
+    publication_date: str,
+    public_work_contact: str,
+    contact_title: str,
+    icp_fit: int,
+    buying_intent: int,
+    growth_signal: int,
+    hiring_signal: int,
+    funding_signal: int,
+    expansion_signal: int,
+    website_quality: int,
+    technology_fit: int,
+    contact_confidence: int,
+    outreach_readiness: int,
+    company_momentum: int,
+    urgency: int,
+    overall_lead_score: int,
+    confidence: int,
+    evidence: dict[str, list[str]],
+    insufficient_data: list[str],
+    negative_penalty: int,
+) -> ResearchProfile:
+    facts = _base_research_facts(
+        company_name=company_name,
+        industry=industry,
+        country=country,
+        source_verified=source_verified,
+        source_type=source_type,
+        publication_date=publication_date,
+        public_work_contact=public_work_contact,
+        text=text,
+    )
+    buying_terms = evidence.get("buying_intent_terms", [])
+    growth_terms = evidence.get("growth_terms", [])
+    hiring_terms = evidence.get("hiring_terms", [])
+    funding_terms = evidence.get("funding_terms", [])
+    expansion_terms = evidence.get("expansion_terms", [])
+    technology_terms = evidence.get("technology_terms", [])
+    urgency_terms = evidence.get("urgency_terms", [])
+    risk_terms = evidence.get("risk_terms", [])
+    momentum_terms = _dedupe_terms([*growth_terms, *hiring_terms, *funding_terms, *expansion_terms, *urgency_terms])
+    mention_terms = _dedupe_terms([*buying_terms, *momentum_terms, *technology_terms])
+    business_model = _business_model(industry=industry, text=text)
+    products = _products_or_services(text=text, criteria=criteria)
+    decision_maker = contact_title or ", ".join(criteria.contact_titles[:2])
+    return {
+        "version": RESEARCH_ENGINE_VERSION,
+        "Company Summary": _conclusion(
+            value=_company_summary(company_name=company_name, industry=industry, country=country, source_verified=source_verified),
+            why="Uses verified source status plus company industry and country from the finder candidate.",
+            facts=facts[:4],
+            missing_data=_missing_when_false(source_verified, "verified_public_source"),
+        ),
+        "Business Model": _conclusion(
+            value=business_model,
+            why="Inferred only from explicit public industry and business wording.",
+            facts=_facts_from_terms([industry], prefix="Industry"),
+            missing_data=_missing_when_value_missing(business_model, "business_model"),
+        ),
+        "Products / Services": _conclusion(
+            value=products,
+            why="Uses public text excerpt and the user's target problem; it does not infer unseen product lines.",
+            facts=_facts_from_terms(_evidence_phrases(text, criteria), prefix="Public text"),
+            missing_data=_missing_when_value_missing(products, "products_or_services"),
+        ),
+        "ICP Match": _scored_conclusion(
+            score=icp_fit,
+            why="Combines target industry, target country, and use-case overlap already used by lead scoring.",
+            facts=_facts_from_terms([criteria.target_industry, criteria.target_country], prefix="Target"),
+            missing_data=_missing_score(icp_fit, "icp_match"),
+        ),
+        "Buying Intent": _scored_conclusion(
+            score=buying_intent,
+            why="Uses explicit buying, replacement, migration, manual-workaround, and evaluation terms found in public text.",
+            facts=_facts_from_terms(buying_terms, prefix="Signal"),
+            missing_data=_missing_terms(buying_terms, "buying_intent"),
+        ),
+        "Growth Signals": _scored_conclusion(
+            score=growth_signal,
+            why="Uses public hiring, funding, launch, expansion, and growth terms.",
+            facts=_facts_from_terms(momentum_terms, prefix="Growth signal"),
+            missing_data=_missing_terms(momentum_terms, "growth_signal"),
+        ),
+        "Hiring Signals": _scored_conclusion(
+            score=hiring_signal,
+            why="Uses only explicit public hiring, careers, jobs, and sales/revenue role terms.",
+            facts=_facts_from_terms(hiring_terms, prefix="Hiring signal"),
+            missing_data=_missing_terms(hiring_terms, "hiring_signal"),
+        ),
+        "Funding Signals": _scored_conclusion(
+            score=funding_signal,
+            why="Uses only explicit public funding, raised, investment, and round terms.",
+            facts=_facts_from_terms(funding_terms, prefix="Funding signal"),
+            missing_data=_missing_terms(funding_terms, "funding_signal"),
+        ),
+        "Expansion Signals": _scored_conclusion(
+            score=expansion_signal,
+            why="Uses only explicit public expansion, launch, new market, office, and partnership terms.",
+            facts=_facts_from_terms(expansion_terms, prefix="Expansion signal"),
+            missing_data=_missing_terms(expansion_terms, "expansion_signal"),
+        ),
+        "Technology Stack": _conclusion(
+            value=", ".join(technology_terms) if technology_terms else INSUFFICIENT_DATA,
+            why="Uses technology-related terms already extracted for Technology Fit.",
+            facts=_facts_from_terms(technology_terms, prefix="Technology signal"),
+            missing_data=_missing_terms(technology_terms, "technology_stack"),
+        ),
+        "Website Quality": _scored_conclusion(
+            score=website_quality,
+            why="Uses verified public source status, readable text volume, and official website source type.",
+            facts=facts,
+            missing_data=_missing_score(website_quality, "website_quality"),
+        ),
+        "Digital Maturity": _scored_conclusion(
+            score=clamp_score(round(website_quality * 0.55 + technology_fit * 0.45)),
+            why="Combines website evidence quality and technology-change evidence.",
+            facts=_facts_from_terms(technology_terms, prefix="Technology signal") + facts[:2],
+            missing_data=_missing_terms(technology_terms, "digital_maturity"),
+        ),
+        "Marketing Maturity": _scored_conclusion(
+            score=clamp_score(round(website_quality * 0.7 + expansion_signal * 0.3)),
+            why="Uses readable public website evidence and explicit launch or expansion messaging.",
+            facts=facts[:2] + _facts_from_terms(expansion_terms, prefix="Marketing signal"),
+            missing_data=_missing_terms(expansion_terms, "marketing_maturity"),
+        ),
+        "Sales Maturity": _scored_conclusion(
+            score=clamp_score(round(contact_confidence * 0.6 + buying_intent * 0.4)),
+            why="Uses public business contact evidence and sales-relevant buying intent.",
+            facts=_contact_facts(public_work_contact, contact_title) + _facts_from_terms(buying_terms, prefix="Sales signal"),
+            missing_data=_missing_when_false(bool(public_work_contact or contact_title), "sales_contact_evidence"),
+        ),
+        "AI Readiness": _scored_conclusion(
+            score=clamp_score(round(technology_fit * 0.65 + buying_intent * 0.35)),
+            why="Uses automation, integration, workflow, CRM, migration, and buying-intent evidence already found.",
+            facts=_facts_from_terms(technology_terms + buying_terms, prefix="AI readiness signal"),
+            missing_data=_missing_terms(technology_terms + buying_terms, "ai_readiness"),
+        ),
+        "Estimated Company Size": _conclusion(
+            value=INSUFFICIENT_DATA,
+            why=INSUFFICIENT_DATA,
+            facts=[],
+            missing_data=["employee_count", "public_company_size_source"],
+        ),
+        "Estimated Decision Maker": _conclusion(
+            value=decision_maker or INSUFFICIENT_DATA,
+            why="Uses requested contact titles or public contact title when present; it does not guess a person.",
+            facts=_facts_from_terms([decision_maker], prefix="Role") if decision_maker else [],
+            missing_data=_missing_when_value_missing(decision_maker, "decision_maker_title"),
+        ),
+        "Public Contact Confidence": _scored_conclusion(
+            score=contact_confidence,
+            why="Uses whether a public business contact route or decision-maker title is present on verified public evidence.",
+            facts=_contact_facts(public_work_contact, contact_title),
+            missing_data=_missing_when_false(bool(public_work_contact), "public_business_contact"),
+        ),
+        "Company Momentum": _scored_conclusion(
+            score=company_momentum,
+            why="Blends growth, hiring, funding, expansion, and urgency signals already extracted from public text.",
+            facts=_facts_from_terms(momentum_terms, prefix="Momentum signal"),
+            missing_data=_missing_terms(momentum_terms, "company_momentum"),
+        ),
+        "Urgency Score": _scored_conclusion(
+            score=urgency,
+            why="Combines explicit timing terms, intent explicitness, and recency; unknown publication dates lower urgency.",
+            facts=_facts_from_terms(urgency_terms + buying_terms, prefix="Urgency signal"),
+            missing_data=["publication_date"] if publication_date.lower() == "unknown" else [],
+        ),
+        "Overall Lead Score": _scored_conclusion(
+            score=overall_lead_score,
+            why="Uses the existing deterministic Customer Finder lead score.",
+            facts=_facts_from_terms(mention_terms, prefix="Score signal"),
+            missing_data=insufficient_data,
+        ),
+        "Recommended Outreach Strategy": _recommended_outreach_strategy(
+            buying_terms=buying_terms,
+            growth_terms=momentum_terms,
+            technology_terms=technology_terms,
+            risk_terms=risk_terms,
+            public_work_contact=public_work_contact,
+            outreach_readiness=outreach_readiness,
+        ),
+        "Opportunity Detection": _opportunity_detection(
+            buying_terms=buying_terms,
+            growth_terms=momentum_terms,
+            public_work_contact=public_work_contact,
+            buying_intent=buying_intent,
+            urgency=urgency,
+            negative_penalty=negative_penalty,
+        ),
+        "Risk Analysis": _risk_analysis(
+            insufficient_data=insufficient_data,
+            risk_terms=risk_terms,
+            public_work_contact=public_work_contact,
+            confidence=confidence,
+        ),
+    }
+
+
+def _conclusion(*, value: object, why: str, facts: list[str], missing_data: list[str]) -> dict[str, object]:
+    has_value = bool(value) and value != INSUFFICIENT_DATA
+    return {
+        "value": value if has_value else INSUFFICIENT_DATA,
+        "why": why if has_value else INSUFFICIENT_DATA,
+        "facts": facts or [INSUFFICIENT_DATA],
+        "missing_data": missing_data or [INSUFFICIENT_DATA],
+    }
+
+
+def _scored_conclusion(*, score: int, why: str, facts: list[str], missing_data: list[str]) -> dict[str, object]:
+    return {
+        "score": clamp_score(score),
+        "value": _score_label(score),
+        "why": why if score > 0 else INSUFFICIENT_DATA,
+        "facts": facts or [INSUFFICIENT_DATA],
+        "missing_data": missing_data or [INSUFFICIENT_DATA],
+    }
+
+
+def _recommended_outreach_strategy(
+    *,
+    buying_terms: list[str],
+    growth_terms: list[str],
+    technology_terms: list[str],
+    risk_terms: list[str],
+    public_work_contact: str,
+    outreach_readiness: int,
+) -> dict[str, object]:
+    mention_terms = _dedupe_terms([*buying_terms, *growth_terms, *technology_terms])
+    return {
+        "Best reason to write": _conclusion(
+            value=_first_or_insufficient([*buying_terms, *growth_terms]),
+            why="Prioritizes explicit buying or company-momentum evidence from public text.",
+            facts=_facts_from_terms([*buying_terms, *growth_terms], prefix="Outreach trigger"),
+            missing_data=_missing_terms([*buying_terms, *growth_terms], "outreach_trigger"),
+        ),
+        "Best first-contact angle": _conclusion(
+            value=_outreach_angle(buying_terms=buying_terms, technology_terms=technology_terms, outreach_readiness=outreach_readiness),
+            why="Uses the strongest available public pain, technology, or readiness signal.",
+            facts=_facts_from_terms(mention_terms, prefix="Angle evidence"),
+            missing_data=_missing_terms(mention_terms, "first_contact_angle"),
+        ),
+        "Mention in email": _conclusion(
+            value=", ".join(mention_terms[:5]) if mention_terms else INSUFFICIENT_DATA,
+            why="Only includes terms already found in public source text.",
+            facts=_facts_from_terms(mention_terms, prefix="Mention"),
+            missing_data=_missing_terms(mention_terms, "email_personalization_evidence"),
+        ),
+        "Do not write": _conclusion(
+            value=_do_not_write(risk_terms=risk_terms, public_work_contact=public_work_contact),
+            why="Avoids claims that lack evidence and flags risky or unverified contact assumptions.",
+            facts=_facts_from_terms(risk_terms, prefix="Risk term"),
+            missing_data=_missing_when_false(bool(public_work_contact), "verified_public_business_contact"),
+        ),
+        "Emphasis": _conclusion(
+            value=_emphasis(buying_terms=buying_terms, growth_terms=growth_terms, technology_terms=technology_terms),
+            why="Selects the clearest public evidence cluster for the first message.",
+            facts=_facts_from_terms(mention_terms, prefix="Emphasis evidence"),
+            missing_data=_missing_terms(mention_terms, "emphasis_evidence"),
+        ),
+    }
+
+
+def _opportunity_detection(
+    *,
+    buying_terms: list[str],
+    growth_terms: list[str],
+    public_work_contact: str,
+    buying_intent: int,
+    urgency: int,
+    negative_penalty: int,
+) -> dict[str, object]:
+    opportunity = buying_intent >= 50 and urgency >= 30 and negative_penalty == 0
+    response_boosters = _dedupe_terms([*buying_terms, *growth_terms])
+    response_risks: list[str] = []
+    if not public_work_contact:
+        response_risks.append("public_business_contact")
+    if negative_penalty > 0:
+        response_risks.append("negative_public_evidence")
+    return {
+        "Sales opportunity now": _conclusion(
+            value="Yes" if opportunity else INSUFFICIENT_DATA,
+            why="Requires meaningful buying intent, acceptable urgency, and no negative public evidence.",
+            facts=_facts_from_terms(response_boosters, prefix="Opportunity signal"),
+            missing_data=[] if opportunity else ["strong_buying_intent", "fresh_timing_or_momentum"],
+        ),
+        "Why now": _conclusion(
+            value=", ".join(response_boosters[:5]) if response_boosters else INSUFFICIENT_DATA,
+            why="Uses buying and growth signals already found in public text.",
+            facts=_facts_from_terms(response_boosters, prefix="Timing signal"),
+            missing_data=_missing_terms(response_boosters, "why_now"),
+        ),
+        "May increase reply probability": _conclusion(
+            value=", ".join(response_boosters[:5]) if response_boosters else INSUFFICIENT_DATA,
+            why="Mentions only public evidence that can make outreach more relevant.",
+            facts=_facts_from_terms(response_boosters, prefix="Reply booster"),
+            missing_data=_missing_terms(response_boosters, "reply_booster"),
+        ),
+        "May reduce reply probability": _conclusion(
+            value=", ".join(response_risks) if response_risks else INSUFFICIENT_DATA,
+            why="Flags missing contact evidence or negative public evidence.",
+            facts=_facts_from_terms(response_risks, prefix="Reply risk"),
+            missing_data=response_risks or [INSUFFICIENT_DATA],
+        ),
+    }
+
+
+def _risk_analysis(
+    *,
+    insufficient_data: list[str],
+    risk_terms: list[str],
+    public_work_contact: str,
+    confidence: int,
+) -> dict[str, object]:
+    risks = risk_terms[:]
+    if confidence < 60:
+        risks.append("low_confidence")
+    if not public_work_contact:
+        risks.append("missing_public_business_contact")
+    manual_checks = insufficient_data[:]
+    if not public_work_contact:
+        manual_checks.append("confirm_decision_maker_contact")
+    return {
+        "Main risks": _conclusion(
+            value=", ".join(risks) if risks else INSUFFICIENT_DATA,
+            why="Uses negative public terms, confidence, and contact completeness.",
+            facts=_facts_from_terms(risks, prefix="Risk"),
+            missing_data=risks or [INSUFFICIENT_DATA],
+        ),
+        "Main unknowns": _conclusion(
+            value=", ".join(insufficient_data) if insufficient_data else INSUFFICIENT_DATA,
+            why="Uses the existing insufficient-data list from lead scoring.",
+            facts=_facts_from_terms(insufficient_data, prefix="Unknown"),
+            missing_data=insufficient_data or [INSUFFICIENT_DATA],
+        ),
+        "Manual checks": _conclusion(
+            value=", ".join(manual_checks) if manual_checks else INSUFFICIENT_DATA,
+            why="Lists evidence gaps that should be verified before sending outreach.",
+            facts=_facts_from_terms(manual_checks, prefix="Manual check"),
+            missing_data=manual_checks or [INSUFFICIENT_DATA],
+        ),
+    }
+
+
+def _company_summary(*, company_name: str, industry: str, country: str, source_verified: bool) -> str:
+    parts = [part for part in [company_name, industry, country] if part]
+    if not parts or not source_verified:
+        return INSUFFICIENT_DATA
+    return " / ".join(parts)
+
+
+def _business_model(*, industry: str, text: str) -> str:
+    context = f"{industry} {text}".lower()
+    if "saas" in context:
+        return "B2B SaaS" if "b2b" in context else "SaaS"
+    return industry.strip() or INSUFFICIENT_DATA
+
+
+def _products_or_services(*, text: str, criteria: CustomerFinderCriteria) -> str:
+    phrases = _evidence_phrases(text, criteria)
+    if phrases:
+        return " ".join(phrases[:2])[:320]
+    return INSUFFICIENT_DATA
+
+
+def _evidence_phrases(text: str, criteria: CustomerFinderCriteria) -> list[str]:
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text or "") if part.strip()]
+    target_terms = set(_terms(criteria.product_or_service)[:8] + _terms(criteria.company_description)[:6])
+    if not target_terms:
+        return []
+    matches = [sentence for sentence in sentences if any(term in sentence.lower() for term in target_terms)]
+    return matches[:3]
+
+
+def _base_research_facts(
+    *,
+    company_name: str,
+    industry: str,
+    country: str,
+    source_verified: bool,
+    source_type: str,
+    publication_date: str,
+    public_work_contact: str,
+    text: str,
+) -> list[str]:
+    facts: list[str] = []
+    if company_name:
+        facts.append(f"Company name: {company_name}.")
+    if industry:
+        facts.append(f"Industry: {industry}.")
+    if country:
+        facts.append(f"Country: {country}.")
+    if source_verified:
+        facts.append(f"Verified public source type: {source_type}.")
+    if publication_date and publication_date.lower() != "unknown":
+        facts.append(f"Publication date: {publication_date}.")
+    if public_work_contact:
+        facts.append("Public business contact route found.")
+    if text:
+        facts.append("Readable public website text was collected.")
+    return facts
+
+
+def _facts_from_terms(terms: list[str], *, prefix: str) -> list[str]:
+    return [f"{prefix}: {term}." for term in terms if term][:8]
+
+
+def _contact_facts(public_work_contact: str, contact_title: str) -> list[str]:
+    facts = []
+    if public_work_contact:
+        facts.append("Public business contact route found.")
+    if contact_title:
+        facts.append(f"Decision-maker role evidence: {contact_title}.")
+    return facts
+
+
+def _missing_terms(terms: list[str], missing_key: str) -> list[str]:
+    return [] if terms else [missing_key]
+
+
+def _missing_score(score: int, missing_key: str) -> list[str]:
+    return [] if score > 0 else [missing_key]
+
+
+def _missing_when_false(condition: bool, missing_key: str) -> list[str]:
+    return [] if condition else [missing_key]
+
+
+def _missing_when_value_missing(value: object, missing_key: str) -> list[str]:
+    return [] if value and value != INSUFFICIENT_DATA else [missing_key]
+
+
+def _score_label(score: int) -> str:
+    if score >= 75:
+        return "High"
+    if score >= 50:
+        return "Medium"
+    if score > 0:
+        return "Low"
+    return INSUFFICIENT_DATA
+
+
+def _first_or_insufficient(values: list[str]) -> str:
+    return values[0] if values else INSUFFICIENT_DATA
+
+
+def _outreach_angle(*, buying_terms: list[str], technology_terms: list[str], outreach_readiness: int) -> str:
+    if buying_terms:
+        return f"Reference the public buying signal: {buying_terms[0]}."
+    if technology_terms and outreach_readiness >= 45:
+        return f"Reference the technology/workflow signal: {technology_terms[0]}."
+    return INSUFFICIENT_DATA
+
+
+def _do_not_write(*, risk_terms: list[str], public_work_contact: str) -> str:
+    warnings = ["Do not claim private knowledge or unverified budget/timing."]
+    if risk_terms:
+        warnings.append(f"Do not ignore negative public evidence: {', '.join(risk_terms[:3])}.")
+    if not public_work_contact:
+        warnings.append("Do not send email until a verified public business contact is found.")
+    return " ".join(warnings)
+
+
+def _emphasis(*, buying_terms: list[str], growth_terms: list[str], technology_terms: list[str]) -> str:
+    if buying_terms:
+        return f"Pain or buying intent: {buying_terms[0]}."
+    if growth_terms:
+        return f"Company momentum: {growth_terms[0]}."
+    if technology_terms:
+        return f"Workflow or technology context: {technology_terms[0]}."
+    return INSUFFICIENT_DATA
 
 
 def _terms(value: str) -> list[str]:

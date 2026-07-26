@@ -124,6 +124,7 @@ export const firstCustomerResultSchema = z.object({
   ai_confidence_score: z.number().optional(),
   lead_intelligence: z.record(z.unknown()).optional(),
   lead_reasoning: z.record(z.unknown()).optional(),
+  ai_research_profile: z.record(z.unknown()).optional(),
   lead_id: z.string().optional(),
   company_id: z.string().optional(),
   email_id: z.string().optional(),
