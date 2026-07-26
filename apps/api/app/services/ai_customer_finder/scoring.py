@@ -40,6 +40,41 @@ GROWTH_SIGNAL_TERMS = {
     "growing": 12,
 }
 
+HIRING_SIGNAL_TERMS = {
+    "hiring": 22,
+    "we are hiring": 24,
+    "careers": 14,
+    "jobs": 14,
+    "open roles": 18,
+    "sales operations roles": 20,
+    "revenue operations": 18,
+    "sdr": 14,
+    "account executive": 14,
+}
+
+FUNDING_SIGNAL_TERMS = {
+    "funding": 22,
+    "raised": 22,
+    "series a": 24,
+    "series b": 24,
+    "seed round": 22,
+    "investment": 16,
+    "backed by": 14,
+    "new capital": 18,
+}
+
+EXPANSION_SIGNAL_TERMS = {
+    "expansion": 22,
+    "new market": 20,
+    "launch": 16,
+    "launched": 16,
+    "new product": 18,
+    "new office": 18,
+    "international": 14,
+    "partnership": 14,
+    "partnerships": 14,
+}
+
 TECHNOLOGY_CHANGE_TERMS = {
     "api": 12,
     "integration": 14,
@@ -52,6 +87,19 @@ TECHNOLOGY_CHANGE_TERMS = {
     "migration": 16,
     "replace": 14,
     "replacing": 14,
+}
+
+URGENCY_TERMS = {
+    "now": 10,
+    "today": 10,
+    "this quarter": 12,
+    "this month": 12,
+    "scaling": 14,
+    "rapid growth": 16,
+    "replacing": 16,
+    "migration": 16,
+    "manual": 10,
+    "spreadsheet": 10,
 }
 
 EXPLICIT_INTENT_TERMS = {
@@ -74,9 +122,15 @@ NEGATIVE_TERMS = {
     "closed": 20,
     "shut down": 20,
     "no budget": 14,
+    "not interested": 18,
+    "not looking": 16,
+    "personal blog": 14,
+    "directory": 12,
+    "marketplace": 12,
+    "agency": 8,
 }
 
-SCORING_VERSION = "lead-intelligence-v3"
+SCORING_VERSION = "lead-intelligence-v4"
 
 
 @dataclass(frozen=True)
@@ -90,11 +144,19 @@ class ScoreResult:
     revenue_opportunity_score: int = 0
     overall_lead_score: int = 0
     growth_signal_score: int = 0
+    hiring_signal_score: int = 0
+    funding_signal_score: int = 0
+    expansion_signal_score: int = 0
     website_quality_score: int = 0
     technology_fit_score: int = 0
     contact_confidence_score: int = 0
     outreach_readiness_score: int = 0
+    company_momentum_score: int = 0
+    urgency_score: int = 0
+    ai_confidence_score: int = 0
     lead_intelligence: dict[str, object] = field(default_factory=dict)
+    passes_quality_gate: bool = False
+    rejection_reason: str = ""
     weights: dict[str, int] = field(default_factory=dict)
     penalties: dict[str, int] = field(default_factory=dict)
     scoring_version: str = SCORING_VERSION
@@ -133,7 +195,11 @@ def score_candidate(
     use_case_fit = min(28, sum(4 for term in use_case_terms if term in haystack))
     signal_strength = min(30, sum(weight for term, weight in HIGH_INTENT_TERMS.items() if term in haystack))
     explicitness = min(20, sum(weight for term, weight in EXPLICIT_INTENT_TERMS.items() if term in haystack))
-    growth_signal = clamp_score(sum(weight for term, weight in GROWTH_SIGNAL_TERMS.items() if term in haystack))
+    hiring_signal = clamp_score(sum(weight for term, weight in HIRING_SIGNAL_TERMS.items() if term in haystack))
+    funding_signal = clamp_score(sum(weight for term, weight in FUNDING_SIGNAL_TERMS.items() if term in haystack))
+    expansion_signal = clamp_score(sum(weight for term, weight in EXPANSION_SIGNAL_TERMS.items() if term in haystack))
+    broad_growth_signal = clamp_score(sum(weight for term, weight in GROWTH_SIGNAL_TERMS.items() if term in haystack))
+    growth_signal = clamp_score(round(max(broad_growth_signal, hiring_signal, funding_signal, expansion_signal) * 0.6 + (hiring_signal + funding_signal + expansion_signal) * 0.18))
     evidence_quality = _source_quality(source_verified=source_verified, source_type=source_type, text=text)
     recency = _recency_score(publication_date)
     diversity = min(12, max(0, independent_source_count) * 4 + max(0, source_diversity - 1) * 4)
@@ -151,28 +217,51 @@ def score_candidate(
     website_quality = clamp_score(evidence_quality + min(20, len(text or "") // 500) + (8 if source_type == "official_website" else 0))
     technology_fit = _technology_fit_score(criteria, haystack)
     contact_confidence = _contact_confidence_score(public_work_contact=public_work_contact, contact_title=contact_title, source_verified=source_verified)
+    urgency = _urgency_score(haystack=haystack, explicitness=explicitness, recency=recency, has_meaningful_signal=has_meaningful_signal)
+    company_momentum = clamp_score(round(hiring_signal * 0.32 + funding_signal * 0.26 + expansion_signal * 0.26 + growth_signal * 0.16))
     outreach_readiness = clamp_score(round(buying_intent * 0.36 + contact_confidence * 0.28 + evidence_quality * 0.2 + icp_fit * 0.16))
     if not public_work_contact:
         outreach_readiness = min(outreach_readiness, 58)
     if not has_meaningful_signal:
         outreach_readiness = min(outreach_readiness, 42)
-    overall_lead_score = clamp_score(
-        round(
-            icp_fit * 0.24
-            + buying_intent * 0.24
-            + growth_signal * 0.14
-            + website_quality * 0.12
-            + technology_fit * 0.10
-            + contact_confidence * 0.08
-            + outreach_readiness * 0.08
-        )
-    )
     confidence = clamp_score(
         (evidence_quality * 0.65)
         + (30 if has_meaningful_signal else 6)
         + (8 if source_verified else 0)
         + min(20, len(text) // 600)
         + min(15, diversity)
+    )
+    ai_confidence = _ai_confidence_score(
+        confidence=confidence,
+        evidence_quality=evidence_quality,
+        has_meaningful_signal=has_meaningful_signal,
+        negative_penalty=negative_penalty,
+        disqualifier_penalty=disqualifier_penalty,
+        public_work_contact=public_work_contact,
+        company_momentum=company_momentum,
+    )
+    overall_lead_score = clamp_score(
+        round(
+            icp_fit * 0.18
+            + buying_intent * 0.20
+            + company_momentum * 0.14
+            + urgency * 0.10
+            + website_quality * 0.10
+            + technology_fit * 0.10
+            + contact_confidence * 0.08
+            + outreach_readiness * 0.06
+            + ai_confidence * 0.04
+        )
+    )
+    passes_quality_gate, rejection_reason = _quality_gate(
+        icp_fit=icp_fit,
+        buying_intent=buying_intent,
+        company_momentum=company_momentum,
+        website_quality=website_quality,
+        ai_confidence=ai_confidence,
+        negative_penalty=negative_penalty,
+        disqualifier_penalty=disqualifier_penalty,
+        has_meaningful_signal=has_meaningful_signal,
     )
     factors = {
         "industry_fit": industry_fit,
@@ -181,10 +270,16 @@ def score_candidate(
         "signal_strength": signal_strength,
         "signal_explicitness": explicitness,
         "growth_signal": growth_signal,
+        "hiring_signal": hiring_signal,
+        "funding_signal": funding_signal,
+        "expansion_signal": expansion_signal,
         "website_quality": website_quality,
         "technology_fit": technology_fit,
         "contact_confidence": contact_confidence,
         "outreach_readiness": outreach_readiness,
+        "company_momentum": company_momentum,
+        "urgency": urgency,
+        "ai_confidence": ai_confidence,
         "overall_lead_score": overall_lead_score,
         "signal_recency": recency,
         "source_quality": evidence_quality,
@@ -197,6 +292,7 @@ def score_candidate(
         "negative_or_contradictory_evidence": negative_penalty,
         "stale_or_unknown_publication_date": max(0, 18 - recency),
         "weak_or_missing_buying_signal": 22 if not has_meaningful_signal else 0,
+        "quality_gate": 0 if passes_quality_gate else 30,
     }
     weights = {
         "industry_fit": 30,
@@ -210,36 +306,56 @@ def score_candidate(
         "overall_lead_score": 100,
         "lead_score_icp_match": 24,
         "lead_score_buying_intent": 24,
-        "lead_score_growth_signal": 14,
-        "lead_score_website_quality": 12,
+        "lead_score_company_momentum": 14,
+        "lead_score_urgency": 10,
+        "lead_score_website_quality": 10,
         "lead_score_technology_fit": 10,
         "lead_score_contact_confidence": 8,
-        "lead_score_outreach_readiness": 8,
+        "lead_score_outreach_readiness": 6,
+        "lead_score_ai_confidence": 4,
     }
+    evidence = {
+        "buying_intent_terms": _matched_terms(haystack, HIGH_INTENT_TERMS | EXPLICIT_INTENT_TERMS),
+        "growth_terms": _matched_terms(haystack, GROWTH_SIGNAL_TERMS),
+        "hiring_terms": _matched_terms(haystack, HIRING_SIGNAL_TERMS),
+        "funding_terms": _matched_terms(haystack, FUNDING_SIGNAL_TERMS),
+        "expansion_terms": _matched_terms(haystack, EXPANSION_SIGNAL_TERMS),
+        "technology_terms": _matched_terms(haystack, TECHNOLOGY_CHANGE_TERMS),
+        "urgency_terms": _matched_terms(haystack, URGENCY_TERMS),
+        "risk_terms": _matched_terms(haystack, NEGATIVE_TERMS),
+    }
+    insufficient_data = _insufficient_data(
+        has_meaningful_signal=has_meaningful_signal,
+        hiring_signal=hiring_signal,
+        funding_signal=funding_signal,
+        expansion_signal=expansion_signal,
+        technology_fit=technology_fit,
+        public_work_contact=public_work_contact,
+        source_verified=source_verified,
+        evidence_quality=evidence_quality,
+    )
     lead_intelligence = {
         "overall_lead_score": overall_lead_score,
+        "score_model": "outreach_success_probability",
+        "passes_quality_gate": passes_quality_gate,
+        "rejection_reason": rejection_reason,
         "components": {
             "icp_match": icp_fit,
             "buying_intent": buying_intent,
             "growth_signal": growth_signal,
+            "hiring_signal": hiring_signal,
+            "funding_signal": funding_signal,
+            "expansion_signal": expansion_signal,
             "website_quality": website_quality,
             "technology_fit": technology_fit,
             "contact_confidence": contact_confidence,
             "outreach_readiness": outreach_readiness,
+            "company_momentum": company_momentum,
+            "urgency": urgency,
+            "ai_confidence": ai_confidence,
         },
-        "evidence": {
-            "buying_intent_terms": _matched_terms(haystack, HIGH_INTENT_TERMS | EXPLICIT_INTENT_TERMS),
-            "growth_terms": _matched_terms(haystack, GROWTH_SIGNAL_TERMS),
-            "technology_terms": _matched_terms(haystack, TECHNOLOGY_CHANGE_TERMS),
-        },
-        "insufficient_data": _insufficient_data(
-            has_meaningful_signal=has_meaningful_signal,
-            growth_signal=growth_signal,
-            technology_fit=technology_fit,
-            public_work_contact=public_work_contact,
-            source_verified=source_verified,
-            evidence_quality=evidence_quality,
-        ),
+        "evidence": evidence,
+        "insufficient_data": insufficient_data,
     }
     explanation = (
         "Scores are deterministic: Overall Lead Score blends ICP match, public buying intent, growth, website evidence, technology fit, "
@@ -256,11 +372,19 @@ def score_candidate(
         revenue_opportunity_score=revenue,
         overall_lead_score=overall_lead_score,
         growth_signal_score=growth_signal,
+        hiring_signal_score=hiring_signal,
+        funding_signal_score=funding_signal,
+        expansion_signal_score=expansion_signal,
         website_quality_score=website_quality,
         technology_fit_score=technology_fit,
         contact_confidence_score=contact_confidence,
         outreach_readiness_score=outreach_readiness,
+        company_momentum_score=company_momentum,
+        urgency_score=urgency,
+        ai_confidence_score=ai_confidence,
         lead_intelligence=lead_intelligence,
+        passes_quality_gate=passes_quality_gate,
+        rejection_reason=rejection_reason,
         weights=weights,
         penalties=penalties,
         source_quality_score=evidence_quality,
@@ -289,7 +413,15 @@ def signal_type_from_text(text: str) -> str:
 
 def meaningful_signal_present(text: str) -> bool:
     lower = (text or "").lower()
-    return any(term in lower for term in HIGH_INTENT_TERMS) or any(term in lower for term in EXPLICIT_INTENT_TERMS)
+    signal_terms = (
+        set(HIGH_INTENT_TERMS)
+        | set(EXPLICIT_INTENT_TERMS)
+        | set(HIRING_SIGNAL_TERMS)
+        | set(FUNDING_SIGNAL_TERMS)
+        | set(EXPANSION_SIGNAL_TERMS)
+        | set(TECHNOLOGY_CHANGE_TERMS)
+    )
+    return any(term in lower for term in signal_terms)
 
 
 def _terms(value: str) -> list[str]:
@@ -311,6 +443,12 @@ def _technology_fit_score(criteria: CustomerFinderCriteria, haystack: str) -> in
     return clamp_score(overlap + tech_change)
 
 
+def _urgency_score(*, haystack: str, explicitness: int, recency: int, has_meaningful_signal: bool) -> int:
+    urgency_terms = min(45, sum(weight for term, weight in URGENCY_TERMS.items() if term in haystack))
+    base = urgency_terms + explicitness + (recency if has_meaningful_signal else 0)
+    return clamp_score(base)
+
+
 def _contact_confidence_score(*, public_work_contact: str, contact_title: str, source_verified: bool) -> int:
     if public_work_contact:
         return 84 if source_verified else 66
@@ -323,10 +461,59 @@ def _matched_terms(haystack: str, terms: dict[str, int]) -> list[str]:
     return [term for term in terms if term in haystack][:12]
 
 
+def _ai_confidence_score(
+    *,
+    confidence: int,
+    evidence_quality: int,
+    has_meaningful_signal: bool,
+    negative_penalty: int,
+    disqualifier_penalty: int,
+    public_work_contact: str,
+    company_momentum: int,
+) -> int:
+    value = confidence + (8 if public_work_contact else 0) + min(10, company_momentum // 8)
+    if not has_meaningful_signal:
+        value -= 24
+    if evidence_quality < 30:
+        value -= 12
+    value -= min(30, negative_penalty + disqualifier_penalty)
+    return clamp_score(value)
+
+
+def _quality_gate(
+    *,
+    icp_fit: int,
+    buying_intent: int,
+    company_momentum: int,
+    website_quality: int,
+    ai_confidence: int,
+    negative_penalty: int,
+    disqualifier_penalty: int,
+    has_meaningful_signal: bool,
+) -> tuple[bool, str]:
+    if disqualifier_penalty >= 20:
+        return False, "Rejected: matched an explicit exclusion."
+    if negative_penalty >= 28:
+        return False, "Rejected: public evidence contains strong negative or contradictory signals."
+    if not has_meaningful_signal:
+        return False, "Rejected: no public buying, growth, hiring, expansion, or timing signal."
+    if website_quality < 30:
+        return False, "Rejected: public website evidence is too thin."
+    if ai_confidence < 45:
+        return False, "Rejected: AI confidence is too low for outreach."
+    if icp_fit < 34 and buying_intent < 70:
+        return False, "Rejected: buying signal exists, but ICP match is too weak."
+    if buying_intent < 45 and company_momentum < 35:
+        return False, "Rejected: no strong buying intent or company momentum."
+    return True, ""
+
+
 def _insufficient_data(
     *,
     has_meaningful_signal: bool,
-    growth_signal: int,
+    hiring_signal: int,
+    funding_signal: int,
+    expansion_signal: int,
     technology_fit: int,
     public_work_contact: str,
     source_verified: bool,
@@ -337,8 +524,12 @@ def _insufficient_data(
         missing.append("verified_public_source")
     if not has_meaningful_signal:
         missing.append("buying_intent")
-    if growth_signal <= 0:
-        missing.append("growth_signal")
+    if hiring_signal <= 0:
+        missing.append("hiring_signal")
+    if funding_signal <= 0:
+        missing.append("funding_signal")
+    if expansion_signal <= 0:
+        missing.append("expansion_signal")
     if technology_fit <= 20:
         missing.append("technology_change")
     if not public_work_contact:

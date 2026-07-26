@@ -288,7 +288,9 @@ def test_ai_customer_finder_lead_intelligence_does_not_invent_missing_signals() 
     assert weak_public_profile.growth_signal_score == 0
     assert weak_public_profile.contact_confidence_score < 50
     assert "buying_intent" in missing
-    assert "growth_signal" in missing
+    assert "hiring_signal" in missing
+    assert "funding_signal" in missing
+    assert "expansion_signal" in missing
     assert "public_work_contact" in missing
 
 
@@ -319,8 +321,74 @@ def test_ai_customer_finder_lead_intelligence_uses_verified_contact_and_growth()
     assert strong_public_profile.overall_lead_score >= 55
     assert strong_public_profile.outreach_readiness_score >= 60
     assert strong_public_profile.contact_confidence_score >= 80
+    assert strong_public_profile.hiring_signal_score > 0
+    assert strong_public_profile.company_momentum_score > 0
+    assert strong_public_profile.urgency_score > 0
+    assert strong_public_profile.ai_confidence_score >= 60
+    assert strong_public_profile.passes_quality_gate is True
     assert strong_public_profile.lead_intelligence["evidence"]["growth_terms"]
     assert "public_work_contact" not in strong_public_profile.lead_intelligence["insufficient_data"]
+
+
+def test_ai_customer_finder_lead_intelligence_v2_separates_momentum_signals() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates outbound research and CRM workflows",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200",
+    )
+    score = score_candidate(
+        criteria,
+        text=(
+            "B2B SaaS company in Germany raised a Series A, opened a new office, launched a sales automation integration, "
+            "and is hiring revenue operations roles this quarter. Contact partnerships@example.com for business requests."
+        ),
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+        public_work_contact="partnerships@example.com",
+        contact_title="Head of Revenue",
+        publication_date=datetime.utcnow().date().isoformat(),
+    )
+
+    components = score.lead_intelligence["components"]
+    assert components["hiring_signal"] > 0
+    assert components["funding_signal"] > 0
+    assert components["expansion_signal"] > 0
+    assert components["company_momentum"] >= 30
+    assert components["urgency"] >= 30
+    assert components["ai_confidence"] >= 70
+    assert score.passes_quality_gate is True
+    assert score.lead_intelligence["evidence"]["urgency_terms"]
+    assert score.lead_intelligence["evidence"]["growth_terms"]
+
+
+def test_ai_customer_finder_lead_intelligence_v2_rejects_low_quality_false_positive() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates outbound research",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200",
+    )
+    score = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany building a directory of sales software vendors.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+    )
+
+    assert score.passes_quality_gate is False
+    assert "buying_intent" in score.lead_intelligence["insufficient_data"]
+    assert score.penalties["quality_gate"] > 0
 
 
 def test_ai_customer_finder_rejects_result_without_source_url() -> None:
@@ -549,6 +617,94 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
         db.close()
 
 
+def test_ai_customer_finder_job_ranks_by_outreach_success_probability(monkeypatch) -> None:
+    import app.services.ai_customer_finder.service as finder_service
+    from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "customer-finder-ranking@example.com"}
+
+    class FakeProvider:
+        key = "test_provider"
+
+        def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            return [
+                PublicCustomerCandidate(
+                    company_name="Early Weak Co",
+                    website="https://early-weak.example",
+                    industry=criteria.target_industry,
+                    country=criteria.target_country,
+                    source_provider=self.key,
+                ),
+                PublicCustomerCandidate(
+                    company_name="Later Strong Co",
+                    website="https://later-strong.example",
+                    industry=criteria.target_industry,
+                    country=criteria.target_country,
+                    source_provider=self.key,
+                ),
+            ]
+
+    def fake_collect_website(url: str) -> WebsiteSnapshot:
+        if "early-weak" in url:
+            return WebsiteSnapshot(
+                url=url,
+                title="Early Weak Co",
+                meta_description="B2B SaaS company replacing manual spreadsheet workflows.",
+                text="Early Weak Co is a B2B SaaS company in Germany replacing manual spreadsheet workflows.",
+                technologies=["CRM"],
+            )
+        return WebsiteSnapshot(
+            url=url,
+            title="Later Strong Co",
+            meta_description="B2B SaaS company with funding, hiring, expansion, and CRM migration signals.",
+            text=(
+                "Later Strong Co is a B2B SaaS company in Germany. It raised a Series A, opened a new office, "
+                "is hiring revenue operations roles this quarter, and is replacing manual spreadsheet CRM workflows "
+                "with sales automation integrations. Contact sales@later-strong.example for business requests."
+            ),
+            technologies=["CRM", "Automation"],
+        )
+
+    monkeypatch.setattr(finder_service, "provider_for_key", lambda _: FakeProvider())
+    monkeypatch.setattr(finder_service, "collect_website", fake_collect_website)
+
+    created = client.post(
+        "/api/workspace-app/ai-customer-finder/searches",
+        headers=headers,
+        json={
+            "company_description": "AI sales operating system",
+            "product_or_service": "Automates outbound research and CRM workflows",
+            "target_country": "Germany",
+            "target_industry": "B2B SaaS",
+            "company_size": "10-200",
+            "contact_titles": ["Founder", "Head of Sales"],
+            "max_results": 1,
+            "keywords": ["CRM", "sales operations"],
+        },
+    )
+    assert created.status_code == 202, created.text
+    job_id = created.json()["id"]
+
+    from app.services.ai_customer_finder.service import claim_next_ai_customer_finder_job, process_ai_customer_finder_job
+
+    db = get_sessionmaker()()
+    try:
+        claimed = claim_next_ai_customer_finder_job(db, worker_id="test-worker:customer-finder-ranking")
+        assert claimed is not None
+        claim_token = claimed.locked_by
+    finally:
+        db.close()
+
+    assert process_ai_customer_finder_job(UUID(job_id), claim_token=claim_token) is True
+    refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
+    assert refreshed.status_code == 200, refreshed.text
+    payload = refreshed.json()
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["company_name"] == "Later Strong Co"
+    assert payload["results"][0]["lead_intelligence"]["components"]["company_momentum"] > 0
+    assert payload["summary"]["saved"] == 1
+
+
 def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monkeypatch) -> None:
     import app.services.ai_customer_finder.service as finder_service
     from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
@@ -669,7 +825,7 @@ def test_ai_customer_finder_rejects_public_icp_fit_without_buying_signal(monkeyp
     assert payload["results"] == []
     assert payload["summary"]["saved"] == 0
     assert payload["summary"]["rejected"] == 1
-    assert "no buying" in payload["error_message"]
+    assert "no public buying" in payload["error_message"]
 
 
 def test_ai_customer_finder_repeat_search_deduplicates_company_lead_and_draft(monkeypatch) -> None:
