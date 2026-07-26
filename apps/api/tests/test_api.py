@@ -314,6 +314,7 @@ def test_ai_customer_finder_lead_intelligence_uses_verified_contact_and_growth()
         industry="B2B SaaS",
         country="Germany",
         source_verified=True,
+        company_name="Strong Public Co",
         public_work_contact="sales@example.com",
         contact_title="Head of Sales",
     )
@@ -335,6 +336,14 @@ def test_ai_customer_finder_lead_intelligence_uses_verified_contact_and_growth()
     assert strong_public_profile.lead_reasoning["Confidence"]["score"] == strong_public_profile.ai_confidence_score
     assert strong_public_profile.lead_reasoning["Recommended Action"]
     assert strong_public_profile.lead_reasoning["Reason Summary"] != "Недостаточно данных."
+    research = strong_public_profile.ai_research_profile
+    assert research["version"] == "ai-research-engine-v1"
+    assert research["Company Summary"]["value"] != "Недостаточно данных."
+    assert research["Buying Intent"]["score"] == strong_public_profile.buying_intent_score
+    assert research["Growth Signals"]["score"] == strong_public_profile.growth_signal_score
+    assert research["Recommended Outreach Strategy"]["Mention in email"]["value"] != "Недостаточно данных."
+    assert research["Opportunity Detection"]["Why now"]["facts"]
+    assert research["Risk Analysis"]["Manual checks"]["missing_data"]
     assert "public_work_contact" not in strong_public_profile.lead_intelligence["insufficient_data"]
 
 
@@ -399,6 +408,12 @@ def test_ai_customer_finder_lead_intelligence_v2_rejects_low_quality_false_posit
     assert score.lead_reasoning["Evidence"]["Buying Intent"] == ["Недостаточно данных."]
     assert score.lead_reasoning["Positive Signals"] == ["Недостаточно данных."]
     assert score.lead_reasoning["Recommended Action"].startswith("Rejected:")
+    profile = score.ai_research_profile
+    assert profile["Funding Signals"]["value"] == "Недостаточно данных."
+    assert profile["Funding Signals"]["why"] == "Недостаточно данных."
+    assert profile["Technology Stack"]["value"] == "Недостаточно данных."
+    assert profile["Estimated Company Size"]["value"] == "Недостаточно данных."
+    assert profile["Opportunity Detection"]["Sales opportunity now"]["value"] == "Недостаточно данных."
     assert "buying_intent" in score.lead_intelligence["insufficient_data"]
     assert score.penalties["quality_gate"] > 0
 
@@ -437,6 +452,11 @@ def test_ai_customer_finder_explainable_ai_separates_facts_and_probabilistic_con
     assert reasoning["Fact Conclusions"] == reasoning["Facts"]
     assert reasoning["Probabilistic Conclusions"] != ["Недостаточно данных."]
     assert reasoning["Outreach Timing"] != "Недостаточно данных."
+    profile = score.ai_research_profile
+    assert profile["AI Readiness"]["facts"]
+    assert profile["Estimated Decision Maker"]["value"] == "Head of Sales"
+    assert profile["Recommended Outreach Strategy"]["Do not write"]["value"].startswith("Do not claim private knowledge")
+    assert profile["Opportunity Detection"]["May increase reply probability"]["value"] != "Недостаточно данных."
 
 
 def test_ai_customer_finder_rejects_result_without_source_url() -> None:
@@ -632,6 +652,9 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert payload["results"][0]["overall_lead_score"] == payload["results"][0]["ai_relevance_score"]
     assert payload["results"][0]["buying_intent_score"] >= payload["results"][0]["overall_lead_score"]
     assert payload["results"][0]["lead_intelligence"]["components"]["outreach_readiness"] > 0
+    assert payload["results"][0]["ai_research_profile"]["Company Summary"]["value"] != "Недостаточно данных."
+    assert payload["results"][0]["ai_research_profile"]["Recommended Outreach Strategy"]["Best first-contact angle"]["facts"]
+    assert payload["results"][0]["ai_research_profile"]["Risk Analysis"]["Manual checks"]["value"]
     assert payload["results"][0]["first_line_opener"]
     assert payload["results"][0]["draft_email"]
     assert payload["results"][0]["public_work_contact"] == "sales@verified-finder.example"
@@ -657,6 +680,8 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
         metadata = company.metadata_json or {}
         assert metadata["simple_customer_finder"]["source_url"] == "https://verified-finder.example"
         assert metadata["simple_customer_finder"]["simple_status"] == "Письмо подготовлено"
+        assert metadata["simple_customer_finder"]["ai_research_profile"]["Company Summary"]["value"] != "Недостаточно данных."
+        assert metadata["ai_research_profile"]["Overall Lead Score"]["score"] == payload["results"][0]["overall_lead_score"]
         email = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == UUID(payload["results"][0]["lead_id"])))
         assert email is not None
         assert email.delivery_status == "draft"
