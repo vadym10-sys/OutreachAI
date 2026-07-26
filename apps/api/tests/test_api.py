@@ -344,6 +344,16 @@ def test_ai_customer_finder_lead_intelligence_uses_verified_contact_and_growth()
     assert research["Recommended Outreach Strategy"]["Mention in email"]["value"] != "Недостаточно данных."
     assert research["Opportunity Detection"]["Why now"]["facts"]
     assert research["Risk Analysis"]["Manual checks"]["missing_data"]
+    strategy = strong_public_profile.outreach_strategy
+    assert strategy["version"] == "ai-outreach-strategy-engine-v1"
+    assert strategy["recommended_decision_maker"] == "Head of Sales"
+    assert strategy["recommended_channel"] == "Email"
+    assert strategy["should_contact_now"] is True
+    assert strategy["recommended_cta"] == "Open to a quick fit review?"
+    assert strategy["pain_hypothesis"] != "Недостаточно данных."
+    assert strategy["source_inputs"]["lead_intelligence"] is True
+    assert strategy["source_inputs"]["lead_reasoning"] is True
+    assert strategy["source_inputs"]["ai_research_profile"] is True
     assert "public_work_contact" not in strong_public_profile.lead_intelligence["insufficient_data"]
 
 
@@ -414,6 +424,12 @@ def test_ai_customer_finder_lead_intelligence_v2_rejects_low_quality_false_posit
     assert profile["Technology Stack"]["value"] == "Недостаточно данных."
     assert profile["Estimated Company Size"]["value"] == "Недостаточно данных."
     assert profile["Opportunity Detection"]["Sales opportunity now"]["value"] == "Недостаточно данных."
+    strategy = score.outreach_strategy
+    assert strategy["should_contact_now"] is False
+    assert strategy["recommended_channel"] == "LinkedIn/manual route"
+    assert strategy["recommended_cta"] == "Manually verify the evidence before outreach."
+    assert "manual_review_before_outreach" in strategy["manual_checks"]
+    assert strategy["pain_hypothesis"] == "Недостаточно данных."
     assert "buying_intent" in score.lead_intelligence["insufficient_data"]
     assert score.penalties["quality_gate"] > 0
 
@@ -457,6 +473,39 @@ def test_ai_customer_finder_explainable_ai_separates_facts_and_probabilistic_con
     assert profile["Estimated Decision Maker"]["value"] == "Head of Sales"
     assert profile["Recommended Outreach Strategy"]["Do not write"]["value"].startswith("Do not claim private knowledge")
     assert profile["Opportunity Detection"]["May increase reply probability"]["value"] != "Недостаточно данных."
+    strategy = score.outreach_strategy
+    assert strategy["proof_points"] != ["Недостаточно данных."]
+    assert strategy["do_not_say"][0] == "Do not claim guaranteed results."
+    assert strategy["strategy_summary"] != "Недостаточно данных."
+
+
+def test_ai_customer_finder_outreach_strategy_does_not_invent_missing_decision_maker_or_cta() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates outbound research",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200",
+        contact_titles=[],
+    )
+    score = score_candidate(
+        criteria,
+        text="B2B SaaS company in Germany publishes product updates for collaboration software.",
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+    )
+    strategy = score.outreach_strategy
+
+    assert strategy["recommended_decision_maker"] == "Недостаточно данных."
+    assert strategy["decision_maker_reason"] == "Недостаточно данных."
+    assert strategy["pain_hypothesis"] == "Недостаточно данных."
+    assert strategy["should_contact_now"] is False
+    assert strategy["recommended_cta"] == "Manually verify the evidence before outreach."
+    assert "verified_public_business_contact" in strategy["missing_evidence"]
 
 
 def test_ai_customer_finder_rejects_result_without_source_url() -> None:
@@ -655,6 +704,9 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert payload["results"][0]["ai_research_profile"]["Company Summary"]["value"] != "Недостаточно данных."
     assert payload["results"][0]["ai_research_profile"]["Recommended Outreach Strategy"]["Best first-contact angle"]["facts"]
     assert payload["results"][0]["ai_research_profile"]["Risk Analysis"]["Manual checks"]["value"]
+    assert payload["results"][0]["outreach_strategy"]["recommended_channel"] == "Email"
+    assert payload["results"][0]["outreach_strategy"]["should_contact_now"] is True
+    assert payload["results"][0]["outreach_strategy"]["recommended_cta"] == "Open to a quick fit review?"
     assert payload["results"][0]["first_line_opener"]
     assert payload["results"][0]["draft_email"]
     assert payload["results"][0]["public_work_contact"] == "sales@verified-finder.example"
@@ -681,7 +733,9 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
         assert metadata["simple_customer_finder"]["source_url"] == "https://verified-finder.example"
         assert metadata["simple_customer_finder"]["simple_status"] == "Письмо подготовлено"
         assert metadata["simple_customer_finder"]["ai_research_profile"]["Company Summary"]["value"] != "Недостаточно данных."
+        assert metadata["simple_customer_finder"]["outreach_strategy"]["should_contact_now"] is True
         assert metadata["ai_research_profile"]["Overall Lead Score"]["score"] == payload["results"][0]["overall_lead_score"]
+        assert metadata["outreach_strategy"]["recommended_channel"] == "Email"
         email = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == UUID(payload["results"][0]["lead_id"])))
         assert email is not None
         assert email.delivery_status == "draft"
