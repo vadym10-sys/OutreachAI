@@ -515,10 +515,16 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         revenue_opportunity_score=_safe_int(scoring.get("revenue_opportunity_score"), 0),
         overall_lead_score=_safe_int(lead_intelligence.get("overall_lead_score") or scoring.get("overall_lead_score"), result.ai_relevance_score),
         growth_signal_score=_safe_int(lead_components.get("growth_signal"), 0),
+        hiring_signal_score=_safe_int(lead_components.get("hiring_signal"), 0),
+        funding_signal_score=_safe_int(lead_components.get("funding_signal"), 0),
+        expansion_signal_score=_safe_int(lead_components.get("expansion_signal"), 0),
         website_quality_score=_safe_int(lead_components.get("website_quality"), 0),
         technology_fit_score=_safe_int(lead_components.get("technology_fit"), 0),
         contact_confidence_score=_safe_int(lead_components.get("contact_confidence"), 0),
         outreach_readiness_score=_safe_int(lead_components.get("outreach_readiness"), 0),
+        company_momentum_score=_safe_int(lead_components.get("company_momentum"), 0),
+        urgency_score=_safe_int(lead_components.get("urgency"), 0),
+        ai_confidence_score=_safe_int(lead_components.get("ai_confidence"), result.confidence_score),
         lead_intelligence=lead_intelligence,
         first_line_opener=str(outreach.get("first_line_opener") or ""),
         draft_email=str(outreach.get("draft_email") or ""),
@@ -563,6 +569,8 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
         public_work_contact=public_email,
         contact_title=", ".join(criteria.contact_titles[:2]),
     )
+    if not score.passes_quality_gate:
+        raise ValueError(score.rejection_reason or "Rejected: lead quality gate did not pass.")
     if not score.has_meaningful_signal:
         raise ValueError("Rejected: public source confirms ICP fit but has no buying, pain, growth, hiring, or timing signal.")
     signal_description = _signal_description(signal_type, candidate.company_name, criteria)
@@ -636,10 +644,16 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
                 "revenue_opportunity_score": score.revenue_opportunity_score,
                 "overall_lead_score": score.overall_lead_score,
                 "growth_signal_score": score.growth_signal_score,
+                "hiring_signal_score": score.hiring_signal_score,
+                "funding_signal_score": score.funding_signal_score,
+                "expansion_signal_score": score.expansion_signal_score,
                 "website_quality_score": score.website_quality_score,
                 "technology_fit_score": score.technology_fit_score,
                 "contact_confidence_score": score.contact_confidence_score,
                 "outreach_readiness_score": score.outreach_readiness_score,
+                "company_momentum_score": score.company_momentum_score,
+                "urgency_score": score.urgency_score,
+                "ai_confidence_score": score.ai_confidence_score,
                 "factors": score.factors,
                 "weights": score.weights,
                 "penalties": score.penalties,
