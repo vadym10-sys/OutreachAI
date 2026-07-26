@@ -132,9 +132,11 @@ NEGATIVE_TERMS = {
 
 SCORING_VERSION = "lead-intelligence-v4"
 RESEARCH_ENGINE_VERSION = "ai-research-engine-v1"
+OUTREACH_STRATEGY_VERSION = "ai-outreach-strategy-engine-v1"
 INSUFFICIENT_DATA = "Недостаточно данных."
 LeadReasoning = dict[str, object]
 ResearchProfile = dict[str, object]
+OutreachStrategy = dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -161,6 +163,7 @@ class ScoreResult:
     lead_intelligence: dict[str, object] = field(default_factory=dict)
     lead_reasoning: LeadReasoning = field(default_factory=dict)
     ai_research_profile: ResearchProfile = field(default_factory=dict)
+    outreach_strategy: OutreachStrategy = field(default_factory=dict)
     passes_quality_gate: bool = False
     rejection_reason: str = ""
     weights: dict[str, int] = field(default_factory=dict)
@@ -413,6 +416,22 @@ def score_candidate(
         "reasoning": lead_reasoning,
         "research_profile": ai_research_profile,
     }
+    outreach_strategy = build_outreach_strategy(
+        criteria=criteria,
+        text=text,
+        industry=industry,
+        country=country,
+        public_work_contact=public_work_contact,
+        contact_title=contact_title,
+        lead_intelligence=lead_intelligence,
+        lead_reasoning=lead_reasoning,
+        ai_research_profile=ai_research_profile,
+        score_factors=factors,
+        penalties=penalties,
+        confidence_score=confidence,
+        has_meaningful_signal=has_meaningful_signal,
+    )
+    lead_intelligence["outreach_strategy"] = outreach_strategy
     explanation = (
         "Scores are deterministic: Overall Lead Score blends ICP match, public buying intent, growth, website evidence, technology fit, "
         "contact confidence, and outreach readiness. Missing public evidence lowers the score instead of being inferred."
@@ -441,6 +460,7 @@ def score_candidate(
         lead_intelligence=lead_intelligence,
         lead_reasoning=lead_reasoning,
         ai_research_profile=ai_research_profile,
+        outreach_strategy=outreach_strategy,
         passes_quality_gate=passes_quality_gate,
         rejection_reason=rejection_reason,
         weights=weights,
@@ -960,6 +980,380 @@ def _emphasis(*, buying_terms: list[str], growth_terms: list[str], technology_te
     if technology_terms:
         return f"Workflow or technology context: {technology_terms[0]}."
     return INSUFFICIENT_DATA
+
+
+def build_outreach_strategy(
+    *,
+    criteria: CustomerFinderCriteria,
+    text: str,
+    industry: str,
+    country: str,
+    public_work_contact: str,
+    contact_title: str,
+    lead_intelligence: dict[str, object],
+    lead_reasoning: dict[str, object],
+    ai_research_profile: dict[str, object],
+    score_factors: dict[str, int],
+    penalties: dict[str, int],
+    confidence_score: int,
+    has_meaningful_signal: bool,
+    crm_metadata: dict[str, object] | None = None,
+) -> OutreachStrategy:
+    haystack = f"{text} {industry} {country}".lower()
+    evidence = lead_intelligence.get("evidence") if isinstance(lead_intelligence.get("evidence"), dict) else {}
+    components = lead_intelligence.get("components") if isinstance(lead_intelligence.get("components"), dict) else {}
+    buying_terms = _string_list(evidence.get("buying_intent_terms"))
+    growth_terms = _string_list(evidence.get("growth_terms"))
+    technology_terms = _string_list(evidence.get("technology_terms"))
+    risk_terms = _string_list(evidence.get("risk_terms")) or _matched_terms(haystack, NEGATIVE_TERMS)
+    insufficient = _string_list(lead_intelligence.get("insufficient_data"))
+    outreach_readiness = _safe_component(components, "outreach_readiness")
+    contact_confidence = _safe_component(components, "contact_confidence")
+    buying_intent = _safe_component(components, "buying_intent")
+    growth_signal = _safe_component(components, "growth_signal")
+    decision_maker = _recommended_decision_maker(
+        criteria=criteria,
+        haystack=haystack,
+        contact_title=contact_title,
+        buying_terms=buying_terms,
+        technology_terms=technology_terms,
+    )
+    meaningful_evidence = has_meaningful_signal and bool(buying_terms or growth_terms or technology_terms)
+    should_contact_now = bool(
+        confidence_score >= 60
+        and meaningful_evidence
+        and outreach_readiness >= 60
+        and contact_confidence >= 60
+        and public_work_contact
+        and not risk_terms
+    )
+    supporting_evidence = _strategy_evidence(
+        buying_terms=buying_terms,
+        growth_terms=growth_terms,
+        technology_terms=technology_terms,
+        public_work_contact=public_work_contact,
+        contact_title=contact_title,
+        industry=industry,
+        country=country,
+    )
+    missing_evidence = _dedupe_terms(
+        insufficient
+        + ([] if public_work_contact else ["verified_public_business_contact"])
+        + ([] if decision_maker != INSUFFICIENT_DATA else ["relevant_decision_maker_role"])
+        + ([] if meaningful_evidence else ["meaningful_outreach_evidence"])
+    )
+    assumptions = _strategy_assumptions(
+        decision_maker=decision_maker,
+        buying_terms=buying_terms,
+        growth_terms=growth_terms,
+        technology_terms=technology_terms,
+        lead_reasoning=lead_reasoning,
+        ai_research_profile=ai_research_profile,
+        crm_metadata=crm_metadata or {},
+    )
+    manual_checks = _manual_checks(
+        should_contact_now=should_contact_now,
+        missing_evidence=missing_evidence,
+        risk_terms=risk_terms,
+        confidence_score=confidence_score,
+    )
+    recommended_channel = _recommended_channel(public_work_contact=public_work_contact, contact_confidence=contact_confidence)
+    urgency = _strategy_urgency_label(buying_intent=buying_intent, growth_signal=growth_signal, confidence_score=confidence_score)
+    pain_hypothesis = _strategy_pain_hypothesis(buying_terms=buying_terms, technology_terms=technology_terms)
+    value_proposition = _strategy_value_proposition(criteria=criteria, pain_hypothesis=pain_hypothesis)
+    outreach_angle = _strategy_outreach_angle(buying_terms=buying_terms, growth_terms=growth_terms, technology_terms=technology_terms)
+    confidence = _strategy_confidence(
+        confidence_score=confidence_score,
+        outreach_readiness=outreach_readiness,
+        contact_confidence=contact_confidence,
+        meaningful_evidence=meaningful_evidence,
+        risk_terms=risk_terms,
+    )
+    safe_cta = "Open to a quick fit review?"
+    if not should_contact_now:
+        safe_cta = "Manually verify the evidence before outreach."
+    return {
+        "version": OUTREACH_STRATEGY_VERSION,
+        "recommended_decision_maker": decision_maker,
+        "decision_maker_reason": _decision_maker_reason(decision_maker=decision_maker, contact_title=contact_title, criteria=criteria),
+        "contact_reason": _strategy_contact_reason(buying_terms=buying_terms, growth_terms=growth_terms),
+        "pain_hypothesis": pain_hypothesis,
+        "value_proposition": value_proposition,
+        "outreach_angle": outreach_angle,
+        "subject_angle": _strategy_subject_angle(outreach_angle),
+        "first_line_angle": _strategy_first_line_angle(buying_terms=buying_terms, growth_terms=growth_terms, technology_terms=technology_terms),
+        "proof_points": _strategy_proof_points(buying_terms=buying_terms, growth_terms=growth_terms, technology_terms=technology_terms),
+        "personalization_facts": supporting_evidence or [INSUFFICIENT_DATA],
+        "recommended_cta": safe_cta,
+        "recommended_channel": recommended_channel,
+        "urgency": urgency,
+        "should_contact_now": should_contact_now,
+        "timing_recommendation": "Proceed after manual approval." if should_contact_now else "Wait until missing evidence is verified.",
+        "outreach_priority": _strategy_priority(should_contact_now=should_contact_now, confidence=confidence, urgency=urgency),
+        "do_not_say": _strategy_do_not_say(risk_terms=risk_terms, public_work_contact=public_work_contact),
+        "risks": _strategy_risks(risk_terms=risk_terms, missing_evidence=missing_evidence, confidence_score=confidence_score),
+        "confidence": confidence,
+        "evidence": supporting_evidence or [INSUFFICIENT_DATA],
+        "missing_evidence": missing_evidence or [INSUFFICIENT_DATA],
+        "assumptions": assumptions or [INSUFFICIENT_DATA],
+        "manual_checks": manual_checks or [INSUFFICIENT_DATA],
+        "strategy_summary": _strategy_summary(should_contact_now=should_contact_now, decision_maker=decision_maker, outreach_angle=outreach_angle, recommended_channel=recommended_channel),
+        "source_inputs": {
+            "lead_intelligence": bool(lead_intelligence),
+            "lead_reasoning": bool(lead_reasoning),
+            "ai_research_profile": bool(ai_research_profile),
+            "crm_metadata": bool(crm_metadata),
+            "score_factors": bool(score_factors),
+            "penalties": bool(penalties),
+        },
+    }
+
+
+def _recommended_decision_maker(
+    *,
+    criteria: CustomerFinderCriteria,
+    haystack: str,
+    contact_title: str,
+    buying_terms: list[str],
+    technology_terms: list[str],
+) -> str:
+    explicit_role = _normalize_decision_maker(contact_title)
+    if explicit_role != INSUFFICIENT_DATA:
+        return explicit_role
+    for title in criteria.contact_titles:
+        role = _normalize_decision_maker(title)
+        if role != INSUFFICIENT_DATA:
+            return role
+    if any(term in haystack for term in ["revenue operations", "sales operations", "crm", "outbound"]):
+        return "Revenue Operations"
+    if buying_terms and any(term in haystack for term in ["sales", "pipeline", "sdr", "account executive"]):
+        return "Head of Sales"
+    if technology_terms and any(term in haystack for term in ["api", "integration", "platform", "workflow"]):
+        return "IT / Technology"
+    return INSUFFICIENT_DATA
+
+
+def _normalize_decision_maker(value: str) -> str:
+    lower = (value or "").lower()
+    if not lower:
+        return INSUFFICIENT_DATA
+    if any(term in lower for term in ["founder", "ceo", "owner"]):
+        return "Founder / CEO"
+    if any(term in lower for term in ["head of sales", "sales director", "vp sales", "chief revenue"]):
+        return "Head of Sales"
+    if any(term in lower for term in ["marketing", "growth", "demand generation"]):
+        return "Head of Marketing"
+    if any(term in lower for term in ["revenue operations", "revops", "sales operations"]):
+        return "Revenue Operations"
+    if "operations" in lower:
+        return "Operations"
+    if any(term in lower for term in ["cto", "technology", "engineering", "it"]):
+        return "IT / Technology"
+    return INSUFFICIENT_DATA
+
+
+def _strategy_evidence(
+    *,
+    buying_terms: list[str],
+    growth_terms: list[str],
+    technology_terms: list[str],
+    public_work_contact: str,
+    contact_title: str,
+    industry: str,
+    country: str,
+) -> list[str]:
+    evidence = [f"Buying signal: {term}" for term in buying_terms[:4]]
+    evidence += [f"Growth signal: {term}" for term in growth_terms[:4]]
+    evidence += [f"Technology/workflow signal: {term}" for term in technology_terms[:4]]
+    if public_work_contact:
+        evidence.append("Verified public business contact route is present.")
+    if contact_title:
+        evidence.append(f"Contact title evidence: {contact_title}.")
+    if industry:
+        evidence.append(f"Industry context: {industry}.")
+    if country:
+        evidence.append(f"Country context: {country}.")
+    return evidence[:12]
+
+
+def _strategy_assumptions(
+    *,
+    decision_maker: str,
+    buying_terms: list[str],
+    growth_terms: list[str],
+    technology_terms: list[str],
+    lead_reasoning: dict[str, object],
+    ai_research_profile: dict[str, object],
+    crm_metadata: dict[str, object],
+) -> list[str]:
+    assumptions: list[str] = []
+    if decision_maker != INSUFFICIENT_DATA:
+        assumptions.append(f"{decision_maker} is likely relevant to the observed public signals.")
+    if buying_terms:
+        assumptions.append("The public buying terms may indicate current pain or evaluation.")
+    if growth_terms:
+        assumptions.append("Growth signals may make timing more relevant.")
+    if technology_terms:
+        assumptions.append("Technology/workflow terms may support a technical or operations angle.")
+    if lead_reasoning:
+        assumptions.append("Existing lead reasoning is available and should be reviewed before send.")
+    if ai_research_profile:
+        assumptions.append("Existing AI research profile is available and should inform the draft.")
+    if crm_metadata:
+        assumptions.append("CRM metadata is available and should be checked for prior handling.")
+    return assumptions
+
+
+def _manual_checks(*, should_contact_now: bool, missing_evidence: list[str], risk_terms: list[str], confidence_score: int) -> list[str]:
+    checks = missing_evidence[:]
+    if risk_terms:
+        checks.append("review_negative_public_evidence")
+    if confidence_score < 60:
+        checks.append("increase_strategy_confidence")
+    if not should_contact_now:
+        checks.append("manual_review_before_outreach")
+    return _dedupe_terms(checks)
+
+
+def _recommended_channel(*, public_work_contact: str, contact_confidence: int) -> str:
+    if public_work_contact and contact_confidence >= 60:
+        return "Email"
+    return "LinkedIn/manual route"
+
+
+def _strategy_urgency_label(*, buying_intent: int, growth_signal: int, confidence_score: int) -> str:
+    if buying_intent >= 60 and confidence_score >= 60:
+        return "High"
+    if buying_intent >= 40 or growth_signal >= 25:
+        return "Medium"
+    if buying_intent > 0 or growth_signal > 0:
+        return "Low"
+    return INSUFFICIENT_DATA
+
+
+def _strategy_pain_hypothesis(*, buying_terms: list[str], technology_terms: list[str]) -> str:
+    if buying_terms:
+        return f"Public evidence suggests possible pain around {buying_terms[0]}."
+    if technology_terms:
+        return f"Public evidence suggests a workflow or technology context around {technology_terms[0]}."
+    return INSUFFICIENT_DATA
+
+
+def _strategy_value_proposition(*, criteria: CustomerFinderCriteria, pain_hypothesis: str) -> str:
+    product = (criteria.product_or_service or criteria.company_description or "").strip()
+    if product and pain_hypothesis != INSUFFICIENT_DATA:
+        return f"Frame {product[:160]} around the observed public pain."
+    return INSUFFICIENT_DATA
+
+
+def _strategy_outreach_angle(*, buying_terms: list[str], growth_terms: list[str], technology_terms: list[str]) -> str:
+    if buying_terms:
+        return f"Lead with the public buying signal: {buying_terms[0]}."
+    if growth_terms:
+        return f"Lead with the company momentum signal: {growth_terms[0]}."
+    if technology_terms:
+        return f"Lead with the public workflow/technology signal: {technology_terms[0]}."
+    return INSUFFICIENT_DATA
+
+
+def _strategy_subject_angle(outreach_angle: str) -> str:
+    if outreach_angle == INSUFFICIENT_DATA:
+        return INSUFFICIENT_DATA
+    return "Short, evidence-based subject tied to the public signal."
+
+
+def _strategy_first_line_angle(*, buying_terms: list[str], growth_terms: list[str], technology_terms: list[str]) -> str:
+    terms = buying_terms + growth_terms + technology_terms
+    if not terms:
+        return INSUFFICIENT_DATA
+    return f"Start by referencing the public signal: {terms[0]}."
+
+
+def _strategy_proof_points(*, buying_terms: list[str], growth_terms: list[str], technology_terms: list[str]) -> list[str]:
+    proof = [f"Public buying evidence: {term}." for term in buying_terms[:3]]
+    proof += [f"Public growth evidence: {term}." for term in growth_terms[:3]]
+    proof += [f"Public workflow evidence: {term}." for term in technology_terms[:3]]
+    return proof or [INSUFFICIENT_DATA]
+
+
+def _strategy_contact_reason(*, buying_terms: list[str], growth_terms: list[str]) -> str:
+    terms = buying_terms + growth_terms
+    if terms:
+        return f"Public source includes relevant signal: {terms[0]}."
+    return INSUFFICIENT_DATA
+
+
+def _decision_maker_reason(*, decision_maker: str, contact_title: str, criteria: CustomerFinderCriteria) -> str:
+    if decision_maker == INSUFFICIENT_DATA:
+        return INSUFFICIENT_DATA
+    if contact_title:
+        return f"Uses public/requested role evidence: {contact_title}."
+    if criteria.contact_titles:
+        return f"Uses requested target role evidence: {', '.join(criteria.contact_titles[:2])}."
+    return "Role inferred from public company and signal context, not from a named person."
+
+
+def _strategy_do_not_say(*, risk_terms: list[str], public_work_contact: str) -> list[str]:
+    warnings = ["Do not claim guaranteed results.", "Do not claim private budget, intent, or internal plans."]
+    if not public_work_contact:
+        warnings.append("Do not send email before verifying a public business contact.")
+    warnings += [f"Do not ignore negative evidence: {term}." for term in risk_terms[:3]]
+    return warnings
+
+
+def _strategy_risks(*, risk_terms: list[str], missing_evidence: list[str], confidence_score: int) -> list[str]:
+    risks = [f"Negative evidence: {term}" for term in risk_terms[:4]]
+    risks += [f"Missing evidence: {term}" for term in missing_evidence[:6]]
+    if confidence_score < 60:
+        risks.append("Strategy confidence is below outreach threshold.")
+    return risks or [INSUFFICIENT_DATA]
+
+
+def _strategy_confidence(
+    *,
+    confidence_score: int,
+    outreach_readiness: int,
+    contact_confidence: int,
+    meaningful_evidence: bool,
+    risk_terms: list[str],
+) -> int:
+    confidence = round(confidence_score * 0.45 + outreach_readiness * 0.3 + contact_confidence * 0.25)
+    if not meaningful_evidence:
+        confidence = min(confidence, 35)
+    if risk_terms:
+        confidence = min(confidence, 45)
+    return clamp_score(confidence)
+
+
+def _strategy_priority(*, should_contact_now: bool, confidence: int, urgency: str) -> str:
+    if not should_contact_now:
+        return "manual_review"
+    if confidence >= 75 and urgency == "High":
+        return "high"
+    if confidence >= 60:
+        return "medium"
+    return "low"
+
+
+def _strategy_summary(*, should_contact_now: bool, decision_maker: str, outreach_angle: str, recommended_channel: str) -> str:
+    if not should_contact_now:
+        return "Manual review required before outreach."
+    if decision_maker == INSUFFICIENT_DATA or outreach_angle == INSUFFICIENT_DATA:
+        return INSUFFICIENT_DATA
+    return f"Contact {decision_maker} via {recommended_channel}. {outreach_angle}"
+
+
+def _safe_component(components: dict[object, object], key: str) -> int:
+    try:
+        return clamp_score(int(components.get(key) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
 
 
 def _terms(value: str) -> list[str]:

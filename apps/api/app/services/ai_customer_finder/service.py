@@ -476,6 +476,11 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         ai_research_profile = lead_intelligence.get("research_profile")
     if not isinstance(ai_research_profile, dict):
         ai_research_profile = {}
+    outreach_strategy = metadata.get("outreach_strategy")
+    if not isinstance(outreach_strategy, dict):
+        outreach_strategy = lead_intelligence.get("outreach_strategy")
+    if not isinstance(outreach_strategy, dict):
+        outreach_strategy = {}
     lead_reasoning = metadata.get("lead_reasoning")
     if not isinstance(lead_reasoning, dict):
         lead_reasoning = lead_intelligence.get("reasoning")
@@ -538,6 +543,7 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         lead_intelligence=lead_intelligence,
         lead_reasoning=lead_reasoning,
         ai_research_profile=ai_research_profile,
+        outreach_strategy=outreach_strategy,
         first_line_opener=str(outreach.get("first_line_opener") or ""),
         draft_email=str(outreach.get("draft_email") or ""),
         lead_id=str(result.lead_id or ""),
@@ -677,6 +683,7 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
             "lead_intelligence": score.lead_intelligence,
             "lead_reasoning": score.lead_reasoning,
             "ai_research_profile": score.ai_research_profile,
+            "outreach_strategy": score.outreach_strategy,
             "outreach_draft": {
                 "first_line_opener": first_line,
                 "subject": _draft_subject(candidate.company_name, criteria),
@@ -761,6 +768,7 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
     result_metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
     lead_intelligence = result_metadata.get("lead_intelligence") if isinstance(result_metadata.get("lead_intelligence"), dict) else {}
     ai_research_profile = result_metadata.get("ai_research_profile") if isinstance(result_metadata.get("ai_research_profile"), dict) else {}
+    outreach_strategy = result_metadata.get("outreach_strategy") if isinstance(result_metadata.get("outreach_strategy"), dict) else {}
     source_summary = result.fit_explanation or result.evidence_summary or result.signal_description
     metadata = {
         "source": "ai_customer_finder",
@@ -786,12 +794,14 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
             "overall_lead_score": _lead_intelligence_score(result),
             "lead_intelligence": lead_intelligence,
             "ai_research_profile": ai_research_profile,
+            "outreach_strategy": outreach_strategy,
         },
         "recommended_decision_maker_role": result.contact_title or ", ".join(criteria.contact_titles[:2]),
         "email_status": "Verified" if result.public_work_contact else "Not found",
         "overall_lead_score": _lead_intelligence_score(result),
         "lead_intelligence": lead_intelligence,
         "ai_research_profile": ai_research_profile,
+        "outreach_strategy": outreach_strategy,
     }
     lead_out = LeadOut(
         company=result.company_name,

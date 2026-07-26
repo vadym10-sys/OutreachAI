@@ -190,6 +190,7 @@ class CustomerFinderResultOut(BaseModel):
     lead_intelligence: Dict = Field(default_factory=dict)
     lead_reasoning: Dict = Field(default_factory=dict)
     ai_research_profile: Dict = Field(default_factory=dict)
+    outreach_strategy: Dict = Field(default_factory=dict)
     first_line_opener: str = ""
     draft_email: str = ""
     lead_id: str = ""
