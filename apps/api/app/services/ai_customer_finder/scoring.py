@@ -131,6 +131,7 @@ NEGATIVE_TERMS = {
 }
 
 SCORING_VERSION = "lead-intelligence-v4"
+LeadReasoning = dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -155,6 +156,7 @@ class ScoreResult:
     urgency_score: int = 0
     ai_confidence_score: int = 0
     lead_intelligence: dict[str, object] = field(default_factory=dict)
+    lead_reasoning: LeadReasoning = field(default_factory=dict)
     passes_quality_gate: bool = False
     rejection_reason: str = ""
     weights: dict[str, int] = field(default_factory=dict)
@@ -334,6 +336,24 @@ def score_candidate(
         source_verified=source_verified,
         evidence_quality=evidence_quality,
     )
+    lead_reasoning = _lead_reasoning(
+        criteria=criteria,
+        icp_fit=icp_fit,
+        buying_intent=buying_intent,
+        company_momentum=company_momentum,
+        urgency=urgency,
+        technology_fit=technology_fit,
+        contact_confidence=contact_confidence,
+        outreach_readiness=outreach_readiness,
+        ai_confidence=ai_confidence,
+        source_verified=source_verified,
+        public_work_contact=public_work_contact,
+        evidence=evidence,
+        insufficient_data=insufficient_data,
+        negative_penalty=negative_penalty,
+        rejection_reason=rejection_reason,
+        passes_quality_gate=passes_quality_gate,
+    )
     lead_intelligence = {
         "overall_lead_score": overall_lead_score,
         "score_model": "outreach_success_probability",
@@ -356,6 +376,7 @@ def score_candidate(
         },
         "evidence": evidence,
         "insufficient_data": insufficient_data,
+        "reasoning": lead_reasoning,
     }
     explanation = (
         "Scores are deterministic: Overall Lead Score blends ICP match, public buying intent, growth, website evidence, technology fit, "
@@ -383,6 +404,7 @@ def score_candidate(
         urgency_score=urgency,
         ai_confidence_score=ai_confidence,
         lead_intelligence=lead_intelligence,
+        lead_reasoning=lead_reasoning,
         passes_quality_gate=passes_quality_gate,
         rejection_reason=rejection_reason,
         weights=weights,
@@ -535,6 +557,220 @@ def _insufficient_data(
     if not public_work_contact:
         missing.append("public_work_contact")
     return missing
+
+
+def _reason_or_insufficient(items: list[str], label: str) -> str:
+    if not items:
+        return "Недостаточно данных."
+    return f"{label}: {', '.join(items[:5])}."
+
+
+def _lead_reasoning(
+    *,
+    criteria: CustomerFinderCriteria,
+    icp_fit: int,
+    buying_intent: int,
+    company_momentum: int,
+    urgency: int,
+    technology_fit: int,
+    contact_confidence: int,
+    outreach_readiness: int,
+    ai_confidence: int,
+    source_verified: bool,
+    public_work_contact: str,
+    evidence: dict[str, list[str]],
+    insufficient_data: list[str],
+    negative_penalty: int,
+    rejection_reason: str,
+    passes_quality_gate: bool,
+) -> LeadReasoning:
+    buying_terms = evidence.get("buying_intent_terms", [])
+    growth_terms = [*evidence.get("hiring_terms", []), *evidence.get("funding_terms", []), *evidence.get("expansion_terms", [])]
+    technology_terms = evidence.get("technology_terms", [])
+    urgency_terms = evidence.get("urgency_terms", [])
+    risk_terms = evidence.get("risk_terms", [])
+    positive_signals = _dedupe_terms([*buying_terms, *growth_terms, *technology_terms, *urgency_terms])
+    selected = (
+        f"ICP match is {icp_fit}/100 for {criteria.target_industry} in {criteria.target_country}; "
+        f"buying intent is {buying_intent}/100 and momentum is {company_momentum}/100."
+        if icp_fit >= 34 and (buying_intent >= 45 or company_momentum >= 35)
+        else "Недостаточно данных."
+    )
+    why_now = (
+        f"Urgency is {urgency}/100 based on current public timing or operational-change terms."
+        if urgency >= 30
+        else "Недостаточно данных."
+    )
+    facts = _facts(
+        criteria=criteria,
+        icp_fit=icp_fit,
+        source_verified=source_verified,
+        public_work_contact=public_work_contact,
+        positive_signals=positive_signals,
+    )
+    missing = insufficient_data or ["Недостаточно данных."]
+    negative_signals = risk_terms or ["Недостаточно данных."]
+    recommended_action = _recommended_action(
+        passes_quality_gate=passes_quality_gate,
+        outreach_readiness=outreach_readiness,
+        ai_confidence=ai_confidence,
+        public_work_contact=public_work_contact,
+        rejection_reason=rejection_reason,
+    )
+    reason_summary = _reason_summary(
+        passes_quality_gate=passes_quality_gate,
+        selected=selected,
+        why_now=why_now,
+        rejection_reason=rejection_reason,
+    )
+    probabilistic = _probabilistic_conclusions(
+        buying_intent=buying_intent,
+        company_momentum=company_momentum,
+        urgency=urgency,
+        technology_fit=technology_fit,
+        outreach_readiness=outreach_readiness,
+        ai_confidence=ai_confidence,
+    )
+    return {
+        "schema": "LeadReasoning",
+        "Facts": facts,
+        "Evidence": {
+            "Buying Intent": buying_terms or ["Недостаточно данных."],
+            "Growth": _dedupe_terms(growth_terms) or ["Недостаточно данных."],
+            "Hiring": evidence.get("hiring_terms", []) or ["Недостаточно данных."],
+            "Funding": evidence.get("funding_terms", []) or ["Недостаточно данных."],
+            "Expansion": evidence.get("expansion_terms", []) or ["Недостаточно данных."],
+            "Technology Fit": technology_terms or ["Недостаточно данных."],
+            "Urgency": urgency_terms or ["Недостаточно данных."],
+            "Risk": risk_terms or ["Недостаточно данных."],
+        },
+        "Missing Evidence": missing,
+        "Positive Signals": positive_signals or ["Недостаточно данных."],
+        "Negative Signals": negative_signals,
+        "Confidence": {
+            "score": ai_confidence,
+            "label": _confidence_label(ai_confidence),
+            "reason": _confidence_reason(ai_confidence=ai_confidence, source_verified=source_verified, public_work_contact=public_work_contact, insufficient_data=insufficient_data),
+        },
+        "Recommended Action": recommended_action,
+        "Reason Summary": reason_summary,
+        "Fact Conclusions": facts,
+        "Probabilistic Conclusions": probabilistic or ["Недостаточно данных."],
+        "Outreach Timing": why_now,
+        "why_selected": selected,
+        "why_now": why_now,
+        "buying_signals": _reason_or_insufficient(buying_terms, "Public buying evidence"),
+        "growth_signals": _reason_or_insufficient(_dedupe_terms(growth_terms), "Public growth evidence"),
+        "risk_signals": _reason_or_insufficient(risk_terms, "Public risk evidence") if negative_penalty > 0 else "Недостаточно данных.",
+        "evidence_limitations": insufficient_data or ["none"],
+        "quality_gate": rejection_reason or "Passed.",
+    }
+
+
+def _facts(
+    *,
+    criteria: CustomerFinderCriteria,
+    icp_fit: int,
+    source_verified: bool,
+    public_work_contact: str,
+    positive_signals: list[str],
+) -> list[str]:
+    facts: list[str] = []
+    if source_verified:
+        facts.append("Public source was retrieved and verified.")
+    if criteria.target_industry and icp_fit >= 30:
+        facts.append(f"Public text matched target industry context: {criteria.target_industry}.")
+    if criteria.target_country and criteria.target_country.lower() != "any" and icp_fit >= 30:
+        facts.append(f"Public text matched target country context: {criteria.target_country}.")
+    if public_work_contact:
+        facts.append("A public business contact route was found.")
+    if positive_signals:
+        facts.append("Public text contained explicit signal terms.")
+    return facts or ["Недостаточно данных."]
+
+
+def _recommended_action(
+    *,
+    passes_quality_gate: bool,
+    outreach_readiness: int,
+    ai_confidence: int,
+    public_work_contact: str,
+    rejection_reason: str,
+) -> str:
+    if not passes_quality_gate:
+        return rejection_reason or "Keep in CRM as requires review."
+    if not public_work_contact:
+        return "Save for review, but do not send outreach until a verified public business contact is found."
+    if outreach_readiness >= 65 and ai_confidence >= 60:
+        return "Prepare a personalized draft for manual review."
+    return "Save to CRM and review evidence before outreach."
+
+
+def _reason_summary(*, passes_quality_gate: bool, selected: str, why_now: str, rejection_reason: str) -> str:
+    if not passes_quality_gate:
+        return rejection_reason or "Недостаточно данных."
+    if selected == "Недостаточно данных." and why_now == "Недостаточно данных.":
+        return "Недостаточно данных."
+    if why_now == "Недостаточно данных.":
+        return selected
+    return f"{selected} {why_now}"
+
+
+def _probabilistic_conclusions(
+    *,
+    buying_intent: int,
+    company_momentum: int,
+    urgency: int,
+    technology_fit: int,
+    outreach_readiness: int,
+    ai_confidence: int,
+) -> list[str]:
+    conclusions: list[str] = []
+    if buying_intent >= 60:
+        conclusions.append(f"Buying intent is likely meaningful ({buying_intent}/100).")
+    if company_momentum >= 35:
+        conclusions.append(f"Company momentum may improve timing ({company_momentum}/100).")
+    if urgency >= 30:
+        conclusions.append(f"Current timing may be favorable ({urgency}/100).")
+    if technology_fit >= 40:
+        conclusions.append(f"Technology context appears relevant ({technology_fit}/100).")
+    if outreach_readiness >= 60 and ai_confidence >= 55:
+        conclusions.append(f"Manual-review outreach is likely appropriate ({outreach_readiness}/100 readiness).")
+    return conclusions
+
+
+def _confidence_label(score: int) -> str:
+    if score >= 75:
+        return "high"
+    if score >= 55:
+        return "medium"
+    if score > 0:
+        return "low"
+    return "unknown"
+
+
+def _confidence_reason(*, ai_confidence: int, source_verified: bool, public_work_contact: str, insufficient_data: list[str]) -> str:
+    if ai_confidence <= 0:
+        return "Недостаточно данных."
+    reasons: list[str] = []
+    if source_verified:
+        reasons.append("verified public source")
+    if public_work_contact:
+        reasons.append("public business contact")
+    if insufficient_data:
+        reasons.append(f"missing evidence: {', '.join(insufficient_data[:4])}")
+    return ", ".join(reasons) if reasons else "Недостаточно данных."
+
+
+def _dedupe_terms(terms: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        output.append(term)
+    return output
 
 
 def _recency_score(publication_date: str) -> int:

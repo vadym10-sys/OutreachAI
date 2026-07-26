@@ -327,6 +327,14 @@ def test_ai_customer_finder_lead_intelligence_uses_verified_contact_and_growth()
     assert strong_public_profile.ai_confidence_score >= 60
     assert strong_public_profile.passes_quality_gate is True
     assert strong_public_profile.lead_intelligence["evidence"]["growth_terms"]
+    assert strong_public_profile.lead_reasoning["why_selected"] != "Недостаточно данных."
+    assert strong_public_profile.lead_reasoning["schema"] == "LeadReasoning"
+    assert strong_public_profile.lead_reasoning["Facts"]
+    assert strong_public_profile.lead_reasoning["Evidence"]["Buying Intent"]
+    assert strong_public_profile.lead_reasoning["Positive Signals"]
+    assert strong_public_profile.lead_reasoning["Confidence"]["score"] == strong_public_profile.ai_confidence_score
+    assert strong_public_profile.lead_reasoning["Recommended Action"]
+    assert strong_public_profile.lead_reasoning["Reason Summary"] != "Недостаточно данных."
     assert "public_work_contact" not in strong_public_profile.lead_intelligence["insufficient_data"]
 
 
@@ -387,8 +395,48 @@ def test_ai_customer_finder_lead_intelligence_v2_rejects_low_quality_false_posit
     )
 
     assert score.passes_quality_gate is False
+    assert score.lead_reasoning["buying_signals"] == "Недостаточно данных."
+    assert score.lead_reasoning["Evidence"]["Buying Intent"] == ["Недостаточно данных."]
+    assert score.lead_reasoning["Positive Signals"] == ["Недостаточно данных."]
+    assert score.lead_reasoning["Recommended Action"].startswith("Rejected:")
     assert "buying_intent" in score.lead_intelligence["insufficient_data"]
     assert score.penalties["quality_gate"] > 0
+
+
+def test_ai_customer_finder_explainable_ai_separates_facts_and_probabilistic_conclusions() -> None:
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.ai_customer_finder.scoring import score_candidate
+
+    criteria = CustomerFinderCriteria(
+        company_description="AI sales platform",
+        product_or_service="automates outbound research and CRM workflows",
+        target_country="Germany",
+        target_industry="B2B SaaS",
+        company_size="20-200",
+    )
+    score = score_candidate(
+        criteria,
+        text=(
+            "B2B SaaS company in Germany raised a Series A and is replacing manual spreadsheet CRM workflows "
+            "with automation integrations this quarter. Contact sales@example.com for business requests."
+        ),
+        industry="B2B SaaS",
+        country="Germany",
+        source_verified=True,
+        public_work_contact="sales@example.com",
+        contact_title="Head of Sales",
+    )
+    reasoning = score.lead_reasoning
+
+    assert reasoning["schema"] == "LeadReasoning"
+    assert "Public source was retrieved and verified." in reasoning["Facts"]
+    assert reasoning["Evidence"]["Funding"] != ["Недостаточно данных."]
+    assert reasoning["Missing Evidence"]
+    assert reasoning["Negative Signals"] == ["Недостаточно данных."]
+    assert reasoning["Confidence"]["label"] in {"medium", "high"}
+    assert reasoning["Fact Conclusions"] == reasoning["Facts"]
+    assert reasoning["Probabilistic Conclusions"] != ["Недостаточно данных."]
+    assert reasoning["Outreach Timing"] != "Недостаточно данных."
 
 
 def test_ai_customer_finder_rejects_result_without_source_url() -> None:
