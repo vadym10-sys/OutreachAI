@@ -188,6 +188,7 @@ class CustomerFinderResultOut(BaseModel):
     urgency_score: int = 0
     ai_confidence_score: int = 0
     lead_intelligence: Dict = Field(default_factory=dict)
+    lead_reasoning: Dict = Field(default_factory=dict)
     first_line_opener: str = ""
     draft_email: str = ""
     lead_id: str = ""
