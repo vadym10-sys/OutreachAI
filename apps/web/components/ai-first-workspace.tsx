@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, PauseCircle, RefreshCw, Send, Settings, Sparkles, Square, UsersRound } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, PauseCircle, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Square, UsersRound } from "lucide-react";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand } from "@/lib/ai-first-api";
 import type { FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
@@ -176,6 +176,53 @@ function Notice({ children, tone = "neutral" }: { children: React.ReactNode; ton
   return <div className={`rounded-lg border p-3 text-sm font-semibold leading-6 ${toneClass}`}>{children}</div>;
 }
 
+function PremiumPanel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <section className={`rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm ${className}`}>{children}</section>;
+}
+
+function ScoreTile({ label, value, copy }: { label: string; value?: number; copy?: string }) {
+  const score = typeof value === "number" ? Math.max(0, Math.min(100, Math.round(value))) : null;
+  const tone = score === null ? "text-slate-500" : score >= 75 ? "text-teal-700" : score >= 50 ? "text-amber-700" : "text-red-700";
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{label}</p>
+      <p className={`mt-2 text-3xl font-black tracking-tight ${tone}`}>{score === null ? "Недостаточно данных" : score}</p>
+      {copy ? <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{copy}</p> : null}
+    </div>
+  );
+}
+
+function EvidenceLine({ label, value, href }: { label: string; value?: string; href?: string }) {
+  const text = String(value || "").trim();
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{label}</p>
+      {href && text ? (
+        <a href={href} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 break-all text-sm font-bold leading-6 text-teal-700">
+          {text} <ExternalLink size={14} />
+        </a>
+      ) : (
+        <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{text || "Недостаточно данных"}</p>
+      )}
+    </div>
+  );
+}
+
+function WorkflowStep({ index, label, active }: { index: number; label: string; active?: boolean }) {
+  return (
+    <div className={`flex min-h-11 items-center gap-3 rounded-full border px-3 text-sm font-black ${active ? "border-slate-950 bg-slate-950 text-white" : "border-slate-200 bg-white text-slate-700"}`}>
+      <span className={`grid size-7 place-items-center rounded-full text-xs ${active ? "bg-white text-slate-950" : "bg-slate-100 text-slate-600"}`}>{index}</span>
+      {label}
+    </div>
+  );
+}
+
+function qualityGateLabel(result: FirstCustomerResult) {
+  const review = resultNeedsReview(result);
+  if (!review) return "Quality gate passed";
+  return `Review required: ${review}`;
+}
+
 function ResultCard({
   result,
   busy,
@@ -194,14 +241,19 @@ function ResultCard({
   const saved = Boolean(result.company_id || result.lead_id);
   const emailId = latestDraftForResult(result);
   const canSend = Boolean(emailId && result.public_work_contact);
+  const overallScore = result.overall_lead_score ?? result.ai_relevance_score;
+  const contactConfidence = result.contact_confidence_score ?? result.confidence_score;
+  const outreachReadiness = result.outreach_readiness_score;
+  const aiConfidence = result.ai_confidence_score ?? result.confidence_score;
+  const qualityGate = qualityGateLabel(result);
   return (
-    <article className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+    <article className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-lg font-black text-ink">{result.company_name}</h2>
-            <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">{result.ai_relevance_score}/100 fit</span>
-            <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-700">{result.confidence_score}/100 source</span>
+            <h2 className="text-xl font-black tracking-tight text-ink">{result.company_name}</h2>
+            <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-black text-white">{overallScore}/100 score</span>
+            <span className={`rounded-full px-3 py-1 text-xs font-black ${qualityGate.includes("passed") ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{qualityGate}</span>
           </div>
           <p className="mt-1 text-sm text-slate-600">{[result.industry, result.country, result.company_size].filter(Boolean).join(" · ") || "Company profile fields were not found yet."}</p>
         </div>
@@ -217,23 +269,27 @@ function ResultCard({
           </button>
         </div> : null}
       </div>
-      <div className="mt-4 grid gap-3 lg:grid-cols-3">
-        <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-black uppercase text-slate-500">Why it fits</p><p className="mt-2 text-sm leading-6 text-slate-700">{result.fit_explanation || result.signal_description || "No fit explanation returned."}</p></div>
-        <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-black uppercase text-slate-500">Public source</p><p className="mt-2 text-sm leading-6 text-slate-700">{result.evidence_summary || result.observed_fact || "No evidence summary returned."}</p></div>
-        <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-black uppercase text-slate-500">Recipient</p><p className="mt-2 text-sm leading-6 text-slate-700">{result.public_work_contact || "No verified public work email yet."}</p></div>
+      <div className="mt-5 grid gap-3 lg:grid-cols-4">
+        <ScoreTile label="Overall Lead Score" value={overallScore} />
+        <ScoreTile label="AI Confidence" value={aiConfidence} />
+        <ScoreTile label="Contact Confidence" value={contactConfidence} />
+        <ScoreTile label="Outreach Readiness" value={outreachReadiness} />
       </div>
-      <details className="mt-3 rounded-lg border border-slate-200">
-        <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Подробнее <ChevronDown size={16} /></summary>
-        <div className="grid gap-3 border-t border-slate-200 p-3 text-sm leading-6 text-slate-700 lg:grid-cols-2">
-          <div>
-            <p className="font-black text-ink">Source</p>
-            {sourceUrl(result) ? <a href={sourceUrl(result)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 break-all font-bold text-teal-700">{result.source_title || sourceUrl(result)} <ExternalLink size={14} /></a> : <p>No source URL returned.</p>}
-            <p className="mt-2">{result.evidence_excerpt || "No excerpt returned."}</p>
-          </div>
-          <div>
-            <p className="font-black text-ink">Draft</p>
-            <p className="mt-1 font-bold">{result.email_subject || "No subject yet."}</p>
-            <p className="mt-2 whitespace-pre-wrap">{result.email_body || result.draft_email || "No email draft yet. Save the result to CRM when ready."}</p>
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        <EvidenceLine label="Why this company" value={result.fit_explanation || result.signal_description || "No fit explanation returned."} />
+        <EvidenceLine label="Evidence" value={result.evidence_summary || result.observed_fact || "No evidence summary returned."} />
+        <EvidenceLine label="Recommended decision maker" value={[result.contact_name, result.contact_title].filter(Boolean).join(" · ") || result.contact_title || "Decision maker not confirmed"} />
+      </div>
+      <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50">
+        <summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-sm font-black text-ink">Подробнее <ChevronDown size={16} /></summary>
+        <div className="grid gap-3 border-t border-slate-200 p-4 text-sm leading-6 text-slate-700 lg:grid-cols-2">
+          <EvidenceLine label="Source" value={result.source_title || sourceUrl(result)} href={sourceUrl(result)} />
+          <EvidenceLine label="Contact route" value={result.public_work_contact || "No verified public work email yet."} />
+          <EvidenceLine label="Facts" value={result.evidence_excerpt || result.observed_fact || "No excerpt returned."} />
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Outreach Strategy</p>
+            <p className="mt-2 font-bold text-ink">{result.email_subject || "No subject yet."}</p>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{result.email_body || result.draft_email || "No email draft yet. Save the result to CRM when ready."}</p>
           </div>
         </div>
       </details>
@@ -478,42 +534,62 @@ function AssistantSection() {
   const progressText = job ? `${stage}: ${String(progress.message || job.error_message || "AI is checking backend progress.")}` : "Ожидаю сайт или описание бизнеса.";
 
   return (
-    <Frame title="AI-помощник" copy="Вставьте сайт или опишите бизнес. OutreachAI сам соберет критерии, запустит First Customer Finder, сохранит проверенные компании в CRM и подготовит письма.">
-      <form aria-label="AI customer command" onSubmit={submit} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-        <label className="block text-sm font-black text-ink">AI command<textarea value={command} onChange={(event) => setCommand(event.target.value)} className="mt-2 min-h-32 w-full rounded-md border border-slate-300 p-4 text-base leading-7" placeholder="Вставьте сайт или опишите свой бизнес и кого хотите найти" /></label>
-        <div className="mt-4 grid grid-cols-2 gap-2">
+    <Frame title="AI-помощник" copy="Вставьте сайт или опишите бизнес. OutreachAI сам соберет критерии, запустит First Customer Finder, покажет evidence, сохранит проверенные компании в CRM и подготовит письма для ручного approval.">
+      <PremiumPanel className="bg-gradient-to-br from-white via-white to-slate-50">
+        <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+          <form aria-label="AI customer command" onSubmit={submit} className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm">
+            <label className="block text-sm font-black text-ink">AI command<textarea value={command} onChange={(event) => setCommand(event.target.value)} className="mt-2 min-h-40 w-full resize-y rounded-[1.25rem] border border-slate-300 bg-slate-50 p-4 text-base leading-7 outline-none transition focus:border-teal-500 focus:bg-white focus:ring-4 focus:ring-teal-500/10" placeholder="Вставьте сайт или опишите свой бизнес и кого хотите найти" /></label>
+            <div className="mt-4 grid grid-cols-2 gap-2">
           <button type="submit" disabled={loading || !hydrated || !api.ready} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Запустить AI</button>
           <button type="button" onClick={() => void loadJobs()} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 px-4 text-sm font-black text-ink"><RefreshCw size={17} /> Обновить</button>
-        </div>
-        <details className="mt-4 rounded-lg border border-slate-200">
-          <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Расширенные настройки <ChevronDown size={16} /></summary>
-          <div className="grid gap-3 border-t border-slate-200 p-3 lg:grid-cols-3">
+            </div>
+            <details className="mt-4 rounded-2xl border border-slate-200 bg-white">
+              <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Расширенные настройки <ChevronDown size={16} /></summary>
+              <div className="grid gap-3 border-t border-slate-200 p-3 lg:grid-cols-3">
             <label className="text-sm font-bold text-slate-700">Страна<input value={advanced.targetCountry} onChange={(event) => updateAdvanced("targetCountry", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Auto" /></label>
             <label className="text-sm font-bold text-slate-700">Отрасль<input value={advanced.targetIndustry} onChange={(event) => updateAdvanced("targetIndustry", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Auto" /></label>
             <label className="text-sm font-bold text-slate-700">Дневной лимит<input type="number" min={1} max={50} value={advanced.maxResults} onChange={(event) => updateAdvanced("maxResults", Number(event.target.value || 10))} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label>
+              </div>
+            </details>
+          </form>
+          <div className="flex flex-col justify-between gap-4">
+            <div className="rounded-[1.5rem] border border-teal-100 bg-teal-50 p-4">
+              <div className="flex items-start gap-3">
+                <ShieldCheck className="mt-0.5 text-teal-700" size={22} />
+                <div>
+                  <p className="text-sm font-black text-ink">Manual approval stays on</p>
+                  <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">AI may find, analyse and draft. Real sending still requires a reviewed recipient, subject, body and explicit approval.</p>
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              {["Describe business", "AI searches", "AI analyses", "Lead score", "Evidence", "Research profile", "Outreach strategy", "Save to CRM", "Draft email", "Manual approval", "Send"].map((label, index) => (
+                <WorkflowStep key={label} index={index + 1} label={label} active={index === (found ? prepared ? 9 : 7 : 0)} />
+              ))}
+            </div>
           </div>
-        </details>
-      </form>
-      <div data-ai-controls-ready={aiControlsReady ? "true" : "false"} data-autopilot-state={autopilotControlState} className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+        </div>
+      </PremiumPanel>
+      <div data-ai-controls-ready={aiControlsReady ? "true" : "false"} data-autopilot-state={autopilotControlState} className="grid grid-cols-2 gap-2 rounded-[1.5rem] border border-slate-200 bg-white p-3 shadow-sm">
         <button type="button" disabled={!canControlAutopilot} onClick={() => void autopilotAction("pause")} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-amber-300 px-4 text-sm font-black text-amber-800 disabled:cursor-not-allowed disabled:opacity-50"><PauseCircle size={17} /> Пауза</button>
         <button type="button" disabled={!canControlAutopilot} onClick={() => void autopilotAction("stop")} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-red-300 px-4 text-sm font-black text-red-700 disabled:cursor-not-allowed disabled:opacity-50"><Square size={17} /> Остановить</button>
       </div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
       <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <PremiumPanel>
           <p className="text-sm font-black text-ink">Понимание задачи</p>
           <p className="mt-2 text-sm leading-6 text-slate-700">{understanding || understandingFor(command || "https://outreachaiaiai.com", criteria)}</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-5">
-            {[["Найдено", found], ["CRM", saved], ["Подготовлено", prepared], ["Отправлено", sent], ["Ответы", replies]].map(([label, value]) => <div key={String(label)} className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-black uppercase text-slate-500">{label}</p><p className="mt-1 text-2xl font-black text-ink">{value}</p></div>)}
+            {[["Найдено", found], ["CRM", saved], ["Подготовлено", prepared], ["Отправлено", sent], ["Ответы", replies]].map(([label, value]) => <div key={String(label)} className="rounded-2xl bg-slate-50 p-3"><p className="text-xs font-black uppercase text-slate-500">{label}</p><p className="mt-1 text-2xl font-black text-ink">{value}</p></div>)}
           </div>
-          <div className="mt-4 rounded-lg bg-slate-50 p-3">
+          <div className="mt-4 rounded-2xl bg-slate-50 p-4">
             <p className="text-xs font-black uppercase text-slate-500">Что AI делает сейчас</p>
             <p className="mt-2 text-sm leading-6 text-slate-700">{autoSaving ? "Сохраняю проверенные компании в CRM и создаю черновики через backend." : progressText}</p>
             {needsReview ? <p className="mt-2 text-sm font-bold text-amber-700">{needsReview} лид(ов) оставлены со статусом «Требует проверки».</p> : null}
           </div>
-        </div>
-        <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        </PremiumPanel>
+        <PremiumPanel>
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-lg font-black text-ink">AI Autopilot</h2>
             <span className={`rounded-full px-2 py-1 text-xs font-black ${campaign?.status === "Running" || campaign?.status === "running" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{campaign?.status || "needs approval"}</span>
@@ -530,12 +606,12 @@ function AssistantSection() {
             {senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectMail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Отключить</button> : null}
           </div>
           {!senderReady && !canStartGmailOAuth ? <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}
-          <details className="mt-3 rounded-lg border border-slate-200"><summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Пример письма <ChevronDown size={16} /></summary><p className="whitespace-pre-wrap border-t border-slate-200 p-3 text-sm leading-6 text-slate-700">{sample?.email_body || sample?.draft_email || "Пример появится после первого найденного и сохраненного результата."}</p></details>
+          <details className="mt-3 rounded-2xl border border-slate-200"><summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Пример письма <ChevronDown size={16} /></summary><p className="whitespace-pre-wrap border-t border-slate-200 p-3 text-sm leading-6 text-slate-700">{sample?.email_body || sample?.draft_email || "Пример появится после первого найденного и сохраненного результата."}</p></details>
           <button type="button" disabled={!canAllowAutopilot || Boolean(busy)} onClick={() => void allowCampaign()} className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === "campaign:allow" ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} Разрешить эту кампанию</button>
           {!canAllowAutopilot ? <p className="mt-2 text-xs font-bold leading-5 text-slate-500">Autopilot включится только после verified sender, CRM-save, черновиков, публичных источников, лимитов тарифа и дневного лимита.</p> : null}
-        </div>
+        </PremiumPanel>
       </section>
-      {job?.results.length ? <details className="rounded-lg border border-slate-200 bg-white"><summary className="flex cursor-pointer items-center justify-between p-4 text-sm font-black text-ink">Подробнее по найденным компаниям <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-slate-200 p-3">{job.results.map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</div></details> : null}
+      {job?.results.length ? <details className="rounded-[1.75rem] border border-slate-200 bg-white shadow-sm"><summary className="flex cursor-pointer items-center justify-between p-4 text-sm font-black text-ink">Подробнее по найденным компаниям <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-slate-200 p-4">{job.results.map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</div></details> : null}
       {jobs.length > 1 ? <details className="rounded-lg border border-slate-200 bg-white"><summary className="flex cursor-pointer items-center justify-between p-4 text-sm font-black text-ink">Previous searches <ChevronDown size={16} /></summary><div className="border-t border-slate-200 p-2">{jobs.slice(1).map((item) => <button key={item.id} type="button" onClick={() => setJob(item)} className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50"><span>{pretty(item.status)}</span><span className="font-bold">{item.results.length} result(s)</span></button>)}</div></details> : null}
     </Frame>
   );
@@ -563,19 +639,40 @@ function ClientsSection() {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+  const nextCompany = companies.find((company) => !latestEmail(company)) || companies.find((company) => latestEmail(company)?.delivery_status !== "sent") || companies[0];
+  const crmStatuses = ["New", "Qualified", "Draft ready", "Approved", "Sent", "Replied", "Meeting", "Not interested"];
 
   return (
-    <Frame title="Клиенты" copy="Только компании, явно сохранённые в CRM текущего workspace. Подробности открываются отдельно.">
-      <div className="flex justify-end"><button type="button" onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink"><RefreshCw size={16} /> Refresh</button></div>
+    <Frame title="Клиенты" copy="CRM Queue: только компании, явно сохранённые в текущем workspace. Следующее действие важнее сложного pipeline.">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap gap-2">
+          {crmStatuses.map((status) => <span key={status} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-black text-slate-700">{status}</span>)}
+        </div>
+        <button type="button" onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink"><RefreshCw size={16} /> Refresh</button>
+      </div>
       {loading ? <Notice>Loading real CRM companies.</Notice> : error ? <Notice tone="bad">{error}</Notice> : companies.length ? (
-        <section className="grid gap-3">
+        <section className="grid gap-4">
+          <PremiumPanel className="border-teal-200 bg-teal-50">
+            <p className="text-xs font-black uppercase tracking-[0.14em] text-teal-800">Next sales action</p>
+            <h2 className="mt-2 text-2xl font-black text-ink">{nextCompany?.name || "No company selected"}</h2>
+            <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{nextCompany ? (latestEmail(nextCompany) ? "Review the email approval state, then send only after explicit confirmation." : "Open lead details, verify evidence and create the personalised draft.") : "Find leads from AI-помощник first."}</p>
+          </PremiumPanel>
           {companies.map((company) => (
-            <article key={company.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <article key={company.id} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div><h2 className="text-lg font-black text-ink">{company.name}</h2><p className="mt-1 text-sm text-slate-600">{[company.industry, company.city, company.country].filter(Boolean).join(" · ") || "No company profile fields yet."}</p><p className="mt-2 text-sm leading-6 text-slate-700">{company.ai_summary || company.opportunity_analysis || "AI research has not filled a summary yet."}</p></div>
-                <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">{company.crm_stage || company.email_status}</span>
+                <div className="min-w-0"><h2 className="text-xl font-black tracking-tight text-ink">{company.name}</h2><p className="mt-1 text-sm text-slate-600">{[company.industry, company.city, company.country].filter(Boolean).join(" · ") || "No company profile fields yet."}</p><p className="mt-2 text-sm leading-6 text-slate-700">{company.ai_summary || company.opportunity_analysis || "AI research has not filled a summary yet."}</p></div>
+                <div className="flex flex-wrap gap-2 lg:justify-end">
+                  <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">{company.crm_stage || company.email_status}</span>
+                  <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-teal-800">{latestEmail(company)?.delivery_status || "draft needed"}</span>
+                </div>
               </div>
-              <details className="mt-3 rounded-lg border border-slate-200"><summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Подробнее <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-slate-200 p-3 text-sm leading-6 text-slate-700 lg:grid-cols-3"><div><p className="font-black text-ink">Website</p>{company.website ? <a className="font-bold text-teal-700" href={company.website} target="_blank" rel="noreferrer">{company.website}</a> : <p>Not found.</p>}</div><div><p className="font-black text-ink">Reason</p><p>{company.reasoning || company.suggested_offer || "No backend reason yet."}</p></div><div><p className="font-black text-ink">Draft</p><p>{latestEmail(company)?.subject || "No draft yet."}</p></div></div></details>
+              <div className="mt-4 grid gap-3 lg:grid-cols-4">
+                <ScoreTile label="Overall Lead Score" value={Number(company.overall_score || company.priority_score || company.icp_score || 0) || undefined} />
+                <ScoreTile label="Website Quality" value={Number(company.ai_company_predictions?.sales_readiness?.score || company.icp_score || 0) || undefined} />
+                <ScoreTile label="Contact Confidence" value={Number(company.confidence_score || 0) || undefined} />
+                <ScoreTile label="Outreach Readiness" value={latestEmail(company) ? 80 : undefined} />
+              </div>
+              <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50"><summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-sm font-black text-ink">Подробнее <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-slate-200 p-4 text-sm leading-6 text-slate-700 lg:grid-cols-3"><EvidenceLine label="Website" value={company.website || "Not found"} href={company.website || undefined} /><EvidenceLine label="Lead Reasoning" value={company.reasoning || company.suggested_offer || "No backend reason yet."} /><EvidenceLine label="Email draft" value={latestEmail(company)?.subject || "No draft yet."} /><EvidenceLine label="Research Profile" value={company.ai_summary || company.opportunity_analysis || "Недостаточно данных"} /><EvidenceLine label="Outreach Strategy" value={company.outreach_strategy || company.sales_angle || "No outreach strategy yet."} /><EvidenceLine label="Manual Review" value={latestEmail(company)?.delivery_status === "approved" ? "Approved. Send still requires explicit confirmation." : "Review required before any send."} /></div></details>
             </article>
           ))}
         </section>
@@ -641,12 +738,57 @@ function EmailsSection() {
   }
 
   return (
-    <Frame title="Письма" copy="Черновики и отправленные письма из backend. Отправка доступна только после ручного approve и отдельного подтверждения send.">
+    <Frame title="Письма" copy="Email Approval Workspace: черновики и отправленные письма из backend. Отправка доступна только после ручного approve и отдельного подтверждения send.">
       <div className="flex justify-end"><button type="button" onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink"><RefreshCw size={16} /> Refresh</button></div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {actionError ? <Notice tone="bad">{actionError}</Notice> : null}
       {loadError ? <Notice tone="bad">{loadError}</Notice> : null}
-      {emails.length ? <section className="grid gap-3">{emails.map((email) => <article key={email.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div><h2 className="text-lg font-black text-ink">{email.subject || "No subject"}</h2><p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p><p className="mt-3 max-w-3xl whitespace-pre-wrap text-sm leading-6 text-slate-700">{email.body || email.preview || "No email body returned."}</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void approve(email)} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</button><button type="button" disabled={Boolean(busy) || email.delivery_status !== "approved"} onClick={() => void send(email)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</button></div></div></article>)}</section> : <Notice>No email drafts yet. Save a verified customer result to CRM to create a draft.</Notice>}
+      <PremiumPanel className="border-amber-200 bg-amber-50">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 text-amber-700" size={22} />
+          <div>
+            <p className="font-black text-ink">AI creates drafts only</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-amber-900">Approve verifies the draft. Send still requires a separate explicit confirmation and uses the existing backend email action.</p>
+          </div>
+        </div>
+      </PremiumPanel>
+      {emails.length ? <section className="grid gap-4">{emails.map((email) => {
+        const relatedCompany = companies.find((company) => company.generated_emails?.some((item) => item.id === email.id));
+        return <article key={email.id} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+            <div>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Editable email draft</p>
+                  <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{email.subject || "No subject"}</h2>
+                  <p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void approve(email)} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</button>
+                  <button type="button" disabled={Boolean(busy) || email.delivery_status !== "approved"} onClick={() => void send(email)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</button>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <EvidenceLine label="Recipient" value={relatedCompany?.email || "Recipient not returned by this backend response"} />
+                <EvidenceLine label="Company" value={relatedCompany?.name || "Company not linked in this response"} />
+              </div>
+              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Body</p>
+                <p className="mt-3 max-w-3xl whitespace-pre-wrap text-sm leading-7 text-slate-700">{email.body || email.preview || "No email body returned."}</p>
+              </div>
+            </div>
+            <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">AI reasoning</p>
+              <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{relatedCompany?.reasoning || relatedCompany?.ai_summary || "No AI reasoning returned for this draft yet."}</p>
+              <div className="mt-4 grid gap-3">
+                <EvidenceLine label="Evidence used" value={relatedCompany?.opportunity_analysis || relatedCompany?.suggested_offer || "Недостаточно данных"} />
+                <EvidenceLine label="Outreach strategy" value={relatedCompany?.outreach_strategy || relatedCompany?.sales_angle || "No outreach strategy returned yet."} />
+                <EvidenceLine label="Safety state" value={email.delivery_status === "approved" ? "Approved. Send still requires confirmation." : email.delivery_status === "sent" ? "Sent through backend." : "Manual approval required."} />
+              </div>
+            </aside>
+          </div>
+        </article>;
+      })}</section> : <Notice>No email drafts yet. Save a verified customer result to CRM to create a draft.</Notice>}
     </Frame>
   );
 }
@@ -732,12 +874,17 @@ function SettingsSection() {
   const oauthProvider = gmailReady ? "Gmail OAuth" : "Not connected";
 
   return (
-    <Frame title="Настройки" copy="Workspace, интеграции и отправитель. Статусы приходят из backend и остаются scoped к текущему аккаунту.">
+    <Frame title="Настройки" copy="Workspace, Gmail OAuth, sender safety, billing и account. Статусы приходят из backend и остаются scoped к текущему аккаунту.">
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
       <section className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-        <form onSubmit={save} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><h2 className="text-lg font-black text-ink">Workspace</h2><div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-slate-700">Name<input name="name" defaultValue={workspace?.name || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Company<input name="company" defaultValue={workspace?.company || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Industry<input name="industry" defaultValue={workspace?.industry || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700 sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label></div><button type="submit" className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white"><CheckCircle2 size={16} /> Save workspace</button></form>
-        <div className="grid gap-4"><section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-md border border-slate-200 p-3"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><span className={`rounded-full px-2 py-1 text-xs font-black ${item.status === "connected" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{item.status}</span></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></section><section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><span className={`rounded-full px-2 py-1 text-xs font-black ${gmailReady ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{gmailReady ? "connected" : "needs OAuth"}</span></div><div className="mt-3 grid gap-2 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</button>{gmailReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Disconnect</button> : null}<button type="button" disabled={Boolean(busy)} onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} /> Refresh</button></div></section></div>
+        <form onSubmit={save} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-slate-700">Name<input name="name" defaultValue={workspace?.name || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Company<input name="company" defaultValue={workspace?.company || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Industry<input name="industry" defaultValue={workspace?.industry || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700 sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label></div><button type="submit" className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white"><CheckCircle2 size={16} /> Save workspace</button></form>
+        <div className="grid gap-4"><section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-2xl border border-slate-200 p-3"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><span className={`rounded-full px-2 py-1 text-xs font-black ${item.status === "connected" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{item.status}</span></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></section><section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><span className={`rounded-full px-2 py-1 text-xs font-black ${gmailReady ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{gmailReady ? "connected" : "needs OAuth"}</span></div><div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</button>{gmailReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Disconnect</button> : null}<button type="button" disabled={Boolean(busy)} onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} /> Refresh</button></div></section></div>
+      </section>
+      <section className="grid gap-4 md:grid-cols-3">
+        <PremiumPanel><p className="text-sm font-black text-ink">Email safety</p><p className="mt-2 text-sm leading-6 text-slate-600">Manual approval, Pause and Stop remain visible before external sending.</p></PremiumPanel>
+        <PremiumPanel><p className="text-sm font-black text-ink">Plan</p><p className="mt-2 text-sm leading-6 text-slate-600">Plan management stays on the existing billing route.</p><Link href="/dashboard/billing" className="mt-3 inline-flex min-h-10 items-center rounded-md border border-slate-300 px-3 text-sm font-black text-ink">Open billing</Link></PremiumPanel>
+        <PremiumPanel><p className="text-sm font-black text-ink">Account</p><p className="mt-2 text-sm leading-6 text-slate-600">Authentication remains handled by the secure account session.</p></PremiumPanel>
       </section>
     </Frame>
   );
