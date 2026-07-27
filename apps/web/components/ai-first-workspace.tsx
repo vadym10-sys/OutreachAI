@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, PauseCircle, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Square, UsersRound } from "lucide-react";
+import { AppBadge, AppButton, EmptyStateView, LoadingStateView, SurfaceCard } from "@/components/design-system";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand } from "@/lib/ai-first-api";
 import type { FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
@@ -24,6 +25,11 @@ const blankCommand: AiAssistantCommand = {
   exclusions: [],
   maxResults: 10
 };
+
+const aiWorkflowLabels = ["Describe business", "AI searches", "AI analyses", "Lead score", "Evidence", "Research profile", "Outreach strategy", "Save to CRM", "Draft email", "Manual approval", "Send"];
+const crmStatuses = ["New", "Qualified", "Draft ready", "Approved", "Sent", "Replied", "Meeting", "Not interested"];
+const fieldClass = "focus-ring mt-2 min-h-11 w-full rounded-xl border border-[var(--ui-border)] bg-white px-3 text-sm text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]";
+const detailSummaryClass = "flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-2xl px-4 py-3 text-sm font-black text-[var(--ui-text)] transition hover:bg-slate-100";
 
 function pretty(value: string) {
   const text = value.replace(/_/g, " ");
@@ -161,10 +167,10 @@ function uniqueEmails(companies: CrmCompany[], inbox: Email[]) {
 
 function Frame({ title, copy, children }: { title: string; copy: string; children: React.ReactNode }) {
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-5">
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 ui-animate-enter">
       <div>
-        <h1 className="text-2xl font-black tracking-tight text-ink sm:text-3xl">{title}</h1>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{copy}</p>
+        <h1 className="ui-title text-2xl sm:text-3xl">{title}</h1>
+        <p className="ui-copy mt-2 max-w-3xl">{copy}</p>
       </div>
       {children}
     </div>
@@ -172,22 +178,22 @@ function Frame({ title, copy, children }: { title: string; copy: string; childre
 }
 
 function Notice({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "good" | "bad" }) {
-  const toneClass = tone === "good" ? "border-teal-200 bg-teal-50 text-teal-800" : tone === "bad" ? "border-red-200 bg-red-50 text-red-700" : "border-slate-200 bg-white text-slate-700";
-  return <div className={`rounded-lg border p-3 text-sm font-semibold leading-6 ${toneClass}`}>{children}</div>;
+  const toneClass = tone === "good" ? "border-teal-200 bg-teal-50 text-teal-800" : tone === "bad" ? "border-red-200 bg-red-50 text-red-700" : "border-[var(--ui-border)] bg-white text-[var(--ui-text-soft)]";
+  return <div role={tone === "bad" ? "alert" : "status"} aria-live="polite" className={`rounded-2xl border p-4 text-sm font-semibold leading-6 shadow-sm ${toneClass}`}>{children}</div>;
 }
 
 function PremiumPanel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <section className={`rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm ${className}`}>{children}</section>;
+  return <SurfaceCard className={`rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5 motion-safe:hover:shadow-raised ${className}`}>{children}</SurfaceCard>;
 }
 
 function ScoreTile({ label, value, copy }: { label: string; value?: number; copy?: string }) {
   const score = typeof value === "number" ? Math.max(0, Math.min(100, Math.round(value))) : null;
   const tone = score === null ? "text-slate-500" : score >= 75 ? "text-teal-700" : score >= 50 ? "text-amber-700" : "text-red-700";
   return (
-    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{label}</p>
+    <div aria-label={`${label}: ${score === null ? "Недостаточно данных" : `${score} из 100`}`} className="min-h-[8.5rem] rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 transition hover:border-[var(--ui-border-strong)]">
+      <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{label}</p>
       <p className={`mt-2 text-3xl font-black tracking-tight ${tone}`}>{score === null ? "Недостаточно данных" : score}</p>
-      {copy ? <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{copy}</p> : null}
+      {copy ? <p className="mt-2 text-sm font-semibold leading-6 text-[var(--ui-text-soft)]">{copy}</p> : null}
     </div>
   );
 }
@@ -195,14 +201,14 @@ function ScoreTile({ label, value, copy }: { label: string; value?: number; copy
 function EvidenceLine({ label, value, href }: { label: string; value?: string; href?: string }) {
   const text = String(value || "").trim();
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{label}</p>
+    <div className="min-h-[7.5rem] rounded-2xl border border-[var(--ui-border)] bg-white p-4 transition hover:border-[var(--ui-border-strong)]">
+      <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{label}</p>
       {href && text ? (
-        <a href={href} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 break-all text-sm font-bold leading-6 text-teal-700">
+        <a href={href} target="_blank" rel="noreferrer" className="focus-ring mt-2 inline-flex min-h-10 items-center gap-1 break-all rounded-lg text-sm font-bold leading-6 text-teal-700">
           {text} <ExternalLink size={14} />
         </a>
       ) : (
-        <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{text || "Недостаточно данных"}</p>
+        <p className="mt-2 text-sm font-semibold leading-6 text-[var(--ui-text-soft)]">{text || "Недостаточно данных"}</p>
       )}
     </div>
   );
@@ -210,7 +216,7 @@ function EvidenceLine({ label, value, href }: { label: string; value?: string; h
 
 function WorkflowStep({ index, label, active }: { index: number; label: string; active?: boolean }) {
   return (
-    <div className={`flex min-h-11 items-center gap-3 rounded-full border px-3 text-sm font-black ${active ? "border-slate-950 bg-slate-950 text-white" : "border-slate-200 bg-white text-slate-700"}`}>
+    <div className={`flex min-h-11 items-center gap-3 rounded-full border px-3 text-sm font-black transition ${active ? "border-[var(--ui-brand)] bg-[var(--ui-brand)] text-white shadow-glow" : "border-[var(--ui-border)] bg-white text-[var(--ui-text-soft)]"}`}>
       <span className={`grid size-7 place-items-center rounded-full text-xs ${active ? "bg-white text-slate-950" : "bg-slate-100 text-slate-600"}`}>{index}</span>
       {label}
     </div>
@@ -247,26 +253,26 @@ function ResultCard({
   const aiConfidence = result.ai_confidence_score ?? result.confidence_score;
   const qualityGate = qualityGateLabel(result);
   return (
-    <article className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+    <SurfaceCard as="article" className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-xl font-black tracking-tight text-ink">{result.company_name}</h2>
-            <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-black text-white">{overallScore}/100 score</span>
-            <span className={`rounded-full px-3 py-1 text-xs font-black ${qualityGate.includes("passed") ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{qualityGate}</span>
+            <h2 className="ui-title text-xl">{result.company_name}</h2>
+            <AppBadge tone="dark">{overallScore}/100 score</AppBadge>
+            <AppBadge tone={qualityGate.includes("passed") ? "success" : "warning"}>{qualityGate}</AppBadge>
           </div>
-          <p className="mt-1 text-sm text-slate-600">{[result.industry, result.country, result.company_size].filter(Boolean).join(" · ") || "Company profile fields were not found yet."}</p>
+          <p className="mt-1 text-sm text-[var(--ui-text-soft)]">{[result.industry, result.country, result.company_size].filter(Boolean).join(" · ") || "Company profile fields were not found yet."}</p>
         </div>
         {!hideActions ? <div className="flex flex-wrap gap-2">
-          <button type="button" disabled={Boolean(busy) || saved} onClick={() => onSave(result)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">
+          <AppButton size="sm" disabled={Boolean(busy) || saved} onClick={() => onSave(result)} aria-label={`${saved ? "Saved" : "Save to CRM"} ${result.company_name}`}>
             {busy === `save:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} {saved ? "Saved" : "Save to CRM"}
-          </button>
-          <button type="button" disabled={Boolean(busy) || !emailId} onClick={() => onApprove(result)} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">
+          </AppButton>
+          <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !emailId} onClick={() => onApprove(result)} aria-label={`Approve draft for ${result.company_name}`}>
             {busy === `approve:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />} Approve draft
-          </button>
-          <button type="button" disabled={Boolean(busy) || !canSend} onClick={() => onSend(result)} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">
+          </AppButton>
+          <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !canSend} onClick={() => onSend(result)} aria-label={`Send email for ${result.company_name}`}>
             {busy === `send:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send approved
-          </button>
+          </AppButton>
         </div> : null}
       </div>
       <div className="mt-5 grid gap-3 lg:grid-cols-4">
@@ -280,20 +286,20 @@ function ResultCard({
         <EvidenceLine label="Evidence" value={result.evidence_summary || result.observed_fact || "No evidence summary returned."} />
         <EvidenceLine label="Recommended decision maker" value={[result.contact_name, result.contact_title].filter(Boolean).join(" · ") || result.contact_title || "Decision maker not confirmed"} />
       </div>
-      <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50">
-        <summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-sm font-black text-ink">Подробнее <ChevronDown size={16} /></summary>
-        <div className="grid gap-3 border-t border-slate-200 p-4 text-sm leading-6 text-slate-700 lg:grid-cols-2">
+      <details className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)]">
+        <summary className={detailSummaryClass}>Подробнее <ChevronDown size={16} /></summary>
+        <div className="grid gap-3 border-t border-[var(--ui-border)] p-4 text-sm leading-6 text-[var(--ui-text-soft)] lg:grid-cols-2">
           <EvidenceLine label="Source" value={result.source_title || sourceUrl(result)} href={sourceUrl(result)} />
           <EvidenceLine label="Contact route" value={result.public_work_contact || "No verified public work email yet."} />
           <EvidenceLine label="Facts" value={result.evidence_excerpt || result.observed_fact || "No excerpt returned."} />
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Outreach Strategy</p>
-            <p className="mt-2 font-bold text-ink">{result.email_subject || "No subject yet."}</p>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{result.email_body || result.draft_email || "No email draft yet. Save the result to CRM when ready."}</p>
+          <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Outreach Strategy</p>
+            <p className="mt-2 font-bold text-[var(--ui-text)]">{result.email_subject || "No subject yet."}</p>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[var(--ui-text-soft)]">{result.email_body || result.draft_email || "No email draft yet. Save the result to CRM when ready."}</p>
           </div>
         </div>
       </details>
-    </article>
+    </SurfaceCard>
   );
 }
 
@@ -537,18 +543,18 @@ function AssistantSection() {
     <Frame title="AI-помощник" copy="Вставьте сайт или опишите бизнес. OutreachAI сам соберет критерии, запустит First Customer Finder, покажет evidence, сохранит проверенные компании в CRM и подготовит письма для ручного approval.">
       <PremiumPanel className="bg-gradient-to-br from-white via-white to-slate-50">
         <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
-          <form aria-label="AI customer command" onSubmit={submit} className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm">
-            <label className="block text-sm font-black text-ink">AI command<textarea value={command} onChange={(event) => setCommand(event.target.value)} className="mt-2 min-h-40 w-full resize-y rounded-[1.25rem] border border-slate-300 bg-slate-50 p-4 text-base leading-7 outline-none transition focus:border-teal-500 focus:bg-white focus:ring-4 focus:ring-teal-500/10" placeholder="Вставьте сайт или опишите свой бизнес и кого хотите найти" /></label>
+          <form aria-label="AI customer command" onSubmit={submit} className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-soft">
+            <label className="block text-sm font-black text-[var(--ui-text)]">AI command<textarea value={command} onChange={(event) => setCommand(event.target.value)} className="focus-ring mt-2 min-h-40 w-full resize-y rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-base leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)] focus:bg-white" placeholder="Вставьте сайт или опишите свой бизнес и кого хотите найти" /></label>
             <div className="mt-4 grid grid-cols-2 gap-2">
-          <button type="submit" disabled={loading || !hydrated || !api.ready} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Запустить AI</button>
-          <button type="button" onClick={() => void loadJobs()} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-slate-300 px-4 text-sm font-black text-ink"><RefreshCw size={17} /> Обновить</button>
+          <AppButton type="submit" disabled={loading || !hydrated || !api.ready} className="w-full">{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Запустить AI</AppButton>
+          <AppButton variant="secondary" onClick={() => void loadJobs()} className="w-full" aria-label="Обновить AI searches"><RefreshCw size={17} /> Обновить</AppButton>
             </div>
-            <details className="mt-4 rounded-2xl border border-slate-200 bg-white">
-              <summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Расширенные настройки <ChevronDown size={16} /></summary>
-              <div className="grid gap-3 border-t border-slate-200 p-3 lg:grid-cols-3">
-            <label className="text-sm font-bold text-slate-700">Страна<input value={advanced.targetCountry} onChange={(event) => updateAdvanced("targetCountry", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Auto" /></label>
-            <label className="text-sm font-bold text-slate-700">Отрасль<input value={advanced.targetIndustry} onChange={(event) => updateAdvanced("targetIndustry", event.target.value)} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" placeholder="Auto" /></label>
-            <label className="text-sm font-bold text-slate-700">Дневной лимит<input type="number" min={1} max={50} value={advanced.maxResults} onChange={(event) => updateAdvanced("maxResults", Number(event.target.value || 10))} className="mt-2 min-h-10 w-full rounded-md border border-slate-300 px-3" /></label>
+            <details className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-white">
+              <summary className={detailSummaryClass}>Расширенные настройки <ChevronDown size={16} /></summary>
+              <div className="grid gap-3 border-t border-[var(--ui-border)] p-3 lg:grid-cols-3">
+            <label className="text-sm font-bold text-[var(--ui-text-soft)]">Страна<input value={advanced.targetCountry} onChange={(event) => updateAdvanced("targetCountry", event.target.value)} className={fieldClass} placeholder="Auto" /></label>
+            <label className="text-sm font-bold text-[var(--ui-text-soft)]">Отрасль<input value={advanced.targetIndustry} onChange={(event) => updateAdvanced("targetIndustry", event.target.value)} className={fieldClass} placeholder="Auto" /></label>
+            <label className="text-sm font-bold text-[var(--ui-text-soft)]">Дневной лимит<input type="number" min={1} max={50} value={advanced.maxResults} onChange={(event) => updateAdvanced("maxResults", Number(event.target.value || 10))} className={fieldClass} /></label>
               </div>
             </details>
           </form>
@@ -563,7 +569,7 @@ function AssistantSection() {
               </div>
             </div>
             <div className="grid gap-2">
-              {["Describe business", "AI searches", "AI analyses", "Lead score", "Evidence", "Research profile", "Outreach strategy", "Save to CRM", "Draft email", "Manual approval", "Send"].map((label, index) => (
+              {aiWorkflowLabels.map((label, index) => (
                 <WorkflowStep key={label} index={index + 1} label={label} active={index === (found ? prepared ? 9 : 7 : 0)} />
               ))}
             </div>
@@ -571,8 +577,8 @@ function AssistantSection() {
         </div>
       </PremiumPanel>
       <div data-ai-controls-ready={aiControlsReady ? "true" : "false"} data-autopilot-state={autopilotControlState} className="grid grid-cols-2 gap-2 rounded-[1.5rem] border border-slate-200 bg-white p-3 shadow-sm">
-        <button type="button" disabled={!canControlAutopilot} onClick={() => void autopilotAction("pause")} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-amber-300 px-4 text-sm font-black text-amber-800 disabled:cursor-not-allowed disabled:opacity-50"><PauseCircle size={17} /> Пауза</button>
-        <button type="button" disabled={!canControlAutopilot} onClick={() => void autopilotAction("stop")} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-red-300 px-4 text-sm font-black text-red-700 disabled:cursor-not-allowed disabled:opacity-50"><Square size={17} /> Остановить</button>
+        <AppButton variant="secondary" disabled={!canControlAutopilot} onClick={() => void autopilotAction("pause")} className="w-full border-amber-300 text-amber-800"><PauseCircle size={17} /> Пауза</AppButton>
+        <AppButton variant="secondary" disabled={!canControlAutopilot} onClick={() => void autopilotAction("stop")} className="w-full border-red-300 text-red-700"><Square size={17} /> Остановить</AppButton>
       </div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
@@ -581,18 +587,18 @@ function AssistantSection() {
           <p className="text-sm font-black text-ink">Понимание задачи</p>
           <p className="mt-2 text-sm leading-6 text-slate-700">{understanding || understandingFor(command || "https://outreachaiaiai.com", criteria)}</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-5">
-            {[["Найдено", found], ["CRM", saved], ["Подготовлено", prepared], ["Отправлено", sent], ["Ответы", replies]].map(([label, value]) => <div key={String(label)} className="rounded-2xl bg-slate-50 p-3"><p className="text-xs font-black uppercase text-slate-500">{label}</p><p className="mt-1 text-2xl font-black text-ink">{value}</p></div>)}
+            {[["Найдено", found], ["CRM", saved], ["Подготовлено", prepared], ["Отправлено", sent], ["Ответы", replies]].map(([label, value]) => <div key={String(label)} className="rounded-2xl bg-[var(--ui-surface-subtle)] p-3"><p className="text-xs font-black uppercase text-[var(--ui-text-soft)]">{label}</p><p className="mt-1 text-2xl font-black text-[var(--ui-text)]">{value}</p></div>)}
           </div>
-          <div className="mt-4 rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-black uppercase text-slate-500">Что AI делает сейчас</p>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{autoSaving ? "Сохраняю проверенные компании в CRM и создаю черновики через backend." : progressText}</p>
+          <div role="status" aria-live="polite" className="mt-4 rounded-2xl bg-[var(--ui-surface-subtle)] p-4">
+            <p className="text-xs font-black uppercase text-[var(--ui-text-soft)]">Что AI делает сейчас</p>
+            <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{autoSaving ? "Сохраняю проверенные компании в CRM и создаю черновики через backend." : progressText}</p>
             {needsReview ? <p className="mt-2 text-sm font-bold text-amber-700">{needsReview} лид(ов) оставлены со статусом «Требует проверки».</p> : null}
           </div>
         </PremiumPanel>
         <PremiumPanel>
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-lg font-black text-ink">AI Autopilot</h2>
-            <span className={`rounded-full px-2 py-1 text-xs font-black ${campaign?.status === "Running" || campaign?.status === "running" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{campaign?.status || "needs approval"}</span>
+            <AppBadge tone={campaign?.status === "Running" || campaign?.status === "running" ? "success" : "warning"}>{campaign?.status || "needs approval"}</AppBadge>
           </div>
           <div className="mt-3 grid gap-2 text-sm leading-6 text-slate-700">
             <p><span className="font-black text-ink">Почта:</span> {senderReady ? `${sender?.oauth_mailbox} через Gmail OAuth` : "подключите Gmail OAuth перед автономной отправкой"}</p>
@@ -601,18 +607,18 @@ function AssistantSection() {
             <p><span className="font-black text-ink">Дневной лимит:</span> {Math.min(sender?.remaining_today || 0, 10)} из {sender?.daily_send_limit || 0}</p>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
-            {!senderReady ? <button type="button" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectMail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> {busy === "mail:connect" ? "Opening Gmail..." : "Connect Gmail"}</button> : null}
-            {senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void syncReplies()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} /> Проверить ответы</button> : null}
-            {senderReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectMail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Отключить</button> : null}
+            {!senderReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectMail()}><Mail size={16} /> {busy === "mail:connect" ? "Opening Gmail..." : "Connect Gmail"}</AppButton> : null}
+            {senderReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void syncReplies()}><RefreshCw size={16} /> Проверить ответы</AppButton> : null}
+            {senderReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void disconnectMail()}>Отключить</AppButton> : null}
           </div>
-          {!senderReady && !canStartGmailOAuth ? <p className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}
-          <details className="mt-3 rounded-2xl border border-slate-200"><summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-sm font-black text-ink">Пример письма <ChevronDown size={16} /></summary><p className="whitespace-pre-wrap border-t border-slate-200 p-3 text-sm leading-6 text-slate-700">{sample?.email_body || sample?.draft_email || "Пример появится после первого найденного и сохраненного результата."}</p></details>
-          <button type="button" disabled={!canAllowAutopilot || Boolean(busy)} onClick={() => void allowCampaign()} className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === "campaign:allow" ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} Разрешить эту кампанию</button>
+          {!senderReady && !canStartGmailOAuth ? <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}
+          <details className="mt-3 rounded-2xl border border-[var(--ui-border)]"><summary className={detailSummaryClass}>Пример письма <ChevronDown size={16} /></summary><p className="whitespace-pre-wrap border-t border-[var(--ui-border)] p-3 text-sm leading-6 text-[var(--ui-text-soft)]">{sample?.email_body || sample?.draft_email || "Пример появится после первого найденного и сохраненного результата."}</p></details>
+          <AppButton disabled={!canAllowAutopilot || Boolean(busy)} onClick={() => void allowCampaign()} className="mt-4 w-full">{busy === "campaign:allow" ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} Разрешить эту кампанию</AppButton>
           {!canAllowAutopilot ? <p className="mt-2 text-xs font-bold leading-5 text-slate-500">Autopilot включится только после verified sender, CRM-save, черновиков, публичных источников, лимитов тарифа и дневного лимита.</p> : null}
         </PremiumPanel>
       </section>
-      {job?.results.length ? <details className="rounded-[1.75rem] border border-slate-200 bg-white shadow-sm"><summary className="flex cursor-pointer items-center justify-between p-4 text-sm font-black text-ink">Подробнее по найденным компаниям <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-slate-200 p-4">{job.results.map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</div></details> : null}
-      {jobs.length > 1 ? <details className="rounded-lg border border-slate-200 bg-white"><summary className="flex cursor-pointer items-center justify-between p-4 text-sm font-black text-ink">Previous searches <ChevronDown size={16} /></summary><div className="border-t border-slate-200 p-2">{jobs.slice(1).map((item) => <button key={item.id} type="button" onClick={() => setJob(item)} className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50"><span>{pretty(item.status)}</span><span className="font-bold">{item.results.length} result(s)</span></button>)}</div></details> : null}
+      {job?.results.length ? <details className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white shadow-soft"><summary className={detailSummaryClass}>Подробнее по найденным компаниям <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-[var(--ui-border)] p-4">{job.results.map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</div></details> : null}
+      {jobs.length > 1 ? <details className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white shadow-sm"><summary className={detailSummaryClass}>Previous searches <ChevronDown size={16} /></summary><div className="border-t border-[var(--ui-border)] p-2">{jobs.slice(1).map((item) => <button key={item.id} type="button" onClick={() => setJob(item)} className="focus-ring flex min-h-11 w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition hover:bg-slate-50"><span>{pretty(item.status)}</span><span className="font-bold">{item.results.length} result(s)</span></button>)}</div></details> : null}
     </Frame>
   );
 }
@@ -640,17 +646,15 @@ function ClientsSection() {
     return () => window.clearTimeout(timer);
   }, [load]);
   const nextCompany = companies.find((company) => !latestEmail(company)) || companies.find((company) => latestEmail(company)?.delivery_status !== "sent") || companies[0];
-  const crmStatuses = ["New", "Qualified", "Draft ready", "Approved", "Sent", "Replied", "Meeting", "Not interested"];
-
   return (
     <Frame title="Клиенты" copy="CRM Queue: только компании, явно сохранённые в текущем workspace. Следующее действие важнее сложного pipeline.">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap gap-2">
-          {crmStatuses.map((status) => <span key={status} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-black text-slate-700">{status}</span>)}
+          {crmStatuses.map((status) => <AppBadge key={status} tone="neutral">{status}</AppBadge>)}
         </div>
-        <button type="button" onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink"><RefreshCw size={16} /> Refresh</button>
+        <AppButton variant="secondary" size="sm" onClick={() => void load()} aria-label="Refresh CRM companies"><RefreshCw size={16} /> Refresh</AppButton>
       </div>
-      {loading ? <Notice>Loading real CRM companies.</Notice> : error ? <Notice tone="bad">{error}</Notice> : companies.length ? (
+      {loading ? <LoadingStateView title="Loading real CRM companies." /> : error ? <Notice tone="bad">{error}</Notice> : companies.length ? (
         <section className="grid gap-4">
           <PremiumPanel className="border-teal-200 bg-teal-50">
             <p className="text-xs font-black uppercase tracking-[0.14em] text-teal-800">Next sales action</p>
@@ -658,12 +662,12 @@ function ClientsSection() {
             <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{nextCompany ? (latestEmail(nextCompany) ? "Review the email approval state, then send only after explicit confirmation." : "Open lead details, verify evidence and create the personalised draft.") : "Find leads from AI-помощник first."}</p>
           </PremiumPanel>
           {companies.map((company) => (
-            <article key={company.id} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+            <SurfaceCard as="article" key={company.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0"><h2 className="text-xl font-black tracking-tight text-ink">{company.name}</h2><p className="mt-1 text-sm text-slate-600">{[company.industry, company.city, company.country].filter(Boolean).join(" · ") || "No company profile fields yet."}</p><p className="mt-2 text-sm leading-6 text-slate-700">{company.ai_summary || company.opportunity_analysis || "AI research has not filled a summary yet."}</p></div>
                 <div className="flex flex-wrap gap-2 lg:justify-end">
-                  <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">{company.crm_stage || company.email_status}</span>
-                  <span className="w-fit rounded-full bg-teal-50 px-3 py-1 text-xs font-black text-teal-800">{latestEmail(company)?.delivery_status || "draft needed"}</span>
+                  <AppBadge tone="neutral">{company.crm_stage || company.email_status}</AppBadge>
+                  <AppBadge tone={latestEmail(company)?.delivery_status === "sent" ? "success" : "brand"}>{latestEmail(company)?.delivery_status || "draft needed"}</AppBadge>
                 </div>
               </div>
               <div className="mt-4 grid gap-3 lg:grid-cols-4">
@@ -672,11 +676,11 @@ function ClientsSection() {
                 <ScoreTile label="Contact Confidence" value={Number(company.confidence_score || 0) || undefined} />
                 <ScoreTile label="Outreach Readiness" value={latestEmail(company) ? 80 : undefined} />
               </div>
-              <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50"><summary className="flex cursor-pointer items-center justify-between px-4 py-3 text-sm font-black text-ink">Подробнее <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-slate-200 p-4 text-sm leading-6 text-slate-700 lg:grid-cols-3"><EvidenceLine label="Website" value={company.website || "Not found"} href={company.website || undefined} /><EvidenceLine label="Lead Reasoning" value={company.reasoning || company.suggested_offer || "No backend reason yet."} /><EvidenceLine label="Email draft" value={latestEmail(company)?.subject || "No draft yet."} /><EvidenceLine label="Research Profile" value={company.ai_summary || company.opportunity_analysis || "Недостаточно данных"} /><EvidenceLine label="Outreach Strategy" value={company.outreach_strategy || company.sales_angle || "No outreach strategy yet."} /><EvidenceLine label="Manual Review" value={latestEmail(company)?.delivery_status === "approved" ? "Approved. Send still requires explicit confirmation." : "Review required before any send."} /></div></details>
-            </article>
+              <details className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)]"><summary className={detailSummaryClass}>Подробнее <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-[var(--ui-border)] p-4 text-sm leading-6 text-[var(--ui-text-soft)] lg:grid-cols-3"><EvidenceLine label="Website" value={company.website || "Not found"} href={company.website || undefined} /><EvidenceLine label="Lead Reasoning" value={company.reasoning || company.suggested_offer || "No backend reason yet."} /><EvidenceLine label="Email draft" value={latestEmail(company)?.subject || "No draft yet."} /><EvidenceLine label="Research Profile" value={company.ai_summary || company.opportunity_analysis || "Недостаточно данных"} /><EvidenceLine label="Outreach Strategy" value={company.outreach_strategy || company.sales_angle || "No outreach strategy yet."} /><EvidenceLine label="Manual Review" value={latestEmail(company)?.delivery_status === "approved" ? "Approved. Send still requires explicit confirmation." : "Review required before any send."} /></div></details>
+            </SurfaceCard>
           ))}
         </section>
-      ) : <Notice>No clients saved yet. Save verified First Customer Finder results from AI-помощник.</Notice>}
+      ) : <EmptyStateView title="No clients saved yet." copy="Save verified First Customer Finder results from AI-помощник. Unsafe results stay in review instead of becoming CRM records." />}
     </Frame>
   );
 }
@@ -685,6 +689,7 @@ function EmailsSection() {
   const api = useAiFirstApi();
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [inbox, setInbox] = useState<Email[]>([]);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [loadError, setLoadError] = useState("");
   const [actionError, setActionError] = useState("");
@@ -692,6 +697,7 @@ function EmailsSection() {
   const emails = useMemo(() => uniqueEmails(companies, inbox), [companies, inbox]);
   const load = useCallback(async () => {
     if (!api.ready) return;
+    setLoading(true);
     try {
       const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails()]);
       setCompanies(nextCompanies);
@@ -699,6 +705,8 @@ function EmailsSection() {
       setLoadError("");
     } catch (err) {
       setLoadError(friendlyErrorMessage(err, "Could not load emails."));
+    } finally {
+      setLoading(false);
     }
   }, [api]);
   useEffect(() => {
@@ -739,7 +747,7 @@ function EmailsSection() {
 
   return (
     <Frame title="Письма" copy="Email Approval Workspace: черновики и отправленные письма из backend. Отправка доступна только после ручного approve и отдельного подтверждения send.">
-      <div className="flex justify-end"><button type="button" onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink"><RefreshCw size={16} /> Refresh</button></div>
+      <div className="flex justify-end"><AppButton variant="secondary" size="sm" onClick={() => void load()} aria-label="Refresh email drafts"><RefreshCw size={16} /> Refresh</AppButton></div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {actionError ? <Notice tone="bad">{actionError}</Notice> : null}
       {loadError ? <Notice tone="bad">{loadError}</Notice> : null}
@@ -752,33 +760,33 @@ function EmailsSection() {
           </div>
         </div>
       </PremiumPanel>
-      {emails.length ? <section className="grid gap-4">{emails.map((email) => {
+      {loading ? <LoadingStateView title="Loading email approval workspace." /> : emails.length ? <section className="grid gap-4">{emails.map((email) => {
         const relatedCompany = companies.find((company) => company.generated_emails?.some((item) => item.id === email.id));
-        return <article key={email.id} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm">
+        return <SurfaceCard as="article" key={email.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
           <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
             <div>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Editable email draft</p>
+                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Editable email draft</p>
                   <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{email.subject || "No subject"}</h2>
                   <p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void approve(email)} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</button>
-                  <button type="button" disabled={Boolean(busy) || email.delivery_status !== "approved"} onClick={() => void send(email)} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</button>
+                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void approve(email)} aria-label={`Approve email ${email.subject || email.id}`}>{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</AppButton>
+                  <AppButton size="sm" disabled={Boolean(busy) || email.delivery_status !== "approved"} onClick={() => void send(email)} aria-label={`Send email ${email.subject || email.id}`}>{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</AppButton>
                 </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <EvidenceLine label="Recipient" value={relatedCompany?.email || "Recipient not returned by this backend response"} />
                 <EvidenceLine label="Company" value={relatedCompany?.name || "Company not linked in this response"} />
               </div>
-              <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">Body</p>
-                <p className="mt-3 max-w-3xl whitespace-pre-wrap text-sm leading-7 text-slate-700">{email.body || email.preview || "No email body returned."}</p>
+              <div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
+                <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body</p>
+                <p className="mt-3 max-w-3xl whitespace-pre-wrap text-sm leading-7 text-[var(--ui-text-soft)]">{email.body || email.preview || "No email body returned."}</p>
               </div>
             </div>
-            <aside className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">AI reasoning</p>
+            <aside className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
+              <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">AI reasoning</p>
               <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{relatedCompany?.reasoning || relatedCompany?.ai_summary || "No AI reasoning returned for this draft yet."}</p>
               <div className="mt-4 grid gap-3">
                 <EvidenceLine label="Evidence used" value={relatedCompany?.opportunity_analysis || relatedCompany?.suggested_offer || "Недостаточно данных"} />
@@ -787,8 +795,8 @@ function EmailsSection() {
               </div>
             </aside>
           </div>
-        </article>;
-      })}</section> : <Notice>No email drafts yet. Save a verified customer result to CRM to create a draft.</Notice>}
+        </SurfaceCard>;
+      })}</section> : <EmptyStateView title="No email drafts yet." copy="Save a verified customer result to CRM to create a draft. AI will not send anything without explicit approval." />}
     </Frame>
   );
 }
@@ -798,12 +806,14 @@ function SettingsSection() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [integrations, setIntegrations] = useState<WorkspaceIntegrationStatus[]>([]);
   const [sender, setSender] = useState<OutreachSenderStatus | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
 
   const load = useCallback(async () => {
     if (!api.ready) return;
+    setLoading(true);
     try {
       const [nextWorkspace, nextIntegrations, nextSender] = await Promise.all([api.getWorkspace(), api.integrations(), api.senderStatus()]);
       setWorkspace(nextWorkspace);
@@ -812,6 +822,8 @@ function SettingsSection() {
       setError("");
     } catch (err) {
       setError(friendlyErrorMessage(err, "Could not load settings."));
+    } finally {
+      setLoading(false);
     }
   }, [api]);
   useEffect(() => {
@@ -877,13 +889,14 @@ function SettingsSection() {
     <Frame title="Настройки" copy="Workspace, Gmail OAuth, sender safety, billing и account. Статусы приходят из backend и остаются scoped к текущему аккаунту.">
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
+      {loading ? <LoadingStateView title="Loading workspace settings." /> : null}
       <section className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-        <form onSubmit={save} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-slate-700">Name<input name="name" defaultValue={workspace?.name || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Company<input name="company" defaultValue={workspace?.company || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Industry<input name="industry" defaultValue={workspace?.industry || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label><label className="text-sm font-bold text-slate-700 sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /></label></div><button type="submit" className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-black text-white"><CheckCircle2 size={16} /> Save workspace</button></form>
-        <div className="grid gap-4"><section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-2xl border border-slate-200 p-3"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><span className={`rounded-full px-2 py-1 text-xs font-black ${item.status === "connected" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{item.status}</span></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></section><section className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><span className={`rounded-full px-2 py-1 text-xs font-black ${gmailReady ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{gmailReady ? "connected" : "needs OAuth"}</span></div><div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md bg-ink px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50"><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</button>{gmailReady ? <button type="button" disabled={Boolean(busy)} onClick={() => void disconnectGmail()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50">Disconnect</button> : null}<button type="button" disabled={Boolean(busy)} onClick={() => void load()} className="inline-flex min-h-10 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-black text-ink disabled:cursor-not-allowed disabled:opacity-50"><RefreshCw size={16} /> Refresh</button></div></section></div>
+        <form onSubmit={save} className="ui-card rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-[var(--ui-text-soft)]">Name<input name="name" defaultValue={workspace?.name || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Company<input name="company" defaultValue={workspace?.company || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Industry<input name="industry" defaultValue={workspace?.industry || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className={fieldClass} /></label></div><AppButton type="submit" size="md" className="mt-4"><CheckCircle2 size={16} /> Save workspace</AppButton></form>
+        <div className="grid gap-4"><SurfaceCard className="rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-2xl border border-[var(--ui-border)] p-3 transition hover:border-[var(--ui-border-strong)]"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><AppBadge tone={item.status === "connected" ? "success" : "warning"}>{item.status}</AppBadge></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></SurfaceCard><SurfaceCard className="rounded-[1.75rem] p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><AppBadge tone={gmailReady ? "success" : "warning"}>{gmailReady ? "connected" : "needs OAuth"}</AppBadge></div><div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><AppButton size="sm" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()}><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</AppButton>{gmailReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void disconnectGmail()}>Disconnect</AppButton> : null}<AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void load()} aria-label="Refresh settings"><RefreshCw size={16} /> Refresh</AppButton></div></SurfaceCard></div>
       </section>
       <section className="grid gap-4 md:grid-cols-3">
         <PremiumPanel><p className="text-sm font-black text-ink">Email safety</p><p className="mt-2 text-sm leading-6 text-slate-600">Manual approval, Pause and Stop remain visible before external sending.</p></PremiumPanel>
-        <PremiumPanel><p className="text-sm font-black text-ink">Plan</p><p className="mt-2 text-sm leading-6 text-slate-600">Plan management stays on the existing billing route.</p><Link href="/dashboard/billing" className="mt-3 inline-flex min-h-10 items-center rounded-md border border-slate-300 px-3 text-sm font-black text-ink">Open billing</Link></PremiumPanel>
+        <PremiumPanel><p className="text-sm font-black text-ink">Plan</p><p className="mt-2 text-sm leading-6 text-slate-600">Plan management stays on the existing billing route.</p><Link href="/dashboard/billing" className="focus-ring mt-3 inline-flex min-h-10 items-center rounded-full border border-[var(--ui-border)] bg-white px-3 text-sm font-black text-ink transition hover:border-[var(--ui-brand)]">Open billing</Link></PremiumPanel>
         <PremiumPanel><p className="text-sm font-black text-ink">Account</p><p className="mt-2 text-sm leading-6 text-slate-600">Authentication remains handled by the secure account session.</p></PremiumPanel>
       </section>
     </Frame>
