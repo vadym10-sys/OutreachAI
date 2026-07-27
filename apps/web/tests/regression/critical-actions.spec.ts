@@ -81,3 +81,36 @@ test("email action HTTP errors are shown as failures, not success notices", asyn
   await expect(page.getByText(/already been sent|could not approve this draft|something went wrong|email sending is temporarily unavailable/i)).toBeVisible();
   await expect(page.getByText("Email approved. It is ready to send")).toHaveCount(0);
 });
+
+test("email approval send and reply tracking stay connected end to end", async ({ page }) => {
+  await page.goto("/dashboard/emails");
+  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+
+  const approveResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve")
+  );
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect((await approveResponse).ok()).toBe(true);
+  await expect(page.getByText(/ready to send/i)).toBeVisible();
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Send this approved email now");
+    await dialog.accept();
+  });
+  const sendResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send")
+  );
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect((await sendResponse).ok()).toBe(true);
+  await expect(page.getByText("Approved email was sent. CRM stage updated.")).toBeVisible();
+
+  const syncResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/outreach/oauth/gmail/sync")
+  );
+  await page.getByRole("button", { name: "Track replies" }).click();
+  await expect((await syncResponse).ok()).toBe(true);
+  await expect(page.getByText("Replies synced: 1. Reply tracking refreshed without sending automatic responses.")).toBeVisible();
+  await expect(page.getByText("Re: Quick idea for Hill Country Build Co")).toBeVisible();
+  await expect(page.getByText(/Classification: Interested/)).toBeVisible();
+  await expect(page.getByRole("article").filter({ hasText: "Re: Quick idea for Hill Country Build Co" }).getByText("Hill Country Build Co", { exact: true })).toBeVisible();
+});

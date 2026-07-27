@@ -330,7 +330,9 @@ type MockOverride = {
 
 export async function mockWorkspaceApi(page: Page, overrides: Record<string, MockOverride> = {}) {
   let manualCompany: any = null;
+  let currentCompany: any = qaCompany;
   let currentCampaign: any = qaCampaign;
+  let currentInbox: any[] = [];
   let currentAnalysis: any = { ...qaSalesAnalysisV2 };
   let analysisHistory: any[] = [{ ...qaSalesAnalysisV2 }, { ...qaSalesAnalysisV1 }];
   let currentProfile = { workspace: "QA Private Workspace", company: "QA Private Workspace", avatar_url: null, timezone: "UTC", language: "en" };
@@ -516,8 +518,8 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
         message: "Company saved to CRM."
       });
     }
-    if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [qaCompany]);
-    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, qaCompany);
+    if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [currentCompany]);
+    if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, currentCompany);
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis`) {
       if (route.request().method() === "POST") {
         const body = route.request().postDataJSON() as { force?: boolean };
@@ -664,8 +666,16 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       if (manualCompany?.id === companyId) manualCompany = company;
       return fulfillJson(route, { status: "success", message: "Email draft created for review. Nothing was sent.", company, email });
     }
-    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: { ...qaCompany, crm_stage: "Approved", email_approved_at: now }, email: { ...qaCompany.generated_emails[0], delivery_status: "approved" } });
-    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: { ...qaCompany, crm_stage: "Sent", email_sent_at: now }, email: { ...qaCompany.generated_emails[0], delivery_status: "sent", sent_at: now } });
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") {
+      const email = { ...qaCompany.generated_emails[0], delivery_status: "approved" };
+      currentCompany = { ...currentCompany, crm_stage: "Approved", email_approved_at: now, generated_emails: [email] };
+      return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: currentCompany, email });
+    }
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
+      const email = { ...qaCompany.generated_emails[0], delivery_status: "sent", sent_at: now };
+      currentCompany = { ...currentCompany, crm_stage: "Sent", email_sent_at: now, generated_emails: [email] };
+      return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: currentCompany, email });
+    }
     if (apiPath === "/api/outreach/sender/status") return fulfillJson(route, {
       provider: "gmail",
       connected: true,
@@ -698,7 +708,24 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       smtp_verified_at: ""
     });
     if (apiPath === "/api/outreach/oauth/gmail/start") return fulfillJson(route, { auth_url: "/dashboard/settings?mail=mock_connected" });
-    if (apiPath === "/api/outreach/oauth/gmail/sync") return fulfillJson(route, { synced: 1, classified: { "заинтересован": 1 } });
+    if (apiPath === "/api/outreach/oauth/gmail/sync") {
+      currentInbox = [{
+        ...qaCompany.generated_emails[0],
+        id: "99999999-9999-9999-9999-999999999999",
+        subject: "Re: Quick idea for Hill Country Build Co",
+        preview: "Interested. Can you send details?",
+        body: "Interested. Can you send details?",
+        delivery_status: "replied",
+        replied_at: now,
+        reply_assistant: {
+          classification: "Interested",
+          suggested_response: "Reply with the website-specific growth audit outline and propose two times.",
+          next_step: "Review and respond manually."
+        }
+      }];
+      currentCompany = { ...currentCompany, crm_stage: "Replied", replied_at: now };
+      return fulfillJson(route, { synced: 1, classified: { Interested: 1 } });
+    }
     if (apiPath === "/api/outreach/oauth/gmail") return fulfillJson(route, {
       provider: "gmail",
       connected: false,
@@ -773,7 +800,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/sales-employees") return fulfillJson(route, []);
     if (apiPath === "/api/activity") return fulfillJson(route, []);
     if (apiPath === "/api/notifications") return fulfillJson(route, []);
-    if (apiPath === "/api/inbox") return fulfillJson(route, []);
+    if (apiPath === "/api/inbox") return fulfillJson(route, currentInbox);
     if (apiPath === "/api/profile") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();

@@ -165,6 +165,20 @@ function uniqueEmails(companies: CrmCompany[], inbox: Email[]) {
   return [...byId.values()];
 }
 
+function companyForEmail(companies: CrmCompany[], email: Email) {
+  return companies.find((company) => company.generated_emails?.some((item) => item.id === email.id))
+    || companies.find((company) => Boolean(email.lead_id) && company.lead_id === email.lead_id)
+    || null;
+}
+
+function replyAssistantText(email: Email) {
+  const assistant = email.reply_assistant || {};
+  const classification = String(assistant.classification || assistant.category || "").trim();
+  const suggested = String(assistant.suggested_response || assistant.suggested_reply || "").trim();
+  const nextStep = String(assistant.next_step || "").trim();
+  return [classification && `Classification: ${classification}`, suggested && `Suggested reply: ${suggested}`, nextStep && `Next step: ${nextStep}`].filter(Boolean).join("\n");
+}
+
 function Frame({ title, copy, children }: { title: string; copy: string; children: React.ReactNode }) {
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 ui-animate-enter">
@@ -745,9 +759,29 @@ function EmailsSection() {
     }
   }
 
+  async function trackReplies() {
+    setBusy("reply:sync");
+    setNotice("");
+    setActionError("");
+    try {
+      const result = await api.syncGmailReplies();
+      setNotice(`Replies synced: ${result.synced}. Reply tracking refreshed without sending automatic responses.`);
+      await load();
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, "Could not sync Gmail replies."));
+    } finally {
+      setBusy("");
+    }
+  }
+
   return (
     <Frame title="Письма" copy="Email Approval Workspace: черновики и отправленные письма из backend. Отправка доступна только после ручного approve и отдельного подтверждения send.">
-      <div className="flex justify-end"><AppButton variant="secondary" size="sm" onClick={() => void load()} aria-label="Refresh email drafts"><RefreshCw size={16} /> Refresh</AppButton></div>
+      <div className="flex flex-wrap justify-end gap-2">
+        <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void trackReplies()} aria-label="Track replies from Gmail">
+          {busy === "reply:sync" ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} Track replies
+        </AppButton>
+        <AppButton variant="secondary" size="sm" onClick={() => void load()} aria-label="Refresh email drafts"><RefreshCw size={16} /> Refresh</AppButton>
+      </div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {actionError ? <Notice tone="bad">{actionError}</Notice> : null}
       {loadError ? <Notice tone="bad">{loadError}</Notice> : null}
@@ -761,7 +795,8 @@ function EmailsSection() {
         </div>
       </PremiumPanel>
       {loading ? <LoadingStateView title="Loading email approval workspace." /> : emails.length ? <section className="grid gap-4">{emails.map((email) => {
-        const relatedCompany = companies.find((company) => company.generated_emails?.some((item) => item.id === email.id));
+        const relatedCompany = companyForEmail(companies, email);
+        const replySummary = replyAssistantText(email);
         return <SurfaceCard as="article" key={email.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
           <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
             <div>
@@ -792,6 +827,7 @@ function EmailsSection() {
                 <EvidenceLine label="Evidence used" value={relatedCompany?.opportunity_analysis || relatedCompany?.suggested_offer || "Недостаточно данных"} />
                 <EvidenceLine label="Outreach strategy" value={relatedCompany?.outreach_strategy || relatedCompany?.sales_angle || "No outreach strategy returned yet."} />
                 <EvidenceLine label="Safety state" value={email.delivery_status === "approved" ? "Approved. Send still requires confirmation." : email.delivery_status === "sent" ? "Sent through backend." : "Manual approval required."} />
+                <EvidenceLine label="Reply tracking" value={email.delivery_status === "replied" ? (replySummary || "Reply received. Review and respond manually.") : email.replied_at ? "Reply timestamp recorded. Review the conversation before responding." : "No reply tracked yet."} />
               </div>
             </aside>
           </div>
