@@ -21,5 +21,7 @@ test("pricing page exposes plan CTAs", async ({ page }, testInfo) => {
   await expect(page.getByRole("heading", { name: "Starter", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Pro", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agency", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "View plan" }).first()).toHaveAttribute("href", "/sign-up?plan=Starter");
+  await expect(page.getByRole("link", { name: "Start trial" })).toHaveAttribute("href", "/sign-up?plan=Pro");
   await guards.assertClean();
 });

@@ -341,7 +341,7 @@ export function PricingCard({
       padding="lg"
       className={cx("rounded-[1.5rem]", featured && "border-[var(--ui-brand)] shadow-glow", className)}
     >
-      <p className="text-xl font-black text-[var(--ui-text)]">{plan}</p>
+      <h3 className="text-xl font-black text-[var(--ui-text)]">{plan}</h3>
       <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{copy}</p>
       {usage ? <div className="mt-5 rounded-2xl bg-[var(--ui-surface-subtle)] p-3 text-sm font-semibold text-[var(--ui-text)]">{usage}</div> : null}
       {action ? <div className="mt-5">{action}</div> : null}
