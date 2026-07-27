@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { ArrowRight, CheckCircle2, Loader2, ShieldCheck } from "lucide-react";
+import { AppBadge, SurfaceCard } from "@/components/design-system";
 import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { useI18n } from "@/lib/i18n/provider";
@@ -192,147 +193,169 @@ export function OnboardingWorkspaceSetup() {
   return (
     <>
       <NetworkStatusBanner />
-      <main className="mx-auto min-h-screen max-w-4xl px-4 py-8 sm:px-6">
-        <p className="text-sm font-semibold text-brand">{t("Setup")}</p>
-        <h1 className="mt-2 text-3xl font-black tracking-tight text-ink">{t("Set up OutreachAI")}</h1>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-          {t("Create your private workspace once. OutreachAI then uses your company and market context for lead search, CRM, and reviewed outreach.")}
-        </p>
+      <main className="min-h-screen bg-[var(--ui-bg)] px-4 py-8 min-[360px]:px-5 sm:px-6">
+        <div className="mx-auto max-w-6xl">
+          <header className="max-w-3xl">
+            <AppBadge tone="brand">{t("Step 1 of 5")}</AppBadge>
+            <h1 className="mt-4 text-4xl font-black leading-tight tracking-normal text-[var(--ui-text)] min-[390px]:text-5xl">
+              {t("What does your business sell?")}
+            </h1>
+            <p className="mt-3 text-base leading-7 text-[var(--ui-text-soft)]">
+              {t("Short setup: business, ICP, markets, Gmail optional, start finding customers.")}
+            </p>
+          </header>
 
-      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="grid gap-5 lg:grid-cols-[1fr_1.35fr] lg:items-start">
-          <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-xs font-black uppercase tracking-wide text-brand">{t("workspace.privateAccount")}</p>
-            <h2 className="mt-2 text-xl font-black text-ink">{workspace?.name || t("shell.privateWorkspace")}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-700">{t("workspace.privateCopy")}</p>
-            <div className="mt-4 space-y-2 text-sm">
-              <div className="rounded-xl bg-white p-3 font-semibold text-slate-800">{t("workspace.stepCompany")}</div>
-              <div className="rounded-xl bg-white p-3 font-semibold text-slate-800">{t("workspace.stepMarket")}</div>
-              <div className="rounded-xl bg-white p-3 font-semibold text-slate-800">{t("workspace.stepLeads")}</div>
-            </div>
-            <div className="mt-4 flex items-center gap-2 rounded-xl bg-teal-50 p-3 text-sm font-semibold text-brand">
-              <ShieldCheck size={16} />
-              {t("workspace.dataIsolation")}
-            </div>
-          </article>
-
-          <article className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-black text-ink">{t("workspace.finishSetup")}</p>
-                <p className="mt-1 text-sm text-slate-600">{t("workspace.setupCopy")}</p>
-              </div>
-              <span className="inline-flex w-fit items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-700">
-                <CheckCircle2 size={14} /> {completion}/5
-              </span>
-            </div>
-
-            {loading ? (
-              <div className="mt-5 space-y-3" aria-live="polite" aria-label={t("common.loading")}>
-                <div className="h-11 animate-pulse rounded-xl bg-slate-200" />
-                <div className="h-11 animate-pulse rounded-xl bg-slate-200" />
-                <div className="h-11 animate-pulse rounded-xl bg-slate-200" />
-                <div className="h-11 animate-pulse rounded-xl bg-slate-200" />
-                <div className="h-11 animate-pulse rounded-xl bg-slate-200" />
-              </div>
-            ) : (
-              <form aria-label={t("Workspace setup form")} onSubmit={saveWorkspace} className="mt-5 space-y-3">
-                <label className="block text-sm font-bold text-slate-700">
-                  {t("workspace.name")}
-                  <input
-                    value={form.name}
-                    onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-                    placeholder={t("workspace.namePlaceholder")}
-                    className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
-                  />
-                  <span className="mt-1 block text-xs font-medium text-slate-500">{t("workspace.nameHelp")}</span>
-                </label>
-
-                <label className="block text-sm font-bold text-slate-700">
-                  {t("workspace.company")}
-                  <input
-                    value={form.company}
-                    onChange={(event) => setForm((current) => ({ ...current, company: event.target.value }))}
-                    placeholder={t("workspace.companyPlaceholder")}
-                    className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
-                  />
-                  <span className="mt-1 block text-xs font-medium text-slate-500">{t("workspace.companyHelp")}</span>
-                </label>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="block text-sm font-bold text-slate-700">
-                    {t("workspace.industry")}
-                    <input
-                      value={form.industry}
-                      onChange={(event) => setForm((current) => ({ ...current, industry: event.target.value }))}
-                      placeholder={t("workspace.industryPlaceholder")}
-                      className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
-                    />
-                    <span className="mt-1 block text-xs font-medium text-slate-500">{t("workspace.industryHelp")}</span>
-                  </label>
-
-                  <label className="block text-sm font-bold text-slate-700">
-                    {t("workspace.targetCountry")}
-                    <input
-                      value={form.target_country}
-                      onChange={(event) => setForm((current) => ({ ...current, target_country: event.target.value }))}
-                      placeholder={t("workspace.countryPlaceholder")}
-                      className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
-                    />
-                    <span className="mt-1 block text-xs font-medium text-slate-500">{t("workspace.countryHelp")}</span>
-                  </label>
-                </div>
-
-                <label className="block text-sm font-bold text-slate-700">
-                  {t("workspace.targetCustomer")}
-                  <input
-                    value={form.target_customer}
-                    onChange={(event) => setForm((current) => ({ ...current, target_customer: event.target.value }))}
-                    placeholder={t("workspace.customerPlaceholder")}
-                    className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"
-                  />
-                  <span className="mt-1 block text-xs font-medium text-slate-500">{t("workspace.customerHelp")}</span>
-                </label>
-
-                {notice ? <p className="rounded-xl bg-teal-50 p-3 text-sm font-bold text-brand">{notice}</p> : null}
-                {error ? (
-                  <div className="rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">
-                    <p>{error}</p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLoading(true);
-                        setError("");
-                        void loadWorkspace().finally(() => setLoading(false));
-                      }}
-                      className="mt-2 inline-flex min-h-11 items-center justify-center rounded-md border border-red-200 bg-white px-3 text-sm font-bold text-red-700"
-                    >
-                      {t("common.tryAgain")}
-                    </button>
+          <section className="mt-8 grid gap-5 lg:grid-cols-[0.82fr_1.18fr] lg:items-start">
+            <SurfaceCard as="article" className="rounded-[1.75rem] p-5 shadow-soft">
+              <p className="text-sm font-black text-[var(--ui-text)]">{workspace?.name || t("shell.privateWorkspace")}</p>
+              <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{t("workspace.privateCopy")}</p>
+              <div className="mt-5 grid gap-2">
+                {[
+                  ["1", "What does your business sell?"],
+                  ["2", "Who is your ideal customer?"],
+                  ["3", "Which markets do you target?"],
+                  ["4", "Connect Gmail or skip for now."],
+                  ["5", "Start finding customers."],
+                ].map(([number, label], index) => (
+                  <div key={label} className={`flex items-center gap-3 rounded-2xl border px-3 py-3 text-sm font-bold ${index === 0 ? "border-[var(--ui-brand)] bg-[var(--ui-brand-soft)] text-[var(--ui-text)]" : "border-[var(--ui-border)] bg-[var(--ui-surface)] text-[var(--ui-text-soft)]"}`}>
+                    <span className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-black ${index === 0 ? "bg-[var(--ui-brand)] text-white" : "bg-white text-[var(--ui-text-soft)]"}`}>{number}</span>
+                    {t(label)}
                   </div>
-                ) : null}
-
-                <div className="flex flex-col gap-2 pt-1 sm:flex-row">
-                  <button type="submit" disabled={saving} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-60">
-                    {saving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />}
-                    {t("workspace.save")}
-                  </button>
-                  <Link href={setupReady ? "/dashboard/leads" : "/dashboard"} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink">
-                    {setupReady ? t("workspace.nextLeadFinder") : t("nav.dashboard")} <ArrowRight size={16} />
-                  </Link>
-                </div>
-              </form>
-            )}
-
-            {setupReady ? (
-              <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50 p-3 text-sm text-brand">
-                <p className="font-bold">{t("workspace.setupComplete")}</p>
-                <p className="mt-1">{t("You can now search companies, save CRM records, and review outreach from one private workspace.")}</p>
+                ))}
               </div>
-            ) : null}
-          </article>
+              <div className="mt-5 flex items-start gap-2 rounded-2xl bg-[var(--ui-surface-success)] p-3 text-sm font-semibold text-success">
+                <ShieldCheck className="mt-0.5 shrink-0" size={16} />
+                {t("workspace.dataIsolation")}
+              </div>
+            </SurfaceCard>
+
+            <SurfaceCard as="section" className="rounded-[2rem] p-5 shadow-raised sm:p-7">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-black text-[var(--ui-text)]">{t("workspace.finishSetup")}</p>
+                  <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]">{t("workspace.setupCopy")}</p>
+                </div>
+                <span className="inline-flex w-fit items-center gap-2 rounded-full bg-[var(--ui-surface-subtle)] px-3 py-1 text-xs font-black text-[var(--ui-text)]">
+                  <CheckCircle2 size={14} /> {completion}/5
+                </span>
+              </div>
+
+              {loading ? (
+                <div className="mt-6 space-y-3" aria-live="polite" aria-label={t("common.loading")}>
+                  <div className="h-12 animate-pulse rounded-xl bg-[var(--ui-surface-subtle)]" />
+                  <div className="h-12 animate-pulse rounded-xl bg-[var(--ui-surface-subtle)]" />
+                  <div className="h-36 animate-pulse rounded-2xl bg-[var(--ui-surface-subtle)]" />
+                  <div className="h-12 animate-pulse rounded-xl bg-[var(--ui-surface-subtle)]" />
+                </div>
+              ) : (
+                <form aria-label={t("Workspace setup form")} onSubmit={saveWorkspace} className="mt-6 space-y-4">
+                  <label className="block text-sm font-bold text-[var(--ui-text)]">
+                    {t("workspace.company")}
+                    <input
+                      value={form.company}
+                      onChange={(event) => setForm((current) => ({ ...current, company: event.target.value }))}
+                      placeholder={t("workspace.companyPlaceholder")}
+                      className="focus-ring mt-2 min-h-12 w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 text-base"
+                    />
+                    <span className="mt-1 block text-xs font-medium text-[var(--ui-text-soft)]">{t("workspace.companyHelp")}</span>
+                  </label>
+
+                  <label className="block text-sm font-bold text-[var(--ui-text)]">
+                    {t("Describe your business")}
+                    <textarea
+                      value={form.name}
+                      onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                      placeholder={t("Paste your website URL or describe your business in text.")}
+                      rows={4}
+                      className="focus-ring mt-2 min-h-36 w-full resize-y rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 py-3 text-base leading-7"
+                    />
+                    <span className="mt-1 block text-xs font-medium text-[var(--ui-text-soft)]">{t("workspace.nameHelp")}</span>
+                  </label>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="block text-sm font-bold text-[var(--ui-text)]">
+                      {t("workspace.industry")}
+                      <input
+                        value={form.industry}
+                        onChange={(event) => setForm((current) => ({ ...current, industry: event.target.value }))}
+                        placeholder={t("workspace.industryPlaceholder")}
+                        className="focus-ring mt-2 min-h-12 w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 text-base"
+                      />
+                    </label>
+
+                    <label className="block text-sm font-bold text-[var(--ui-text)]">
+                      {t("workspace.targetCountry")}
+                      <input
+                        value={form.target_country}
+                        onChange={(event) => setForm((current) => ({ ...current, target_country: event.target.value }))}
+                        placeholder={t("workspace.countryPlaceholder")}
+                        className="focus-ring mt-2 min-h-12 w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 text-base"
+                      />
+                    </label>
+                  </div>
+
+                  <label className="block text-sm font-bold text-[var(--ui-text)]">
+                    {t("workspace.targetCustomer")}
+                    <input
+                      value={form.target_customer}
+                      onChange={(event) => setForm((current) => ({ ...current, target_customer: event.target.value }))}
+                      placeholder={t("workspace.customerPlaceholder")}
+                      className="focus-ring mt-2 min-h-12 w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 text-base"
+                    />
+                    <span className="mt-1 block text-xs font-medium text-[var(--ui-text-soft)]">{t("workspace.customerHelp")}</span>
+                  </label>
+
+                  <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface)] p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-black text-[var(--ui-text)]">{t("Connect Gmail or skip for now.")}</p>
+                        <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]">{t("Gmail can be connected later from Settings before sending approved emails.")}</p>
+                      </div>
+                      <Link href="/dashboard/settings" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-full border border-[var(--ui-border)] bg-white px-4 text-sm font-black text-[var(--ui-text)] shadow-sm">
+                        {t("Open settings")}
+                      </Link>
+                    </div>
+                  </div>
+
+                  {notice ? <p className="rounded-2xl bg-[var(--ui-surface-success)] p-3 text-sm font-bold text-success">{notice}</p> : null}
+                  {error ? (
+                    <div className="rounded-2xl bg-[var(--ui-surface-danger)] p-3 text-sm font-semibold text-danger">
+                      <p>{error}</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLoading(true);
+                          setError("");
+                          void loadWorkspace().finally(() => setLoading(false));
+                        }}
+                        className="focus-ring mt-2 inline-flex min-h-11 items-center justify-center rounded-full border border-[var(--ui-border)] bg-white px-4 text-sm font-bold text-danger"
+                      >
+                        {t("common.tryAgain")}
+                      </button>
+                    </div>
+                  ) : null}
+
+                  <div className="flex flex-col gap-2 pt-1 sm:flex-row">
+                    <button type="submit" disabled={saving} className="focus-ring inline-flex min-h-12 items-center justify-center gap-2 rounded-full bg-[var(--ui-brand)] px-5 text-sm font-black text-white shadow-soft disabled:cursor-not-allowed disabled:opacity-60">
+                      {saving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />}
+                      {t("workspace.save")}
+                    </button>
+                    <Link href={setupReady ? "/dashboard/leads" : "/dashboard"} className="focus-ring inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-[var(--ui-border)] bg-white px-5 text-sm font-black text-[var(--ui-text)] shadow-sm">
+                      {setupReady ? t("Start finding customers") : t("nav.dashboard")} <ArrowRight size={16} />
+                    </Link>
+                  </div>
+                </form>
+              )}
+
+              {setupReady ? (
+                <div className="mt-5 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-success)] p-4 text-sm text-success">
+                  <p className="font-bold">{t("workspace.setupComplete")}</p>
+                  <p className="mt-1">{t("You can now search companies, save CRM records, and review outreach from one private workspace.")}</p>
+                </div>
+              ) : null}
+            </SurfaceCard>
+          </section>
         </div>
-      </section>
       </main>
     </>
   );
