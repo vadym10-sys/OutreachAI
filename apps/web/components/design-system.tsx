@@ -87,17 +87,19 @@ export function AppBadge({
   return <span className={cx(badgeToneClass[tone], className)}>{children}</span>;
 }
 
-type ButtonVariant = "primary" | "secondary" | "ghost";
+type ButtonVariant = "primary" | "secondary" | "ghost" | "destructive";
 
-type ButtonSize = "md" | "lg";
+type ButtonSize = "sm" | "md" | "lg";
 
 const buttonVariantClass: Record<ButtonVariant, string> = {
   primary: "ui-button ui-button-primary",
   secondary: "ui-button ui-button-secondary",
   ghost: "ui-button ui-button-ghost",
+  destructive: "ui-button ui-button-destructive",
 };
 
 const buttonSizeClass: Record<ButtonSize, string> = {
+  sm: "min-h-10 px-3 text-xs",
   md: "min-h-11 px-4 text-sm",
   lg: "min-h-12 px-5 text-sm",
 };
@@ -122,6 +124,228 @@ export function AppButton({
     >
       {children}
     </button>
+  );
+}
+
+type StatusTone = "strong" | "review" | "insufficient" | "rejected" | "neutral";
+
+const statusToneClass: Record<StatusTone, string> = {
+  strong: "ui-badge ui-badge-success",
+  review: "ui-badge ui-badge-warning",
+  insufficient: "ui-badge ui-badge-brand",
+  rejected: "ui-badge ui-badge-danger",
+  neutral: "ui-badge ui-badge-neutral",
+};
+
+export function StatusBadge({
+  status,
+  children,
+  className,
+}: {
+  status?: StatusTone;
+  children: ReactNode;
+  className?: string;
+}) {
+  return <span className={cx(statusToneClass[status || "neutral"], className)}>{children}</span>;
+}
+
+function scoreTone(value?: number | null) {
+  if (typeof value !== "number") return "text-warning";
+  if (value >= 75) return "text-success";
+  if (value >= 50) return "text-warning";
+  return "text-danger";
+}
+
+export function ScoreBadge({
+  label,
+  value,
+  suffix = "/100",
+  className,
+}: {
+  label: ReactNode;
+  value?: number | null;
+  suffix?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cx("rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-center shadow-sm", className)}>
+      <p className="text-xs font-bold text-[var(--ui-text-soft)]">{label}</p>
+      <p className={cx("mt-1 text-2xl font-black", scoreTone(value))}>
+        {typeof value === "number" ? value : "Insufficient data"} {typeof value === "number" ? suffix : null}
+      </p>
+    </div>
+  );
+}
+
+export function SignalBadge({
+  label,
+  value,
+  detail,
+  tone = "brand",
+  className,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  detail?: ReactNode;
+  tone?: BadgeTone;
+  className?: string;
+}) {
+  return (
+    <div className={cx("rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 shadow-sm", className)}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-bold text-[var(--ui-text-soft)]">{label}</p>
+        <AppBadge tone={tone}>{value}</AppBadge>
+      </div>
+      {detail ? <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{detail}</p> : null}
+    </div>
+  );
+}
+
+export function EvidenceItem({
+  label,
+  title,
+  copy,
+  tone = "success",
+  className,
+}: {
+  label: ReactNode;
+  title: ReactNode;
+  copy?: ReactNode;
+  tone?: BadgeTone;
+  className?: string;
+}) {
+  return (
+    <SurfaceCard as="article" padding="sm" className={cx("rounded-2xl", className)}>
+      <AppBadge tone={tone}>{label}</AppBadge>
+      <p className="mt-3 text-sm font-black text-[var(--ui-text)]">{title}</p>
+      {copy ? <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{copy}</p> : null}
+    </SurfaceCard>
+  );
+}
+
+export function QualityGateCard({
+  status,
+  title = "Quality gate",
+  copy,
+  fields,
+  className,
+}: {
+  status: "pass" | "review" | "blocked";
+  title?: ReactNode;
+  copy: ReactNode;
+  fields?: ReactNode;
+  className?: string;
+}) {
+  const tone = status === "pass" ? "success" : status === "review" ? "warning" : "danger";
+  return (
+    <SurfaceCard
+      tone={status === "pass" ? "default" : "warning"}
+      padding="md"
+      className={cx("rounded-[1.5rem]", className)}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-lg font-black text-[var(--ui-text)]">{title}</p>
+          <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{copy}</p>
+        </div>
+        <AppBadge tone={tone}>{status === "pass" ? "Pass" : status === "review" ? "Review" : "Blocked"}</AppBadge>
+      </div>
+      {fields ? <p className="mt-4 text-xs font-bold text-[var(--ui-text-soft)]">{fields}</p> : null}
+    </SurfaceCard>
+  );
+}
+
+export function AiInputShell({
+  placeholder,
+  children,
+  actions,
+  className,
+}: {
+  placeholder: ReactNode;
+  children?: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cx("rounded-[2rem] border border-[var(--ui-border)] bg-white p-5 shadow-soft", className)}>
+      <p className="text-base leading-7 text-[var(--ui-text-soft)]">{placeholder}</p>
+      {children ? <div className="mt-4">{children}</div> : null}
+      {actions ? <div className="mt-5 flex flex-wrap items-center gap-2">{actions}</div> : null}
+    </section>
+  );
+}
+
+export function ApprovalFooter({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <footer className={cx("rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-3", className)}>
+      <div className="flex flex-wrap items-center gap-2">{children}</div>
+      <p className="mt-3 text-xs font-bold text-danger">AI creates drafts only. Sending requires explicit user approval.</p>
+    </footer>
+  );
+}
+
+export function GmailStatusCard({
+  state,
+  mailbox,
+  copy,
+  action,
+  className,
+}: {
+  state: "connected" | "needs_attention" | "not_connected";
+  mailbox?: ReactNode;
+  copy?: ReactNode;
+  action?: ReactNode;
+  className?: string;
+}) {
+  const tone = state === "connected" ? "success" : state === "needs_attention" ? "warning" : "neutral";
+  const label = state === "connected" ? "Connected" : state === "needs_attention" ? "Needs attention" : "Not connected";
+  return (
+    <SurfaceCard as="article" className={cx("rounded-[1.5rem]", className)}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-lg font-black text-[var(--ui-text)]">Gmail OAuth</p>
+          {mailbox ? <p className="mt-1 text-sm font-semibold text-[var(--ui-text-soft)]">{mailbox}</p> : null}
+        </div>
+        <AppBadge tone={tone}>{label}</AppBadge>
+      </div>
+      {copy ? <p className="mt-4 text-sm leading-6 text-[var(--ui-text-soft)]">{copy}</p> : null}
+      {action ? <div className="mt-4">{action}</div> : null}
+    </SurfaceCard>
+  );
+}
+
+export function PricingCard({
+  plan,
+  copy,
+  usage,
+  action,
+  featured,
+  className,
+}: {
+  plan: ReactNode;
+  copy: ReactNode;
+  usage?: ReactNode;
+  action?: ReactNode;
+  featured?: boolean;
+  className?: string;
+}) {
+  return (
+    <SurfaceCard
+      as="article"
+      padding="lg"
+      className={cx("rounded-[1.5rem]", featured && "border-[var(--ui-brand)] shadow-glow", className)}
+    >
+      <p className="text-xl font-black text-[var(--ui-text)]">{plan}</p>
+      <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{copy}</p>
+      {usage ? <div className="mt-5 rounded-2xl bg-[var(--ui-surface-subtle)] p-3 text-sm font-semibold text-[var(--ui-text)]">{usage}</div> : null}
+      {action ? <div className="mt-5">{action}</div> : null}
+    </SurfaceCard>
   );
 }
 
