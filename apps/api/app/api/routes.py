@@ -1097,8 +1097,10 @@ def _crm_stage_for_lead(lead: Lead) -> str:
 def _email_status_for_lead(lead: Lead) -> str:
     metadata = _lead_metadata(lead)
     email_status = str(metadata.get("email_status") or "")
-    if email_status in {"Sent", "Approved", "Draft Ready", "Needs review"}:
+    if email_status in {"Replied", "Sent", "Approved", "Draft Ready", "Needs review"}:
         return email_status
+    if _display_status(lead.status) == "Interested":
+        return "Replied"
     if _display_status(lead.status) == "Contacted":
         return "Sent"
     if lead.email:
@@ -5377,18 +5379,37 @@ def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Dep
             lead = db.get(Lead, email.lead_id) if email.lead_id else None
             if not lead or not lead.email:
                 continue
-            query = f'from:{lead.email} newer_than:30d'
-            list_response = client.get(GMAIL_MESSAGES_URL, params={"q": query, "maxResults": 3})
-            list_response.raise_for_status()
-            messages = list_response.json().get("messages") or []
-            if not messages:
-                continue
-            message_id = str(messages[0].get("id") or "")
-            if not message_id:
-                continue
-            message_response = client.get(f"{GMAIL_MESSAGES_URL}/{message_id}", params={"format": "full"})
-            message_response.raise_for_status()
-            message = message_response.json()
+            message: dict[str, Any] = {}
+            message_id = ""
+            tags = email.tags if isinstance(email.tags, dict) else {}
+            provider_thread_id = str(tags.get("provider_thread_id") or "").strip()
+            if provider_thread_id:
+                thread_response = client.get(f"{GMAIL_MESSAGES_URL.rsplit('/', 1)[0]}/threads/{provider_thread_id}", params={"format": "full"})
+                thread_response.raise_for_status()
+                thread_messages = thread_response.json().get("messages") or []
+                for thread_message in reversed([item for item in thread_messages if isinstance(item, dict)]):
+                    payload = thread_message.get("payload") if isinstance(thread_message.get("payload"), dict) else {}
+                    headers = {str(item.get("name") or "").lower(): str(item.get("value") or "") for item in payload.get("headers", []) if isinstance(item, dict)}
+                    from_email = _extract_email(parseaddr(headers.get("from", ""))[1])
+                    internal_date = str(thread_message.get("internalDate") or "")
+                    sent_after_outbound = not email.sent_at or not internal_date.isdigit() or datetime.utcfromtimestamp(int(internal_date) / 1000) >= email.sent_at
+                    if from_email == _extract_email(lead.email) and str(thread_message.get("id") or "") != str(email.provider_message_id or "") and sent_after_outbound:
+                        message = thread_message
+                        message_id = str(thread_message.get("id") or "")
+                        break
+            if not message:
+                query = f'from:{lead.email} newer_than:30d'
+                list_response = client.get(GMAIL_MESSAGES_URL, params={"q": query, "maxResults": 3})
+                list_response.raise_for_status()
+                messages = list_response.json().get("messages") or []
+                if not messages:
+                    continue
+                message_id = str(messages[0].get("id") or "")
+                if not message_id:
+                    continue
+                message_response = client.get(f"{GMAIL_MESSAGES_URL}/{message_id}", params={"format": "full"})
+                message_response.raise_for_status()
+                message = message_response.json()
             snippet = str(message.get("snippet") or "")
             category = _classify_reply(snippet)
             now = datetime.utcnow()
@@ -5403,7 +5424,8 @@ def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Dep
                 "gmail_message_id": message_id,
             }
             lead.status = LeadStatus.replied if category != "отписка" else LeadStatus.archive
-            lead.notes = json.dumps({**(_lead_metadata(lead) if "_lead_metadata" in globals() else {}), "last_reply_classification": category, "last_reply_at": now.isoformat()})
+            lead.notes = json.dumps({**_lead_metadata(lead), "email_status": "Replied", "replied_at": now.isoformat(), "last_reply_classification": category, "last_reply_at": now.isoformat()})
+            _sync_lead_to_crm(db, user_id, workspace, lead)
             db.add(AuditLog(user_id=user_id, workspace_id=workspace.id, action="outreach.gmail.reply_synced", metadata_json={"email_id": str(email.id), "lead_id": str(lead.id), "classification": category, "gmail_message_id": message_id}))
             synced += 1
             classified[category] = classified.get(category, 0) + 1
@@ -5521,7 +5543,8 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     message.sent_at = datetime.utcnow()
     message.provider_message_id = str(provider_response.get("id"))
     message.delivery_status = "sent"
-    message.tags = {**(message.tags if isinstance(message.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider}
+    provider_thread_id = str(provider_response.get("thread_id") or provider_response.get("threadId") or "").strip()
+    message.tags = {**(message.tags if isinstance(message.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider, **({"provider_thread_id": provider_thread_id} if provider_thread_id else {})}
     lead.status = LeadStatus.contacted
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": message.sent_at.isoformat()})
     _sync_lead_to_crm(db, user_id, workspace, lead)

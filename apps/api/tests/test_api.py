@@ -49,7 +49,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -6204,6 +6204,164 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
     assert crm_after_send["email_status"] == "Sent"
     assert crm_after_send["email_sent_at"]
     assert any(item["action"] == "email.sent" for item in crm_after_send["activity"])
+
+
+def test_gmail_reply_sync_updates_crm_and_is_idempotent(monkeypatch) -> None:
+    run_id = str(int(time.time() * 1000))
+    user_email = f"reply-crm-sync-{run_id}@example.com"
+    company_name = f"Reply CRM Sync Test {run_id}"
+    lead_email = f"reply-buyer-{run_id}@reply-crm-sync.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "encryption_key", "reply-sync-test-encryption-key")
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "google-secret")
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    monkeypatch.setattr("app.api.routes._gmail_access_token_from_sender", lambda sender: "gmail-access-token")
+    monkeypatch.setattr(
+        "app.api.routes.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="Reply tracking CRM test",
+            preview="A short reviewed idea",
+            full_email="This is a controlled reply tracking regression test.",
+            cta="No action required.",
+            follow_ups=[],
+            ab_tests=[],
+        ),
+    )
+    monkeypatch.setattr("app.api.routes.send_email", lambda **kwargs: {"id": "gmail-outbound-1", "thread_id": "gmail-thread-1"})
+
+    lead_response = client.post(
+        "/api/leads",
+        headers=headers,
+        json={"company": company_name, "website": f"https://reply-crm-sync-{run_id}.com", "industry": "SaaS", "email": lead_email},
+    )
+    assert lead_response.status_code == 200
+    lead = lead_response.json()
+
+    draft_response = client.post(f"/api/leads/{lead['id']}/draft-email", headers=headers)
+    assert draft_response.status_code == 200
+    draft = draft_response.json()
+
+    db = get_sessionmaker()()
+    try:
+        workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_email))
+        app_settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
+        app_settings.email = {
+            "sender": {
+                "provider": "gmail",
+                "sender_name": "QA Sender",
+                "sender_email": "qa.sender@testmail.local",
+                "reply_to": "qa.sender@testmail.local",
+                "daily_send_limit": 25,
+                "enabled": True,
+                "oauth": {
+                    "provider": "gmail",
+                    "refresh_token_encrypted": encrypt_secret("refresh-token", settings.encryption_key),
+                    "verified_at": datetime.utcnow().isoformat(),
+                    "scopes": ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"],
+                },
+                "smtp": {},
+            }
+        }
+        db.add(app_settings)
+        db.commit()
+    finally:
+        db.close()
+
+    approved_response = client.post(f"/api/emails/{draft['id']}/approve", headers=headers)
+    assert approved_response.status_code == 200
+    sent_response = client.post(f"/api/emails/{draft['id']}/send", headers=headers)
+    assert sent_response.status_code == 200
+    assert sent_response.json()["delivery_status"] == "sent"
+
+    class FakeGmailResponse:
+        def __init__(self, payload: dict[str, Any]):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    class FakeGmailClient:
+        def __init__(self, *args: Any, **kwargs: Any):
+            self.calls: list[str] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        def get(self, url: str, params=None) -> FakeGmailResponse:
+            self.calls.append(url)
+            assert "messages/send" not in url
+            if "/threads/gmail-thread-1" in url:
+                return FakeGmailResponse(
+                    {
+                        "messages": [
+                            {
+                                "id": "gmail-outbound-1",
+                                "threadId": "gmail-thread-1",
+                                "internalDate": "1785253887000",
+                                "snippet": "This is a controlled reply tracking regression test.",
+                                "payload": {"headers": [{"name": "From", "value": "QA Sender <qa.sender@testmail.local>"}]},
+                            },
+                            {
+                                "id": "gmail-reply-1",
+                                "threadId": "gmail-thread-1",
+                                "snippet": "Reply received. Controlled test response.",
+                                "payload": {"headers": [{"name": "From", "value": f"Buyer <{lead_email}>"}]},
+                            },
+                        ]
+                    }
+                )
+            raise AssertionError(f"unexpected Gmail URL {url}")
+
+    monkeypatch.setattr("app.api.routes.httpx.Client", FakeGmailClient)
+
+    db = get_sessionmaker()()
+    try:
+        email = db.get(EmailMessage, UUID(draft["id"]))
+        assert email.tags["provider_thread_id"] == "gmail-thread-1"
+    finally:
+        db.close()
+
+    first_sync = client.post("/api/outreach/oauth/gmail/sync", headers=headers)
+    assert first_sync.status_code == 200
+    assert first_sync.json()["synced"] == 1
+
+    crm_after_reply = client.get(f"/api/crm/companies?search={company_name.replace(' ', '%20')}", headers=headers).json()[0]
+    assert crm_after_reply["crm_stage"] == "Replied"
+    assert crm_after_reply["email_status"] == "Replied"
+    assert crm_after_reply["replied_at"]
+    assert any(item["action"] == "outreach.gmail.reply_synced" for item in crm_after_reply["activity"])
+
+    db = get_sessionmaker()()
+    try:
+        email = db.get(EmailMessage, UUID(draft["id"]))
+        assert email.delivery_status == "replied"
+        assert email.replied_at is not None
+        assert email.reply_assistant["gmail_message_id"] == "gmail-reply-1"
+        assert db.query(AuditLog).filter(AuditLog.action == "outreach.gmail.reply_synced", AuditLog.metadata_json["email_id"].as_string() == draft["id"]).count() == 1
+        usage_before_second_sync = db.scalar(select(UsageCounter.email_sends).where(UsageCounter.workspace_id == email.workspace_id))
+    finally:
+        db.close()
+
+    second_sync = client.post("/api/outreach/oauth/gmail/sync", headers=headers)
+    assert second_sync.status_code == 200
+    assert second_sync.json()["synced"] == 0
+
+    db = get_sessionmaker()()
+    try:
+        email = db.get(EmailMessage, UUID(draft["id"]))
+        assert db.query(AuditLog).filter(AuditLog.action == "outreach.gmail.reply_synced", AuditLog.metadata_json["email_id"].as_string() == draft["id"]).count() == 1
+        assert db.scalar(select(UsageCounter.email_sends).where(UsageCounter.workspace_id == email.workspace_id)) == usage_before_second_sync
+    finally:
+        db.close()
 
 
 def test_outreach_sender_status_and_update() -> None:
