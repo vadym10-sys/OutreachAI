@@ -249,6 +249,14 @@ function memoryTypeLabel(value: string) {
   return pretty(value || "interaction");
 }
 
+function retrievalModeLabel(settings?: AiMemorySettings | null) {
+  const mode = settings?.last_retrieval_mode || "none";
+  if (mode === "pgvector") return "pgvector";
+  if (mode === "openai_embedding") return "OpenAI embedding";
+  if (mode === "keyword") return settings?.pgvector_available ? "keyword; pgvector available, not used" : "keyword fallback";
+  return settings?.pgvector_available ? "none; pgvector available, not used" : "none";
+}
+
 function CompanyMemoryExplain({ company }: { company: CrmCompany }) {
   const api = useAiFirstApi();
   const [open, setOpen] = useState(false);
@@ -1054,7 +1062,7 @@ function AiFirstMemoryPanel() {
         <>
           <div className="mt-4 grid gap-3 sm:grid-cols-3">
             <EvidenceLine label="Remembered" value={`${settings?.active_count ?? entries.length} active item(s)`} />
-            <EvidenceLine label="Retrieval" value={`${settings?.last_retrieval_mode || "none"}${settings?.pgvector_available ? " with pgvector" : " fallback ready"}`} />
+            <EvidenceLine label="Retrieval" value={retrievalModeLabel(settings)} />
             <EvidenceLine label="Retention" value={`${settings?.retention_days || 0} days`} />
           </div>
           <form onSubmit={savePreference} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">

@@ -50,7 +50,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _enforce_usage, _lead_ai_payload, _limits_for_workspace, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -62,7 +62,7 @@ from app.services.emailer import EmailProviderRequestError  # noqa: E402
 from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
 from app.services.autopilot import process_autopilot_email_job  # noqa: E402
 from app.services.secret_box import encrypt_secret  # noqa: E402
-from app.services.ai_memory import retrieve_memory, upsert_memory_entry  # noqa: E402
+from app.services.ai_memory import MODE_KEYWORD, MODE_OPENAI_EMBEDDING, _pgvector_retrieval_sql, retrieve_memory, upsert_memory_entry  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteTemporaryUnavailableError, WebsiteValidationError, collect_website, normalize_website_url  # noqa: E402
 import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
@@ -2290,8 +2290,58 @@ def test_ai_memory_retrieval_filters_workspace_deleted_expired_and_prompt_inject
         assert str(deleted.id) not in ids
         assert str(expired.id) not in ids
         assert str(other.id) not in ids
-        assert retrieval.context["retrieval_mode"] in {"vector", "keyword"}
+        assert retrieval.context["retrieval_mode"] == MODE_KEYWORD
         assert retrieval.context["items"][0]["trust_level"] == "trusted"
+
+
+def test_ai_memory_hash_fallback_reports_keyword(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.ai_memory._openai_embedding", lambda value: [])
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-keyword-{uuid4()}@example.com"}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    with get_sessionmaker()() as db:
+        ws = db.get(Workspace, UUID(workspace["id"]))
+        assert ws is not None
+        upsert_memory_entry(db, workspace=ws, user_id=headers["X-Test-User-Email"], memory_type="verified_fact", content="Product: keyword-only clinic scheduling workflow", source="test", verified=True)
+        db.commit()
+        retrieval = retrieve_memory(db, workspace=ws, user_id=headers["X-Test-User-Email"], query="clinic scheduling workflow", purpose="test")
+        assert retrieval.context["retrieval_mode"] == MODE_KEYWORD
+        assert retrieval.mode == MODE_KEYWORD
+
+
+def test_ai_memory_openai_embedding_without_pgvector_does_not_report_pgvector(monkeypatch) -> None:
+    embedding = [0.01] * 1536
+    monkeypatch.setattr("app.services.ai_memory._openai_embedding", lambda value: embedding)
+    monkeypatch.setattr("app.services.ai_memory._pgvector_column_available", lambda db: False)
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-openai-{uuid4()}@example.com"}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    with get_sessionmaker()() as db:
+        ws = db.get(Workspace, UUID(workspace["id"]))
+        assert ws is not None
+        entry = upsert_memory_entry(db, workspace=ws, user_id=headers["X-Test-User-Email"], memory_type="verified_fact", content="Product: OpenAI embedding clinic scheduling workflow", source="test", verified=True)
+        assert entry is not None
+        db.commit()
+        retrieval = retrieve_memory(db, workspace=ws, user_id=headers["X-Test-User-Email"], query="clinic scheduling workflow", purpose="test")
+        assert retrieval.context["retrieval_mode"] == MODE_OPENAI_EMBEDDING
+        assert retrieval.context["retrieval_mode"] != "pgvector"
+
+
+def test_ai_memory_pgvector_sql_is_workspace_scoped() -> None:
+    sql = _pgvector_retrieval_sql(uuid4(), uuid4())
+    assert "workspace_id = :workspace_id" in sql
+    assert "deleted_at IS NULL" in sql
+    assert "expires_at IS NULL OR expires_at > now()" in sql
+    assert "company_id = :company_id" in sql
+    assert "lead_id = :lead_id" in sql
+    assert "embedding_status = :embedding_status" in sql
+    assert "embedding <=>" in sql
+
+
+def test_ai_memory_migration_optional_vector_permission_failure_is_non_blocking() -> None:
+    migration = Path("db/migrations/011_ai_memory.sql").read_text()
+    assert "WHEN insufficient_privilege THEN" in migration
+    assert "WHEN undefined_file THEN" in migration
+    assert migration.index("CREATE TABLE IF NOT EXISTS ai_memory_settings") > migration.index("optional pgvector setup skipped")
+    assert "DROP INDEX IF EXISTS idx_ai_memory_entries_embedding" in migration
 
 
 def test_ai_memory_context_is_added_to_ai_sales_analysis_and_explain(monkeypatch) -> None:
@@ -2365,6 +2415,80 @@ def test_ai_memory_feedback_outcome_and_approve_before_send(monkeypatch) -> None
     entries = client.get("/api/workspace-app/ai-memory/entries?memory_type=outcome", headers=headers)
     assert entries.status_code == 200
     assert any("sent" in item["content"].lower() for item in entries.json()["entries"])
+
+
+def test_ai_memory_correction_recomputes_keywords_embedding_and_blocks_cross_workspace(monkeypatch) -> None:
+    embedding = [0.02] * 1536
+    monkeypatch.setattr("app.services.ai_memory._openai_embedding", lambda value: embedding)
+    monkeypatch.setattr("app.services.ai_memory._write_pgvector_embedding", lambda db, entry_id, embedding: None)
+    monkeypatch.setattr("app.services.ai_memory._clear_pgvector_embedding", lambda db, entry_id: None)
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-correct-{uuid4()}@example.com"}
+    client.get("/api/workspace/me", headers=headers)
+    created = client.post(
+        "/api/workspace-app/ai-memory/entries",
+        headers=headers,
+        json={"memory_type": "verified_fact", "content": "Old product: spreadsheet cleanup", "source": "test", "verified": True},
+    )
+    assert created.status_code == 200
+    entry_id = created.json()["entry"]["id"]
+
+    blocked = client.patch(f"/api/workspace-app/ai-memory/entries/{entry_id}", headers=USER_B_AUTH, json={"content": "Cross workspace edit"})
+    assert blocked.status_code == 404
+
+    corrected = client.patch(
+        f"/api/workspace-app/ai-memory/entries/{entry_id}",
+        headers=headers,
+        json={"content": "New product: clinic appointment workflow. api_key=secret-value"},
+    )
+    assert corrected.status_code == 200
+    body = corrected.json()["entry"]
+    assert "clinic appointment workflow" in body["content"]
+    assert "secret-value" not in body["content"]
+    assert body["embedding_status"] == MODE_OPENAI_EMBEDDING
+    with get_sessionmaker()() as db:
+        row = db.get(AIMemoryEntry, UUID(entry_id))
+        assert row is not None
+        assert "clinic" in row.keywords
+        assert "spreadsheet" not in row.keywords
+        assert row.embedding_json == embedding
+        assert row.expires_at is not None
+
+
+def test_ai_memory_email_generator_receives_memory_context_before_generation(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_personalize(payload):
+        captured["payload"] = payload.model_dump()
+        return EmailVariantOut(
+            subject="Memory context draft",
+            preview="A short reviewed idea",
+            full_email="Hi, memory context was available before writing.",
+            cta="Book a review",
+            follow_ups=[],
+            ab_tests=[],
+        )
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-email-{uuid4()}@example.com"}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    with get_sessionmaker()() as db:
+        ws = db.get(Workspace, UUID(workspace["id"]))
+        assert ws is not None
+        upsert_memory_entry(db, workspace=ws, user_id=headers["X-Test-User-Email"], memory_type="verified_fact", content="Product: AI appointment follow-up for clinics", source="test", verified=True)
+        lead = Lead(user_id=headers["X-Test-User-Email"], workspace_id=ws.id, company="Memory Email Co", website="https://memory-email.example", industry="Clinic SaaS", email="buyer@memory-email.example")
+        db.add(lead)
+        db.commit()
+        lead_id = str(lead.id)
+
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    monkeypatch.setattr("app.api.routes.personalize_email", fake_personalize)
+
+    response = client.post(f"/api/leads/{lead_id}/draft-email", headers=headers)
+    assert response.status_code == 200
+    memory_context = captured["payload"]["analysis_context"]["memory_context"]
+    assert memory_context["enabled"] is True
+    assert memory_context["memory_ids"]
+    assert any("AI appointment follow-up" in item["content"] for item in memory_context["items"])
 
 
 def test_workspace_me_creates_private_workspace_with_owner_email() -> None:

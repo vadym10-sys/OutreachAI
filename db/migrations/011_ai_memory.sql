@@ -1,7 +1,17 @@
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
-    CREATE EXTENSION IF NOT EXISTS vector;
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS vector;
+      RAISE NOTICE 'AI Memory pgvector extension is installed or already available.';
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        RAISE NOTICE 'AI Memory optional pgvector setup skipped: insufficient privilege to CREATE EXTENSION vector.';
+      WHEN undefined_file THEN
+        RAISE NOTICE 'AI Memory optional pgvector setup skipped: vector extension files are not installed.';
+    END;
+  ELSE
+    RAISE NOTICE 'AI Memory optional pgvector setup skipped: vector is not listed in pg_available_extensions.';
   END IF;
 END $$;
 
@@ -67,14 +77,24 @@ CREATE TABLE IF NOT EXISTS ai_memory_audit_logs (
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
-    IF NOT EXISTS (
-      SELECT 1
-      FROM information_schema.columns
-      WHERE table_name = 'ai_memory_entries'
-        AND column_name = 'embedding'
-    ) THEN
-      ALTER TABLE ai_memory_entries ADD COLUMN embedding vector(1536);
-    END IF;
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'ai_memory_entries'
+          AND column_name = 'embedding'
+      ) THEN
+        ALTER TABLE ai_memory_entries ADD COLUMN embedding vector(1536);
+      END IF;
+      RAISE NOTICE 'AI Memory pgvector column is available.';
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        RAISE NOTICE 'AI Memory optional pgvector column skipped: insufficient privilege.';
+      WHEN undefined_file THEN
+        RAISE NOTICE 'AI Memory optional pgvector column skipped: vector type is unavailable.';
+    END;
+  ELSE
+    RAISE NOTICE 'AI Memory pgvector column skipped: vector extension is not installed.';
   END IF;
 END $$;
 
@@ -95,10 +115,20 @@ BEGIN
       WHERE table_name = 'ai_memory_entries'
         AND column_name = 'embedding'
     ) THEN
-    CREATE INDEX IF NOT EXISTS idx_ai_memory_entries_embedding
-      ON ai_memory_entries
-      USING ivfflat (embedding vector_cosine_ops)
-      WITH (lists = 100);
+    BEGIN
+      CREATE INDEX IF NOT EXISTS idx_ai_memory_entries_embedding
+        ON ai_memory_entries
+        USING ivfflat (embedding vector_cosine_ops)
+        WITH (lists = 100);
+      RAISE NOTICE 'AI Memory pgvector index is available.';
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        RAISE NOTICE 'AI Memory optional pgvector index skipped: insufficient privilege.';
+      WHEN undefined_file THEN
+        RAISE NOTICE 'AI Memory optional pgvector index skipped: vector operator class is unavailable.';
+    END;
+  ELSE
+    RAISE NOTICE 'AI Memory pgvector index skipped: vector extension or embedding column is unavailable.';
   END IF;
 END $$;
 

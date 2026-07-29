@@ -8,7 +8,7 @@ Flow:
 
 1. Workspace profile and confirmed facts are written to `ai_memory_entries`.
 2. Before AI Sales analysis or email drafting, retrieval filters by `workspace_id`, `company_id`, `lead_id`, active retention state, relevance, and budget.
-3. If embeddings are available, vector similarity participates in ranking. If pgvector or the embedding provider is unavailable, deterministic keyword/metadata scoring is used.
+3. If PostgreSQL pgvector is installed and an OpenAI embedding is available, retrieval can run a workspace-scoped pgvector similarity query. If OpenAI embeddings are available but pgvector is not used, ranking happens in application code and reports `openai_embedding`. If embeddings are unavailable, deterministic keyword/metadata scoring is used.
 4. The AI result includes `memory_context` with mode, memory ids, item types, sources, relevance scores, verification state, influence notes, truncation, and reason when memory was not used.
 5. Draft, approval, send, webhook open/click/reply/meeting/rejection/unsubscribe events are stored as `interaction` or `outcome`.
 
@@ -41,7 +41,7 @@ Memory types:
 
 ## Embedding Cost And Limits
 
-Embeddings are created only for sanitized memory content and retrieval queries when an OpenAI key is configured and memory embeddings are enabled. The default model is `text-embedding-3-small`. Retrieval has hard limits (`max_items`, `max_characters`, relevance threshold) to avoid sending full history to the LLM.
+Embeddings are created only for sanitized memory content and retrieval queries when an OpenAI key is configured and memory embeddings are enabled. The default model is `text-embedding-3-small`. Local deterministic fallback does not masquerade as vector retrieval. Retrieval has hard limits (`max_items`, `max_characters`, relevance threshold) to avoid sending full history to the LLM.
 
 If embeddings fail, AI analysis and email generation continue with keyword retrieval.
 
@@ -56,7 +56,14 @@ If embeddings fail, AI analysis and email generation continue with keyword retri
 
 ## pgvector
 
-Migration `011_ai_memory.sql` checks `pg_available_extensions` before `CREATE EXTENSION IF NOT EXISTS vector`. It creates the vector column and ivfflat index only when the extension is installed. Do not force-install pgvector in an unsupported Railway/PostgreSQL environment.
+Migration `011_ai_memory.sql` checks `pg_available_extensions` before `CREATE EXTENSION IF NOT EXISTS vector`, and catches `insufficient_privilege` and `undefined_file` so ordinary memory tables still migrate when optional vector setup is unavailable. It creates the vector column and ivfflat index only after the extension is installed. Do not force-install pgvector in an unsupported Railway/PostgreSQL environment.
+
+Retrieval modes are exact:
+
+- `pgvector`: PostgreSQL executed similarity through the `embedding vector(1536)` column and cosine operator.
+- `openai_embedding`: OpenAI embeddings were used, but ranking happened outside pgvector.
+- `keyword`: deterministic keyword/metadata fallback. Hash or keyword fallback must never be reported as vector or pgvector.
+- `none`: no memory was used.
 
 Production verification:
 
@@ -72,7 +79,7 @@ WHERE extname = 'vector';
 
 ## Fallback
 
-When pgvector or embeddings are unavailable, retrieval uses deterministic keyword, trust, entity, and recency scoring. The result reports `retrieval_mode: "keyword"` or `none`.
+When pgvector or embeddings are unavailable, retrieval uses deterministic keyword, trust, entity, and recency scoring. The result reports `retrieval_mode: "keyword"` or `none`. If OpenAI embeddings are available without pgvector, the result reports `retrieval_mode: "openai_embedding"`.
 
 ## Migration
 

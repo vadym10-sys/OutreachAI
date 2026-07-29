@@ -19,6 +19,11 @@ from app.models.entities import AIMemoryAuditLog, AIMemoryEntry, AIMemorySetting
 MEMORY_TYPES = {item.value for item in AIMemoryType}
 TRUSTED_MEMORY_TYPES = {AIMemoryType.verified_fact.value, AIMemoryType.approved_preference.value}
 OUTCOME_TYPES = {"sent", "delivered", "open", "click", "reply", "meeting", "rejection", "unsubscribe", "bounce", "complaint"}
+OPENAI_EMBEDDING_DIMENSIONS = 1536
+MODE_PGVECTOR = "pgvector"
+MODE_OPENAI_EMBEDDING = "openai_embedding"
+MODE_KEYWORD = "keyword"
+MODE_NONE = "none"
 SECRET_PATTERNS = [
     re.compile(r"(?i)\bauthorization\b\s*[:=]\s*Bearer\s+[A-Za-z0-9._\-]{8,}"),
     re.compile(r"(?i)\b(authorization|cookie|set-cookie|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|password|secret)\b\s*[:=]\s*['\"]?[^'\"\s,;]+"),
@@ -87,7 +92,13 @@ def _openai_embedding(value: str) -> list[float]:
     except OpenAIError:
         return []
     vector = response.data[0].embedding if response.data else []
-    return [float(item) for item in vector[:1536]]
+    if len(vector) < OPENAI_EMBEDDING_DIMENSIONS:
+        return []
+    return [float(item) for item in vector[:OPENAI_EMBEDDING_DIMENSIONS]]
+
+
+def _embedding_literal(embedding: list[float]) -> str:
+    return "[" + ",".join(f"{float(item):.8f}" for item in embedding[:OPENAI_EMBEDDING_DIMENSIONS]) + "]"
 
 
 def pgvector_supported(db: Session) -> bool:
@@ -100,6 +111,52 @@ def pgvector_supported(db: Session) -> bool:
     except SQLAlchemyError:
         db.rollback()
         return False
+
+
+def _pgvector_column_available(db: Session) -> bool:
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return False
+    try:
+        installed = db.execute(text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')")).scalar()
+        column_exists = db.execute(
+            text(
+                """
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM information_schema.columns
+                  WHERE table_name = 'ai_memory_entries'
+                    AND column_name = 'embedding'
+                )
+                """
+            )
+        ).scalar()
+        return bool(installed and column_exists)
+    except SQLAlchemyError:
+        db.rollback()
+        return False
+
+
+def _write_pgvector_embedding(db: Session, entry_id: UUID, embedding: list[float]) -> None:
+    if len(embedding) != OPENAI_EMBEDDING_DIMENSIONS or not _pgvector_column_available(db):
+        return
+    try:
+        with db.begin_nested():
+            db.execute(
+                text("UPDATE ai_memory_entries SET embedding = CAST(:embedding AS vector) WHERE id = :entry_id"),
+                {"embedding": _embedding_literal(embedding), "entry_id": str(entry_id)},
+            )
+    except SQLAlchemyError:
+        return
+
+
+def _clear_pgvector_embedding(db: Session, entry_id: UUID) -> None:
+    if not _pgvector_column_available(db):
+        return
+    try:
+        with db.begin_nested():
+            db.execute(text("UPDATE ai_memory_entries SET embedding = NULL WHERE id = :entry_id"), {"entry_id": str(entry_id)})
+    except SQLAlchemyError:
+        return
 
 
 def ensure_memory_settings(db: Session, workspace: Workspace, user_id: str) -> AIMemorySettings:
@@ -133,7 +190,7 @@ def log_memory_event(db: Session, *, workspace_id: UUID, user_id: str, action: s
 def memory_context_none(reason: str) -> dict[str, Any]:
     return {
         "enabled": False,
-        "retrieval_mode": "none",
+        "retrieval_mode": MODE_NONE,
         "memory_ids": [],
         "items": [],
         "truncated": False,
@@ -144,6 +201,17 @@ def memory_context_none(reason: str) -> dict[str, Any]:
 def _dedupe_hash(workspace_id: UUID, memory_type: str, content: str, source: str, source_id: str) -> str:
     raw = "|".join([str(workspace_id), memory_type, source, source_id, content.lower().strip()])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _prepare_embedding(settings: AIMemorySettings, safe_content: str) -> tuple[list[float], str]:
+    if not settings.embeddings_enabled:
+        return [], "disabled"
+    if not get_settings().openai_api_key:
+        return [], "provider_unavailable"
+    embedding = _openai_embedding(safe_content)
+    if not embedding:
+        return [], "provider_unavailable"
+    return embedding, MODE_OPENAI_EMBEDDING
 
 
 def upsert_memory_entry(
@@ -184,10 +252,7 @@ def upsert_memory_entry(
     dedupe_hash = _dedupe_hash(workspace.id, memory_type, safe_content, source, source_id)
     entry = db.scalar(select(AIMemoryEntry).where(AIMemoryEntry.workspace_id == workspace.id, AIMemoryEntry.dedupe_hash == dedupe_hash))
     words = _keywords(" ".join([safe_content, source, str(metadata or {})]))
-    embedding = _openai_embedding(safe_content) if settings.embeddings_enabled and get_settings().openai_api_key else []
-    embedding_status = "embedded" if embedding else ("provider_unavailable" if settings.embeddings_enabled else "disabled")
-    if not embedding:
-        embedding = _hash_embedding(words)
+    embedding, embedding_status = _prepare_embedding(settings, safe_content)
     if entry is None:
         entry = AIMemoryEntry(workspace_id=workspace.id, user_id=user_id, memory_type=AIMemoryType(memory_type), dedupe_hash=dedupe_hash)
         db.add(entry)
@@ -212,7 +277,56 @@ def upsert_memory_entry(
     entry.deleted_at = None
     entry.updated_at = datetime.utcnow()
     db.flush()
+    if embedding_status == MODE_OPENAI_EMBEDDING:
+        _write_pgvector_embedding(db, entry.id, embedding)
+    else:
+        _clear_pgvector_embedding(db, entry.id)
     log_memory_event(db, workspace_id=workspace.id, user_id=user_id, action="memory.upserted", entry_id=entry.id, metadata={"type": memory_type, "source": source})
+    return entry
+
+
+def correct_memory_entry(db: Session, *, workspace: Workspace, user_id: str, entry: AIMemoryEntry, content: Any) -> AIMemoryEntry:
+    safe_content = redact_sensitive_text(content)
+    if not safe_content:
+        raise ValueError("Memory content cannot be empty after redaction.")
+    source = redact_sensitive_text(entry.source, max_length=120)
+    source_id = redact_sensitive_text(entry.source_id, max_length=160)
+    new_hash = _dedupe_hash(workspace.id, entry.memory_type.value, safe_content, source, source_id)
+    conflict = db.scalar(
+        select(AIMemoryEntry).where(
+            AIMemoryEntry.workspace_id == workspace.id,
+            AIMemoryEntry.dedupe_hash == new_hash,
+            AIMemoryEntry.id != entry.id,
+            AIMemoryEntry.deleted_at.is_(None),
+        )
+    )
+    if conflict is not None:
+        raise ValueError("duplicate_memory")
+    settings = ensure_memory_settings(db, workspace, user_id)
+    words = _keywords(" ".join([safe_content, source, str(entry.metadata_json or {})]))
+    embedding, embedding_status = _prepare_embedding(settings, safe_content)
+    entry.content = safe_content
+    entry.summary = safe_content[:500]
+    entry.source = source
+    entry.source_id = source_id
+    entry.dedupe_hash = new_hash
+    entry.keywords = words
+    entry.embedding_json = embedding
+    entry.embedding_status = embedding_status
+    entry.updated_at = datetime.utcnow()
+    db.flush()
+    if embedding_status == MODE_OPENAI_EMBEDDING:
+        _write_pgvector_embedding(db, entry.id, embedding)
+    else:
+        _clear_pgvector_embedding(db, entry.id)
+    log_memory_event(
+        db,
+        workspace_id=workspace.id,
+        user_id=user_id,
+        action="memory.corrected",
+        entry_id=entry.id,
+        metadata={"source": source, "embedding_status": embedding_status, "content_changed": True},
+    )
     return entry
 
 
@@ -274,6 +388,72 @@ def _candidate_query(db: Session, *, workspace_id: UUID, company_id: UUID | None
     return list(db.scalars(stmt).all())
 
 
+def _scope_sql(company_id: UUID | None, lead_id: UUID | None) -> tuple[str, dict[str, str]]:
+    params: dict[str, str] = {}
+    clauses = ["(company_id IS NULL AND lead_id IS NULL)"]
+    if company_id:
+        clauses.append("company_id = :company_id")
+        params["company_id"] = str(company_id)
+    if lead_id:
+        clauses.append("lead_id = :lead_id")
+        params["lead_id"] = str(lead_id)
+    return " OR ".join(clauses), params
+
+
+def _pgvector_retrieval_sql(company_id: UUID | None, lead_id: UUID | None) -> str:
+    scope, _params = _scope_sql(company_id, lead_id)
+    return f"""
+        SELECT id, 1 - (embedding <=> CAST(:query_embedding AS vector)) AS relevance_score
+        FROM ai_memory_entries
+        WHERE workspace_id = :workspace_id
+          AND deleted_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
+          AND embedding IS NOT NULL
+          AND embedding_status = :embedding_status
+          AND ({scope})
+        ORDER BY embedding <=> CAST(:query_embedding AS vector)
+        LIMIT :limit
+    """
+
+
+def _pgvector_candidates(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    company_id: UUID | None,
+    lead_id: UUID | None,
+    query_embedding: list[float],
+    limit: int,
+) -> list[tuple[float, AIMemoryEntry]]:
+    if len(query_embedding) != OPENAI_EMBEDDING_DIMENSIONS or not _pgvector_column_available(db):
+        return []
+    _, scope_params = _scope_sql(company_id, lead_id)
+    try:
+        with db.begin_nested():
+            rows = db.execute(
+                text(_pgvector_retrieval_sql(company_id, lead_id)),
+                {
+                    "workspace_id": str(workspace_id),
+                    "query_embedding": _embedding_literal(query_embedding),
+                    "embedding_status": MODE_OPENAI_EMBEDDING,
+                    "limit": max(limit * 4, 20),
+                    **scope_params,
+                },
+            ).all()
+    except SQLAlchemyError:
+        return []
+    ids = [row.id for row in rows]
+    if not ids:
+        return []
+    entries = {str(entry.id): entry for entry in db.scalars(select(AIMemoryEntry).where(AIMemoryEntry.id.in_(ids), AIMemoryEntry.workspace_id == workspace_id)).all()}
+    ranked: list[tuple[float, AIMemoryEntry]] = []
+    for row in rows:
+        entry = entries.get(str(row.id))
+        if entry is not None:
+            ranked.append((round(max(0.0, min(1.0, float(row.relevance_score or 0.0))), 4), entry))
+    return ranked
+
+
 def retrieve_memory(
     db: Session,
     *,
@@ -288,32 +468,43 @@ def retrieve_memory(
     seed_workspace_profile_memory(db, workspace=workspace, user_id=user_id)
     if not settings.enabled:
         context = memory_context_none("AI Memory is disabled for this workspace.")
+        settings.last_retrieval_mode = MODE_NONE
         log_memory_event(db, workspace_id=workspace.id, user_id=user_id, action="memory.retrieve_skipped", metadata={"purpose": purpose, "reason": context["reason"]})
-        return MemoryRetrieval(context=context, items=[], mode="none", reason=context["reason"])
+        return MemoryRetrieval(context=context, items=[], mode=MODE_NONE, reason=context["reason"])
 
     candidates = _candidate_query(db, workspace_id=workspace.id, company_id=company_id, lead_id=lead_id, limit=settings.max_items)
     if not candidates:
         context = memory_context_none("No active relevant memory entries found.")
         context["enabled"] = True
+        settings.last_retrieval_mode = MODE_NONE
         log_memory_event(db, workspace_id=workspace.id, user_id=user_id, action="memory.retrieve_empty", metadata={"purpose": purpose})
-        return MemoryRetrieval(context=context, items=[], mode="none", reason=context["reason"])
+        return MemoryRetrieval(context=context, items=[], mode=MODE_NONE, reason=context["reason"])
 
     query_words = _keywords(query)
     query_embedding = _openai_embedding(query) if settings.embeddings_enabled and get_settings().openai_api_key else []
-    if not query_embedding:
-        query_embedding = _hash_embedding(query_words)
     scored: list[tuple[float, AIMemoryEntry, str]] = []
     query_word_set = set(query_words)
-    mode = "vector" if settings.embeddings_enabled and any(item.embedding_json for item in candidates) else "keyword"
-    for entry in candidates:
-        entry_words = set(entry.keywords or _keywords(entry.content))
-        keyword_score = len(query_word_set & entry_words) / max(len(query_word_set | entry_words), 1)
-        vector_score = _cosine(query_embedding, [float(item) for item in (entry.embedding_json or [])]) if mode == "vector" else 0.0
+    pgvector_ranked = _pgvector_candidates(db, workspace_id=workspace.id, company_id=company_id, lead_id=lead_id, query_embedding=query_embedding, limit=settings.max_items) if query_embedding else []
+    pgvector_ids = {entry.id for _score, entry in pgvector_ranked}
+    for score, entry in pgvector_ranked:
         trust_bonus = 0.25 if entry.memory_type.value in TRUSTED_MEMORY_TYPES else 0.0
         entity_bonus = 0.18 if (company_id and entry.company_id == company_id) or (lead_id and entry.lead_id == lead_id) else 0.0
         recency_bonus = 0.05 if entry.created_at and (datetime.utcnow() - entry.created_at).days <= 30 else 0.0
-        score = max(keyword_score, vector_score) + trust_bonus + entity_bonus + recency_bonus
-        scored.append((round(min(score, 1.0), 4), entry, "vector" if vector_score >= keyword_score and mode == "vector" else "keyword"))
+        scored.append((round(min(score + trust_bonus + entity_bonus + recency_bonus, 1.0), 4), entry, MODE_PGVECTOR))
+    for entry in candidates:
+        if entry.id in pgvector_ids:
+            continue
+        entry_words = set(entry.keywords or _keywords(entry.content))
+        keyword_score = len(query_word_set & entry_words) / max(len(query_word_set | entry_words), 1)
+        embedding_score = 0.0
+        if query_embedding and entry.embedding_status == MODE_OPENAI_EMBEDDING and len(entry.embedding_json or []) == OPENAI_EMBEDDING_DIMENSIONS:
+            embedding_score = _cosine(query_embedding, [float(item) for item in (entry.embedding_json or [])])
+        trust_bonus = 0.25 if entry.memory_type.value in TRUSTED_MEMORY_TYPES else 0.0
+        entity_bonus = 0.18 if (company_id and entry.company_id == company_id) or (lead_id and entry.lead_id == lead_id) else 0.0
+        recency_bonus = 0.05 if entry.created_at and (datetime.utcnow() - entry.created_at).days <= 30 else 0.0
+        score_mode = MODE_OPENAI_EMBEDDING if embedding_score > keyword_score else MODE_KEYWORD
+        score = max(keyword_score, embedding_score) + trust_bonus + entity_bonus + recency_bonus
+        scored.append((round(min(score, 1.0), 4), entry, score_mode))
     scored.sort(key=lambda item: (item[0], item[1].verified, item[1].approved_by_user, item[1].created_at), reverse=True)
 
     selected: list[tuple[float, AIMemoryEntry, str]] = []
@@ -335,10 +526,16 @@ def retrieve_memory(
     if not selected:
         context = memory_context_none("No memory entries met the relevance threshold.")
         context["enabled"] = True
+        settings.last_retrieval_mode = MODE_NONE
         log_memory_event(db, workspace_id=workspace.id, user_id=user_id, action="memory.retrieve_empty", metadata={"purpose": purpose, "reason": context["reason"]})
-        return MemoryRetrieval(context=context, items=[], mode="none", reason=context["reason"])
+        return MemoryRetrieval(context=context, items=[], mode=MODE_NONE, reason=context["reason"])
 
-    mode = "vector" if any(item[2] == "vector" for item in selected) else "keyword"
+    if any(item[2] == MODE_PGVECTOR for item in selected):
+        mode = MODE_PGVECTOR
+    elif any(item[2] == MODE_OPENAI_EMBEDDING for item in selected):
+        mode = MODE_OPENAI_EMBEDDING
+    else:
+        mode = MODE_KEYWORD
     settings.last_retrieval_mode = mode
     context_items = [_context_item(entry, score) for score, entry, _score_mode in selected]
     context = {

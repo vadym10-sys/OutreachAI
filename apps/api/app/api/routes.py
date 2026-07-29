@@ -180,7 +180,7 @@ from app.services.ai import (
     suggest_reply,
     website_audit,
 )
-from app.services.ai_memory import memory_context_none, record_email_memory, retrieve_memory
+from app.services.ai_memory import attach_memory_context, memory_context_none, record_email_memory, retrieve_memory
 from app.services.continuous_learning import apply_continuous_learning_event
 from app.services.workflow_engine import build_company_workflow_engine
 from app.services.audit import log_event
@@ -3401,6 +3401,18 @@ def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Reques
         ] if part
     )
     try:
+        memory_context = retrieve_memory(
+            db,
+            workspace=workspace,
+            user_id=user_id,
+            query=" ".join([lead.company, lead.industry or "", employee.offer or "", website_context]),
+            lead_id=lead.id,
+            purpose="sales_employee_draft_email",
+        ).context
+    except Exception:
+        memory_context = memory_context_none("AI Memory retrieval failed for sales employee draft.")
+    analysis_context = attach_memory_context({"source": "sales_employee_draft_email"}, memory_context)
+    try:
         generated = personalize_email(
             PersonalizeRequest(
                 company=lead.company,
@@ -3411,6 +3423,7 @@ def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Reques
                 tone=employee.tone or str(intelligence.get("recommended_tone") or "Professional"),
                 language=employee.language,
                 signature=employee.signature,
+                analysis_context=analysis_context,
             )
         )
     except Exception as exc:
@@ -5163,6 +5176,7 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
         ).context
     except Exception:
         memory_context = memory_context_none("AI Memory retrieval failed for legacy lead draft.")
+    ai_payload = ai_payload.model_copy(update={"analysis_context": attach_memory_context(ai_payload.analysis_context, memory_context)})
     try:
         generated = personalize_email(ai_payload)
     except Exception as exc:
@@ -5244,6 +5258,7 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
         ).context
     except Exception:
         memory_context = memory_context_none("AI Memory retrieval failed for legacy campaign email.")
+    ai_payload = ai_payload.model_copy(update={"analysis_context": attach_memory_context(ai_payload.analysis_context, memory_context)})
     try:
         generated = personalize_email(ai_payload)
     except Exception as exc:

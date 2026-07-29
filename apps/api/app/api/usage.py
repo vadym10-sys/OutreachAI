@@ -51,13 +51,13 @@ from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut,
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.ai_memory import (
     attach_memory_context,
+    correct_memory_entry,
     ensure_memory_settings,
     explain_memory_context,
     log_memory_event,
     memory_context_none,
     record_ai_analysis_memory,
     record_email_memory,
-    redact_sensitive_text,
     retrieve_memory,
     upsert_memory_entry,
 )
@@ -7154,10 +7154,12 @@ def correct_ai_memory_entry(memory_id: UUID, payload: AIMemoryCorrectionIn, requ
     entry = _scoped_memory_entry(db, workspace.id, memory_id)
     if entry.deleted_at is not None:
         raise HTTPException(status_code=409, detail="Deleted memory cannot be corrected.")
-    entry.content = redact_sensitive_text(payload.content)
-    entry.summary = entry.content[:500]
-    entry.updated_at = datetime.utcnow()
-    log_memory_event(db, workspace_id=workspace.id, user_id=user.user_id, action="memory.corrected", entry_id=entry.id)
+    try:
+        correct_memory_entry(db, workspace=workspace, user_id=user.user_id, entry=entry, content=payload.content)
+    except ValueError as exc:
+        if str(exc) == "duplicate_memory":
+            raise HTTPException(status_code=409, detail="Corrected memory duplicates an existing active entry.") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     return {"entry": _memory_entry_out(entry)}
 
