@@ -83,8 +83,11 @@ function inferCountry(command: string) {
 
 function inferIndustry(command: string) {
   const normalized = command.toLowerCase();
-  if (/saas|software|crm|b2b|ai|sales|outbound/i.test(normalized)) return "B2B SaaS";
+  if (/local service|cleaning|accounting|bookkeeping|ремонт|service compan|services compan/i.test(normalized)) return "Local services";
+  if (/agency|agencies|агентств|marketing/i.test(normalized)) return "B2B agencies";
+  if (/manufactur|factory|industrial|производ/i.test(normalized)) return "Manufacturing";
   if (/строитель|construction|renovation/i.test(normalized)) return "Construction";
+  if (/saas|software|crm|b2b|ai|sales|outbound/i.test(normalized)) return "B2B SaaS";
   if (/clinic|health|medical|healthcare/i.test(normalized)) return "Healthcare";
   return "B2B";
 }
@@ -96,19 +99,35 @@ function inferProduct(command: string) {
   return cleaned.slice(0, 220) || "B2B product or service";
 }
 
-function inferAudience(command: string) {
-  const country = inferCountry(command);
-  const industry = inferIndustry(command);
+function extractSearchAudience(command: string) {
+  const withoutTestPrefix = command.trim().replace(/^E2E_TEST_[\w-]+\s*/i, "");
+  const searchIntent = /^(find|search for|look for|найди|найти|ищи|подбери)\b/i.test(withoutTestPrefix);
+  if (!searchIntent) return "";
+
+  const cleaned = withoutTestPrefix
+    .replace(/^(find|search for|look for|найди|найти|ищи|подбери)\s+/i, "")
+    .replace(/^\d+\s+/i, "")
+    .trim();
+
+  return cleaned.slice(0, 420);
+}
+
+function inferAudience(command: string, targetCountry?: string, targetIndustry?: string) {
+  const requestedAudience = extractSearchAudience(command);
+  if (requestedAudience) return requestedAudience;
+
+  const country = targetCountry || inferCountry(command);
+  const industry = targetIndustry || inferIndustry(command);
   const suffix = country === "Any" ? "" : ` in ${country}`;
   return `${industry} companies${suffix} with public timing, hiring, growth, or workflow pain signals.`;
 }
 
-function commandToCriteria(command: string, advanced: Pick<AiAssistantCommand, "targetCountry" | "targetIndustry" | "companySize" | "contactTitles" | "keywords" | "exclusions" | "maxResults">): AiAssistantCommand {
+export function commandToCriteria(command: string, advanced: Pick<AiAssistantCommand, "targetCountry" | "targetIndustry" | "companySize" | "contactTitles" | "keywords" | "exclusions" | "maxResults">): AiAssistantCommand {
   const input = command.trim();
   const website = isWebsiteInput(input) ? normalizeWebsite(input) : "";
   const targetCountry = advanced.targetCountry || inferCountry(input);
   const targetIndustry = advanced.targetIndustry || inferIndustry(input);
-  const desiredCustomers = inferAudience(`${input} ${targetCountry} ${targetIndustry}`);
+  const desiredCustomers = inferAudience(input, targetCountry, targetIndustry);
   return {
     command: input,
     companyWebsite: website,
