@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     automation_secret: str = ""
     automation_batch_size: int = 25
     automation_send_limit_per_run: int = 25
+    production_e2e_cleanup_token: str = ""
+    production_e2e_email: str = ""
     public_api_url: str = "http://localhost:8000"
     public_app_url: str = "https://outreachaiaiai.com"
     stripe_secret_key: str = ""

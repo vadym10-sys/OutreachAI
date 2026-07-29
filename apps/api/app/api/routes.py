@@ -30,7 +30,9 @@ from app.core.security import CurrentUser, CurrentUserContext, OwnerUser, Worksp
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
+    AICustomerFinderJob,
     AICustomerFinderResult,
+    AICustomerFinderSource,
     AppSettings,
     AuditLog,
     BackupRun,
@@ -213,6 +215,133 @@ from app.services.google_maps import (
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, collect_website, normalize_website_url
 
 router = APIRouter()
+E2E_TEST_PREFIX = "E2E_TEST"
+
+
+def _cleanup_forbidden() -> None:
+    raise HTTPException(status_code=403, detail="E2E cleanup is not permitted for this request.")
+
+
+def _cleanup_bearer_token(authorization: str | None) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        _cleanup_forbidden()
+    return authorization.removeprefix("Bearer ").strip()
+
+
+def _is_valid_e2e_run_id(value: object) -> bool:
+    run_id = str(value or "").strip()
+    return run_id.startswith(E2E_TEST_PREFIX) and len(run_id) > len(E2E_TEST_PREFIX)
+
+
+def _cleanup_email(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _record_has_e2e_marker(metadata: Any, run_id: str, test_account_email: str) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    marker = metadata.get("e2e_test") is True or metadata.get("source") == E2E_TEST_PREFIX
+    return marker and metadata.get("e2e_run_id") == run_id and _cleanup_email(metadata.get("test_account_email")) == test_account_email
+
+
+def _record_mentions_run_id(record: Any, run_id: str) -> bool:
+    fields = (
+        "name",
+        "company",
+        "company_name",
+        "subject",
+        "body",
+        "preview",
+        "request_id",
+        "command",
+        "source_url",
+        "source_title",
+    )
+    for field in fields:
+        value = getattr(record, field, None)
+        if isinstance(value, str) and run_id in value:
+            return True
+    for field in ("metadata_json", "tags", "criteria_json", "summary_json", "progress_json", "payload_json", "result_json"):
+        value = getattr(record, field, None)
+        if isinstance(value, (dict, list)) and run_id in json.dumps(value, sort_keys=True):
+            return True
+    return False
+
+
+def _json_marker_from_text(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip().startswith("{"):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _record_marker(record: Any) -> Any:
+    for field in ("metadata_json", "tags", "criteria_json", "result_json"):
+        value = getattr(record, field, None)
+        if isinstance(value, dict):
+            return value
+    for field in ("notes", "body", "next_step"):
+        marker = _json_marker_from_text(getattr(record, field, None))
+        if marker:
+            return marker
+    website_filters = getattr(record, "website_filters", None)
+    if isinstance(website_filters, list):
+        for item in website_filters:
+            if isinstance(item, dict):
+                return item
+    return {}
+
+
+def _e2e_cleanup_scope(db: Session, test_account_email: str) -> tuple[set[str], set[UUID]]:
+    user_ids: set[str] = {test_account_email}
+    user_ids.update(
+        str(item)
+        for item in db.scalars(select(User.clerk_user_id).where(func.lower(User.email) == test_account_email)).all()
+        if item
+    )
+    workspace_ids: set[UUID] = set(
+        db.scalars(select(Workspace.id).where(Workspace.owner_user_id.in_(user_ids))).all()
+    )
+    workspace_ids.update(
+        db.scalars(
+            select(WorkspaceMember.workspace_id).where(
+                or_(
+                    WorkspaceMember.user_id.in_(user_ids),
+                    func.lower(WorkspaceMember.email) == test_account_email,
+                )
+            )
+        ).all()
+    )
+    return user_ids, workspace_ids
+
+
+def _requested_cleanup_workspace(payload: dict[str, Any], workspace_ids: set[UUID]) -> set[UUID]:
+    requested = str(payload.get("workspace_id") or "").strip()
+    if not requested:
+        return workspace_ids
+    try:
+        workspace_id = UUID(requested)
+    except ValueError:
+        _cleanup_forbidden()
+    if workspace_id not in workspace_ids:
+        _cleanup_forbidden()
+    return {workspace_id}
+
+
+def _cleanup_query(db: Session, model: type[Any], user_ids: set[str], workspace_ids: set[UUID]) -> list[Any]:
+    if not workspace_ids:
+        return []
+    return list(
+        db.scalars(
+            select(model).where(
+                model.user_id.in_(user_ids),
+                model.workspace_id.in_(workspace_ids),
+            )
+        ).all()
+    )
 logger = logging.getLogger("outreachai.api.routes")
 LEAD_PROVIDER_TIMEOUT_SECONDS = 10
 
@@ -2382,6 +2511,77 @@ def automation_run(
         raise HTTPException(status_code=401, detail="Invalid automation secret")
     result = run_daily_acquisition(db, workspace_id=str(workspace_id) if workspace_id else None)
     return AutomationRunOut.model_validate(result.as_dict())
+
+
+@router.post("/qa/e2e/cleanup")
+def production_e2e_cleanup(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    settings = get_app_settings()
+    token = _cleanup_bearer_token(authorization)
+    if not settings.production_e2e_cleanup_token or not secrets.compare_digest(token, settings.production_e2e_cleanup_token):
+        _cleanup_forbidden()
+
+    run_id = str(payload.get("run_id") or "").strip()
+    if payload.get("prefix") != E2E_TEST_PREFIX or not _is_valid_e2e_run_id(run_id):
+        _cleanup_forbidden()
+
+    configured_test_account = _cleanup_email(settings.production_e2e_email)
+    requested_test_account = _cleanup_email(payload.get("test_account_email"))
+    if not configured_test_account or requested_test_account != configured_test_account:
+        _cleanup_forbidden()
+
+    user_ids, workspace_ids = _e2e_cleanup_scope(db, configured_test_account)
+    if not workspace_ids:
+        _cleanup_forbidden()
+    workspace_ids = _requested_cleanup_workspace(payload, workspace_ids)
+
+    models: tuple[type[Any], ...] = (
+        AICustomerFinderSource,
+        AICustomerFinderResult,
+        AICustomerFinderJob,
+        EmailMessage,
+        Note,
+        Deal,
+        Contact,
+        Company,
+        Lead,
+        Campaign,
+    )
+    records_by_model = {model: _cleanup_query(db, model, user_ids, workspace_ids) for model in models}
+
+    ambiguous_records = [
+        f"{model.__name__}:{getattr(record, 'id', '')}"
+        for model, records in records_by_model.items()
+        for record in records
+        if _record_mentions_run_id(record, run_id) and not _record_has_e2e_marker(_record_marker(record), run_id, configured_test_account)
+    ]
+    if ambiguous_records:
+        _cleanup_forbidden()
+
+    deleted: dict[str, int] = {}
+    for model, records in records_by_model.items():
+        count = 0
+        for record in records:
+            if not _record_has_e2e_marker(_record_marker(record), run_id, configured_test_account):
+                continue
+            db.delete(record)
+            count += 1
+        deleted[model.__tablename__] = count
+
+    db.add(
+        AuditLog(
+            user_id=configured_test_account,
+            workspace_id=next(iter(workspace_ids)),
+            action="qa.e2e_cleanup",
+            ip_address=None,
+            metadata_json={"run_id": run_id, "deleted": deleted},
+        )
+    )
+    db.commit()
+    return {"status": "ok", "run_id": run_id, "test_account": configured_test_account, "deleted": deleted}
 
 
 def _sales_employee_mode(value: str) -> SalesEmployeeMode:

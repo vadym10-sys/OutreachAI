@@ -41,6 +41,14 @@ def _scrub_sentry_value(value):
 
 def _before_send(event, hint):  # noqa: ANN001
     del hint
+    if event.get("message"):
+        event["message"] = _scrub_sentry_value(event["message"])
+    if event.get("exception", {}).get("values"):
+        for exception in event["exception"]["values"]:
+            if exception.get("value"):
+                exception["value"] = _scrub_sentry_value(exception["value"])
+    if event.get("breadcrumbs", {}).get("values"):
+        event["breadcrumbs"]["values"] = _scrub_sentry_value(event["breadcrumbs"]["values"])
     if "request" in event:
         request = event["request"]
         request["headers"] = _scrub_sentry_value(request.get("headers") or {})
@@ -54,6 +62,11 @@ def _before_send(event, hint):  # noqa: ANN001
     return event
 
 
+def _before_breadcrumb(breadcrumb, hint):  # noqa: ANN001
+    del hint
+    return _scrub_sentry_value(breadcrumb)
+
+
 def init_sentry(settings: Settings) -> None:
     if not settings.sentry_dsn:
         return
@@ -65,6 +78,7 @@ def init_sentry(settings: Settings) -> None:
         traces_sample_rate=settings.sentry_traces_sample_rate,
         send_default_pii=False,
         before_send=_before_send,
+        before_breadcrumb=_before_breadcrumb,
         integrations=[
             FastApiIntegration(transaction_style="endpoint"),
             SqlalchemyIntegration(),

@@ -26,6 +26,7 @@ const sensitiveValuePattern = /(authorization|cookie|password|secret|token|api[_
 type SentryLikeEvent = {
   message?: string;
   exception?: { values?: Array<{ value?: string; stacktrace?: { frames?: Array<{ filename?: string }> } }> };
+  breadcrumbs?: unknown[];
   request?: { url?: string; headers?: Record<string, unknown>; cookies?: unknown; data?: unknown };
   extra?: unknown;
   contexts?: unknown;
@@ -45,6 +46,17 @@ export function scrubSentryEvent<T extends object>(event: T): T {
   };
 
   const next = event as SentryLikeEvent;
+  if (next.message) next.message = scrubRecord(next.message) as string;
+  if (next.exception?.values) {
+    next.exception = {
+      ...next.exception,
+      values: next.exception.values.map((exception) => ({
+        ...exception,
+        value: exception.value ? scrubRecord(exception.value) as string : exception.value
+      }))
+    };
+  }
+  if (next.breadcrumbs) next.breadcrumbs = scrubRecord(next.breadcrumbs) as unknown[];
   if (next.request) {
     next.request = {
       ...next.request,
@@ -57,6 +69,11 @@ export function scrubSentryEvent<T extends object>(event: T): T {
   if (next.contexts) next.contexts = scrubRecord(next.contexts);
   if (next.user) next.user = scrubRecord(next.user);
   return event;
+}
+
+export function scrubSentryBreadcrumb<T extends object | null | undefined>(breadcrumb: T): T {
+  if (!breadcrumb || typeof breadcrumb !== "object") return breadcrumb;
+  return scrubSentryEvent({ breadcrumbs: [breadcrumb] }).breadcrumbs?.[0] as T;
 }
 
 export function shouldDropSentryEvent(event: SentryLikeEvent) {

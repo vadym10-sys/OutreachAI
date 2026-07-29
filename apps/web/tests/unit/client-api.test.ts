@@ -119,6 +119,19 @@ describe("client API errors", () => {
 
   it("scrubs Sentry request, extra, context, and user data before telemetry leaves the browser", () => {
     const event = scrubSentryEvent({
+      message: "Failed to send message to customer@example.com with Bearer token",
+      exception: {
+        values: [
+          { value: "Email draft for prospect@example.com contains private content" }
+        ]
+      },
+      breadcrumbs: [
+        {
+          category: "api",
+          message: "POST /api/workspace-app/emails with customer@example.com",
+          data: { authorization: "Bearer token", safe_id: "req_1" }
+        }
+      ],
       request: {
         headers: { authorization: "Bearer token", cookie: "sid=secret", "x-request-id": "req_1" },
         cookies: { sid: "secret" },
@@ -137,6 +150,10 @@ describe("client API errors", () => {
       }
     });
 
+    expect(event.message).toBe("[Filtered]");
+    expect(event.exception?.values?.[0]?.value).toBe("[Filtered]");
+    expect(event.breadcrumbs?.[0]?.message).toBe("[Filtered]");
+    expect(event.breadcrumbs?.[0]?.data).toMatchObject({ authorization: "[Filtered]", safe_id: "req_1" });
     expect(event.request?.headers?.authorization).toBe("[Filtered]");
     expect(event.request?.headers?.cookie).toBe("[Filtered]");
     expect(event.request?.headers?.["x-request-id"]).toBe("req_1");

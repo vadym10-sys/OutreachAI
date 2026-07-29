@@ -8,7 +8,7 @@ import logging
 import tempfile
 import os
 import time
-from typing import Any
+from typing import Any, Optional
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwt as jose_jwt
+import jwt
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects import postgresql
 
@@ -50,7 +50,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _enforce_usage, _lead_ai_payload, _limits_for_workspace, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -95,6 +95,21 @@ def test_sentry_before_send_scrubs_pii_and_secret_fields() -> None:
 
     event = _before_send(
         {
+            "message": "Failed to send message to customer@example.com with Bearer token",
+            "exception": {
+                "values": [
+                    {"value": "Email draft for prospect@example.com contains private content"},
+                ],
+            },
+            "breadcrumbs": {
+                "values": [
+                    {
+                        "category": "api",
+                        "message": "POST /api/workspace-app/emails with customer@example.com",
+                        "data": {"authorization": "Bearer token", "safe_id": "req_1"},
+                    }
+                ],
+            },
             "request": {
                 "headers": {"authorization": "Bearer token", "x-request-id": "req_1"},
                 "cookies": "sid=secret",
@@ -107,6 +122,11 @@ def test_sentry_before_send_scrubs_pii_and_secret_fields() -> None:
         {},
     )
 
+    assert event["message"] == "[Filtered]"
+    assert event["exception"]["values"][0]["value"] == "[Filtered]"
+    assert event["breadcrumbs"]["values"][0]["message"] == "[Filtered]"
+    assert event["breadcrumbs"]["values"][0]["data"]["authorization"] == "[Filtered]"
+    assert event["breadcrumbs"]["values"][0]["data"]["safe_id"] == "req_1"
     assert event["request"]["headers"]["authorization"] == "[Filtered]"
     assert event["request"]["headers"]["x-request-id"] == "req_1"
     assert event["request"]["cookies"] == "[Filtered]"
@@ -115,6 +135,23 @@ def test_sentry_before_send_scrubs_pii_and_secret_fields() -> None:
     assert event["contexts"]["outreachai"]["body"] == "[Filtered]"
     assert event["user"]["email"] == "[Filtered]"
     assert event["user"]["id"] == "user_1"
+
+
+def test_sentry_before_breadcrumb_scrubs_pii_and_secret_fields() -> None:
+    from app.core.observability import _before_breadcrumb
+
+    breadcrumb = _before_breadcrumb(
+        {
+            "category": "api",
+            "message": "POST /api/workspace-app/emails with customer@example.com",
+            "data": {"authorization": "Bearer token", "safe_id": "req_1"},
+        },
+        {},
+    )
+
+    assert breadcrumb["message"] == "[Filtered]"
+    assert breadcrumb["data"]["authorization"] == "[Filtered]"
+    assert breadcrumb["data"]["safe_id"] == "req_1"
 
 
 def test_website_url_normalization_adds_https_and_rejects_invalid_domains() -> None:
@@ -2742,6 +2779,155 @@ def test_customer_facing_workspace_hides_internal_qa_records() -> None:
     campaign_names = [item["name"] for item in campaigns.json()]
     assert "Berlin Construction Outreach" in campaign_names
     assert "QA Campaign 123" not in campaign_names
+
+
+def _e2e_cleanup_headers() -> dict[str, str]:
+    return {"Authorization": "Bearer cleanup_test_token"}
+
+
+def _e2e_cleanup_payload(run_id: str, account: str, workspace_id: Optional[UUID] = None) -> dict[str, str]:
+    payload = {"prefix": "E2E_TEST", "run_id": run_id, "test_account_email": account}
+    if workspace_id is not None:
+        payload["workspace_id"] = str(workspace_id)
+    return payload
+
+
+def _e2e_marker(run_id: str, account: str) -> dict[str, object]:
+    return {"e2e_test": True, "source": "E2E_TEST", "e2e_run_id": run_id, "test_account_email": account}
+
+
+def _configure_e2e_cleanup(monkeypatch, account: str = "production-e2e@example.com") -> str:
+    monkeypatch.setenv("PRODUCTION_E2E_CLEANUP_TOKEN", "cleanup_test_token")
+    monkeypatch.setenv("PRODUCTION_E2E_EMAIL", account)
+    get_settings.cache_clear()
+    return account
+
+
+def _create_e2e_workspace(db, account: str, owner_user_id: Optional[str] = None) -> Workspace:
+    workspace = Workspace(owner_user_id=owner_user_id or account, name=f"E2E workspace {account}")
+    db.add(workspace)
+    db.flush()
+    db.add(WorkspaceMember(workspace_id=workspace.id, user_id=owner_user_id or account, email=account, role=WorkspaceRole.owner, status="active"))
+    return workspace
+
+
+def test_production_e2e_cleanup_requires_structured_markers_and_test_account(monkeypatch) -> None:
+    account = _configure_e2e_cleanup(monkeypatch)
+    run_id = "E2E_TEST_cleanup_valid"
+    marker = _e2e_marker(run_id, account)
+    SessionLocal = get_sessionmaker()
+
+    with SessionLocal() as db:
+        workspace = _create_e2e_workspace(db, account)
+        regular_company = Company(user_id=account, workspace_id=workspace.id, name="Regular Customer GmbH", website="https://regular.example")
+        campaign = Campaign(user_id=account, workspace_id=workspace.id, name=f"{run_id} campaign", website_filters=[marker])
+        lead = Lead(user_id=account, workspace_id=workspace.id, campaign=campaign, company=f"{run_id} lead", email=f"{run_id.lower()}@example.com", notes=json.dumps(marker))
+        company = Company(user_id=account, workspace_id=workspace.id, lead=lead, name=f"{run_id} company", website="https://e2e.example", metadata_json=marker)
+        contact = Contact(user_id=account, workspace_id=workspace.id, company=company, lead=lead, name=f"{run_id} contact", email=f"{run_id.lower()}-contact@example.com", metadata_json=marker)
+        deal = Deal(user_id=account, workspace_id=workspace.id, company=company, lead=lead, name=f"{run_id} deal", next_step=json.dumps(marker))
+        note = Note(user_id=account, workspace_id=workspace.id, company=company, lead=lead, body=json.dumps(marker))
+        job = AICustomerFinderJob(user_id=account, workspace_id=workspace.id, request_id=run_id, criteria_json=marker)
+        result = AICustomerFinderResult(
+            user_id=account,
+            workspace_id=workspace.id,
+            job=job,
+            lead=lead,
+            company=company,
+            company_name=f"{run_id} result",
+            source_url="https://e2e.example/source",
+            signal_fingerprint=f"{run_id}:fingerprint",
+            metadata_json=marker,
+        )
+        source = AICustomerFinderSource(
+            user_id=account,
+            workspace_id=workspace.id,
+            job=job,
+            result=result,
+            source_url="https://e2e.example/source",
+            metadata_json=marker,
+        )
+        db.add_all([regular_company, campaign, lead, company, contact, deal, note, job, result, source])
+        db.flush()
+        email = EmailMessage(user_id=account, workspace_id=workspace.id, campaign_id=campaign.id, lead_id=lead.id, subject=f"{run_id} draft", body="draft only", tags=marker)
+        db.add(email)
+        db.commit()
+        workspace_id = workspace.id
+        regular_company_id = regular_company.id
+
+    response = client.post("/api/qa/e2e/cleanup", headers=_e2e_cleanup_headers(), json=_e2e_cleanup_payload(run_id, account, workspace_id))
+    assert response.status_code == 200
+    deleted = response.json()["deleted"]
+    assert deleted["companies"] == 1
+    assert deleted["contacts"] == 1
+    assert deleted["deals"] == 1
+    assert deleted["notes"] == 1
+    assert deleted["email_messages"] == 1
+    assert deleted["leads"] == 1
+    assert deleted["campaigns"] == 1
+    assert deleted["ai_customer_finder_jobs"] == 1
+    assert deleted["ai_customer_finder_results"] == 1
+    assert deleted["ai_customer_finder_sources"] == 1
+
+    with SessionLocal() as db:
+        assert db.get(Company, regular_company_id) is not None
+        assert db.scalar(select(func.count()).select_from(Company).where(Company.name == f"{run_id} company")) == 0
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == "qa.e2e_cleanup", AuditLog.user_id == account).order_by(AuditLog.created_at.desc()))
+        assert audit is not None
+        assert audit.metadata_json["run_id"] == run_id
+    get_settings.cache_clear()
+
+
+def test_production_e2e_cleanup_rejects_regular_user_account(monkeypatch) -> None:
+    account = _configure_e2e_cleanup(monkeypatch)
+    response = client.post(
+        "/api/qa/e2e/cleanup",
+        headers=_e2e_cleanup_headers(),
+        json=_e2e_cleanup_payload("E2E_TEST_regular_user", "real-user@example.com"),
+    )
+    assert response.status_code == 403
+    assert account != "real-user@example.com"
+    get_settings.cache_clear()
+
+
+def test_production_e2e_cleanup_rejects_missing_run_id(monkeypatch) -> None:
+    account = _configure_e2e_cleanup(monkeypatch)
+    response = client.post("/api/qa/e2e/cleanup", headers=_e2e_cleanup_headers(), json={"prefix": "E2E_TEST", "test_account_email": account})
+    assert response.status_code == 403
+    get_settings.cache_clear()
+
+
+def test_production_e2e_cleanup_rejects_unmarked_data_that_mentions_run_id(monkeypatch) -> None:
+    account = _configure_e2e_cleanup(monkeypatch)
+    run_id = "E2E_TEST_unmarked_attempt"
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = _create_e2e_workspace(db, account)
+        company = Company(user_id=account, workspace_id=workspace.id, name=f"{run_id} unmarked company", website="https://unmarked.example")
+        db.add(company)
+        db.commit()
+        company_id = company.id
+        workspace_id = workspace.id
+
+    response = client.post("/api/qa/e2e/cleanup", headers=_e2e_cleanup_headers(), json=_e2e_cleanup_payload(run_id, account, workspace_id))
+    assert response.status_code == 403
+    with SessionLocal() as db:
+        assert db.get(Company, company_id) is not None
+    get_settings.cache_clear()
+
+
+def test_production_e2e_cleanup_rejects_other_workspace(monkeypatch) -> None:
+    account = _configure_e2e_cleanup(monkeypatch)
+    run_id = "E2E_TEST_other_workspace"
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        _create_e2e_workspace(db, account)
+        other_workspace = _create_e2e_workspace(db, "other-e2e@example.com")
+        db.commit()
+        other_workspace_id = other_workspace.id
+
+    response = client.post("/api/qa/e2e/cleanup", headers=_e2e_cleanup_headers(), json=_e2e_cleanup_payload(run_id, account, other_workspace_id))
+    assert response.status_code == 403
+    get_settings.cache_clear()
 
 
 def test_workspace_app_manual_company_save_persists_and_dedupes() -> None:
@@ -5533,7 +5719,7 @@ def test_production_auth_accepts_verified_clerk_jwt(monkeypatch) -> None:
     monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": issuer, "sub": "user_verified", "aud": audience, "iat": int(time.time()), "exp": int(time.time()) + 300},
         private_pem,
         algorithm="RS256",
@@ -5553,7 +5739,7 @@ def test_production_auth_accepts_standard_clerk_session_jwt_without_audience_whe
     monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": issuer, "sub": "user_standard_session", "iat": int(time.time()), "exp": int(time.time()) + 300},
         private_pem,
         algorithm="RS256",
@@ -5576,7 +5762,7 @@ def test_production_auth_accepts_custom_domain_clerk_issuer_fallback(monkeypatch
     monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": token_issuer, "sub": "user_custom_domain_issuer", "iat": int(time.time()), "exp": int(time.time()) + 300},
         private_pem,
         algorithm="RS256",
@@ -5599,7 +5785,7 @@ def test_production_owner_context_uses_verified_clerk_user_email(monkeypatch) ->
     monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda user_id: "romaniukvadym10@gmail.com")
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": issuer, "sub": "user_owner", "aud": audience, "iat": int(time.time()), "exp": int(time.time()) + 300},
         private_pem,
         algorithm="RS256",
@@ -5623,7 +5809,7 @@ def test_production_auth_rejects_expired_clerk_jwt(monkeypatch) -> None:
     monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": issuer, "sub": "user_expired", "aud": audience, "iat": int(time.time()) - 600, "exp": int(time.time()) - 300},
         private_pem,
         algorithm="RS256",

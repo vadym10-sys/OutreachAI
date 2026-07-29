@@ -39,6 +39,28 @@ function installProductionGuards(page: Page, testInfo: TestInfo) {
   };
 }
 
+function installNoEmailSendGuard(page: Page, testInfo: TestInfo) {
+  const sendAttempts: Array<{ method: string; path: string }> = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (request.method() === "POST" && /\/api\/(?:backend\/api\/)?workspace-app\/emails\/[^/]+\/send$/.test(path)) {
+      sendAttempts.push({ method: request.method(), path });
+    }
+  });
+  return {
+    async assertNoSendAttempt() {
+      if (sendAttempts.length) {
+        await testInfo.attach("production-send-attempts.json", {
+          body: JSON.stringify(sendAttempts, null, 2),
+          contentType: "application/json"
+        });
+      }
+      expect(sendAttempts).toEqual([]);
+    }
+  };
+}
+
 async function expectNoSensitiveContent(page: Page) {
   await expect(page.locator("body")).not.toContainText(forbiddenText);
   await expect(page.locator("body")).not.toContainText(/Something went wrong|Failed to fetch|Traceback|SQLAlchemy/i);
@@ -102,6 +124,7 @@ test.describe("production authenticated customer workflow", () => {
   test("Customer Finder can prepare an E2E_TEST lead and draft without sending email", async ({ page }, testInfo) => {
     test.skip(!mutationSmokeEnabled, "Set PRODUCTION_SMOKE_MUTATION_ENABLED=true to run mutation smoke with E2E_TEST data.");
     const guards = installProductionGuards(page, testInfo);
+    const noSend = installNoEmailSendGuard(page, testInfo);
 
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     const command = `${runId} Find one B2B SaaS customer in Germany. Create draft only. Do not send email.`;
@@ -111,17 +134,24 @@ test.describe("production authenticated customer workflow", () => {
     await expect(page.locator("main")).toContainText(/draft|письм|CRM|found|найден/i, { timeout: 60_000 });
     await expect(page.getByRole("button", { name: /Send|Confirm and send|Отправить/i })).toHaveCount(0);
     await expectNoSensitiveContent(page);
+    await noSend.assertNoSendAttempt();
     await guards.assertClean();
   });
 
   test("manual approval gate remains separate from send", async ({ page }, testInfo) => {
     test.skip(!mutationSmokeEnabled, "Set PRODUCTION_SMOKE_MUTATION_ENABLED=true to run mutation smoke with E2E_TEST data.");
     const guards = installProductionGuards(page, testInfo);
+    const noSend = installNoEmailSendGuard(page, testInfo);
     await page.goto("/dashboard/emails", { waitUntil: "domcontentloaded" });
     await expect(page.locator("main")).toBeVisible();
     await expect(page.locator("main")).toContainText(/approve|review|draft|провер/i);
-    await expect(page.getByRole("button", { name: /Confirm and send|Send approved email/i })).toBeDisabled({ timeout: 15_000 }).catch(() => undefined);
+    const sendButtons = page.getByRole("button", { name: /Confirm and send|Send approved email/i });
+    const sendButtonCount = await sendButtons.count();
+    for (let index = 0; index < sendButtonCount; index += 1) {
+      await expect(sendButtons.nth(index)).toBeDisabled();
+    }
     await expectNoSensitiveContent(page);
+    await noSend.assertNoSendAttempt();
     await guards.assertClean();
   });
 });

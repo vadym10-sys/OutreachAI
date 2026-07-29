@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
-import { scrubSentryEvent, sentryEnvironment, shouldDropSentryEvent } from "@/lib/sentry-common";
+import { scrubSentryBreadcrumb, scrubSentryEvent, sentryEnvironment, shouldDropSentryEvent } from "@/lib/sentry-common";
 
 export async function register() {
   const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
@@ -15,6 +15,9 @@ export async function register() {
     sendDefaultPii: false,
     beforeSend(event) {
       return shouldDropSentryEvent(event) ? null : scrubSentryEvent(event);
+    },
+    beforeBreadcrumb(breadcrumb) {
+      return scrubSentryBreadcrumb(breadcrumb);
     }
   });
 }

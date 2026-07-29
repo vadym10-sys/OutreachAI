@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
-import { scrubSentryEvent, sentryEnvironment, shouldDropSentryEvent } from "@/lib/sentry-common";
+import { scrubSentryBreadcrumb, scrubSentryEvent, sentryEnvironment, shouldDropSentryEvent } from "@/lib/sentry-common";
 import { shouldUseHeavyClientTelemetry } from "@/lib/client-runtime";
 
 const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
@@ -33,6 +33,9 @@ if (dsn) {
     ],
     beforeSend(event) {
       return shouldDropSentryEvent(event) ? null : scrubSentryEvent(event);
+    },
+    beforeBreadcrumb(breadcrumb) {
+      return scrubSentryBreadcrumb(breadcrumb);
     }
   });
 }
