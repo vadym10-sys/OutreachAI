@@ -18,6 +18,10 @@ test("AI assistant runs First Customer Finder and shows source-backed companies"
   await expect(page.getByText("Найдено")).toBeVisible();
   await expect(page.getByText("Подготовлено")).toBeVisible();
   await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
+  await page.getByText("Подробнее по найденным компаниям").click();
+  await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+  await expect(page.getByText("Strong match")).toBeVisible();
+  await expect(page.getByText("Website verification")).toBeVisible();
   await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
 });
 

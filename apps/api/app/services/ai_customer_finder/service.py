@@ -29,8 +29,8 @@ from app.schemas.dto import LeadOut
 from app.services.ai_customer_finder.dedupe import canonical_url, company_dedupe_key, content_hash, normalized_domain, signal_fingerprint
 from app.services.ai_customer_finder.providers import provider_for_key
 from app.services.ai_customer_finder.schemas import CustomerFinderCriteria, CustomerFinderJobOut, CustomerFinderResultOut, PublicCustomerCandidate, VerifiedCustomerSignal
-from app.services.ai_customer_finder.scoring import meaningful_signal_present, score_candidate, signal_type_from_text
-from app.services.website import WebsiteFetchError, collect_website, normalize_website_url
+from app.services.ai_customer_finder.scoring import score_candidate, signal_type_from_text
+from app.services.website import WebsiteFetchError, WebsiteTemporaryUnavailableError, collect_website, normalize_website_url
 
 logger = logging.getLogger("outreachai.ai_customer_finder")
 
@@ -193,7 +193,9 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
                 return True
             _set_progress(db, job, "enriching", f"Saving top-ranked result for {signal.company_name}.", min(95, 85 + saved * 2), claim_token=claim_token)
             result = _persist_signal(db, job, signal)
-            _save_signal_to_crm(db, job, result, criteria)
+            result_metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+            if result_metadata.get("result_tier") != "Weak / needs review":
+                _save_signal_to_crm(db, job, result, criteria)
             saved += 1
             db.commit()
         final_status = "completed" if saved > 0 and not warnings else ("partially_completed" if saved > 0 else "failed")
@@ -520,6 +522,10 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         retrieved_at=source_verification.get("retrieved_at") or result.checked_at,
         source_confidence=_safe_int(source_verification.get("confidence"), result.confidence_score),
         source_verification_status=str(source_verification.get("status") or result.verified_status),
+        result_tier=str(metadata.get("result_tier") or ""),
+        website_verification_status=str(metadata.get("website_verification_status") or source_verification.get("status") or result.verified_status),
+        website_verification_warning=str(metadata.get("website_verification_warning") or source_verification.get("warning") or ""),
+        missing_buying_signal=bool(metadata.get("missing_buying_signal")),
         scoring_version=str(scoring.get("version") or metadata.get("scoring_version") or ""),
         score_factors=scoring.get("factors") if isinstance(scoring.get("factors"), dict) else {},
         score_weights=scoring.get("weights") if isinstance(scoring.get("weights"), dict) else {},
@@ -563,14 +569,27 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
 
 def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustomerCandidate) -> VerifiedCustomerSignal:
     website = normalize_website_url(candidate.website)
-    snapshot = collect_website(website)
-    text = snapshot.text or snapshot.meta_description or snapshot.title
+    verification_status = "verified"
+    verification_warning = ""
+    try:
+        snapshot = collect_website(website)
+        text = snapshot.text or snapshot.meta_description or snapshot.title
+        source_url = canonical_url(snapshot.url or website)
+        source_title = snapshot.title or candidate.company_name
+        source_type = "official_website"
+        source_verified = True
+    except WebsiteTemporaryUnavailableError as exc:
+        verification_status = "temporarily_unavailable"
+        verification_warning = str(exc)
+        text = _provider_evidence_text(criteria, candidate)
+        source_url = canonical_url(website)
+        source_title = candidate.company_name
+        source_type = "google_places_profile"
+        source_verified = True
     if not text.strip():
         raise WebsiteFetchError("Public source had no readable evidence.")
     signal_type = signal_type_from_text(text)
-    has_timing_signal = meaningful_signal_present(text)
     excerpt = _evidence_excerpt(text, criteria)
-    source_url = canonical_url(snapshot.url or website)
     if not source_url or not normalized_domain(source_url):
         raise ValueError("Rejected: source URL could not be canonicalized.")
     fingerprint = signal_fingerprint(source_url=source_url, signal_type=signal_type, evidence=excerpt, company_name=candidate.company_name)
@@ -581,24 +600,31 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
         text=text,
         industry=candidate.industry,
         country=candidate.country,
-        source_verified=True,
+        source_verified=source_verified,
         company_name=candidate.company_name,
-        source_type="official_website",
+        source_type=source_type,
         publication_date="Unknown",
         public_work_contact=public_email,
         contact_title=", ".join(criteria.contact_titles[:2]),
     )
-    if not score.passes_quality_gate:
+    provider_identity_evidence = _provider_identity_evidence(candidate)
+    result_tier = _result_tier(score, verification_status=verification_status, provider_identity_evidence=provider_identity_evidence)
+    if not score.passes_quality_gate and result_tier == "Rejected":
         raise ValueError(score.rejection_reason or "Rejected: lead quality gate did not pass.")
-    if not score.has_meaningful_signal:
-        raise ValueError("Rejected: public source confirms ICP fit but has no buying, pain, growth, hiring, or timing signal.")
     signal_description = _signal_description(signal_type, candidate.company_name, criteria)
     observed_fact = _observed_fact(signal_type, excerpt, candidate.company_name)
     model_inference = _model_inference(signal_type, criteria)
     first_line = _first_line_opener(candidate.company_name, observed_fact)
     draft_email = _draft_email(criteria, candidate.company_name, first_line, model_inference)
-    verified_status = "verified" if score.confidence_score >= 60 and has_timing_signal else "partially_verified"
-    evidence_summary = f"Verified public website content supports this company as a potential fit for {criteria.target_industry}."
+    verified_status = "verified" if verification_status == "verified" else "partially_verified" if result_tier in {"Strong match", "Relevant match"} else "unknown"
+    evidence_summary = (
+        f"Verified public website content supports this company as a potential fit for {criteria.target_industry}."
+        if verification_status == "verified"
+        else "Public Google Places identity/location evidence was available, but website verification was temporarily unavailable."
+    )
+    if not score.has_meaningful_signal:
+        evidence_summary = f"{evidence_summary} No current buying signal found."
+    confidence_score = score.confidence_score if verification_status == "verified" else max(20, score.confidence_score - 18)
     return VerifiedCustomerSignal(
         company_name=candidate.company_name,
         official_website=source_url,
@@ -613,15 +639,15 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
         signal_description=signal_description,
         signal_date="Unknown",
         source_url=source_url,
-        source_title=snapshot.title or candidate.company_name,
-        source_type="official_website",
+        source_title=source_title,
+        source_type=source_type,
         evidence_excerpt=excerpt,
         evidence_summary=evidence_summary,
         observed_fact=observed_fact,
         model_inference=model_inference,
         fit_explanation=score.explanation,
         ai_relevance_score=score.overall_lead_score,
-        confidence_score=score.confidence_score,
+        confidence_score=confidence_score,
         verified_status=verified_status,
         checked_at=datetime.utcnow(),
         source_provider=candidate.source_provider,
@@ -630,8 +656,8 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
         canonical_source_url=source_url,
         publication_date="Unknown",
         retrieved_at=datetime.utcnow(),
-        source_confidence=score.source_quality_score,
-        source_verification_status=verified_status,
+        source_confidence=score.source_quality_score if verification_status == "verified" else max(10, score.source_quality_score - 12),
+        source_verification_status=verification_status,
         first_line_opener=first_line,
         draft_email=draft_email,
         metadata={
@@ -643,18 +669,24 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
             "canonical_source_url": source_url,
             "publication_date": "Unknown",
             "retrieved_at": datetime.utcnow().isoformat(),
+            "result_tier": result_tier,
+            "website_verification_status": verification_status,
+            "website_verification_warning": verification_warning,
+            "missing_buying_signal": not score.has_meaningful_signal,
+            "provider_identity_evidence": provider_identity_evidence,
             "source_verification": {
                 "source_url": source_url,
                 "canonical_url": source_url,
-                "source_title": snapshot.title or candidate.company_name,
-                "source_type": "official_website",
+                "source_title": source_title,
+                "source_type": source_type,
                 "publication_date": "Unknown",
                 "retrieved_at": datetime.utcnow().isoformat(),
                 "evidence_summary": evidence_summary,
                 "observed_fact": observed_fact,
                 "model_inference": model_inference,
                 "confidence": score.source_quality_score,
-                "status": verified_status,
+                "status": verification_status,
+                "warning": verification_warning,
             },
             "scoring": {
                 "version": score.scoring_version,
@@ -693,6 +725,45 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
             },
         },
     )
+
+
+def _provider_evidence_text(criteria: CustomerFinderCriteria, candidate: PublicCustomerCandidate) -> str:
+    payload = candidate.source_payload if isinstance(candidate.source_payload, dict) else {}
+    parts = [
+        candidate.company_name,
+        candidate.industry or criteria.target_industry,
+        candidate.country or criteria.target_country,
+        str(payload.get("business_category") or ""),
+        str(payload.get("address") or ""),
+        str(payload.get("query_variant") or ""),
+        criteria.desired_customers,
+        criteria.product_or_service,
+        criteria.additional_criteria,
+    ]
+    return " ".join(part.strip() for part in parts if str(part or "").strip())
+
+
+def _provider_identity_evidence(candidate: PublicCustomerCandidate) -> bool:
+    payload = candidate.source_payload if isinstance(candidate.source_payload, dict) else {}
+    has_provider_identity = bool(payload.get("place_id") or payload.get("address") or payload.get("business_category"))
+    has_company_identity = bool(candidate.company_name and (candidate.website or candidate.country or candidate.industry))
+    return has_provider_identity and has_company_identity
+
+
+def _result_tier(score, *, verification_status: str, provider_identity_evidence: bool = False) -> str:  # type: ignore[no-untyped-def]
+    if score.rejection_reason.startswith("Rejected: matched an explicit exclusion") or score.rejection_reason.startswith("Rejected: public evidence contains strong negative"):
+        return "Rejected"
+    if provider_identity_evidence and verification_status == "temporarily_unavailable" and score.source_quality_score >= 28 and score.confidence_score >= 30:
+        return "Relevant match"
+    if score.icp_fit_score < 24 and score.buying_intent_score < 45:
+        return "Rejected"
+    if score.overall_lead_score >= 72 and score.confidence_score >= 60 and score.has_meaningful_signal and verification_status == "verified":
+        return "Strong match"
+    if score.icp_fit_score >= 28 and score.confidence_score >= 34:
+        return "Relevant match"
+    if score.icp_fit_score >= 22 and score.confidence_score >= 20:
+        return "Weak / needs review"
+    return "Rejected"
 
 
 def _persist_signal(db: Session, job: AICustomerFinderJob, signal: VerifiedCustomerSignal) -> AICustomerFinderResult:

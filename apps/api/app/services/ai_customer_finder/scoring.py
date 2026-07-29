@@ -1363,7 +1363,7 @@ def _terms(value: str) -> list[str]:
 def _source_quality(*, source_verified: bool, source_type: str, text: str) -> int:
     if not source_verified:
         return 5
-    source_bonus = 30 if source_type in {"official_website", "company_news", "job_post", "press_release"} else 22
+    source_bonus = 30 if source_type in {"official_website", "company_news", "job_post", "press_release", "google_places_profile"} else 22
     text_bonus = min(10, len(text or "") // 1000)
     return clamp_score(source_bonus + text_bonus)
 
@@ -1427,15 +1427,15 @@ def _quality_gate(
         return False, "Rejected: matched an explicit exclusion."
     if negative_penalty >= 28:
         return False, "Rejected: public evidence contains strong negative or contradictory signals."
-    if not has_meaningful_signal:
-        return False, "Rejected: no public buying, growth, hiring, expansion, or timing signal."
     if website_quality < 30:
         return False, "Rejected: public website evidence is too thin."
-    if ai_confidence < 45:
+    if ai_confidence < 32:
         return False, "Rejected: AI confidence is too low for outreach."
+    if not has_meaningful_signal and (icp_fit < 28 or website_quality < 34):
+        return False, "Rejected: insufficient identity and ICP evidence without a current buying signal."
     if icp_fit < 34 and buying_intent < 70:
         return False, "Rejected: buying signal exists, but ICP match is too weak."
-    if buying_intent < 45 and company_momentum < 35:
+    if has_meaningful_signal and buying_intent < 45 and company_momentum < 35:
         return False, "Rejected: no strong buying intent or company momentum."
     return True, ""
 

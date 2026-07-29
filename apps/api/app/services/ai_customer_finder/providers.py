@@ -21,37 +21,46 @@ class GooglePlacesCustomerSearchProvider:
     def search(self, criteria: CustomerFinderCriteria, *, max_candidates: int) -> list[PublicCustomerCandidate]:
         query = _google_places_query_terms(criteria)
         country, city = _google_places_location(criteria)
-        payload = LeadFinderRequest(
-            industry=query["industry"],
-            category=query["category"],
-            keyword=query["keyword"],
-            country=country,
-            city=city,
-            company_size=criteria.company_size or None,
-            keywords=query["keywords"],
-            technologies=[],
-            limit=max(1, min(25, max_candidates)),
-        )
-        result = search_google_places(payload)
         candidates: list[PublicCustomerCandidate] = []
-        for lead in result.leads:
-            if not lead.website:
-                continue
-            candidates.append(
-                PublicCustomerCandidate(
-                    company_name=lead.company,
-                    website=str(lead.website or ""),
-                    industry=lead.industry or criteria.target_industry,
-                    country=lead.country or criteria.target_country,
-                    source_provider=self.key,
-                    source_payload={
-                        "place_id": lead.place_id,
-                        "google_rating": lead.google_rating,
-                        "business_category": lead.business_category,
-                        "address": lead.address,
-                    },
-                )
+        seen: set[str] = set()
+        for index, variant in enumerate(_google_places_query_variants(str(query["keyword"]), criteria)):
+            payload = LeadFinderRequest(
+                industry=str(query["industry"]),
+                category=str(query["category"]),
+                keyword=variant,
+                country=country,
+                city=city,
+                company_size=criteria.company_size or None,
+                keywords=list(query["keywords"]) if index == 0 else [],
+                technologies=[],
+                limit=max(1, min(25, max_candidates)),
             )
+            result = search_google_places(payload)
+            for lead in result.leads:
+                if not lead.website:
+                    continue
+                dedupe = (str(lead.website or "") or lead.company).strip().lower()
+                if dedupe in seen:
+                    continue
+                seen.add(dedupe)
+                candidates.append(
+                    PublicCustomerCandidate(
+                        company_name=lead.company,
+                        website=str(lead.website or ""),
+                        industry=lead.industry or criteria.target_industry,
+                        country=lead.country or criteria.target_country,
+                        source_provider=self.key,
+                        source_payload={
+                            "place_id": lead.place_id,
+                            "google_rating": lead.google_rating,
+                            "business_category": lead.business_category,
+                            "address": lead.address,
+                            "query_variant": variant,
+                        },
+                    )
+                )
+            if len(candidates) >= min(max_candidates, criteria.max_results):
+                break
         return candidates
 
 
@@ -109,6 +118,26 @@ def _google_places_query_terms(criteria: CustomerFinderCriteria) -> dict[str, st
     keyword = " ".join(explicit_keywords[:4]) or phrase or ("" if generic_industry else industry) or "companies"
     keywords = explicit_keywords if explicit_keywords else ([phrase] if phrase and phrase != keyword else [])
     return {"industry": "" if generic_industry else industry, "category": category, "keyword": keyword[:160], "keywords": [item[:120] for item in keywords[:6]]}
+
+
+def _google_places_query_variants(keyword: str, criteria: CustomerFinderCriteria) -> list[str]:
+    variants = [keyword.strip() or "companies"]
+    haystack = " ".join([keyword, criteria.product_or_service, criteria.additional_criteria, criteria.desired_customers]).lower()
+    if "гелев" in haystack or "шарик" in haystack or "balloon" in haystack or "balon" in haystack:
+        variants.extend(["balony z helem", "helium balloons", "producent balonów"])
+    for item in criteria.keywords:
+        text = item.strip()
+        if text:
+            variants.append(text)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        key = variant.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(variant[:160])
+    return deduped[:4]
 
 
 def _clean_customer_search_phrase(value: str) -> str:

@@ -142,12 +142,25 @@ function safeToAutoSave(result: FirstCustomerResult) {
 }
 
 function resultNeedsReview(result: FirstCustomerResult) {
+  if (result.result_tier === "Weak / needs review") return "weak match требует проверки";
+  if (result.website_verification_status === "temporarily_unavailable") return "website verification temporarily unavailable";
   if (!sourceUrl(result)) return "нет публичного источника";
   if (!result.public_work_contact) return "нет подтверждённого публичного делового контакта";
   if (result.confidence_score < 60) return "низкий confidence";
   if (result.ai_relevance_score < 60) return "низкий fit score";
   if (!["verified", "partially_verified"].includes(result.verified_status)) return "статус проверки недостаточен";
   return "";
+}
+
+function needsReviewTier(result: FirstCustomerResult) {
+  return result.result_tier === "Weak / needs review" || result.website_verification_status === "temporarily_unavailable" || result.missing_buying_signal;
+}
+
+function websiteVerificationLabel(result: FirstCustomerResult) {
+  const status = typeof result.website_verification_status === "string" ? result.website_verification_status : "";
+  const warning = typeof result.website_verification_warning === "string" ? result.website_verification_warning : "";
+  const fallback = typeof result.source_verification_status === "string" ? result.source_verification_status : "Not returned";
+  return status ? `${status}${warning ? `: ${warning}` : ""}` : fallback;
 }
 
 function latestEmail(company: CrmCompany) {
@@ -266,6 +279,7 @@ function ResultCard({
   const outreachReadiness = result.outreach_readiness_score;
   const aiConfidence = result.ai_confidence_score ?? result.confidence_score;
   const qualityGate = qualityGateLabel(result);
+  const reviewReason = resultNeedsReview(result);
   return (
     <SurfaceCard as="article" className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -273,7 +287,9 @@ function ResultCard({
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="ui-title text-xl">{result.company_name}</h2>
             <AppBadge tone="dark">{overallScore}/100 score</AppBadge>
+            {result.result_tier ? <AppBadge tone={result.result_tier === "Strong match" ? "success" : result.result_tier === "Relevant match" ? "warning" : "neutral"}>{result.result_tier}</AppBadge> : null}
             <AppBadge tone={qualityGate.includes("passed") ? "success" : "warning"}>{qualityGate}</AppBadge>
+            {reviewReason ? <AppBadge tone="warning">Needs review</AppBadge> : null}
           </div>
           <p className="mt-1 text-sm text-[var(--ui-text-soft)]">{[result.industry, result.country, result.company_size].filter(Boolean).join(" · ") || "Company profile fields were not found yet."}</p>
         </div>
@@ -299,6 +315,7 @@ function ResultCard({
         <EvidenceLine label="Why this company" value={result.fit_explanation || result.signal_description || "No fit explanation returned."} />
         <EvidenceLine label="Evidence" value={result.evidence_summary || result.observed_fact || "No evidence summary returned."} />
         <EvidenceLine label="Recommended decision maker" value={[result.contact_name, result.contact_title].filter(Boolean).join(" · ") || result.contact_title || "Decision maker not confirmed"} />
+        <EvidenceLine label="Website verification" value={websiteVerificationLabel(result)} />
       </div>
       <details className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)]">
         <summary className={detailSummaryClass}>Подробнее <ChevronDown size={16} /></summary>
@@ -631,7 +648,10 @@ function AssistantSection() {
           {!canAllowAutopilot ? <p className="mt-2 text-xs font-bold leading-5 text-slate-500">Autopilot включится только после verified sender, CRM-save, черновиков, публичных источников, лимитов тарифа и дневного лимита.</p> : null}
         </PremiumPanel>
       </section>
-      {job?.results.length ? <details className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white shadow-soft"><summary className={detailSummaryClass}>Подробнее по найденным компаниям <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-[var(--ui-border)] p-4">{job.results.map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</div></details> : null}
+      {job?.results.length ? <details className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white shadow-soft"><summary className={detailSummaryClass}>Подробнее по найденным компаниям <ChevronDown size={16} /></summary><div className="grid gap-5 border-t border-[var(--ui-border)] p-4">
+        {job.results.filter((result) => !needsReviewTier(result)).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Verified / Relevant</h2>{job.results.filter((result) => !needsReviewTier(result)).map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</section> : null}
+        {job.results.filter(needsReviewTier).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-amber-700">Needs review</h2>{job.results.filter(needsReviewTier).map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</section> : null}
+      </div></details> : null}
       {jobs.length > 1 ? <details className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white shadow-sm"><summary className={detailSummaryClass}>Previous searches <ChevronDown size={16} /></summary><div className="border-t border-[var(--ui-border)] p-2">{jobs.slice(1).map((item) => <button key={item.id} type="button" onClick={() => setJob(item)} className="focus-ring flex min-h-11 w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition hover:bg-slate-50"><span>{pretty(item.status)}</span><span className="font-bold">{item.results.length} result(s)</span></button>)}</div></details> : null}
     </Frame>
   );

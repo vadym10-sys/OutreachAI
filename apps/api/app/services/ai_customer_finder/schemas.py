@@ -167,6 +167,10 @@ class CustomerFinderResultOut(BaseModel):
     retrieved_at: Optional[datetime] = None
     source_confidence: int = 0
     source_verification_status: str = ""
+    result_tier: str = ""
+    website_verification_status: str = ""
+    website_verification_warning: str = ""
+    missing_buying_signal: bool = False
     scoring_version: str = ""
     score_factors: Dict = Field(default_factory=dict)
     score_weights: Dict = Field(default_factory=dict)
