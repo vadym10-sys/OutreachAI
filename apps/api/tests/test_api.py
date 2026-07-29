@@ -508,6 +508,36 @@ def test_ai_customer_finder_outreach_strategy_does_not_invent_missing_decision_m
     assert "verified_public_business_contact" in strategy["missing_evidence"]
 
 
+def test_ai_customer_finder_google_places_uses_natural_language_search_terms(monkeypatch) -> None:
+    from app.services.ai_customer_finder.providers import GooglePlacesCustomerSearchProvider
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.google_maps import GooglePlacesSearchResult
+
+    captured = {}
+
+    def fake_search(payload):  # type: ignore[no-untyped-def]
+        captured["payload"] = payload
+        return GooglePlacesSearchResult(leads=[], raw_count=0, duration_ms=1)
+
+    monkeypatch.setattr("app.services.ai_customer_finder.providers.search_google_places", fake_search)
+    criteria = CustomerFinderCriteria(
+        company_description="Найди 3 компании в Варшаве кто занимается производством гелевых Шариков",
+        product_or_service="Найди 3 компании в Варшаве кто занимается производством гелевых Шариков",
+        desired_customers="B2B SaaS companies with public timing, hiring, growth, or workflow pain signals.",
+        target_country="Any",
+        target_industry="B2B",
+    )
+
+    GooglePlacesCustomerSearchProvider().search(criteria, max_candidates=20)
+
+    payload = captured["payload"]
+    assert payload.city == "Warsaw"
+    assert payload.country == "Poland"
+    assert "гелевых" in payload.keyword.lower()
+    assert payload.industry == ""
+    assert payload.category == ""
+
+
 def test_ai_customer_finder_rejects_result_without_source_url() -> None:
     from app.services.ai_customer_finder.schemas import CustomerFinderResultOut
 
