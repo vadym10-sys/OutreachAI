@@ -837,6 +837,12 @@ export type CrmCompany = {
     generated_at?: string;
     provider?: string;
     model?: string;
+    generation_mode?: "ai" | "legacy" | "deterministic_fallback" | string;
+    requires_human_review?: boolean;
+    verified_facts?: string[];
+    ai_inferences?: string[];
+    confidence_basis?: string;
+    llm_used?: boolean;
     summary?: string;
     company_summary?: string;
     business_model?: string;
@@ -892,7 +898,7 @@ export type CrmCompany = {
     next_action?: string;
     reasoning?: string[];
     missing_data?: string[];
-    evidence?: Array<{ source_field?: string; value?: string; confidence?: number }>;
+    evidence?: Array<{ source?: string; source_field?: string; value?: string; confidence?: number; evidence_type?: string; verified?: boolean }>;
     recommendation_actions?: Record<
       string,
       {
