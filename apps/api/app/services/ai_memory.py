@@ -204,7 +204,7 @@ def _dedupe_hash(workspace_id: UUID, memory_type: str, content: str, source: str
 
 
 def _prepare_embedding(settings: AIMemorySettings, safe_content: str) -> tuple[list[float], str]:
-    if not settings.embeddings_enabled:
+    if not settings.enabled or not settings.embeddings_enabled:
         return [], "disabled"
     if not get_settings().openai_api_key:
         return [], "provider_unavailable"
@@ -465,12 +465,12 @@ def retrieve_memory(
     purpose: str = "ai_generation",
 ) -> MemoryRetrieval:
     settings = ensure_memory_settings(db, workspace, user_id)
-    seed_workspace_profile_memory(db, workspace=workspace, user_id=user_id)
     if not settings.enabled:
         context = memory_context_none("AI Memory is disabled for this workspace.")
         settings.last_retrieval_mode = MODE_NONE
         log_memory_event(db, workspace_id=workspace.id, user_id=user_id, action="memory.retrieve_skipped", metadata={"purpose": purpose, "reason": context["reason"]})
         return MemoryRetrieval(context=context, items=[], mode=MODE_NONE, reason=context["reason"])
+    seed_workspace_profile_memory(db, workspace=workspace, user_id=user_id)
 
     candidates = _candidate_query(db, workspace_id=workspace.id, company_id=company_id, lead_id=lead_id, limit=settings.max_items)
     if not candidates:
@@ -600,6 +600,8 @@ def record_ai_analysis_memory(
     lead: Lead | None,
     analysis: dict[str, Any],
 ) -> None:
+    if not ensure_memory_settings(db, workspace, user_id).enabled:
+        return
     for fact in analysis.get("verified_facts", []) if isinstance(analysis.get("verified_facts"), list) else []:
         upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=AIMemoryType.verified_fact.value, content=fact, source="ai_sales_analysis.verified_facts", source_id=str(company.id), company_id=company.id, lead_id=lead.id if lead else None, verified=True, confidence=85)
     for inference in analysis.get("ai_inferences", []) if isinstance(analysis.get("ai_inferences"), list) else []:
@@ -620,6 +622,8 @@ def record_email_memory(
     event: str,
     extra: dict[str, Any] | None = None,
 ) -> None:
+    if not ensure_memory_settings(db, workspace, user_id).enabled:
+        return
     if event not in OUTCOME_TYPES and event not in {"draft", "approved"}:
         event = "sent"
     company_id = company.id if company is not None else None

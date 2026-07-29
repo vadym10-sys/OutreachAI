@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS ai_memory_settings (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   user_id VARCHAR(128) NOT NULL,
-  enabled BOOLEAN NOT NULL DEFAULT true,
+  enabled BOOLEAN NOT NULL DEFAULT false,
   max_items INTEGER NOT NULL DEFAULT 12,
   max_characters INTEGER NOT NULL DEFAULT 6000,
   relevance_threshold NUMERIC NOT NULL DEFAULT 0.18,

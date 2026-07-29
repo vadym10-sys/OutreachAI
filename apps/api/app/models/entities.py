@@ -530,7 +530,7 @@ class AIMemorySettings(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     max_items: Mapped[int] = mapped_column(Integer, default=12)
     max_characters: Mapped[int] = mapped_column(Integer, default=6000)
     relevance_threshold: Mapped[float] = mapped_column(Numeric, default=0.18)

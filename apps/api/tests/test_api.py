@@ -78,6 +78,13 @@ NON_OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "not-owner
 security.limiter.limit = 10000
 
 
+def _enable_ai_memory(headers: dict[str, str]) -> dict[str, Any]:
+    response = client.patch("/api/workspace-app/ai-memory/settings", headers=headers, json={"enabled": True})
+    assert response.status_code == 200
+    assert response.json()["enabled"] is True
+    return response.json()
+
+
 def test_sentry_debug_endpoint_disabled_by_default() -> None:
     response = client.get("/api/debug/sentry-error")
     assert response.status_code == 404
@@ -2238,6 +2245,66 @@ def test_ai_memory_tenant_isolation_delete_clear_and_secret_redaction() -> None:
     assert cleared.json()["cleared"] >= 1
 
 
+def test_ai_memory_new_workspace_defaults_disabled_and_can_be_enabled() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-disabled-{uuid4()}@example.com"}
+    settings = client.get("/api/workspace-app/ai-memory/settings", headers=headers)
+    assert settings.status_code == 200
+    assert settings.json()["enabled"] is False
+
+    enabled = client.patch("/api/workspace-app/ai-memory/settings", headers=headers, json={"enabled": True})
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+
+
+def test_ai_memory_disabled_does_not_call_embedding_provider(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def fail_embedding(value: str) -> list[float]:
+        calls["count"] += 1
+        raise AssertionError("disabled AI Memory must not call embedding provider")
+
+    monkeypatch.setattr("app.services.ai_memory._openai_embedding", fail_embedding)
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-no-embedding-{uuid4()}@example.com"}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    settings = client.get("/api/workspace-app/ai-memory/settings", headers=headers).json()
+    assert settings["enabled"] is False
+    created = client.post(
+        "/api/workspace-app/ai-memory/entries",
+        headers=headers,
+        json={"memory_type": "verified_fact", "content": "Product: disabled memory should not embed", "source": "test", "verified": True},
+    )
+    assert created.status_code == 200
+    assert created.json()["entry"]["embedding_status"] == "disabled"
+    with get_sessionmaker()() as db:
+        ws = db.get(Workspace, UUID(workspace["id"]))
+        assert ws is not None
+        retrieval = retrieve_memory(db, workspace=ws, user_id=headers["X-Test-User-Email"], query="disabled memory", purpose="disabled_test")
+        assert retrieval.context["enabled"] is False
+        assert retrieval.context["retrieval_mode"] == "none"
+        assert "disabled" in retrieval.context["reason"].lower()
+    assert calls["count"] == 0
+
+
+def test_ai_memory_retrieval_works_after_explicit_enable() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-enabled-{uuid4()}@example.com"}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    disabled_created = client.post(
+        "/api/workspace-app/ai-memory/entries",
+        headers=headers,
+        json={"memory_type": "verified_fact", "content": "Product: staged rollout clinic workflow", "source": "test", "verified": True},
+    )
+    assert disabled_created.status_code == 200
+    assert disabled_created.json()["entry"]["embedding_status"] == "disabled"
+    _enable_ai_memory(headers)
+    with get_sessionmaker()() as db:
+        ws = db.get(Workspace, UUID(workspace["id"]))
+        assert ws is not None
+        retrieval = retrieve_memory(db, workspace=ws, user_id=headers["X-Test-User-Email"], query="clinic workflow", purpose="enabled_test")
+        assert retrieval.context["enabled"] is True
+        assert retrieval.context["retrieval_mode"] == MODE_KEYWORD
+        assert any("staged rollout clinic workflow" in item["content"] for item in retrieval.context["items"])
+
+
 def test_ai_memory_preference_requires_confirmation_and_inference_is_not_verified() -> None:
     rejected = client.post(
         "/api/workspace-app/ai-memory/entries",
@@ -2261,6 +2328,8 @@ def test_ai_memory_preference_requires_confirmation_and_inference_is_not_verifie
 
 
 def test_ai_memory_retrieval_filters_workspace_deleted_expired_and_prompt_injection() -> None:
+    _enable_ai_memory(USER_A_AUTH)
+    _enable_ai_memory(USER_B_AUTH)
     workspace_a = client.get("/api/workspace/me", headers=USER_A_AUTH).json()
     workspace_b = client.get("/api/workspace/me", headers=USER_B_AUTH).json()
     with get_sessionmaker()() as db:
@@ -2297,6 +2366,7 @@ def test_ai_memory_retrieval_filters_workspace_deleted_expired_and_prompt_inject
 def test_ai_memory_hash_fallback_reports_keyword(monkeypatch) -> None:
     monkeypatch.setattr("app.services.ai_memory._openai_embedding", lambda value: [])
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-keyword-{uuid4()}@example.com"}
+    _enable_ai_memory(headers)
     workspace = client.get("/api/workspace/me", headers=headers).json()
     with get_sessionmaker()() as db:
         ws = db.get(Workspace, UUID(workspace["id"]))
@@ -2313,6 +2383,7 @@ def test_ai_memory_openai_embedding_without_pgvector_does_not_report_pgvector(mo
     monkeypatch.setattr("app.services.ai_memory._openai_embedding", lambda value: embedding)
     monkeypatch.setattr("app.services.ai_memory._pgvector_column_available", lambda db: False)
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-openai-{uuid4()}@example.com"}
+    _enable_ai_memory(headers)
     workspace = client.get("/api/workspace/me", headers=headers).json()
     with get_sessionmaker()() as db:
         ws = db.get(Workspace, UUID(workspace["id"]))
@@ -2346,6 +2417,7 @@ def test_ai_memory_migration_optional_vector_permission_failure_is_non_blocking(
 
 def test_ai_memory_context_is_added_to_ai_sales_analysis_and_explain(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-analysis-{uuid4()}@example.com"}
+    _enable_ai_memory(headers)
     workspace = client.get("/api/workspace/me", headers=headers).json()
     with get_sessionmaker()() as db:
         lead = Lead(user_id=headers["X-Test-User-Email"], workspace_id=UUID(workspace["id"]), company="Memory Fit Co", website="https://memory-fit.example", industry="Dental SaaS", email="buyer@memory-fit.example")
@@ -2391,6 +2463,7 @@ def test_ai_memory_context_is_added_to_ai_sales_analysis_and_explain(monkeypatch
 
 def test_ai_memory_feedback_outcome_and_approve_before_send(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-feedback-{uuid4()}@example.com"}
+    _enable_ai_memory(headers)
     workspace = client.get("/api/workspace/me", headers=headers).json()
     with get_sessionmaker()() as db:
         lead = Lead(user_id=headers["X-Test-User-Email"], workspace_id=UUID(workspace["id"]), company="Outcome Co", website="https://outcome.example", industry="SaaS", email="buyer@outcome.example")
@@ -2423,7 +2496,7 @@ def test_ai_memory_correction_recomputes_keywords_embedding_and_blocks_cross_wor
     monkeypatch.setattr("app.services.ai_memory._write_pgvector_embedding", lambda db, entry_id, embedding: None)
     monkeypatch.setattr("app.services.ai_memory._clear_pgvector_embedding", lambda db, entry_id: None)
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-correct-{uuid4()}@example.com"}
-    client.get("/api/workspace/me", headers=headers)
+    _enable_ai_memory(headers)
     created = client.post(
         "/api/workspace-app/ai-memory/entries",
         headers=headers,
@@ -2469,6 +2542,7 @@ def test_ai_memory_email_generator_receives_memory_context_before_generation(mon
         )
 
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-email-{uuid4()}@example.com"}
+    _enable_ai_memory(headers)
     workspace = client.get("/api/workspace/me", headers=headers).json()
     with get_sessionmaker()() as db:
         ws = db.get(Workspace, UUID(workspace["id"]))
@@ -2489,6 +2563,44 @@ def test_ai_memory_email_generator_receives_memory_context_before_generation(mon
     assert memory_context["enabled"] is True
     assert memory_context["memory_ids"]
     assert any("AI appointment follow-up" in item["content"] for item in memory_context["items"])
+
+
+def test_ai_memory_disabled_email_generator_gets_disabled_context(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_personalize(payload):
+        captured["payload"] = payload.model_dump()
+        return EmailVariantOut(
+            subject="Disabled memory draft",
+            preview="A short reviewed idea",
+            full_email="Hi, normal draft generation still works.",
+            cta="Book a review",
+            follow_ups=[],
+            ab_tests=[],
+        )
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-disabled-email-{uuid4()}@example.com"}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    assert client.get("/api/workspace-app/ai-memory/settings", headers=headers).json()["enabled"] is False
+    with get_sessionmaker()() as db:
+        ws = db.get(Workspace, UUID(workspace["id"]))
+        assert ws is not None
+        lead = Lead(user_id=headers["X-Test-User-Email"], workspace_id=ws.id, company="Disabled Memory Email Co", website="https://disabled-memory-email.example", industry="Clinic SaaS", email="buyer@disabled-memory-email.example")
+        db.add(lead)
+        db.commit()
+        lead_id = str(lead.id)
+
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    monkeypatch.setattr("app.api.routes.personalize_email", fake_personalize)
+
+    response = client.post(f"/api/leads/{lead_id}/draft-email", headers=headers)
+    assert response.status_code == 200
+    memory_context = captured["payload"]["analysis_context"]["memory_context"]
+    assert memory_context["enabled"] is False
+    assert memory_context["retrieval_mode"] == "none"
+    assert memory_context["items"] == []
+    assert "disabled" in memory_context["reason"].lower()
 
 
 def test_workspace_me_creates_private_workspace_with_owner_email() -> None:

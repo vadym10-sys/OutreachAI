@@ -30,7 +30,7 @@ Memory types:
 
 ## Environment Variables
 
-- `AI_MEMORY_DEFAULT_ENABLED`: default workspace memory enablement.
+- `AI_MEMORY_DEFAULT_ENABLED`: default workspace memory enablement. Production-safe default is `false`; enable only through Settings or an explicit production environment override.
 - `AI_MEMORY_EMBEDDINGS_ENABLED`: enables embedding attempts.
 - `AI_MEMORY_MAX_ITEMS`: maximum memory records per AI call.
 - `AI_MEMORY_MAX_CHARACTERS`: maximum memory context characters per AI call.
@@ -41,7 +41,7 @@ Memory types:
 
 ## Embedding Cost And Limits
 
-Embeddings are created only for sanitized memory content and retrieval queries when an OpenAI key is configured and memory embeddings are enabled. The default model is `text-embedding-3-small`. Local deterministic fallback does not masquerade as vector retrieval. Retrieval has hard limits (`max_items`, `max_characters`, relevance threshold) to avoid sending full history to the LLM.
+Embeddings are created only for sanitized memory content and retrieval queries when AI Memory is enabled, an OpenAI key is configured, and memory embeddings are enabled. Disabled memory does not call the embedding provider. The default model is `text-embedding-3-small`. Local deterministic fallback does not masquerade as vector retrieval. Retrieval has hard limits (`max_items`, `max_characters`, relevance threshold) to avoid sending full history to the LLM.
 
 If embeddings fail, AI analysis and email generation continue with keyword retrieval.
 
@@ -84,6 +84,17 @@ When pgvector or embeddings are unavailable, retrieval uses deterministic keywor
 ## Migration
 
 Apply normal app startup migrations. For existing Postgres databases, `011_ai_memory.sql` creates tables and indexes idempotently. For new databases, `db/schema.sql` includes the same objects.
+
+Staged rollout order:
+
+1. Apply migration `011_ai_memory.sql`.
+2. Verify `ai_memory_settings`, `ai_memory_entries`, and `ai_memory_audit_logs` exist.
+3. Verify pgvector availability with the SQL checks above; pgvector may remain unavailable without blocking rollout.
+4. Keep `AI_MEMORY_DEFAULT_ENABLED=false` for staged production rollout unless there is an explicit production configuration decision.
+5. Manually enable AI Memory for one test workspace from Settings.
+6. Generate an AI analysis/email draft and verify `memory_context.retrieval_mode` is `keyword`, `openai_embedding`, `pgvector`, or `none` according to actual runtime behavior.
+
+The migration and config do not automatically enable memory for existing workspaces.
 
 ## Rollback
 
