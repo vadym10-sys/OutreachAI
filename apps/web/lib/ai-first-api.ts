@@ -6,6 +6,10 @@ import { useAuthRuntime } from "@/components/app-providers";
 import { clientApi, type ClientApiInit } from "@/lib/client-api";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import type {
+  AiMemoryEntriesResponse,
+  AiMemoryEntry,
+  AiMemoryExplainResponse,
+  AiMemorySettings,
   FirstCustomerJob,
   FirstCustomerResult,
   FirstCustomerSaveResponse,
@@ -52,6 +56,13 @@ export type AiFirstApi = {
   createCampaign(payload: Partial<Campaign>): Promise<Campaign>;
   approveAutopilotCampaign(campaignId: string, jobId: string): Promise<Campaign>;
   campaignAction(campaignId: string, action: "launch" | "resume" | "pause" | "stop"): Promise<Campaign>;
+  memorySettings(): Promise<AiMemorySettings>;
+  updateMemorySettings(enabled: boolean): Promise<AiMemorySettings>;
+  memoryEntries(): Promise<AiMemoryEntriesResponse>;
+  saveMemoryPreference(content: string): Promise<AiMemoryEntry>;
+  deleteMemoryEntry(memoryId: string): Promise<{ status: string }>;
+  clearMemory(): Promise<{ status: string; deleted: number }>;
+  explainMemoryDecision(companyId: string): Promise<AiMemoryExplainResponse>;
 };
 
 function redirectToSignIn() {
@@ -177,7 +188,20 @@ export function useAiFirstApi(): AiFirstApi {
       method: "POST",
       body: JSON.stringify({ job_id: jobId })
     }),
-    campaignAction: (campaignId, action) => request<Campaign>(`/api/campaigns/${campaignId}/${action}`, { method: "POST" })
+    campaignAction: (campaignId, action) => request<Campaign>(`/api/campaigns/${campaignId}/${action}`, { method: "POST" }),
+    memorySettings: () => request<AiMemorySettings>("/api/workspace-app/ai-memory/settings"),
+    updateMemorySettings: (enabled) => request<AiMemorySettings>("/api/workspace-app/ai-memory/settings", {
+      method: "PATCH",
+      body: JSON.stringify({ enabled })
+    }),
+    memoryEntries: () => request<AiMemoryEntriesResponse>("/api/workspace-app/ai-memory/entries"),
+    saveMemoryPreference: (content) => request<AiMemoryEntry>("/api/workspace-app/ai-memory/preferences", {
+      method: "POST",
+      body: JSON.stringify({ content })
+    }),
+    deleteMemoryEntry: (memoryId) => request<{ status: string }>(`/api/workspace-app/ai-memory/entries/${memoryId}`, { method: "DELETE" }),
+    clearMemory: () => request<{ status: string; deleted: number }>("/api/workspace-app/ai-memory/entries", { method: "DELETE" }),
+    explainMemoryDecision: (companyId) => request<AiMemoryExplainResponse>(`/api/workspace-app/ai-memory/decisions/${companyId}/explain`)
   }), [ready, request]);
 }
 

@@ -2,11 +2,11 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, PauseCircle, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Square, UsersRound } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, PauseCircle, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Square, Trash2, UsersRound } from "lucide-react";
 import { AppBadge, AppButton, EmptyStateView, LoadingStateView, SurfaceCard } from "@/components/design-system";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand } from "@/lib/ai-first-api";
-import type { FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
+import type { AiMemoryEntry, AiMemoryExplainResponse, AiMemorySettings, FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
 import type { Campaign, CrmCompany, Email, Workspace } from "@/lib/types";
 
 type Section = "assistant" | "clients" | "emails" | "settings";
@@ -237,6 +237,88 @@ function EvidenceLine({ label, value, href }: { label: string; value?: string; h
       ) : (
         <p className="mt-2 text-sm font-semibold leading-6 text-[var(--ui-text-soft)]">{text || "Недостаточно данных"}</p>
       )}
+    </div>
+  );
+}
+
+function memoryTypeLabel(value: string) {
+  if (value === "verified_fact") return "Verified fact";
+  if (value === "approved_preference") return "Approved preference";
+  if (value === "ai_inference") return "AI assumption";
+  if (value === "outcome") return "Outcome";
+  return pretty(value || "interaction");
+}
+
+function CompanyMemoryExplain({ company }: { company: CrmCompany }) {
+  const api = useAiFirstApi();
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [decision, setDecision] = useState<AiMemoryExplainResponse | null>(null);
+  const [error, setError] = useState("");
+
+  async function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    if (decision || !api.ready) return;
+    setLoading(true);
+    setError("");
+    try {
+      setDecision(await api.explainMemoryDecision(company.id));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not explain this AI decision."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const verified = decision?.verified_facts || [];
+  const assumptions = decision?.ai_assumptions || [];
+  const memories = decision?.used_memories || [];
+  const confidenceBasis = decision?.confidence_basis || company.ai_sales_workspace?.confidence_basis || "Недостаточно данных";
+
+  return (
+    <div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
+      <AppButton variant="secondary" size="sm" disabled={loading} onClick={() => void toggle()} aria-expanded={open}>
+        {loading ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
+        Why AI decided this?
+      </AppButton>
+      {open ? (
+        <div className="mt-4 grid gap-3 text-sm leading-6 text-[var(--ui-text-soft)]">
+          <h3 className="text-sm font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Decision evidence</h3>
+          {error ? <Notice tone="bad">{error}</Notice> : null}
+          {loading ? <LoadingStateView title="Loading decision evidence." /> : null}
+          {!loading && decision ? (
+            <>
+              <EvidenceLine label="Confidence basis" value={confidenceBasis} />
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Verified facts</p>
+                  {verified.length ? verified.map((item) => <p key={item.id} className="mt-2 font-semibold">{item.content || item.source}</p>) : <p className="mt-2 font-semibold">Недостаточно данных</p>}
+                </div>
+                <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">AI assumptions</p>
+                  {assumptions.length ? assumptions.map((item) => <p key={item.id} className="mt-2 font-semibold">{item.content || item.source}</p>) : <p className="mt-2 font-semibold">Недостаточно данных</p>}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Sources</p>
+                <p className="mt-2 font-semibold">{decision.sources.length ? decision.sources.join(", ") : "Недостаточно данных"}</p>
+              </div>
+              <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Used memories</p>
+                {memories.length ? memories.map((item) => (
+                  <p key={item.id} className="mt-2 font-semibold">
+                    {memoryTypeLabel(item.type)} · {item.source || "workspace"} · {Math.round(Number(item.relevance_score || 0) * 100)}%
+                  </p>
+                )) : <p className="mt-2 font-semibold">Недостаточно данных</p>}
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -710,6 +792,7 @@ function ClientsSection() {
                 <ScoreTile label="Contact Confidence" value={Number(company.confidence_score || 0) || undefined} />
                 <ScoreTile label="Outreach Readiness" value={latestEmail(company) ? 80 : undefined} />
               </div>
+              <CompanyMemoryExplain company={company} />
               <details className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)]"><summary className={detailSummaryClass}>Подробнее <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-[var(--ui-border)] p-4 text-sm leading-6 text-[var(--ui-text-soft)] lg:grid-cols-3"><EvidenceLine label="Website" value={company.website || "Not found"} href={company.website || undefined} /><EvidenceLine label="Lead Reasoning" value={company.reasoning || company.suggested_offer || "No backend reason yet."} /><EvidenceLine label="Email draft" value={latestEmail(company)?.subject || "No draft yet."} /><EvidenceLine label="Research Profile" value={company.ai_summary || company.opportunity_analysis || "Недостаточно данных"} /><EvidenceLine label="Outreach Strategy" value={company.outreach_strategy || company.sales_angle || "No outreach strategy yet."} /><EvidenceLine label="Manual Review" value={latestEmail(company)?.delivery_status === "approved" ? "Approved. Send still requires explicit confirmation." : "Review required before any send."} /></div></details>
             </SurfaceCard>
           ))}
@@ -857,6 +940,162 @@ function EmailsSection() {
   );
 }
 
+function AiFirstMemoryPanel() {
+  const api = useAiFirstApi();
+  const [settings, setSettings] = useState<AiMemorySettings | null>(null);
+  const [entries, setEntries] = useState<AiMemoryEntry[]>([]);
+  const [preference, setPreference] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const load = useCallback(async () => {
+    if (!api.ready) return;
+    setLoading(true);
+    try {
+      const [nextSettings, nextEntries] = await Promise.all([api.memorySettings(), api.memoryEntries()]);
+      setSettings(nextSettings);
+      setEntries(nextEntries.entries);
+      setError("");
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not load AI Memory."));
+    } finally {
+      setLoading(false);
+    }
+  }, [api]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  async function toggleMemory() {
+    if (!settings) return;
+    setBusy("toggle");
+    setNotice("");
+    setError("");
+    try {
+      setSettings(await api.updateMemorySettings(!settings.enabled));
+      setNotice(!settings.enabled ? "Workspace memory is on." : "Workspace memory is off.");
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not update AI Memory."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function savePreference(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const content = preference.trim();
+    if (!content) return;
+    setBusy("preference");
+    setNotice("");
+    setError("");
+    try {
+      const created = await api.saveMemoryPreference(content);
+      setEntries((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      setPreference("");
+      setNotice("Preference saved after explicit confirmation.");
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not save this preference."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function deleteEntry(entry: AiMemoryEntry) {
+    setBusy(`delete:${entry.id}`);
+    setNotice("");
+    setError("");
+    try {
+      await api.deleteMemoryEntry(entry.id);
+      setEntries((current) => current.filter((item) => item.id !== entry.id));
+      setNotice("Memory entry deleted.");
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not delete this memory entry."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function clearMemory() {
+    if (!window.confirm("Clear AI Memory for this workspace? This will not affect other workspaces.")) return;
+    setBusy("clear");
+    setNotice("");
+    setError("");
+    try {
+      const response = await api.clearMemory();
+      setEntries([]);
+      setSettings((current) => current ? { ...current, active_count: 0, counts_by_type: {} } : current);
+      setNotice(`Cleared ${response.deleted} memory item(s).`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not clear AI Memory."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const enabledText = settings?.enabled ? "Workspace memory is on" : "Workspace memory is off";
+  const statusTone = settings?.enabled ? "success" : "warning";
+
+  return (
+    <SurfaceCard className="rounded-[1.75rem] p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-lg font-black text-ink">AI Memory</h2>
+          <p className="mt-1 text-sm leading-6 text-slate-600">Isolated workspace memory for verified facts, approved preferences, interactions, assumptions and outcomes.</p>
+        </div>
+        <AppBadge tone={statusTone}>{enabledText}</AppBadge>
+      </div>
+      {notice ? <div className="mt-3"><Notice tone="good">{notice}</Notice></div> : null}
+      {error ? <div className="mt-3"><Notice tone="bad">{error}</Notice></div> : null}
+      {loading ? <LoadingStateView title="Loading AI Memory." /> : (
+        <>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <EvidenceLine label="Remembered" value={`${settings?.active_count ?? entries.length} active item(s)`} />
+            <EvidenceLine label="Retrieval" value={`${settings?.last_retrieval_mode || "none"}${settings?.pgvector_available ? " with pgvector" : " fallback ready"}`} />
+            <EvidenceLine label="Retention" value={`${settings?.retention_days || 0} days`} />
+          </div>
+          <form onSubmit={savePreference} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+            <label className="text-sm font-bold text-[var(--ui-text-soft)]">
+              Confirmed preference
+              <input value={preference} onChange={(event) => setPreference(event.target.value)} className={fieldClass} placeholder="Example: use a concise, consultative tone" />
+            </label>
+            <AppButton type="submit" size="md" disabled={Boolean(busy) || !preference.trim()} className="self-end">
+              {busy === "preference" ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
+              Save
+            </AppButton>
+          </form>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !settings} onClick={() => void toggleMemory()}>
+              {busy === "toggle" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
+              {settings?.enabled ? "Turn off" : "Turn on"}
+            </AppButton>
+            <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void load()} aria-label="Refresh AI Memory"><RefreshCw size={16} /> Refresh</AppButton>
+            <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !entries.length} onClick={() => void clearMemory()}><Trash2 size={16} /> Clear memory</AppButton>
+          </div>
+          <div className="mt-4 grid gap-2">
+            {entries.slice(0, 5).map((entry) => (
+              <div key={entry.id} className="flex flex-col gap-3 rounded-2xl border border-[var(--ui-border)] bg-white p-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{memoryTypeLabel(entry.memory_type)} · {entry.source}</p>
+                  <p className="mt-1 break-words text-sm font-semibold leading-6 text-slate-700">{entry.content}</p>
+                </div>
+                <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void deleteEntry(entry)} aria-label={`Delete memory ${entry.id}`}>
+                  {busy === `delete:${entry.id}` ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
+                  Delete
+                </AppButton>
+              </div>
+            ))}
+            {!entries.length ? <p className="rounded-2xl border border-[var(--ui-border)] bg-white p-3 text-sm font-semibold text-slate-600">No memory entries stored yet.</p> : null}
+          </div>
+        </>
+      )}
+    </SurfaceCard>
+  );
+}
+
 function SettingsSection() {
   const api = useAiFirstApi();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -955,6 +1194,7 @@ function SettingsSection() {
         <PremiumPanel><p className="text-sm font-black text-ink">Plan</p><p className="mt-2 text-sm leading-6 text-slate-600">Plan management stays on the existing billing route.</p><Link href="/dashboard/billing" className="focus-ring mt-3 inline-flex min-h-10 items-center rounded-full border border-[var(--ui-border)] bg-white px-3 text-sm font-black text-ink transition hover:border-[var(--ui-brand)]">Open billing</Link></PremiumPanel>
         <PremiumPanel><p className="text-sm font-black text-ink">Account</p><p className="mt-2 text-sm leading-6 text-slate-600">Authentication remains handled by the secure account session.</p></PremiumPanel>
       </section>
+      <AiFirstMemoryPanel />
     </Frame>
   );
 }

@@ -118,3 +118,18 @@ test("email approval send and reply tracking stay connected end to end", async (
   await expect(page.getByText(/Classification: Interested/)).toBeVisible();
   await expect(page.getByRole("article").filter({ hasText: "Re: Quick idea for Hill Country Build Co" }).getByText("Hill Country Build Co", { exact: true })).toBeVisible();
 });
+
+test("company workspace explains AI decisions with memory context", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.goto("/dashboard/companies");
+  await expect(page.getByRole("heading", { name: "Клиенты" })).toBeVisible();
+  const explainResponse = page.waitForResponse((response) =>
+    response.request().method() === "GET" && response.url().includes("/api/workspace-app/ai-memory/decisions/44444444-4444-4444-4444-444444444444/explain")
+  );
+  await page.getByRole("button", { name: "Why AI decided this?" }).click();
+  await expect((await explainResponse).ok()).toBe(true);
+  await expect(page.getByText("Decision evidence")).toBeVisible();
+  await expect(page.getByText("Verified facts")).toBeVisible();
+  await expect(page.getByText("Business profile: OutreachAI sells AI-powered outbound workflow software.")).toBeVisible();
+  await guards.assertClean();
+});

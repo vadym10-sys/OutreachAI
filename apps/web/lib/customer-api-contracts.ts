@@ -195,6 +195,71 @@ export type WorkspaceDeepContactJobStatusResponse = z.infer<typeof workspaceDeep
 
 export type WorkspaceAiSalesAnalysis = NonNullable<CrmCompany["ai_sales_workspace"]>;
 
+export const aiMemoryContextItemSchema = z.object({
+  id: z.string(),
+  type: z.string(),
+  source: z.string().optional(),
+  source_id: z.string().optional(),
+  content: z.string().optional(),
+  relevance_score: z.number().optional(),
+  verified: z.boolean().optional(),
+  trust_level: z.string().optional(),
+  influence: z.string().optional()
+}).passthrough();
+export type AiMemoryContextItem = z.infer<typeof aiMemoryContextItemSchema>;
+
+export const aiMemorySettingsSchema = z.object({
+  enabled: z.boolean(),
+  workspace_id: z.string(),
+  max_items: z.number(),
+  max_characters: z.number(),
+  relevance_threshold: z.number(),
+  retention_days: z.number(),
+  embeddings_enabled: z.boolean(),
+  pgvector_available: z.boolean(),
+  embedding_provider: z.string().optional(),
+  embedding_model: z.string().optional(),
+  last_retrieval_mode: z.string(),
+  active_count: z.number(),
+  counts_by_type: z.record(z.number())
+}).passthrough();
+export type AiMemorySettings = z.infer<typeof aiMemorySettingsSchema>;
+
+export const aiMemoryEntrySchema = z.object({
+  id: z.string(),
+  memory_type: z.string(),
+  content: z.string(),
+  source: z.string(),
+  verified: z.boolean(),
+  approved_by_user: z.boolean(),
+  confidence: z.number(),
+  created_at: z.string().nullable().optional()
+}).passthrough();
+export type AiMemoryEntry = z.infer<typeof aiMemoryEntrySchema>;
+
+export const aiMemoryEntriesResponseSchema = z.object({
+  entries: z.array(aiMemoryEntrySchema)
+}).passthrough();
+export type AiMemoryEntriesResponse = z.infer<typeof aiMemoryEntriesResponseSchema>;
+
+export const aiMemoryExplainResponseSchema = z.object({
+  memory_context: z.object({
+    enabled: z.boolean().optional(),
+    retrieval_mode: z.string().optional(),
+    memory_ids: z.array(z.string()).optional(),
+    items: z.array(aiMemoryContextItemSchema).optional(),
+    truncated: z.boolean().optional(),
+    reason: z.string().optional()
+  }).passthrough(),
+  verified_facts: z.array(aiMemoryContextItemSchema),
+  ai_assumptions: z.array(aiMemoryContextItemSchema),
+  sources: z.array(z.string()),
+  confidence_basis: z.string(),
+  used_memories: z.array(aiMemoryContextItemSchema),
+  insufficient_data: z.boolean()
+}).passthrough();
+export type AiMemoryExplainResponse = z.infer<typeof aiMemoryExplainResponseSchema>;
+
 export const workspaceAiSalesAnalysisSchema = z.custom<WorkspaceAiSalesAnalysis>(objectLike, "Expected AI sales analysis");
 
 export const workspaceAiSalesAnalysisVersionSchema = z.object({
