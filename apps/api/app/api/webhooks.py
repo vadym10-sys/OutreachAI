@@ -20,6 +20,7 @@ from app.core.observability import capture_provider_exception
 from app.models.entities import AppSettings, AuditLog, Company, Deal, EmailMessage, Lead, LeadStatus, Note, Subscription, User, Workspace
 from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
+from app.services.ai_memory import record_email_memory
 from app.services.billing import plan_from_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
 from app.services.continuous_learning import apply_continuous_learning_event
 
@@ -560,6 +561,19 @@ def _record_continuous_learning_event(
         company.updated_at = datetime.utcnow()
 
 
+def _record_email_memory_outcome(db: Session, *, message: EmailMessage, company: Company | None, outcome: str, extra: dict[str, Any] | None = None) -> None:
+    if not message.workspace_id:
+        return
+    workspace = db.get(Workspace, message.workspace_id)
+    if workspace is None:
+        return
+    lead = db.get(Lead, message.lead_id) if message.lead_id else None
+    try:
+        record_email_memory(db, workspace=workspace, user_id=message.user_id, email=message, lead=lead, company=company, event=outcome, extra=extra or {})
+    except Exception as exc:
+        capture_provider_exception(exc, provider="ai_memory", endpoint="webhooks.resend.memory_outcome", workspace_id=message.workspace_id, lead_id=message.lead_id, extra={"outcome": outcome})
+
+
 def _sync_crm_email_status(db: Session, message: EmailMessage, stage: str, email_status: str) -> None:
     if not message.lead_id:
         return
@@ -608,6 +622,7 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         if not bool(tags.get("continuous_learning_sent_recorded")):
             _record_continuous_learning_event(db, message=message, outcome="sent", company=company)
             message.tags = {**tags, "continuous_learning_sent_recorded": True}
+        _record_email_memory_outcome(db, message=message, company=company, outcome="delivered")
     elif event_type == "email.opened":
         message.opened_at = message.opened_at or now
         message.delivery_status = "opened"
@@ -615,13 +630,21 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         lead = db.get(Lead, message.lead_id) if message.lead_id else None
         if lead:
             lead.status = LeadStatus.contacted
+        _record_email_memory_outcome(db, message=message, company=company, outcome="open")
+    elif event_type == "email.clicked":
+        message.clicked_at = message.clicked_at or now
+        message.delivery_status = "clicked"
+        _sync_crm_email_status(db, message, "Sent", "Clicked")
+        _record_email_memory_outcome(db, message=message, company=company, outcome="click")
     elif event_type == "email.bounced":
         message.bounced_at = message.bounced_at or now
         message.delivery_status = "bounced"
         _sync_crm_email_status(db, message, "Sent", "Bounced")
+        _record_email_memory_outcome(db, message=message, company=company, outcome="bounce")
     elif event_type == "email.complained":
         message.delivery_status = "complained"
         _sync_crm_email_status(db, message, "Sent", "Complained")
+        _record_email_memory_outcome(db, message=message, company=company, outcome="complaint")
     elif event_type in {"email.replied", "email.received"}:
         reply_body = _event_reply_body(data)
         message.replied_at = message.replied_at or now
@@ -655,6 +678,13 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
             **base_assistant,
             "sales_inbox": sales_inbox,
         }
+        if classification == "Meeting Requested":
+            memory_outcome = "meeting"
+        elif classification in {"Not Interested", "Spam"}:
+            memory_outcome = "unsubscribe" if "unsubscribe" in reply_body.lower() or "remove me" in reply_body.lower() else "rejection"
+        else:
+            memory_outcome = "reply"
+        _record_email_memory_outcome(db, message=message, company=company, outcome=memory_outcome, extra={"classification": classification})
         message.tags = {
             **tags,
             "continuous_learning_last_outcome": "meeting" if classification == "Meeting Requested" else "reply",

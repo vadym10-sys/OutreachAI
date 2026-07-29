@@ -1,0 +1,90 @@
+# OutreachAI AI Memory
+
+## Architecture
+
+AI Memory is a workspace-scoped retrieval layer for AI analysis and email drafting. It stores only sanitized business context, explicit preferences, interactions, AI assumptions, and real outcomes. Memory entries are treated as untrusted data and are passed to LLM prompts through the existing trust-boundary envelope.
+
+Flow:
+
+1. Workspace profile and confirmed facts are written to `ai_memory_entries`.
+2. Before AI Sales analysis or email drafting, retrieval filters by `workspace_id`, `company_id`, `lead_id`, active retention state, relevance, and budget.
+3. If embeddings are available, vector similarity participates in ranking. If pgvector or the embedding provider is unavailable, deterministic keyword/metadata scoring is used.
+4. The AI result includes `memory_context` with mode, memory ids, item types, sources, relevance scores, verification state, influence notes, truncation, and reason when memory was not used.
+5. Draft, approval, send, webhook open/click/reply/meeting/rejection/unsubscribe events are stored as `interaction` or `outcome`.
+
+No automatic fine-tuning is performed.
+
+## Data Model
+
+- `ai_memory_settings`: one row per workspace with enablement, limits, retention, embedding status, and last retrieval mode.
+- `ai_memory_entries`: workspace-isolated entries with `memory_type`, sanitized content, source, entity references, dedupe hash, trust flags, optional embedding JSON, TTL, and soft delete.
+- `ai_memory_audit_logs`: audit trail for settings, upsert, retrieval, correction, deletion, and clear operations.
+
+Memory types:
+
+- `verified_fact`: confirmed factual context.
+- `approved_preference`: explicitly confirmed user preference.
+- `interaction`: selected drafts, approvals, and prior workspace interactions.
+- `ai_inference`: model assumptions, never promoted to verified fact automatically.
+- `outcome`: factual delivery and reply outcomes.
+
+## Environment Variables
+
+- `AI_MEMORY_DEFAULT_ENABLED`: default workspace memory enablement.
+- `AI_MEMORY_EMBEDDINGS_ENABLED`: enables embedding attempts.
+- `AI_MEMORY_MAX_ITEMS`: maximum memory records per AI call.
+- `AI_MEMORY_MAX_CHARACTERS`: maximum memory context characters per AI call.
+- `AI_MEMORY_RELEVANCE_THRESHOLD`: minimum relevance for non-trusted entries.
+- `AI_MEMORY_RETENTION_DAYS`: default TTL.
+- `OPENAI_EMBEDDING_MODEL`: embedding model, default `text-embedding-3-small`.
+- `OPENAI_API_KEY`: required only for OpenAI embeddings and LLM calls.
+
+## Embedding Cost And Limits
+
+Embeddings are created only for sanitized memory content and retrieval queries when an OpenAI key is configured and memory embeddings are enabled. The default model is `text-embedding-3-small`. Retrieval has hard limits (`max_items`, `max_characters`, relevance threshold) to avoid sending full history to the LLM.
+
+If embeddings fail, AI analysis and email generation continue with keyword retrieval.
+
+## Privacy And Retention
+
+- Entries are scoped by `workspace_id` and `user_id`.
+- Retrieval excludes deleted and expired entries.
+- API keys, passwords, tokens, cookies, and authorization headers are redacted before storage.
+- Full inbound/outbound email bodies are not stored as memory by default; memory stores subject, CTA, event type, and short safe excerpts.
+- Workspace clear uses soft delete for safety and auditability.
+- Customer data is never used across workspaces.
+
+## pgvector
+
+Migration `011_ai_memory.sql` checks `pg_available_extensions` before `CREATE EXTENSION IF NOT EXISTS vector`. It creates the vector column and ivfflat index only when the extension is installed. Do not force-install pgvector in an unsupported Railway/PostgreSQL environment.
+
+Production verification:
+
+```sql
+SELECT name, installed_version
+FROM pg_available_extensions
+WHERE name = 'vector';
+
+SELECT extname, extversion
+FROM pg_extension
+WHERE extname = 'vector';
+```
+
+## Fallback
+
+When pgvector or embeddings are unavailable, retrieval uses deterministic keyword, trust, entity, and recency scoring. The result reports `retrieval_mode: "keyword"` or `none`.
+
+## Migration
+
+Apply normal app startup migrations. For existing Postgres databases, `011_ai_memory.sql` creates tables and indexes idempotently. For new databases, `db/schema.sql` includes the same objects.
+
+## Rollback
+
+```sql
+DROP INDEX IF EXISTS idx_ai_memory_entries_embedding;
+DROP TABLE IF EXISTS ai_memory_audit_logs;
+DROP TABLE IF EXISTS ai_memory_entries;
+DROP TABLE IF EXISTS ai_memory_settings;
+```
+
+Do not automatically drop the `vector` extension; it may be used by another service.

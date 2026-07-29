@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -45,6 +45,14 @@ class NotificationKind(str, enum.Enum):
     error = "error"
     warning = "warning"
     info = "info"
+
+
+class AIMemoryType(str, enum.Enum):
+    verified_fact = "verified_fact"
+    approved_preference = "approved_preference"
+    interaction = "interaction"
+    ai_inference = "ai_inference"
+    outcome = "outcome"
 
 
 class WorkspaceRole(str, enum.Enum):
@@ -513,6 +521,79 @@ class AISalesWorkspaceAnalysis(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     workspace: Mapped[Workspace] = relationship()
     company: Mapped[Company] = relationship()
+
+
+class AIMemorySettings(Base):
+    __tablename__ = "ai_memory_settings"
+    __table_args__ = (UniqueConstraint("workspace_id", name="uq_ai_memory_settings_workspace"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    max_items: Mapped[int] = mapped_column(Integer, default=12)
+    max_characters: Mapped[int] = mapped_column(Integer, default=6000)
+    relevance_threshold: Mapped[float] = mapped_column(Numeric, default=0.18)
+    retention_days: Mapped[int] = mapped_column(Integer, default=365)
+    embeddings_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    pgvector_available: Mapped[bool] = mapped_column(Boolean, default=False)
+    embedding_provider: Mapped[str] = mapped_column(String(80), default="")
+    embedding_model: Mapped[str] = mapped_column(String(120), default="")
+    last_retrieval_mode: Mapped[str] = mapped_column(String(20), default="none")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+
+
+class AIMemoryEntry(Base):
+    __tablename__ = "ai_memory_entries"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "dedupe_hash", name="uq_ai_memory_workspace_dedupe"),
+        Index("idx_ai_memory_entries_workspace_type_created", "workspace_id", "memory_type", "created_at"),
+        Index("idx_ai_memory_entries_workspace_entity", "workspace_id", "company_id", "lead_id"),
+        Index("idx_ai_memory_entries_active", "workspace_id", "deleted_at", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    memory_type: Mapped[AIMemoryType] = mapped_column(Enum(AIMemoryType), index=True)
+    content: Mapped[str] = mapped_column(Text, default="")
+    summary: Mapped[str] = mapped_column(String(500), default="")
+    source: Mapped[str] = mapped_column(String(120), default="", index=True)
+    source_id: Mapped[str] = mapped_column(String(160), default="", index=True)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), index=True)
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"), index=True)
+    email_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("email_messages.id", ondelete="SET NULL"), index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    trust_level: Mapped[str] = mapped_column(String(40), default="untrusted")
+    verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    approved_by_user: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    confidence: Mapped[int] = mapped_column(Integer, default=50)
+    dedupe_hash: Mapped[str] = mapped_column(String(128), index=True)
+    keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
+    embedding_json: Mapped[list[float]] = mapped_column(JSON, default=list)
+    embedding_status: Mapped[str] = mapped_column(String(32), default="not_requested", index=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+
+
+class AIMemoryAuditLog(Base):
+    __tablename__ = "ai_memory_audit_logs"
+    __table_args__ = (Index("idx_ai_memory_audit_workspace_action", "workspace_id", "action", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    memory_entry_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("ai_memory_entries.id", ondelete="SET NULL"), index=True)
+    action: Mapped[str] = mapped_column(String(80), index=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 class WebsiteAnalysis(Base):

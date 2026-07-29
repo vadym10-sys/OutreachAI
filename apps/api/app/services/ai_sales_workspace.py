@@ -547,6 +547,7 @@ def build_ai_sales_workspace_analysis(
     contacts: list[Contact],
     website_analysis: Optional[WebsiteAnalysis],
     language: str,
+    memory_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     top_contact = _first_contact(contacts)
     profile = {
@@ -565,6 +566,13 @@ def build_ai_sales_workspace_analysis(
             "email": top_contact.email if top_contact else "",
         },
         "response_language": language or "English",
+        "workspace_memory_context": memory_context or {
+            "enabled": False,
+            "retrieval_mode": "none",
+            "memory_ids": [],
+            "items": [],
+            "reason": "No workspace memory context supplied.",
+        },
     }
 
     copilot = sales_copilot(profile)
@@ -755,6 +763,14 @@ def build_ai_sales_workspace_analysis(
         "model": settings.openai_model,
         "generation_mode": "ai",
         "requires_human_review": True,
+        "memory_context": memory_context or {
+            "enabled": False,
+            "retrieval_mode": "none",
+            "memory_ids": [],
+            "items": [],
+            "truncated": False,
+            "reason": "No workspace memory context supplied.",
+        },
         "version": 2,
         "company_summary": _clean_text(revenue_engine_report.get("executive_summary")) or _clean_text(copilot.fit_reason) or company.ai_summary or "Potential fit exists but needs validation before outreach.",
         "business_model": _business_model(company, target_customers),
@@ -850,6 +866,17 @@ def read_cached_analysis(metadata_json: dict[str, Any]) -> dict[str, Any]:
         generation_mode = "deterministic_fallback" if _clean_text(payload.get("provider")) == "fallback" else "legacy"
     payload["generation_mode"] = generation_mode
     payload.setdefault("requires_human_review", True)
+    payload.setdefault(
+        "memory_context",
+        {
+            "enabled": False,
+            "retrieval_mode": "none",
+            "memory_ids": [],
+            "items": [],
+            "truncated": False,
+            "reason": "Legacy analysis was created before AI Memory.",
+        },
+    )
     payload.setdefault("version", _safe_int(payload.get("version"), 1))
     raw_evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
     normalized_evidence: list[dict[str, Any]] = []

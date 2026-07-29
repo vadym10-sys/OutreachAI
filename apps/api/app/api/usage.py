@@ -46,9 +46,21 @@ from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
-from app.models.entities import AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
+from app.models.entities import AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
 from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
+from app.services.ai_memory import (
+    attach_memory_context,
+    ensure_memory_settings,
+    explain_memory_context,
+    log_memory_event,
+    memory_context_none,
+    record_ai_analysis_memory,
+    record_email_memory,
+    redact_sensitive_text,
+    retrieve_memory,
+    upsert_memory_entry,
+)
 from app.services.ai_sales_workspace import build_ai_sales_workspace_analysis, read_cached_analysis
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
 from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, enqueue_company_enrichment_job, enqueue_deep_contact_search_job, mark_cancelled, update_job_progress
@@ -264,6 +276,30 @@ class UsageAISalesAnalysisOut(BaseModel):
     requested_version: Optional[int] = None
     latest_version: Optional[int] = None
     available_versions: list[UsageAISalesAnalysisVersionOut] = Field(default_factory=list)
+
+
+class AIMemorySettingsIn(BaseModel):
+    enabled: bool
+
+
+class AIMemoryEntryIn(BaseModel):
+    memory_type: Literal["verified_fact", "interaction", "ai_inference", "outcome"]
+    content: str = Field(min_length=1, max_length=4000)
+    source: str = Field(default="user", max_length=120)
+    company_id: Optional[UUID] = None
+    lead_id: Optional[UUID] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    verified: bool = False
+
+
+class AIMemoryPreferenceIn(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    company_id: Optional[UUID] = None
+    lead_id: Optional[UUID] = None
+
+
+class AIMemoryCorrectionIn(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
 
 
 class UsageMonitoringChangeOut(BaseModel):
@@ -6326,6 +6362,38 @@ def _scoped_company(db: Session, workspace_id: UUID, company_id: UUID) -> Compan
     return company
 
 
+def _scoped_memory_entry(db: Session, workspace_id: UUID, memory_id: UUID) -> AIMemoryEntry:
+    entry = db.scalar(select(AIMemoryEntry).where(AIMemoryEntry.id == memory_id, AIMemoryEntry.workspace_id == workspace_id))
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Memory entry not found.")
+    return entry
+
+
+def _memory_entry_out(entry: AIMemoryEntry) -> dict[str, Any]:
+    return {
+        "id": str(entry.id),
+        "workspace_id": str(entry.workspace_id),
+        "memory_type": entry.memory_type.value if isinstance(entry.memory_type, AIMemoryType) else str(entry.memory_type),
+        "content": entry.content,
+        "summary": entry.summary,
+        "source": entry.source,
+        "source_id": entry.source_id,
+        "company_id": str(entry.company_id) if entry.company_id else None,
+        "lead_id": str(entry.lead_id) if entry.lead_id else None,
+        "email_id": str(entry.email_id) if entry.email_id else None,
+        "metadata": entry.metadata_json if isinstance(entry.metadata_json, dict) else {},
+        "verified": bool(entry.verified),
+        "approved_by_user": bool(entry.approved_by_user),
+        "confidence": entry.confidence,
+        "trust_level": entry.trust_level,
+        "embedding_status": entry.embedding_status,
+        "expires_at": entry.expires_at.isoformat() if entry.expires_at else None,
+        "deleted_at": entry.deleted_at.isoformat() if entry.deleted_at else None,
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+        "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
+    }
+
+
 def _latest_website_analysis_for_lead(db: Session, workspace_id: UUID, lead_id: UUID | None) -> Optional[WebsiteAnalysis]:
     if not lead_id:
         return None
@@ -6514,7 +6582,7 @@ def _stamp_analysis_payload(
 def _analysis_content_key(analysis_payload: dict[str, Any]) -> dict[str, Any]:
     normalized = read_cached_analysis({"ai_sales_workspace": analysis_payload}) if isinstance(analysis_payload, dict) else {}
     comparable = dict(normalized)
-    for key in ("generated_at", "analysis_timestamp", "regenerated_at", "version"):
+    for key in ("generated_at", "analysis_timestamp", "regenerated_at", "version", "memory_context"):
         comparable.pop(key, None)
     return comparable
 
@@ -6802,6 +6870,20 @@ def _refresh_cached_ai_sales_workspace_analysis(
     )
     website_analysis = _latest_website_analysis_for_lead(db, workspace.id, company.lead_id)
     language = str(getattr(workspace, "language", "") or "English")
+    try:
+        memory = retrieve_memory(
+            db,
+            workspace=workspace,
+            user_id=user_id,
+            query=" ".join([company.name, company.industry or "", company.country or "", company.ai_summary or "", company.outreach_strategy or ""]),
+            company_id=company.id,
+            lead_id=lead.id if lead else None,
+            purpose="ai_sales_analysis_auto_refresh",
+        )
+        memory_context = memory.context
+    except Exception as exc:
+        capture_provider_exception(exc, provider="ai_memory", endpoint="workspace_app.ai_sales_analysis.auto_refresh_memory", workspace_id=workspace.id, lead_id=company.lead_id)
+        memory_context = memory_context_none(f"AI Memory retrieval failed: {type(exc).__name__}.")
 
     try:
         analysis = build_ai_sales_workspace_analysis(
@@ -6810,6 +6892,7 @@ def _refresh_cached_ai_sales_workspace_analysis(
             contacts=contacts,
             website_analysis=website_analysis,
             language=language,
+            memory_context=memory_context,
         )
     except (ProviderConfigurationError, ProviderRequestError) as exc:
         capture_provider_exception(
@@ -6835,6 +6918,8 @@ def _refresh_cached_ai_sales_workspace_analysis(
         return previous_analysis
 
     stamped = _stamp_analysis_payload(analysis, force=bool(previous_analysis), previous_analysis=previous_analysis)
+    stamped = attach_memory_context(stamped, memory_context)
+    record_ai_analysis_memory(db, workspace=workspace, user_id=user_id, company=company, lead=lead, analysis=stamped)
     _store_ai_sales_analysis_metadata(company, stamped)
     return stamped
 
@@ -6926,6 +7011,188 @@ def _find_existing_company(db: Session, workspace_id: UUID, payload: UsageCompan
             if item.name.lower() == payload.name.lower() and (item.city or "").lower() == payload.city.lower():
                 return item
     return candidates[0] if candidates else None
+
+
+@router.get("/ai-memory/settings")
+def get_ai_memory_settings(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    settings = ensure_memory_settings(db, workspace, user.user_id)
+    active_count = db.scalar(
+        select(func.count())
+        .select_from(AIMemoryEntry)
+        .where(
+            AIMemoryEntry.workspace_id == workspace.id,
+            AIMemoryEntry.deleted_at.is_(None),
+            or_(AIMemoryEntry.expires_at.is_(None), AIMemoryEntry.expires_at > datetime.utcnow()),
+        )
+    ) or 0
+    by_type_rows = db.execute(
+        select(AIMemoryEntry.memory_type, func.count())
+        .where(
+            AIMemoryEntry.workspace_id == workspace.id,
+            AIMemoryEntry.deleted_at.is_(None),
+            or_(AIMemoryEntry.expires_at.is_(None), AIMemoryEntry.expires_at > datetime.utcnow()),
+        )
+        .group_by(AIMemoryEntry.memory_type)
+    ).all()
+    db.commit()
+    return {
+        "enabled": settings.enabled,
+        "workspace_id": str(workspace.id),
+        "max_items": settings.max_items,
+        "max_characters": settings.max_characters,
+        "relevance_threshold": float(settings.relevance_threshold or 0),
+        "retention_days": settings.retention_days,
+        "embeddings_enabled": settings.embeddings_enabled,
+        "pgvector_available": settings.pgvector_available,
+        "embedding_provider": settings.embedding_provider,
+        "embedding_model": settings.embedding_model,
+        "last_retrieval_mode": settings.last_retrieval_mode,
+        "last_error": settings.last_error,
+        "active_count": int(active_count),
+        "counts_by_type": {str(memory_type.value if isinstance(memory_type, AIMemoryType) else memory_type): int(count) for memory_type, count in by_type_rows},
+    }
+
+
+@router.patch("/ai-memory/settings")
+def update_ai_memory_settings(payload: AIMemorySettingsIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    settings = ensure_memory_settings(db, workspace, user.user_id)
+    settings.enabled = payload.enabled
+    settings.updated_at = datetime.utcnow()
+    log_memory_event(db, workspace_id=workspace.id, user_id=user.user_id, action="memory.settings_updated", metadata={"enabled": payload.enabled})
+    db.commit()
+    return get_ai_memory_settings(user, db)
+
+
+@router.get("/ai-memory/entries")
+def list_ai_memory_entries(
+    user: WorkspaceUserContext,
+    memory_type: Optional[str] = Query(default=None),
+    company_id: Optional[UUID] = Query(default=None),
+    lead_id: Optional[UUID] = Query(default=None),
+    include_deleted: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    if company_id:
+        _scoped_company(db, workspace.id, company_id)
+    if lead_id and not db.scalar(select(Lead.id).where(Lead.id == lead_id, Lead.workspace_id == workspace.id)):
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    clauses = [AIMemoryEntry.workspace_id == workspace.id]
+    if memory_type:
+        if memory_type not in {item.value for item in AIMemoryType}:
+            raise HTTPException(status_code=400, detail="Unsupported memory type.")
+        clauses.append(AIMemoryEntry.memory_type == AIMemoryType(memory_type))
+    if company_id:
+        clauses.append(AIMemoryEntry.company_id == company_id)
+    if lead_id:
+        clauses.append(AIMemoryEntry.lead_id == lead_id)
+    if not include_deleted:
+        clauses.append(AIMemoryEntry.deleted_at.is_(None))
+        clauses.append(or_(AIMemoryEntry.expires_at.is_(None), AIMemoryEntry.expires_at > datetime.utcnow()))
+    entries = list(db.scalars(select(AIMemoryEntry).where(*clauses).order_by(AIMemoryEntry.created_at.desc()).limit(limit)).all())
+    return {"entries": [_memory_entry_out(entry) for entry in entries]}
+
+
+@router.post("/ai-memory/entries")
+def add_ai_memory_entry(payload: AIMemoryEntryIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    if payload.company_id:
+        _scoped_company(db, workspace.id, payload.company_id)
+    if payload.lead_id and not db.scalar(select(Lead.id).where(Lead.id == payload.lead_id, Lead.workspace_id == workspace.id)):
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    if payload.memory_type == AIMemoryType.verified_fact.value and not payload.verified:
+        raise HTTPException(status_code=400, detail="verified_fact requires verified=true.")
+    try:
+        entry = upsert_memory_entry(
+            db,
+            workspace=workspace,
+            user_id=user.user_id,
+            memory_type=payload.memory_type,
+            content=payload.content,
+            source=payload.source,
+            company_id=payload.company_id,
+            lead_id=payload.lead_id,
+            metadata=payload.metadata,
+            verified=payload.verified,
+            confidence=90 if payload.verified else 55,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return {"entry": _memory_entry_out(entry)} if entry else {"entry": None}
+
+
+@router.post("/ai-memory/preferences")
+def confirm_ai_memory_preference(payload: AIMemoryPreferenceIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    if payload.company_id:
+        _scoped_company(db, workspace.id, payload.company_id)
+    if payload.lead_id and not db.scalar(select(Lead.id).where(Lead.id == payload.lead_id, Lead.workspace_id == workspace.id)):
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    entry = upsert_memory_entry(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        memory_type=AIMemoryType.approved_preference.value,
+        content=payload.content,
+        source="user_confirmed_preference",
+        company_id=payload.company_id,
+        lead_id=payload.lead_id,
+        approved_by_user=True,
+        confidence=95,
+    )
+    db.commit()
+    return {"entry": _memory_entry_out(entry)} if entry else {"entry": None}
+
+
+@router.patch("/ai-memory/entries/{memory_id}")
+def correct_ai_memory_entry(memory_id: UUID, payload: AIMemoryCorrectionIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    entry = _scoped_memory_entry(db, workspace.id, memory_id)
+    if entry.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="Deleted memory cannot be corrected.")
+    entry.content = redact_sensitive_text(payload.content)
+    entry.summary = entry.content[:500]
+    entry.updated_at = datetime.utcnow()
+    log_memory_event(db, workspace_id=workspace.id, user_id=user.user_id, action="memory.corrected", entry_id=entry.id)
+    db.commit()
+    return {"entry": _memory_entry_out(entry)}
+
+
+@router.delete("/ai-memory/entries/{memory_id}")
+def delete_ai_memory_entry(memory_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    entry = _scoped_memory_entry(db, workspace.id, memory_id)
+    entry.deleted_at = datetime.utcnow()
+    entry.updated_at = datetime.utcnow()
+    log_memory_event(db, workspace_id=workspace.id, user_id=user.user_id, action="memory.deleted", entry_id=entry.id)
+    db.commit()
+    return {"deleted": True, "id": str(entry.id)}
+
+
+@router.delete("/ai-memory/entries")
+def clear_ai_memory(request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    entries = list(db.scalars(select(AIMemoryEntry).where(AIMemoryEntry.workspace_id == workspace.id, AIMemoryEntry.deleted_at.is_(None))).all())
+    now = datetime.utcnow()
+    for entry in entries:
+        entry.deleted_at = now
+        entry.updated_at = now
+    log_memory_event(db, workspace_id=workspace.id, user_id=user.user_id, action="memory.cleared", metadata={"count": len(entries)})
+    db.commit()
+    return {"cleared": len(entries)}
+
+
+@router.get("/ai-memory/decisions/{company_id}/explain")
+def explain_ai_memory_decision(company_id: UUID, user: WorkspaceUserContext, version: Optional[int] = Query(default=None, ge=1), db: Session = Depends(get_db)) -> dict[str, Any]:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    company = _scoped_company(db, workspace.id, company_id)
+    snapshot = _ai_sales_snapshot_by_version(db, workspace.id, company.id, version) if version else _latest_ai_sales_snapshot(db, workspace.id, company.id)
+    analysis = snapshot.analysis_json if snapshot and isinstance(snapshot.analysis_json, dict) else _cached_ai_sales_analysis_from_company(company)
+    return explain_memory_context(analysis)
 
 
 @router.get("/bootstrap", response_model=UsageBootstrapOut)
@@ -7455,6 +7722,20 @@ def generate_ai_sales_analysis(
     )
     website_analysis = _latest_website_analysis_for_lead(db, workspace.id, company.lead_id)
     language = _workspace_language(request, workspace)
+    try:
+        memory = retrieve_memory(
+            db,
+            workspace=workspace,
+            user_id=user.user_id,
+            query=" ".join([company.name, company.industry or "", company.country or "", company.ai_summary or "", company.outreach_strategy or ""]),
+            company_id=company.id,
+            lead_id=lead.id if lead else None,
+            purpose="ai_sales_analysis",
+        )
+        memory_context = memory.context
+    except Exception as exc:
+        capture_provider_exception(exc, provider="ai_memory", endpoint="workspace_app.ai_sales_analysis.memory", workspace_id=workspace.id, lead_id=company.lead_id)
+        memory_context = memory_context_none(f"AI Memory retrieval failed: {type(exc).__name__}.")
 
     try:
         analysis = build_ai_sales_workspace_analysis(
@@ -7463,8 +7744,10 @@ def generate_ai_sales_analysis(
             contacts=contacts,
             website_analysis=website_analysis,
             language=language,
+            memory_context=memory_context,
         )
         analysis = _stamp_analysis_payload(analysis, force=payload.force, previous_analysis=previous_analysis)
+        analysis = attach_memory_context(analysis, memory_context)
     except (ProviderConfigurationError, ProviderRequestError) as exc:
         capture_provider_exception(exc, provider="openai", endpoint="workspace_app.ai_sales_analysis", workspace_id=workspace.id, lead_id=company.lead_id)
         if payload.force and previous_analysis:
@@ -7502,6 +7785,7 @@ def generate_ai_sales_analysis(
                 force=bool(previous_analysis),
                 previous_analysis=previous_analysis,
             )
+            analysis = attach_memory_context(analysis, memory_context)
             _save_ai_sales_analysis_snapshot(
                 db,
                 workspace_id=workspace.id,
@@ -7572,6 +7856,7 @@ def generate_ai_sales_analysis(
                 force=bool(previous_analysis),
                 previous_analysis=previous_analysis,
             )
+            analysis = attach_memory_context(analysis, memory_context)
             _save_ai_sales_analysis_snapshot(
                 db,
                 workspace_id=workspace.id,
@@ -7613,6 +7898,7 @@ def generate_ai_sales_analysis(
         company=company,
         analysis_payload=analysis,
     )
+    record_ai_analysis_memory(db, workspace=workspace, user_id=user.user_id, company=company, lead=lead, analysis=analysis)
     _store_ai_sales_analysis_metadata(company, analysis)
     if lead:
         _add_lead_activity(
@@ -8015,6 +8301,21 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
     analysis = analysis_snapshot.analysis_json if analysis_snapshot and isinstance(analysis_snapshot.analysis_json, dict) and analysis_snapshot.analysis_json else _cached_ai_sales_analysis_from_company(company)
     analysis_context = _email_analysis_context(analysis)
     try:
+        memory = retrieve_memory(
+            db,
+            workspace=workspace,
+            user_id=user.user_id,
+            query=" ".join([lead.company, lead.industry or "", company.ai_summary or "", str(analysis_context)]),
+            company_id=company.id,
+            lead_id=lead.id,
+            purpose="email_draft",
+        )
+        memory_context = memory.context
+    except Exception as exc:
+        capture_provider_exception(exc, provider="ai_memory", endpoint="workspace_app.email_draft.memory", workspace_id=workspace.id, lead_id=lead.id)
+        memory_context = memory_context_none(f"AI Memory retrieval failed: {type(exc).__name__}.")
+    analysis_context = {**analysis_context, "memory_context": memory_context}
+    try:
         _complete_public_company_details(db, request, user.user_id, workspace, lead, request.headers.get("x-request-id") or str(uuid4()))
         if _needs_ai_research(lead):
             _analyze_lead_if_possible(db, user.user_id, workspace, lead, language=_workspace_language(request, workspace))
@@ -8050,11 +8351,13 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
         tags={"requires_approval": True, "source": "workspace_app"},
         delivery_status="draft",
     )
+    email.tags = {**(email.tags if isinstance(email.tags, dict) else {}), "memory_context": memory_context}
     db.add(email)
     lead.status = LeadStatus.email_generated
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
     _add_lead_activity(db, request, user.user_id, workspace, "email.generated", lead, {"source": "workspace_app"})
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    record_email_memory(db, workspace=workspace, user_id=user.user_id, email=email, lead=lead, company=company, event="draft", extra={"memory_context": memory_context})
     db.commit()
     db.refresh(email)
     return UsageActionOut(
@@ -8450,6 +8753,7 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
         _set_workflow_stage(lead, "approval", "completed", "Human review completed. The email is ready to send.")
         _add_lead_activity(db, request, user.user_id, workspace, "email.approved", lead, {"email_id": str(email.id)})
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+        record_email_memory(db, workspace=workspace, user_id=user.user_id, email=email, lead=lead, company=company, event="approved")
     db.commit()
     db.refresh(email)
     return UsageActionOut(
@@ -8518,6 +8822,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": email.sent_at.isoformat()})
     _add_lead_activity(db, request, user.user_id, workspace, "email.sent", lead, {"email_id": str(email.id), "provider_message_id": email.provider_message_id})
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    record_email_memory(db, workspace=workspace, user_id=user.user_id, email=email, lead=lead, company=company, event="sent")
     db.commit()
     db.refresh(email)
     db.refresh(company)
