@@ -340,7 +340,7 @@ export function OnboardingWorkspaceSetup() {
                       {saving ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />}
                       {t("workspace.save")}
                     </button>
-                    <Link href={setupReady ? "/dashboard/leads" : "/dashboard"} className="focus-ring inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-[var(--ui-border)] bg-white px-5 text-sm font-black text-[var(--ui-text)] shadow-sm">
+                    <Link href="/dashboard" className="focus-ring inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-[var(--ui-border)] bg-white px-5 text-sm font-black text-[var(--ui-text)] shadow-sm">
                       {setupReady ? t("Start finding customers") : t("nav.dashboard")} <ArrowRight size={16} />
                     </Link>
                   </div>

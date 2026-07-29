@@ -38,9 +38,9 @@ const features = [
 ] as const;
 
 const plans = [
-  ["Starter", "Stripe billing, usage limits and workspace readiness. No fake metrics or customer logos.", "View plan"],
+  ["Starter", "Workspace readiness, usage limits and manually approved outreach for focused customer discovery.", "View plan"],
   ["Pro", "Designed for teams that need more AI research, reviewed email drafts and CRM handoff.", "Start trial"],
-  ["Agency", "For higher-volume workspaces with billing and account controls managed through Stripe.", "View plan"],
+  ["Agency", "For higher-volume workspaces with account controls and reviewed sending workflows.", "View plan"],
 ] as const;
 
 const faq = [
@@ -79,6 +79,11 @@ function AuthNavigationLink({
 
 function ProductPreview() {
   const { t } = useI18n();
+  const previewSteps = [
+    ["Business input", "Logistics software for mid-market operators in Germany"],
+    ["Evidence-backed lead", "Website quality, hiring signal, technology fit"],
+    ["Human approval", "Draft email waiting for review before send"],
+  ] as const;
 
   return (
     <SurfaceCard className="relative overflow-hidden rounded-[1.875rem] p-5 shadow-raised sm:p-6">
@@ -91,15 +96,36 @@ function ProductPreview() {
       </div>
 
       <div className="mt-5 rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface)] p-4">
-        <p className="text-sm leading-6 text-[var(--ui-text)]">{t("Find logistics companies in Germany with outdated websites.")}</p>
+        <div className="flex items-start gap-3">
+          <Search className="mt-0.5 shrink-0 text-[var(--ui-brand)]" size={18} aria-hidden="true" />
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-muted)]">{t("Describe target")}</p>
+            <p className="mt-1 text-sm leading-6 text-[var(--ui-text)]">{t("Find logistics companies in Germany with outdated websites.")}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2">
+        {previewSteps.map(([label, copy], index) => (
+          <div key={label} className="flex items-start gap-3 rounded-[1.125rem] border border-[var(--ui-border)] bg-white px-3 py-3 shadow-sm">
+            <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[var(--ui-brand-soft)] text-xs font-black text-[var(--ui-brand)]">{index + 1}</span>
+            <div className="min-w-0">
+              <p className="text-xs font-black text-[var(--ui-text)]">{t(label)}</p>
+              <p className="mt-1 text-xs leading-5 text-[var(--ui-text-soft)]">{t(copy)}</p>
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="mt-4 grid gap-4 min-[520px]:grid-cols-2">
         <article className="rounded-[1.25rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">
           <p className="text-xs font-bold text-[var(--ui-text-soft)]">{t("Company candidate")}</p>
           <h3 className="mt-2 text-base font-black text-[var(--ui-text)]">{t("Website analysis ready")}</h3>
-          <p className="mt-4 text-sm font-black text-success">{t("Overall Lead Score")}</p>
-          <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]">{t("Hiring signal and weak conversion path detected from available evidence.")}</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <AppBadge tone="success">{t("Overall Lead Score")}</AppBadge>
+            <AppBadge tone="brand">{t("Quality Gate")}</AppBadge>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{t("Hiring signal and weak conversion path detected from available evidence.")}</p>
         </article>
         <article className="rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-brand-soft)] p-4 shadow-sm">
           <p className="text-xs font-bold text-[var(--ui-text-soft)]">{t("AI reasoning")}</p>
@@ -108,8 +134,9 @@ function ProductPreview() {
         </article>
       </div>
 
-      <div className="mt-4 rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface-danger)] p-4 text-sm font-bold text-danger">
-        {t("AI prepares drafts only. Users approve before sending.")}
+      <div className="mt-4 rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface-danger)] p-4">
+        <p className="text-sm font-black text-danger">{t("AI prepares drafts only. Users approve before sending.")}</p>
+        <p className="mt-1 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{t("Insufficient data stays visible and is routed to manual review.")}</p>
       </div>
     </SurfaceCard>
   );
@@ -220,10 +247,10 @@ export function LandingPage() {
           <div>
             <p className="ui-eyebrow">{t("Integrations")}</p>
             <h2 className="ui-title mt-3 text-4xl">{t("Works with the systems already in OutreachAI.")}</h2>
-            <p className="ui-copy mt-3">{t("Authentication, Gmail OAuth, Stripe billing, CRM save and email approval stay connected to production logic.")}</p>
+            <p className="ui-copy mt-3">{t("Authentication, Gmail OAuth, billing, CRM save and email approval stay connected to production logic.")}</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            {["Clerk authentication", "Gmail OAuth", "Stripe billing", "Existing CRM"].map((item) => (
+            {["Secure authentication", "Gmail OAuth", "Workspace billing", "Existing CRM"].map((item) => (
               <div key={item} className="rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface)] p-4 text-sm font-black text-[var(--ui-text)]">
                 <CheckCircle2 className="mb-3 text-success" size={18} />
                 {t(item)}
