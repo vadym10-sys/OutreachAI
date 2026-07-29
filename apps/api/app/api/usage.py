@@ -6527,11 +6527,14 @@ def _fallback_ai_sales_analysis(
         website_analysis: WebsiteAnalysis | None,
         language: str,
 ) -> dict[str, Any]:
-        summary = (
-                (company.ai_summary or "").strip()
-                or (website_analysis.summary if website_analysis and getattr(website_analysis, "summary", None) else "")
-                or f"{company.name} is saved in your workspace. AI provider is unavailable, so this fallback uses verified CRM and website data only."
-        )
+        location = ", ".join(part for part in [company.city, company.country] if part)
+        summary_parts = [
+                f"{company.name} is saved in your workspace.",
+                f"Industry: {company.industry}." if company.industry else "",
+                f"Location: {location}." if location else "",
+                "AI provider is unavailable, so this deterministic fallback uses CRM fields and public website/contact records only.",
+        ]
+        summary = " ".join(part for part in summary_parts if part)
         top_contact = contacts[0] if contacts else None
         decision_maker = {
                 "name": (top_contact.name if top_contact and top_contact.name else "").strip(),
@@ -6540,25 +6543,33 @@ def _fallback_ai_sales_analysis(
         }
         opportunity_score = 65 if (company.website or company.domain) else 50
         buying_intent_score = 60 if company.industry else 45
-        confidence_score = 58
+        confidence_score = 58 if (company.website or company.domain or company.industry or decision_maker["email"]) else 35
         evidence: list[dict[str, Any]] = []
         if company.website:
-            evidence.append({"source_field": "website", "value": company.website})
+            evidence.append({"source": "company.website", "source_field": "company.website", "value": company.website, "confidence": 98, "evidence_type": "verified_source", "verified": True})
         if company.industry:
-            evidence.append({"source_field": "industry", "value": company.industry})
+            evidence.append({"source": "company.industry", "source_field": "company.industry", "value": company.industry, "confidence": 86, "evidence_type": "verified_source", "verified": True})
         if decision_maker["email"]:
-            evidence.append({"source_field": "decision_maker_email", "value": decision_maker["email"]})
+            evidence.append({"source": "decision_maker.email", "source_field": "decision_maker.email", "value": decision_maker["email"], "confidence": 94, "evidence_type": "verified_source", "verified": True})
 
         missing_data: list[str] = []
         if not decision_maker["title"]:
             missing_data.append("decision_maker")
         if not decision_maker["email"]:
             missing_data.append("decision_maker_email")
+        verified_facts = [f"{item['source_field']}: {item['value']}" for item in evidence]
+        confidence_basis = (
+                f"Deterministic fallback did not use an LLM. Confidence uses {len(evidence)} verified CRM/public evidence item(s) "
+                f"and missing_data={missing_data or []}; scores are approximate placeholder estimates and require human review."
+        )
 
         return {
                 "generated_at": datetime.utcnow().isoformat(),
                 "provider": "fallback",
                 "model": "deterministic-workspace-fallback",
+                "generation_mode": "deterministic_fallback",
+                "llm_used": False,
+                "requires_human_review": True,
                 "summary": summary,
                 "company_summary": summary,
                 "business_model": (company.industry or "").strip() or "Business model needs additional enrichment.",
@@ -6574,10 +6585,17 @@ def _fallback_ai_sales_analysis(
                 "risk_to_check": "Confirm contact ownership and timing before sending.",
                 "reasoning": [
                         "This analysis is generated from workspace CRM data because the AI provider is temporarily unavailable.",
+                        "LLM was not used; opportunity, intent and confidence scores are approximate placeholder estimates.",
                         f"Language context: {language}",
                 ],
                 "missing_data": missing_data,
                 "evidence": evidence,
+                "verified_facts": verified_facts,
+                "ai_inferences": [
+                        "Fallback next action and outreach angle are deterministic recommendations, not verified facts.",
+                        "Approximate placeholder scores require human review before outreach.",
+                ],
+                "confidence_basis": confidence_basis,
                 "version": 1,
         }
 

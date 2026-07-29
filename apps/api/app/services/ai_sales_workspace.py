@@ -18,16 +18,24 @@ class AISalesWorkspaceDecisionMaker(BaseModel):
 
 
 class AISalesWorkspaceEvidence(BaseModel):
+    source: str = ""
     source_field: str
     value: str
-    confidence: int = Field(ge=1, le=100)
+    confidence: int = Field(ge=0, le=100)
+    evidence_type: str = "verified_source"
+    verified: bool = True
 
 
 class AISalesWorkspaceAnalysisPayload(BaseModel):
     generated_at: str
     provider: str
     model: str
+    generation_mode: str = "ai"
+    requires_human_review: bool = True
     version: int
+    verified_facts: list[str] = Field(default_factory=list)
+    ai_inferences: list[str] = Field(default_factory=list)
+    confidence_basis: str = ""
     company_summary: str
     business_model: str
     what_company_sells: str
@@ -108,6 +116,28 @@ def _compact_list(values: list[str], *, max_items: int = 5) -> list[str]:
         if len(compact) >= max_items:
             break
     return compact
+
+
+def _evidence_item(
+    *,
+    source_field: str,
+    value: Any,
+    confidence: int,
+    evidence_type: str = "verified_source",
+    verified: bool = True,
+) -> dict[str, Any] | None:
+    text = _clean_text(value)
+    field = _clean_text(source_field)
+    if not field or not text:
+        return None
+    return {
+        "source": field,
+        "source_field": field,
+        "value": text,
+        "confidence": max(0, min(100, confidence)),
+        "evidence_type": evidence_type,
+        "verified": bool(verified),
+    }
 
 
 def _first_contact(contacts: list[Contact]) -> Optional[Contact]:
@@ -199,18 +229,41 @@ def _extra_evidence(raw_items: Any) -> list[dict[str, Any]]:
     for item in raw_items:
         if not isinstance(item, dict):
             continue
-        field = _clean_text(item.get("source_field"))
+        field = _clean_text(item.get("source_field") or item.get("source"))
         value = _clean_text(item.get("value"))
         if not field or not value:
             continue
-        evidence.append(
-            {
-                "source_field": field,
-                "value": value,
-                "confidence": max(1, min(100, _safe_int(item.get("confidence"), 70))),
-            }
+        evidence_type = _clean_text(item.get("evidence_type")) or "derived_context"
+        verified = bool(item.get("verified")) and not _is_ai_generated_source(field)
+        evidence_item = _evidence_item(
+            source_field=field,
+            value=value,
+            confidence=max(0, min(100, _safe_int(item.get("confidence"), 55 if verified else 35))),
+            evidence_type=evidence_type if verified else "derived_context",
+            verified=verified,
         )
+        if evidence_item:
+            evidence.append(evidence_item)
     return evidence
+
+
+def _is_ai_generated_source(source_field: str) -> bool:
+    normalized = source_field.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "ai_summary",
+            "sales_angle",
+            "outreach_strategy",
+            "suggested_offer",
+            "opportunity_analysis",
+            "partnership_fit",
+            "recommended_",
+            "copilot",
+            "prediction",
+            "ai_",
+        )
+    )
 
 
 def _best_communication_channel(top_contact: Optional[Contact], company: Company) -> str:
@@ -308,17 +361,13 @@ def _build_evidence(
     evidence: list[dict[str, Any]] = []
 
     def add(field: str, value: Any, confidence: int) -> None:
-        text = _clean_text(value)
-        if not text:
-            return
-        evidence.append({"source_field": field, "value": text, "confidence": max(1, min(100, confidence))})
+        item = _evidence_item(source_field=field, value=value, confidence=confidence, evidence_type="verified_source", verified=True)
+        if item:
+            evidence.append(item)
 
     add("company.name", company.name, 100)
     add("company.website", company.website or company.domain, 98)
     add("company.industry", company.industry, 86)
-    add("company.ai_summary", company.ai_summary, 72)
-    add("company.sales_angle", company.sales_angle, 78)
-    add("company.outreach_strategy", company.outreach_strategy, 76)
     add("lead.status", lead.status.value if lead else "", 75)
     add("lead.notes", lead.notes if lead else "", 66)
     add("website_analysis.summary", website_analysis.summary if website_analysis else "", 84)
@@ -334,6 +383,56 @@ def _build_evidence(
         seen.add(key)
         deduped.append(item)
     return deduped[:12]
+
+
+def _verified_facts_from_evidence(evidence: list[dict[str, Any]]) -> list[str]:
+    facts: list[str] = []
+    for item in evidence:
+        if not isinstance(item, dict) or not item.get("verified"):
+            continue
+        source_field = _clean_text(item.get("source_field") or item.get("source"))
+        if _is_ai_generated_source(source_field):
+            continue
+        value = _clean_text(item.get("value"))
+        if source_field and value:
+            facts.append(f"{source_field}: {value}")
+    return _compact_list(facts, max_items=10)
+
+
+def _ai_inferences_from_payload(payload: dict[str, Any]) -> list[str]:
+    reasoning = payload.get("reasoning") if isinstance(payload.get("reasoning"), list) else []
+    return _compact_list(
+        [
+            payload.get("summary"),
+            payload.get("best_outreach_angle"),
+            payload.get("value_proposition"),
+            payload.get("recommended_next_action"),
+            payload.get("risk_to_check"),
+            *reasoning,
+        ],
+        max_items=10,
+    )
+
+
+def _confidence_basis(*, evidence: list[dict[str, Any]], missing_data: list[str], provider_score: int, generation_mode: str) -> tuple[int, str]:
+    verified_count = sum(1 for item in evidence if isinstance(item, dict) and item.get("verified") and not _is_ai_generated_source(str(item.get("source_field") or item.get("source") or "")))
+    source_types = {
+        str(item.get("source_field") or item.get("source") or "").split(".", 1)[0]
+        for item in evidence
+        if isinstance(item, dict) and item.get("verified")
+    }
+    evidence_cap = min(90, 35 + verified_count * 10 + len(source_types) * 5)
+    missing_penalty = min(35, len(missing_data) * 9)
+    if generation_mode == "deterministic_fallback":
+        evidence_cap = min(evidence_cap, 58)
+    confidence = max(0, min(100, min(provider_score, evidence_cap) - missing_penalty))
+    basis = (
+        f"Confidence is based on {verified_count} verified evidence item(s) across {len(source_types)} source type(s); "
+        f"missing_data={missing_data or []}. AI-generated or derived context is not counted as verified evidence."
+    )
+    if generation_mode == "deterministic_fallback":
+        basis += " Deterministic fallback did not use an LLM, so scores are approximate placeholders and require human review."
+    return confidence, basis
 
 
 def _build_recommendation_actions(*, payload: dict[str, Any]) -> dict[str, Any]:
@@ -642,11 +741,20 @@ def build_ai_sales_workspace_analysis(
         deduped_evidence.append(item)
         if len(deduped_evidence) >= 16:
             break
+    raw_confidence_score = max(0, min(100, _safe_int(revenue_engine_report.get("confidence"), confidence)))
+    adjusted_confidence_score, confidence_basis = _confidence_basis(
+        evidence=deduped_evidence,
+        missing_data=missing_data,
+        provider_score=raw_confidence_score,
+        generation_mode="ai",
+    )
 
     payload = {
         "generated_at": datetime.utcnow().isoformat(),
         "provider": "openai",
         "model": settings.openai_model,
+        "generation_mode": "ai",
+        "requires_human_review": True,
         "version": 2,
         "company_summary": _clean_text(revenue_engine_report.get("executive_summary")) or _clean_text(copilot.fit_reason) or company.ai_summary or "Potential fit exists but needs validation before outreach.",
         "business_model": _business_model(company, target_customers),
@@ -699,13 +807,16 @@ def build_ai_sales_workspace_analysis(
         "summary": _clean_text(revenue_engine_report.get("executive_summary")) or _clean_text(copilot.fit_reason) or company.ai_summary or "Potential fit exists but needs validation before outreach.",
         "opportunity_score": max(0, min(100, _safe_int(revenue_engine_report.get("overall_opportunity_score", {}).get("score"), opportunity_score))),
         "buying_intent_score": max(0, min(100, _safe_int(revenue_engine_report.get("buying_intent", {}).get("score"), copilot.probability_to_buy))),
-        "confidence_score": max(0, min(100, _safe_int(revenue_engine_report.get("confidence"), confidence))),
+        "confidence_score": adjusted_confidence_score,
+        "confidence_basis": confidence_basis,
         "outreach_angle": _clean_text(recommended_strategy.get("why_contact_now")) or str(copilot.best_first_contact or company.sales_angle or "Lead with a concrete operational outcome."),
         "best_subject_line": str(revenue_engine_report.get("recommended_first_email", {}).get("subject") or outreach_strategy.get("best_subject_line") or copilot.best_subject_line or "Quick idea for your team"),
         "best_cta": str(revenue_engine_report.get("recommended_cta") or outreach_strategy.get("cta") or copilot.best_cta or "Book a quick call"),
         "risk_to_check": str(copilot.risk_to_check or "Verify decision-maker context and active need before outreach."),
         "next_action": str(revenue_engine_report.get("recommended_next_action") or copilot.next_best_action or "Review the contact profile and send a tailored intro email."),
     }
+    payload["verified_facts"] = _verified_facts_from_evidence(deduped_evidence)
+    payload["ai_inferences"] = _ai_inferences_from_payload(payload)
 
     recommendation_actions = _build_recommendation_actions(payload=payload)
     payload["recommendation_actions"] = recommendation_actions
@@ -734,10 +845,42 @@ def read_cached_analysis(metadata_json: dict[str, Any]) -> dict[str, Any]:
     if not cached:
         return {}
     payload = dict(cached)
+    generation_mode = _clean_text(payload.get("generation_mode"))
+    if not generation_mode:
+        generation_mode = "deterministic_fallback" if _clean_text(payload.get("provider")) == "fallback" else "legacy"
+    payload["generation_mode"] = generation_mode
+    payload.setdefault("requires_human_review", True)
     payload.setdefault("version", _safe_int(payload.get("version"), 1))
-    payload.setdefault("evidence", [])
+    raw_evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+    normalized_evidence: list[dict[str, Any]] = []
+    for item in raw_evidence:
+        if not isinstance(item, dict):
+            continue
+        source_field = _clean_text(item.get("source_field") or item.get("source"))
+        evidence_type = _clean_text(item.get("evidence_type"))
+        verified = bool(item.get("verified", not _is_ai_generated_source(source_field))) and not _is_ai_generated_source(source_field)
+        normalized = _evidence_item(
+            source_field=source_field,
+            value=item.get("value"),
+            confidence=_safe_int(item.get("confidence"), 70 if verified else 35),
+            evidence_type=evidence_type or ("verified_source" if verified else "derived_context"),
+            verified=verified,
+        )
+        if normalized:
+            normalized_evidence.append(normalized)
+    payload["evidence"] = normalized_evidence
     payload.setdefault("reasoning", [])
     payload.setdefault("missing_data", [])
+    payload.setdefault("verified_facts", _verified_facts_from_evidence(normalized_evidence))
+    payload.setdefault("ai_inferences", _ai_inferences_from_payload(payload))
+    if not _clean_text(payload.get("confidence_basis")):
+        _, basis = _confidence_basis(
+            evidence=normalized_evidence,
+            missing_data=payload.get("missing_data") if isinstance(payload.get("missing_data"), list) else [],
+            provider_score=_safe_int(payload.get("confidence_score"), 0),
+            generation_mode=generation_mode,
+        )
+        payload["confidence_basis"] = basis
     payload.setdefault("business_model", "")
     payload.setdefault("company_stage", "")
     payload.setdefault("pain_points", payload.get("likely_business_pains", []) if isinstance(payload.get("likely_business_pains"), list) else [])
