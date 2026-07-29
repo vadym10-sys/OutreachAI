@@ -17,6 +17,7 @@ from app.services.enrichment_queue import complete_job, mark_cancelled, update_j
 from app.services.secret_box import decrypt_secret
 
 logger = logging.getLogger("outreachai.autopilot")
+INTERNAL_BETA_OVERRIDE_EMAIL = "romaniukvadym10@gmail.com"
 
 
 class AutopilotDeferred(RuntimeError):
@@ -103,6 +104,8 @@ def _increment_usage(db: Session, workspace_id) -> None:  # type: ignore[no-unty
 
 def _plan_limit(settings: AppSettings | None) -> int:
     billing = settings.billing if settings and isinstance(settings.billing, dict) else {}
+    if billing.get("betaOverride") is True and str(billing.get("betaOverrideEmail") or "").strip().lower() == INTERNAL_BETA_OVERRIDE_EMAIL:
+        return 10**9
     plan = str(billing.get("plan") or "Starter")
     limit = int(PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])["email_sends"])
     return limit if limit > 0 else 10**9

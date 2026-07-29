@@ -754,13 +754,72 @@ def _outreach_sender_runtime_config(db: Session, user_id: str, workspace: Worksp
     }
 
 
+INTERNAL_BETA_OVERRIDE_EMAIL = "romaniukvadym10@gmail.com"
+
+
+def _internal_beta_limits() -> dict[str, Any]:
+    limits = dict(PLAN_LIMITS["Agency"])
+    for key, value in list(limits.items()):
+        if isinstance(value, bool):
+            limits[key] = True
+        elif isinstance(value, int):
+            limits[key] = 0
+    limits["mrr"] = 0
+    limits["internal_beta_override"] = True
+    return limits
+
+
+def _billing_beta_override_email(settings: AppSettings) -> str:
+    billing = settings.billing if isinstance(settings.billing, dict) else {}
+    if billing.get("betaOverride") is not True:
+        return ""
+    email = str(billing.get("betaOverrideEmail") or "").strip().lower()
+    return email if email == INTERNAL_BETA_OVERRIDE_EMAIL else ""
+
+
+def _workspace_user_emails(db: Session, user_id: str, workspace: Workspace) -> set[str]:
+    emails: set[str] = set()
+    user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+    if user and user.email:
+        emails.add(user.email.strip().lower())
+    member = db.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace.id,
+            WorkspaceMember.user_id == user_id,
+            WorkspaceMember.status == "active",
+        )
+    )
+    if member and member.email:
+        emails.add(member.email.strip().lower())
+    if "@" in user_id:
+        emails.add(user_id.strip().lower())
+    return emails
+
+
+def _has_internal_beta_override(db: Session, user_id: str, workspace: Workspace, settings: AppSettings | None = None) -> bool:
+    settings = settings or _settings_for_workspace(db, user_id, workspace)
+    email = _billing_beta_override_email(settings)
+    if not email:
+        return False
+    return email in _workspace_user_emails(db, user_id, workspace)
+
+
 def _plan_for_workspace(db: Session, user_id: str, workspace: Workspace) -> str:
     settings = _settings_for_workspace(db, user_id, workspace)
+    if _has_internal_beta_override(db, user_id, workspace, settings):
+        return "Agency"
     plan = str((settings.billing or {}).get("plan") or "Starter")
     return plan if plan in PLAN_LIMITS else "Starter"
 
 
-def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str:
+def _limits_for_workspace(db: Session, user_id: str, workspace: Workspace) -> dict[str, Any]:
+    settings = _settings_for_workspace(db, user_id, workspace)
+    if _has_internal_beta_override(db, user_id, workspace, settings):
+        return _internal_beta_limits()
+    return PLAN_LIMITS[_plan_for_workspace(db, user_id, workspace)]
+
+
+def _subscription_status_for_workspace(db: Session, workspace: Workspace, user_id: str | None = None) -> str:
     settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
     billing: dict[str, Any] = {}
     if settings is None:
@@ -775,6 +834,8 @@ def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str
             db.commit()
             db.refresh(settings)
         billing = settings.billing or {}
+    if user_id and settings and _has_internal_beta_override(db, user_id, workspace, settings):
+        return "active"
 
     subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
     if subscription and subscription.status in {"active", "trialing"}:
@@ -795,8 +856,8 @@ def _subscription_status_for_workspace(db: Session, workspace: Workspace) -> str
     return billing_status
 
 
-def _has_active_subscription(db: Session, workspace: Workspace) -> bool:
-    return _subscription_status_for_workspace(db, workspace) in {"active", "trialing"}
+def _has_active_subscription(db: Session, workspace: Workspace, user_id: str | None = None) -> bool:
+    return _subscription_status_for_workspace(db, workspace, user_id) in {"active", "trialing"}
 
 
 def _latest_subscription(db: Session, workspace: Workspace) -> Subscription | None:
@@ -878,10 +939,10 @@ def _upgrade_message(plan: str, feature: str) -> str:
     return f"{feature} is not available on the {plan} plan. Upgrade in Billing to continue."
 
 
-def _require_active_subscription(db: Session, workspace: Workspace) -> None:
+def _require_active_subscription(db: Session, workspace: Workspace, user_id: str | None = None) -> None:
     if get_app_settings().app_env != "production":
         return
-    if not _has_active_subscription(db, workspace):
+    if not _has_active_subscription(db, workspace, user_id):
         raise HTTPException(status_code=402, detail="Active subscription required. Choose a plan to continue.")
 
 
@@ -896,7 +957,7 @@ def _usage_for_workspace(db: Session, workspace: Workspace) -> UsageCounter:
 
 def _enforce_usage(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> UsageCounter:
     plan = _plan_for_workspace(db, user_id, workspace)
-    limits = PLAN_LIMITS[plan]
+    limits = _limits_for_workspace(db, user_id, workspace)
     usage = _usage_for_workspace(db, workspace)
     current = int(getattr(usage, metric))
     limit = int(limits[metric])
@@ -908,20 +969,20 @@ def _enforce_usage(db: Session, user_id: str, workspace: Workspace, metric: str,
 
 
 def _team_limit(db: Session, user_id: str, workspace: Workspace) -> int:
-    limit = int(PLAN_LIMITS[_plan_for_workspace(db, user_id, workspace)]["team_members"])
+    limit = int(_limits_for_workspace(db, user_id, workspace)["team_members"])
     return limit or 1000000
 
 
 def _enforce_count_limit(db: Session, user_id: str, workspace: Workspace, metric: str, current: int) -> None:
     plan = _plan_for_workspace(db, user_id, workspace)
-    limit = int(PLAN_LIMITS[plan][metric])
+    limit = int(_limits_for_workspace(db, user_id, workspace)[metric])
     if limit and current >= limit:
         raise HTTPException(status_code=402, detail=f"{metric.replace('_', ' ').title()} limit reached for the {plan} plan. Upgrade in Billing to continue.")
 
 
 def _enforce_sales_employee_mode(db: Session, user_id: str, workspace: Workspace, mode: SalesEmployeeMode) -> None:
     plan = _plan_for_workspace(db, user_id, workspace)
-    limits = PLAN_LIMITS[plan]
+    limits = _limits_for_workspace(db, user_id, workspace)
     if mode == SalesEmployeeMode.semi_auto and not limits["semi_auto_mode"]:
         raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Semi-Automatic Campaigns"))
     if mode == SalesEmployeeMode.autonomous and not limits["autonomous_mode"]:
@@ -2804,7 +2865,7 @@ def team_router_dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -
 @router.post("/team-router/route", response_model=TeamRouterPlanOut)
 def team_router_route(payload: TeamRouterRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterPlanOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     settings = _settings_for_workspace(db, user_id, workspace)
     try:
@@ -2902,7 +2963,7 @@ def team_router_approve(payload: TeamRouterDecision, request: Request, user_id: 
 @router.post("/team-router/execute", response_model=TeamRouterPlanOut)
 def team_router_execute(payload: TeamRouterDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterPlanOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     state = _team_router_state(settings)
     plan = state["current_plan"]
@@ -2990,7 +3051,7 @@ def sales_employee_performance(employee_id: UUID, user_id: CurrentUser, db: Sess
 @router.post("/sales-employees/{employee_id}/plan", response_model=SalesEmployeeTaskPlanOut)
 def sales_employee_plan(employee_id: UUID, payload: SalesEmployeeTaskRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskPlanOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     employee = _employee_scope(db, workspace, user_id, employee_id)
     memory = _employee_memory(employee)
@@ -3083,7 +3144,7 @@ def sales_employee_approve_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
 @router.post("/sales-employees/{employee_id}/execute-plan", response_model=SalesEmployeeTaskPlanOut)
 def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskPlanOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     plan = _current_plan(employee)
     if not plan or plan.get("id") != payload.plan_id:
@@ -3251,7 +3312,7 @@ def sales_employee_leads(employee_id: UUID, user_id: CurrentUser, db: Session = 
 @router.post("/sales-employees/{employee_id}/leads/manual", response_model=list[LeadOut])
 def sales_employee_manual_import(employee_id: UUID, payload: SalesEmployeeLeadImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     leads = [_lead_from_employee_payload(db, workspace, user_id, employee, item, "manual") for item in payload.companies]
     log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "manual", "count": len(leads)})
@@ -3262,7 +3323,7 @@ def sales_employee_manual_import(employee_id: UUID, payload: SalesEmployeeLeadIm
 @router.post("/sales-employees/{employee_id}/leads/websites", response_model=list[LeadOut])
 def sales_employee_website_import(employee_id: UUID, payload: WebsiteListImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     leads = [
         _lead_from_employee_payload(db, workspace, user_id, employee, LeadCreate(company=line.replace("https://", "").replace("http://", "").split("/")[0], website=line.strip(), status="New"), "website_list")
@@ -3277,7 +3338,7 @@ def sales_employee_website_import(employee_id: UUID, payload: WebsiteListImport,
 @router.post("/sales-employees/{employee_id}/leads/google-maps", response_model=list[LeadOut])
 def sales_employee_google_maps_import(employee_id: UUID, payload: GoogleMapsImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     leads = []
     for raw in payload.export_text.splitlines():
@@ -3294,7 +3355,7 @@ def sales_employee_google_maps_import(employee_id: UUID, payload: GoogleMapsImpo
 @router.post("/sales-employees/{employee_id}/leads/csv", response_model=list[LeadOut])
 async def sales_employee_csv_import(employee_id: UUID, file: UploadFile, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     content = (await file.read()).decode("utf-8-sig")
     rows = csv.DictReader(io.StringIO(content))
@@ -3307,7 +3368,7 @@ async def sales_employee_csv_import(employee_id: UUID, file: UploadFile, request
 @router.post("/sales-employees/{employee_id}/leads/{lead_id}/qualify", response_model=SalesEmployeeLeadInsightOut)
 def sales_employee_qualify_lead(employee_id: UUID, lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeLeadInsight:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     employee, lead, analysis = _employee_lead_context(db, workspace, user_id, employee_id, lead_id)
     try:
@@ -3324,7 +3385,7 @@ def sales_employee_qualify_lead(employee_id: UUID, lead_id: UUID, request: Reque
 @router.post("/sales-employees/{employee_id}/leads/{lead_id}/draft-email", response_model=EmailOut)
 def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     employee, lead, analysis = _employee_lead_context(db, workspace, user_id, employee_id, lead_id)
     insight = db.scalar(select(SalesEmployeeLeadInsight).where(SalesEmployeeLeadInsight.sales_employee_id == employee.id, SalesEmployeeLeadInsight.lead_id == lead.id))
@@ -3394,7 +3455,7 @@ def sales_employee_approve_email(employee_id: UUID, email_id: UUID, request: Req
 @router.post("/sales-employees/{employee_id}/run", response_model=SalesEmployeeRunOut)
 def sales_employee_run(employee_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeRunOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     result = SalesEmployeeRunOut(employee_id=employee.id, mode=employee.sending_mode.value)
     leads = list(db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.sales_employee_id == employee.id, Lead.status.in_([LeadStatus.new, LeadStatus.qualified])).order_by(Lead.created_at.asc()).limit(employee.daily_limit)).all())
@@ -3469,9 +3530,10 @@ def _dashboard_metrics(user_id: str, db: Session) -> DashboardMetrics:
             "count": db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == status)) or 0,
             "revenue": float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(lead_scope, Lead.status == status)) or 0),
         }
-        for status in [LeadStatus.new, LeadStatus.qualified, LeadStatus.contacted, LeadStatus.interested, LeadStatus.meeting, LeadStatus.won, LeadStatus.lost]
+    for status in [LeadStatus.new, LeadStatus.qualified, LeadStatus.contacted, LeadStatus.interested, LeadStatus.meeting, LeadStatus.won, LeadStatus.lost]
     ]
-    mrr = float(PLAN_LIMITS[plan]["mrr"])
+    limits = _limits_for_workspace(db, user_id, workspace)
+    mrr = float(limits["mrr"])
     return DashboardMetrics(
         leads=leads,
         campaigns=campaigns,
@@ -3493,7 +3555,7 @@ def _dashboard_metrics(user_id: str, db: Session) -> DashboardMetrics:
         funnel=funnel,
         pipeline=pipeline,
         plan=plan,
-        usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends, "limits": PLAN_LIMITS[plan]},
+        usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends, "limits": limits},
     )
 
 
@@ -4017,7 +4079,7 @@ def update_campaign(campaign_id: UUID, payload: CampaignUpdate, request: Request
 def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignAnalyticsOut:
     workspace = _current_workspace(db, user_id)
     plan = _plan_for_workspace(db, user_id, workspace)
-    if not PLAN_LIMITS[plan]["advanced_analytics"]:
+    if not _limits_for_workspace(db, user_id, workspace)["advanced_analytics"]:
         raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Advanced Analytics"))
     _enforce_usage(db, user_id, workspace, "ai_generations")
     campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
@@ -4142,7 +4204,7 @@ def approve_autopilot_campaign(
     db: Session = Depends(get_db),
 ) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     sender_status = _require_outreach_sender_ready(db, user_id, workspace)
     if sender_status.provider != "gmail":
         raise HTTPException(status_code=409, detail="Connect Gmail/Google Workspace before enabling AI Autopilot.")
@@ -4351,7 +4413,7 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
         database_configured=bool(get_app_settings().database_url),
         resend_configured=bool(get_app_settings().resend_api_key),
     )
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _lead_trace(request_id, "validation_passed", workspace_id=str(workspace.id), limit=payload.limit, country=payload.country, city=payload.city, industry=payload.industry)
     search_cache_key = cache_key("lead-search", workspace.id, payload.model_dump(mode="json"))
     cached_search = get_json(search_cache_key)
@@ -4412,7 +4474,7 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
 @router.post("/apollo/search-companies", response_model=list[LeadOut])
 def apollo_search_companies(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     try:
         result = search_apollo_companies(payload)
     except Exception as exc:
@@ -4426,7 +4488,7 @@ def apollo_search_companies(payload: LeadFinderRequest, request: Request, user_i
 @router.post("/apollo/search-contacts", response_model=list[LeadOut])
 def apollo_search_contacts(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     try:
         result = search_apollo_contacts(payload)
     except Exception as exc:
@@ -4918,7 +4980,7 @@ def leads_bulk(payload: BulkLeadAction, request: Request, user_id: CurrentUser, 
 @router.post("/ai/analyze", response_model=AnalysisOut)
 def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AnalysisOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id))) if payload.lead_id else None
     company = payload.company or (lead.company if lead else "")
@@ -5005,7 +5067,7 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
 @router.post("/ai/personalize", response_model=EmailVariantOut)
 def ai_personalize(payload: PersonalizeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailVariantOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     try:
         result = personalize_email(payload)
@@ -5025,7 +5087,7 @@ def ai_personalize_stream(payload: PersonalizeRequest, user_id: CurrentUser) -> 
 @router.post("/ai/rewrite")
 def ai_rewrite(payload: RewriteEmailRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, str]:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     try:
         result = rewrite_email(payload)
@@ -5039,9 +5101,9 @@ def ai_rewrite(payload: RewriteEmailRequest, request: Request, user_id: CurrentU
 @router.post("/ai/reply-assistant", response_model=ReplyAssistantOut)
 def ai_reply_assistant(payload: ReplyAssistantRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> ReplyAssistantOut:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     plan = _plan_for_workspace(db, user_id, workspace)
-    if not PLAN_LIMITS[plan]["reply_ai"]:
+    if not _limits_for_workspace(db, user_id, workspace)["reply_ai"]:
         raise HTTPException(status_code=402, detail=_upgrade_message(plan, "AI Reply Assistant"))
     _enforce_usage(db, user_id, workspace, "ai_generations")
     try:
@@ -5056,7 +5118,7 @@ def ai_reply_assistant(payload: ReplyAssistantRequest, request: Request, user_id
 @router.post("/leads/{lead_id}/draft-email", response_model=EmailOut)
 def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead = db.scalar(select(Lead).where(Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)))
     if lead is None:
@@ -5123,7 +5185,7 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
 @router.post("/emails/generate", response_model=EmailOut)
 def generate_email(payload: GenerateEmailRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     campaign = db.scalar(select(Campaign).where(Campaign.id == payload.campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
     lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id)))
@@ -5508,7 +5570,7 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
 @router.post("/emails/{email_id}/send", response_model=EmailOut)
 def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace)
+    _require_active_subscription(db, workspace, user_id)
     sender_status, smtp_config = _outreach_sender_runtime_config(db, user_id, workspace)
     _enforce_usage(db, user_id, workspace, "email_sends")
     message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
@@ -5709,7 +5771,7 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
 def billing_plans(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[BillingPlanOut]:
     workspace = _current_workspace(db, user_id)
     current = _plan_for_workspace(db, user_id, workspace)
-    active = _has_active_subscription(db, workspace)
+    active = _has_active_subscription(db, workspace, user_id)
     return [BillingPlanOut(name=name, price=int(limits["mrr"]), limits=limits, current=active and name == current, active_subscription=active) for name, limits in PLAN_LIMITS.items()]
 
 
@@ -5717,7 +5779,7 @@ def billing_plans(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[B
 def billing_portal(payload: BillingPortalRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
-    if not _has_active_subscription(db, workspace):
+    if not _has_active_subscription(db, workspace, user_id):
         raise HTTPException(status_code=402, detail="An active subscription is required to open the Billing Portal.")
     customer_id = str((settings.billing or {}).get("stripeCustomerId") or "")
     try:
@@ -5812,13 +5874,15 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
     if cached:
         return BillingStatusOut.model_validate(cached)
     plan = _plan_for_workspace(db, user_id, workspace)
+    limits = _limits_for_workspace(db, user_id, workspace)
     usage = _usage_for_workspace(db, workspace)
     subscription = _latest_subscription(db, workspace)
     settings = _settings_for_workspace(db, user_id, workspace)
     billing = settings.billing or {}
-    status = subscription.status if subscription else str(billing.get("status") or "inactive")
-    trial_end = subscription.trial_end if subscription else _parse_billing_datetime(billing.get("trialEnd"))
-    current_period_end = subscription.current_period_end if subscription else _parse_billing_datetime(billing.get("currentPeriodEnd"))
+    beta_override = _has_internal_beta_override(db, user_id, workspace, settings)
+    status = "active" if beta_override else (subscription.status if subscription else str(billing.get("status") or "inactive"))
+    trial_end = None if beta_override else (subscription.trial_end if subscription else _parse_billing_datetime(billing.get("trialEnd")))
+    current_period_end = None if beta_override else (subscription.current_period_end if subscription else _parse_billing_datetime(billing.get("currentPeriodEnd")))
     trial_days_remaining = 0
     if trial_end:
         trial_days_remaining = max(0, (trial_end.date() - datetime.utcnow().date()).days)
@@ -5826,18 +5890,18 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
     workspaces_used = db.scalar(select(func.count()).select_from(WorkspaceMember).where(WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active")) or 1
     output = BillingStatusOut(
         plan=plan,
-        price=int(PLAN_LIMITS[plan]["mrr"]),
+        price=int(limits["mrr"]),
         status=status,
         trial_end=trial_end,
         current_period_end=current_period_end,
         trial_days_remaining=trial_days_remaining,
-        stripe_customer_id=str(billing.get("stripeCustomerId") or (subscription.stripe_customer_id if subscription else "") or ""),
-        stripe_subscription_id=str(billing.get("stripeSubscriptionId") or (subscription.stripe_subscription_id if subscription else "") or ""),
+        stripe_customer_id="" if beta_override else str(billing.get("stripeCustomerId") or (subscription.stripe_customer_id if subscription else "") or ""),
+        stripe_subscription_id="" if beta_override else str(billing.get("stripeSubscriptionId") or (subscription.stripe_subscription_id if subscription else "") or ""),
         last_payment_error=str((subscription.last_payment_error if subscription else None) or billing.get("lastPaymentError") or ""),
         last_decline_code=str((subscription.last_decline_code if subscription else None) or billing.get("lastDeclineCode") or ""),
         last_failure_message=str((subscription.last_failure_message if subscription else None) or billing.get("lastFailureMessage") or ""),
         last_payment_failed_at=(subscription.last_payment_failed_at if subscription else None) or _parse_billing_datetime(billing.get("lastPaymentFailedAt")),
-        limits=PLAN_LIMITS[plan],
+        limits=limits,
         usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
         sales_employees_used=int(sales_employees_used),
         workspaces_used=int(workspaces_used),
@@ -5862,7 +5926,7 @@ def billing_usage(user_id: CurrentUser, db: Session = Depends(get_db)) -> UsageO
     return UsageOut(
         plan=plan,
         period=usage.period,
-        limits=PLAN_LIMITS[plan],
+        limits=_limits_for_workspace(db, user_id, workspace),
         usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
     )
 

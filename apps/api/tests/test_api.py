@@ -48,9 +48,9 @@ from app.core.reliability import database_backup_configured, validate_database_c
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
-from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
+from app.api.routes import _audit_log_lead_id_clause, _enforce_usage, _lead_ai_payload, _limits_for_workspace, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
 from app.models.entities import AICustomerFinderSource, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
-from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
+from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
@@ -2164,6 +2164,91 @@ def test_workspace_trial_status_survives_inactive_stripe_metadata(monkeypatch) -
             assert workspace is not None
             assert _subscription_status_for_workspace(db, workspace) == "trialing"
             _require_active_subscription(db, workspace)
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
+def test_billing_plan_matrix_keeps_expected_feature_progression() -> None:
+    plan_order = ["Starter", "Pro", "Agency"]
+    assert list(PLAN_LIMITS) == plan_order
+
+    numeric_limits = ["leads", "ai_generations", "email_sends", "sales_employees", "workspaces", "team_members", "campaigns"]
+    feature_flags = ["review_mode", "semi_auto_mode", "autonomous_mode", "basic_analytics", "advanced_analytics", "reply_ai", "api_access", "webhooks", "white_label"]
+
+    for lower, higher in zip(plan_order, plan_order[1:]):
+        for metric in numeric_limits:
+            lower_limit = int(PLAN_LIMITS[lower][metric])
+            higher_limit = int(PLAN_LIMITS[higher][metric])
+            assert higher_limit == 0 or higher_limit >= lower_limit, f"{higher}.{metric} is lower than {lower}.{metric}"
+        for flag in feature_flags:
+            if PLAN_LIMITS[lower][flag]:
+                assert PLAN_LIMITS[higher][flag] is True, f"{higher}.{flag} disables a feature available on {lower}"
+
+    assert PLAN_LIMITS["Starter"]["reply_ai"] is False
+    assert PLAN_LIMITS["Pro"]["reply_ai"] is True
+    assert PLAN_LIMITS["Agency"]["api_access"] is True
+    assert PLAN_LIMITS["Agency"]["webhooks"] is True
+
+
+def test_internal_beta_override_is_free_full_access_for_only_target_user(monkeypatch) -> None:
+    target_user_id = "user_beta_romaniuk"
+    other_user_id = "user_beta_other"
+    target_email = "romaniukvadym10@gmail.com"
+    other_email = "other-beta-member@example.com"
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = Workspace(owner_user_id=target_user_id, name="Internal Beta Workspace", created_at=datetime.utcnow() - timedelta(days=60))
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=target_user_id, email=target_email, role=WorkspaceRole.owner, status="active"))
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=other_user_id, email=other_email, role=WorkspaceRole.member, status="active"))
+        db.add(User(clerk_user_id=target_user_id, email=target_email))
+        db.add(User(clerk_user_id=other_user_id, email=other_email))
+        settings = AppSettings(
+            user_id=target_user_id,
+            workspace_id=workspace.id,
+            billing={
+                "plan": "Starter",
+                "status": "canceled",
+                "stripeCustomerId": "cus_old_cancelled",
+                "stripeSubscriptionId": "sub_old_cancelled",
+                "betaOverride": True,
+                "betaOverrideEmail": target_email,
+                "betaOverrideReason": "closed_beta_internal_testing",
+            },
+        )
+        db.add(settings)
+        db.add(UsageCounter(workspace_id=workspace.id, period=datetime.utcnow().strftime("%Y-%m"), leads=50000, ai_generations=100000, email_sends=100000))
+        db.commit()
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "production")
+    try:
+        with SessionLocal() as db:
+            workspace = db.scalar(select(Workspace).where(Workspace.name == "Internal Beta Workspace"))
+            assert workspace is not None
+
+            assert _plan_for_workspace(db, target_user_id, workspace) == "Agency"
+            assert _subscription_status_for_workspace(db, workspace, target_user_id) == "active"
+            _require_active_subscription(db, workspace, target_user_id)
+
+            limits = _limits_for_workspace(db, target_user_id, workspace)
+            for metric in ["leads", "ai_generations", "email_sends", "sales_employees", "workspaces", "team_members", "campaigns"]:
+                assert limits[metric] == 0
+            for flag in ["review_mode", "semi_auto_mode", "autonomous_mode", "basic_analytics", "advanced_analytics", "reply_ai", "api_access", "webhooks", "white_label"]:
+                assert limits[flag] is True
+            assert limits["mrr"] == 0
+
+            _enforce_usage(db, target_user_id, workspace, "leads")
+            _enforce_usage(db, target_user_id, workspace, "ai_generations")
+            _enforce_usage(db, target_user_id, workspace, "email_sends")
+
+            assert _plan_for_workspace(db, other_user_id, workspace) == "Starter"
+            assert _subscription_status_for_workspace(db, workspace, other_user_id) == "canceled"
+            with pytest.raises(HTTPException) as exc:
+                _require_active_subscription(db, workspace, other_user_id)
+            assert exc.value.status_code == 402
     finally:
         monkeypatch.setattr(app_settings, "app_env", original_env)
 
