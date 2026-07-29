@@ -1060,6 +1060,8 @@ class BillingStatusOut(BaseModel):
     plan: str
     price: int
     status: str
+    beta_override: bool = False
+    all_features_enabled: bool = False
     trial_end: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
     trial_days_remaining: int = 0

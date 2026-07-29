@@ -7304,6 +7304,19 @@ export function BillingPage() {
   const leadLimit = Number(limits.leads || 0);
   const emailLimit = Number(limits.email_sends || 0);
   const aiLimit = Number(limits.ai_generations || 0);
+  const betaOverrideActive = Boolean(status?.beta_override);
+  const enabledFeatures = Object.entries(limits).filter(([, value]) => value === true).map(([key]) => key.replaceAll("_", " "));
+  const quotaRows = [
+    ["Customer Finder", limits.leads],
+    ["AI Analysis", limits.ai_generations],
+    ["Email Drafts", limits.email_sends],
+    ["CRM", true],
+    ["Reply Tracking", limits.reply_ai],
+    ["Seats", limits.team_members],
+    ["Workspaces", limits.workspaces],
+    ["Exports", limits.webhooks],
+    ["API", limits.api_access]
+  ];
   const billingNeedsAttention = Boolean(status?.last_payment_error || status?.last_failure_message || ["inactive", "past_due", "unpaid", "expired"].includes(String(status?.status || "").toLowerCase()));
   const nextBillingAction = billingNeedsAttention ? "Resolve billing before launching more outreach." : leadLimit && leadsUsed >= leadLimit ? "Upgrade before adding more leads." : emailLimit && emailsUsed >= emailLimit ? "Reduce sends or upgrade before the next campaign." : "Keep using the current plan.";
 
@@ -7317,9 +7330,19 @@ export function BillingPage() {
       </section>
       <section className="grid gap-4 lg:grid-cols-4">
         <MetricCard label="Current plan" value={t(status?.plan || metrics.plan || "Unavailable")} help="From billing status" />
+        <MetricCard label="Beta Override" value={betaOverrideActive ? "ACTIVE" : "Not active"} help="Internal closed beta entitlement" />
         <MetricCard label="Billing status" value={t(status?.status || "Unavailable")} help="Current subscription state" />
-        <MetricCard label="Trial days" value={String(status?.trial_days_remaining || 0)} help="Remaining trial time" />
-        <MetricCard label="Invoices" value={String(billing.invoices.length)} help="Billing history items" />
+        <MetricCard label="All features" value={status?.all_features_enabled ? "ENABLED" : "Plan limited"} help="Available product capabilities" />
+      </section>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <p className="text-xs font-black uppercase text-slate-500">{t("Available functions and limits")}</p>
+        <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          {quotaRows.map(([label, value]) => <div key={String(label)} className="rounded-lg bg-slate-50 p-3">
+            <p className="text-sm font-bold text-ink">{t(String(label))}</p>
+            <p className="mt-1 text-sm text-slate-600">{value === true ? "Enabled" : value === false ? "Not included" : Number(value) === 0 ? "Unlimited" : String(value || "Unavailable")}</p>
+          </div>)}
+        </div>
+        {enabledFeatures.length > 0 && <p className="mt-4 text-sm text-slate-600">{t("Enabled features")}: {enabledFeatures.join(", ")}</p>}
       </section>
       <section className="grid gap-4 lg:grid-cols-3">
         {[

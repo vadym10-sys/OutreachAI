@@ -1502,6 +1502,8 @@ export type BillingStatus = {
   plan: string;
   price: number;
   status: string;
+  beta_override?: boolean;
+  all_features_enabled?: boolean;
   trial_end?: string | null;
   current_period_end?: string | null;
   trial_days_remaining: number;

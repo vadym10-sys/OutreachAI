@@ -327,6 +327,8 @@ export const billingStatusSchema = z.object({
   plan: z.string(),
   price: z.number(),
   status: z.string(),
+  beta_override: z.boolean().optional(),
+  all_features_enabled: z.boolean().optional(),
   trial_end: z.string().nullable().optional(),
   current_period_end: z.string().nullable().optional(),
   trial_days_remaining: z.number(),
