@@ -842,6 +842,24 @@ export type CrmCompany = {
     verified_facts?: string[];
     ai_inferences?: string[];
     confidence_basis?: string;
+    memory_context?: {
+      enabled?: boolean;
+      retrieval_mode?: "vector" | "keyword" | "none" | string;
+      memory_ids?: string[];
+      items?: Array<{
+        id?: string;
+        type?: string;
+        source?: string;
+        source_id?: string;
+        content?: string;
+        relevance_score?: number;
+        verified?: boolean;
+        trust_level?: string;
+        influence?: string;
+      }>;
+      truncated?: boolean;
+      reason?: string;
+    };
     llm_used?: boolean;
     summary?: string;
     company_summary?: string;

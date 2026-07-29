@@ -17,5 +17,8 @@ test("settings show real workspace, integration, and sender readiness", async ({
   await expect(page.getByText("Provider: Gmail OAuth")).toBeVisible();
   await expect(page.getByText("Mailbox: qa.sender@example.com")).toBeVisible();
   await expect(page.getByText("OAuth status: connected")).toBeVisible();
+  await expect(page.getByText("AI Memory")).toBeVisible();
+  await expect(page.getByText("Workspace memory is on")).toBeVisible();
+  await expect(page.getByText("Business profile: OutreachAI sells AI-powered outbound workflow software.")).toBeVisible();
   await guards.assertClean();
 });

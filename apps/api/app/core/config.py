@@ -27,9 +27,16 @@ class Settings(BaseSettings):
     jwt_audience: str = ""
     openai_api_key: str = ""
     openai_model: str = "gpt-5.5"
+    openai_embedding_model: str = "text-embedding-3-small"
     openai_timeout_seconds: float = 40
     openai_max_retries: int = 2
     ai_rate_limit_per_minute: int = 30
+    ai_memory_default_enabled: bool = False
+    ai_memory_embeddings_enabled: bool = True
+    ai_memory_max_items: int = 12
+    ai_memory_max_characters: int = 6000
+    ai_memory_relevance_threshold: float = 0.18
+    ai_memory_retention_days: int = 365
     resend_api_key: str = ""
     resend_from_email: str = ""
     resend_reply_to: str = ""

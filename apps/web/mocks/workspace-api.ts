@@ -338,6 +338,27 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
   let currentCampaign: any = qaCampaign;
   let currentInbox: any[] = [];
   let currentAnalysis: any = { ...qaSalesAnalysisV2 };
+  const memoryEntry = {
+    id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    memory_type: "verified_fact",
+    content: "Business profile: OutreachAI sells AI-powered outbound workflow software.",
+    source: "workspace_profile",
+    verified: true,
+    approved_by_user: false,
+    confidence: 95,
+    created_at: now
+  };
+  currentAnalysis = {
+    ...currentAnalysis,
+    memory_context: {
+      enabled: true,
+      retrieval_mode: "keyword",
+      memory_ids: [memoryEntry.id],
+      items: [{ id: memoryEntry.id, type: "verified_fact", source: "workspace_profile", content: memoryEntry.content, relevance_score: 0.91, verified: true, influence: "Used as verified factual context." }],
+      truncated: false,
+      reason: ""
+    }
+  };
   let analysisHistory: any[] = [{ ...qaSalesAnalysisV2 }, { ...qaSalesAnalysisV1 }];
   let currentProfile = { workspace: "QA Private Workspace", company: "QA Private Workspace", avatar_url: null, timezone: "UTC", language: "en" };
   let currentFinderJob: any = {
@@ -429,6 +450,43 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
           { key: "email_sending", label: "Email sending", status: "connected", message: "Connected. Approved emails can be sent." },
           { key: "billing", label: "Billing", status: "connected", message: "Connected. Plans and billing status can be managed." }
         ]
+      });
+    }
+    if (apiPath === "/api/workspace-app/ai-memory/settings") {
+      return fulfillJson(route, {
+        enabled: true,
+        workspace_id: "99999999-9999-9999-9999-999999999999",
+        max_items: 12,
+        max_characters: 6000,
+        relevance_threshold: 0.18,
+        retention_days: 365,
+        embeddings_enabled: true,
+        pgvector_available: false,
+        embedding_provider: "",
+        embedding_model: "",
+        last_retrieval_mode: "keyword",
+        active_count: 1,
+        counts_by_type: { verified_fact: 1, approved_preference: 0, outcome: 0 }
+      });
+    }
+    if (apiPath === "/api/workspace-app/ai-memory/entries") {
+      if (route.request().method() === "DELETE") return fulfillJson(route, { cleared: 1 });
+      return fulfillJson(route, { entries: [memoryEntry] });
+    }
+    if (apiPath === "/api/workspace-app/ai-memory/preferences") return fulfillJson(route, { entry: { ...memoryEntry, memory_type: "approved_preference", content: "Use a concise direct tone." } });
+    if (apiPath.startsWith("/api/workspace-app/ai-memory/entries/")) {
+      if (route.request().method() === "DELETE") return fulfillJson(route, { deleted: true, id: memoryEntry.id });
+      return fulfillJson(route, { entry: memoryEntry });
+    }
+    if (apiPath === `/api/workspace-app/ai-memory/decisions/${qaCompany.id}/explain`) {
+      return fulfillJson(route, {
+        memory_context: currentAnalysis.memory_context,
+        verified_facts: currentAnalysis.memory_context.items,
+        ai_assumptions: [],
+        sources: ["workspace_profile"],
+        confidence_basis: currentAnalysis.confidence_basis || "Uses verified workspace profile and CRM evidence.",
+        used_memories: currentAnalysis.memory_context.items,
+        insufficient_data: false
       });
     }
     if (apiPath === "/api/workspace-app/leads/search") {

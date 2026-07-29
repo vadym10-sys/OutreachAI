@@ -16,7 +16,7 @@ import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { useI18n } from "@/lib/i18n/provider";
 import type { Locale } from "@/lib/i18n/translations";
 import type { Activity, AISalesEmployee, BillingStatus, Campaign, CampaignSequence, CrmCompany, CrmContact, CrmDeal, CrmPipeline, DashboardMetrics, Email, FollowUpSequence, Lead, Profile, RevenueCompany, RevenueIntelligenceFeed, SalesCopilot, Usage, WebsiteAudit } from "@/lib/types";
-import type { AnalysisResult, FirstCustomerJob, FirstCustomerResult, FirstCustomerSaveResponse, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
+import type { AiMemoryEntriesResponse, AiMemoryEntry, AiMemoryExplainResponse, AiMemorySettings, AnalysisResult, FirstCustomerJob, FirstCustomerResult, FirstCustomerSaveResponse, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
 
@@ -4652,6 +4652,10 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
   const [actionError, setActionError] = useState("");
   const [actionCurrentStep, setActionCurrentStep] = useState("");
   const [actionCompletedSteps, setActionCompletedSteps] = useState<string[]>([]);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const [whyLoading, setWhyLoading] = useState(false);
+  const [whyDecision, setWhyDecision] = useState<AiMemoryExplainResponse | null>(null);
+  const [whyError, setWhyError] = useState("");
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const contactFormRef = useRef<HTMLFormElement | null>(null);
   const deepContactPollTimerRef = useRef<number | null>(null);
@@ -5389,6 +5393,22 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
     }
   }
 
+  async function toggleWhyDecision() {
+    const nextOpen = !whyOpen;
+    setWhyOpen(nextOpen);
+    if (!nextOpen || whyDecision || whyLoading) return;
+    setWhyLoading(true);
+    setWhyError("");
+    try {
+      const response = await api<AiMemoryExplainResponse>(`/api/workspace-app/ai-memory/decisions/${current.id}/explain`);
+      setWhyDecision(response);
+    } catch (err) {
+      setWhyError(friendlyErrorMessage(err, "AI decision evidence is unavailable."));
+    } finally {
+      setWhyLoading(false);
+    }
+  }
+
   return <CompanyCardShell id={`company-${current.id}`} className={`scroll-mt-24 overflow-hidden bg-slate-50 ${highlighted ? "border-teal-300 ring-4 ring-teal-100" : "border-slate-200"}`}>
     <div className="border-b border-slate-200 bg-white p-5 sm:p-6" style={{ fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif' }}>
       <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f7fbff] to-[#edf6ff] p-5 shadow-sm sm:p-6">
@@ -5430,6 +5450,9 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
               </a>
             )}
             <a href={`#outreach-${current.id}`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800"><Mail size={16} />{t("Review outreach")}</a>
+            <button type="button" onClick={() => void toggleWhyDecision()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800">
+              <Lightbulb size={16} />{t("Why AI decided this?")}
+            </button>
             <button
               type="button"
               onClick={toggleWatchlist}
@@ -5441,6 +5464,36 @@ function CrmCompanyCard({ company, api, highlighted = false, onOpenNextLead, nex
             </button>
           </div>
         </div>
+
+        {whyOpen ? (
+          <div className="relative mt-5 rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase text-slate-500">{t("Decision evidence")}</p>
+            {whyLoading ? <p className="mt-2 text-sm font-semibold text-slate-600">{t("Loading evidence")}</p> : whyError ? <p className="mt-2 text-sm font-semibold text-rose-700">{t(whyError)}</p> : whyDecision ? (
+              <div className="mt-3 grid gap-3 lg:grid-cols-3">
+                <div>
+                  <p className="text-sm font-black text-ink">{t("Verified facts")}</p>
+                  <ul className="mt-2 space-y-2 text-sm leading-6 text-slate-700">{safeArray(whyDecision.verified_facts).slice(0, 4).map((item) => <li key={item.id || item.content}>{item.content || item.source}</li>)}</ul>
+                  {!whyDecision.verified_facts.length ? <p className="mt-2 text-sm text-slate-500">{t("No verified facts used.")}</p> : null}
+                </div>
+                <div>
+                  <p className="text-sm font-black text-ink">{t("AI assumptions")}</p>
+                  <ul className="mt-2 space-y-2 text-sm leading-6 text-slate-700">{safeArray(whyDecision.ai_assumptions).slice(0, 4).map((item) => <li key={item.id || item.content}>{item.content || item.source}</li>)}</ul>
+                  {!whyDecision.ai_assumptions.length ? <p className="mt-2 text-sm text-slate-500">{t("No AI assumptions used.")}</p> : null}
+                </div>
+                <div>
+                  <p className="text-sm font-black text-ink">{t("Sources")}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-700">{safeArray(whyDecision.sources).join(", ") || t("No memory sources recorded.")}</p>
+                  <p className="mt-3 text-sm font-semibold leading-6 text-slate-700">{whyDecision.confidence_basis || t("Confidence basis is unavailable.")}</p>
+                </div>
+                <div className="lg:col-span-3">
+                  <p className="text-sm font-black text-ink">{t("Used memories")}</p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">{safeArray(whyDecision.used_memories).slice(0, 6).map((item) => <p key={item.id || item.content} className="rounded-md bg-slate-50 p-3 text-sm leading-6 text-slate-700">{item.type}: {item.content || item.source} {typeof item.relevance_score === "number" ? `(${Math.round(item.relevance_score * 100)}%)` : ""}</p>)}</div>
+                  {whyDecision.insufficient_data ? <p className="mt-2 rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-800">{t("Evidence is limited. Review before acting.")}</p> : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="mt-5 grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
           <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-2">
@@ -7217,6 +7270,171 @@ function OutreachSenderSettingsPanel({ api, ready }: { api: ApiFn; ready: boolea
   );
 }
 
+function AiMemorySettingsPanel({ api, ready }: { api: ApiFn; ready: boolean }) {
+  const { t } = useI18n();
+  const [settings, setSettings] = useState<AiMemorySettings | null>(null);
+  const [entries, setEntries] = useState<AiMemoryEntry[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [draftPreference, setDraftPreference] = useState("");
+  const [editingId, setEditingId] = useState("");
+  const [editingValue, setEditingValue] = useState("");
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!ready) return;
+    setBusy(true);
+    setError("");
+    try {
+      const [nextSettings, nextEntries] = await Promise.all([
+        api<AiMemorySettings>("/api/workspace-app/ai-memory/settings"),
+        api<AiMemoryEntriesResponse>("/api/workspace-app/ai-memory/entries?limit=8"),
+      ]);
+      setSettings(nextSettings);
+      setEntries(safeArray(nextEntries.entries));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "AI Memory settings are unavailable."));
+    } finally {
+      setBusy(false);
+    }
+  }, [api, ready]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  async function toggle() {
+    if (!settings) return;
+    setBusy(true);
+    setError("");
+    try {
+      const next = await api<AiMemorySettings>("/api/workspace-app/ai-memory/settings", { method: "PATCH", body: JSON.stringify({ enabled: !settings.enabled }) });
+      setSettings(next);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "AI Memory could not be updated."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePreference() {
+    if (!draftPreference.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api<{ entry: AiMemoryEntry }>("/api/workspace-app/ai-memory/preferences", { method: "POST", body: JSON.stringify({ content: draftPreference.trim() }) });
+      setDraftPreference("");
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Preference could not be saved."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function correctEntry(entry: AiMemoryEntry) {
+    const value = editingId === entry.id ? editingValue.trim() : "";
+    if (!value) {
+      setEditingId(entry.id);
+      setEditingValue(entry.content);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api<{ entry: AiMemoryEntry }>(`/api/workspace-app/ai-memory/entries/${entry.id}`, { method: "PATCH", body: JSON.stringify({ content: value }) });
+      setEditingId("");
+      setEditingValue("");
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Memory entry could not be corrected."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteEntry(entry: AiMemoryEntry) {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/workspace-app/ai-memory/entries/${entry.id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Memory entry could not be deleted."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearAll() {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/workspace-app/ai-memory/entries", { method: "DELETE" });
+      setConfirmClear(false);
+      await load();
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "AI Memory could not be cleared."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const counts = settings?.counts_by_type || {};
+  return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+      <div>
+        <p className="text-sm font-bold uppercase text-slate-500">{t("AI Memory")}</p>
+        <h2 className="mt-2 text-xl font-black text-ink">{t(settings?.enabled ? "Workspace memory is on" : "Workspace memory is off")}</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t("Stores confirmed business context, preferences, interactions and outcomes only inside this workspace.")}</p>
+      </div>
+      <button type="button" onClick={() => void toggle()} disabled={busy || !settings} className="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white disabled:opacity-60">
+        {busy ? t("Saving") : t(settings?.enabled ? "Turn off" : "Turn on")}
+      </button>
+    </div>
+    {error ? <p className="mt-3 rounded-md bg-rose-50 p-3 text-sm font-semibold text-rose-700">{t(error)}</p> : null}
+    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {[
+        ["Remembered", settings?.active_count || 0],
+        ["Verified facts", counts.verified_fact || 0],
+        ["Preferences", counts.approved_preference || 0],
+        ["Outcomes", counts.outcome || 0],
+      ].map(([label, value]) => <div key={String(label)} className="rounded-md border border-slate-200 bg-slate-50 p-3"><p className="text-xs font-bold uppercase text-slate-500">{t(String(label))}</p><p className="mt-1 text-xl font-black text-ink">{String(value)}</p></div>)}
+    </div>
+    <div className="mt-4 rounded-md border border-slate-200 p-3">
+      <label className="text-sm font-bold text-ink" htmlFor="ai-memory-preference">{t("Add confirmed preference")}</label>
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+        <input id="ai-memory-preference" value={draftPreference} onChange={(event) => setDraftPreference(event.target.value)} className="min-h-11 flex-1 rounded-md border border-slate-300 px-3 text-sm" placeholder={t("Example: Use a concise, direct tone with one CTA.")} />
+        <button type="button" onClick={() => void savePreference()} disabled={busy || !draftPreference.trim()} className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand px-4 text-sm font-bold text-white disabled:opacity-60">{t("Confirm")}</button>
+      </div>
+    </div>
+    <div className="mt-4 space-y-2">
+      {entries.length ? entries.map((entry) => <article key={entry.id} className="rounded-md border border-slate-200 p-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-black uppercase text-slate-500">{t(entry.memory_type.replaceAll("_", " "))} · {t(entry.source || "workspace")}</p>
+            {editingId === entry.id ? <textarea value={editingValue} onChange={(event) => setEditingValue(event.target.value)} className="mt-2 min-h-24 w-full rounded-md border border-slate-300 p-3 text-sm" /> : <p className="mt-1 text-sm leading-6 text-slate-700">{entry.content}</p>}
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => void correctEntry(entry)} className="inline-flex min-h-10 items-center rounded-md border border-slate-300 px-3 text-sm font-bold text-ink">{t(editingId === entry.id ? "Save" : "Edit")}</button>
+            <button type="button" onClick={() => void deleteEntry(entry)} className="inline-flex min-h-10 items-center rounded-md border border-rose-200 px-3 text-sm font-bold text-rose-700">{t("Delete")}</button>
+          </div>
+        </div>
+      </article>) : <p className="rounded-md bg-slate-50 p-3 text-sm font-semibold text-slate-600">{busy ? t("Loading memory") : t("No AI Memory entries yet.")}</p>}
+    </div>
+    <button type="button" onClick={() => void clearAll()} disabled={busy || !entries.length} className="mt-4 inline-flex min-h-11 items-center rounded-md border border-rose-200 bg-white px-4 text-sm font-bold text-rose-700 disabled:opacity-60">
+      {t(confirmClear ? "Confirm clear memory" : "Clear workspace memory")}
+    </button>
+  </section>;
+}
+
 export function SettingsPage() {
   const { t } = useI18n();
   const { api, ready } = useTokenApi();
@@ -7283,6 +7501,7 @@ export function SettingsPage() {
       </>}
     </section>
     <OutreachSenderSettingsPanel api={api} ready={ready} />
+    <AiMemorySettingsPanel api={api} ready={ready} />
     <details className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <summary className="cursor-pointer text-sm font-bold text-ink">{t("Advanced settings")}</summary>
       <p className="mt-3 text-sm leading-6 text-slate-600">{t("Use this area only when a workspace owner needs to adjust billing, security, team access or sending preferences. New users can start from Lead Finder instead.")}</p>

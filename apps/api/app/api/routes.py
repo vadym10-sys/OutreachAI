@@ -180,6 +180,7 @@ from app.services.ai import (
     suggest_reply,
     website_audit,
 )
+from app.services.ai_memory import attach_memory_context, memory_context_none, record_email_memory, retrieve_memory
 from app.services.continuous_learning import apply_continuous_learning_event
 from app.services.workflow_engine import build_company_workflow_engine
 from app.services.audit import log_event
@@ -3400,6 +3401,18 @@ def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Reques
         ] if part
     )
     try:
+        memory_context = retrieve_memory(
+            db,
+            workspace=workspace,
+            user_id=user_id,
+            query=" ".join([lead.company, lead.industry or "", employee.offer or "", website_context]),
+            lead_id=lead.id,
+            purpose="sales_employee_draft_email",
+        ).context
+    except Exception:
+        memory_context = memory_context_none("AI Memory retrieval failed for sales employee draft.")
+    analysis_context = attach_memory_context({"source": "sales_employee_draft_email"}, memory_context)
+    try:
         generated = personalize_email(
             PersonalizeRequest(
                 company=lead.company,
@@ -3410,6 +3423,7 @@ def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Reques
                 tone=employee.tone or str(intelligence.get("recommended_tone") or "Professional"),
                 language=employee.language,
                 signature=employee.signature,
+                analysis_context=analysis_context,
             )
         )
     except Exception as exc:
@@ -5152,6 +5166,18 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
         signature="",
     )
     try:
+        memory_context = retrieve_memory(
+            db,
+            workspace=workspace,
+            user_id=user_id,
+            query=" ".join([lead.company, lead.industry or "", website_summary]),
+            lead_id=lead.id,
+            purpose="legacy_lead_draft_email",
+        ).context
+    except Exception:
+        memory_context = memory_context_none("AI Memory retrieval failed for legacy lead draft.")
+    ai_payload = ai_payload.model_copy(update={"analysis_context": attach_memory_context(ai_payload.analysis_context, memory_context)})
+    try:
         generated = personalize_email(ai_payload)
     except Exception as exc:
         raise _provider_error(exc) from exc
@@ -5169,12 +5195,14 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
         follow_up_2=follow_ups[1] if len(follow_ups) > 1 else "",
         direction="outbound",
         delivery_status="draft",
-        tags={"requires_approval": True, "source": "manual_lead_flow"},
+        tags={"requires_approval": True, "source": "manual_lead_flow", "memory_context": memory_context},
     )
     lead.status = LeadStatus.qualified
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
     db.add(message)
     _sync_lead_to_crm(db, user_id, workspace, lead)
+    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
+    record_email_memory(db, workspace=workspace, user_id=user_id, email=message, lead=lead, company=company, event="draft", extra={"memory_context": memory_context})
     _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"email_id": str(message.id), "source": "manual_lead_flow"})
     _notify(db, user_id, NotificationKind.success, "Draft ready for review", f"A personalized email for {lead.company} is ready. Nothing was sent.")
     db.commit()
@@ -5220,6 +5248,18 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
         signature=campaign.signature,
     )
     try:
+        memory_context = retrieve_memory(
+            db,
+            workspace=workspace,
+            user_id=user_id,
+            query=" ".join([lead.company, lead.industry or "", campaign.offer or "", intelligence_summary or website_summary]),
+            lead_id=lead.id,
+            purpose="legacy_campaign_email",
+        ).context
+    except Exception:
+        memory_context = memory_context_none("AI Memory retrieval failed for legacy campaign email.")
+    ai_payload = ai_payload.model_copy(update={"analysis_context": attach_memory_context(ai_payload.analysis_context, memory_context)})
+    try:
         generated = personalize_email(ai_payload)
     except Exception as exc:
         raise _provider_error(exc) from exc
@@ -5237,11 +5277,14 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
         follow_up_2=follow_ups[1] if len(follow_ups) > 1 else "",
         direction="outbound",
         delivery_status="draft",
+        tags={"memory_context": memory_context},
     )
     lead.status = LeadStatus.qualified
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
     db.add(message)
     _sync_lead_to_crm(db, user_id, workspace, lead)
+    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
+    record_email_memory(db, workspace=workspace, user_id=user_id, email=message, lead=lead, company=company, event="draft", extra={"memory_context": memory_context})
     _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"campaign_id": str(campaign.id), "email_id": str(message.id)})
     _notify(db, user_id, NotificationKind.success, "Email generated", f"A personalized email for {lead.company} is ready to edit.")
     db.commit()
@@ -5279,6 +5322,8 @@ def approve_email(email_id: UUID, request: Request, user_id: CurrentUser, db: Se
     lead.status = LeadStatus.contacted
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Approved", "email_approved_at": now.isoformat()})
     _sync_lead_to_crm(db, user_id, workspace, lead)
+    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
+    record_email_memory(db, workspace=workspace, user_id=user_id, email=message, lead=lead, company=company, event="approved")
     _add_lead_activity(db, request, user_id, workspace, "email.approved", lead, {"email_id": str(message.id)})
     _notify(db, user_id, NotificationKind.success, "Email approved", f"{message.subject} is approved and ready to send.")
     db.commit()
@@ -5488,6 +5533,16 @@ def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Dep
             lead.status = LeadStatus.replied if category != "отписка" else LeadStatus.archive
             lead.notes = json.dumps({**_lead_metadata(lead), "email_status": "Replied", "replied_at": now.isoformat(), "last_reply_classification": category, "last_reply_at": now.isoformat()})
             _sync_lead_to_crm(db, user_id, workspace, lead)
+            company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
+            if category == "отписка":
+                memory_outcome = "unsubscribe"
+            elif category in {"не интересует", "отказ"}:
+                memory_outcome = "rejection"
+            elif category in {"встреча", "meeting"}:
+                memory_outcome = "meeting"
+            else:
+                memory_outcome = "reply"
+            record_email_memory(db, workspace=workspace, user_id=user_id, email=email, lead=lead, company=company, event=memory_outcome, extra={"classification": category})
             db.add(AuditLog(user_id=user_id, workspace_id=workspace.id, action="outreach.gmail.reply_synced", metadata_json={"email_id": str(email.id), "lead_id": str(lead.id), "classification": category, "gmail_message_id": message_id}))
             synced += 1
             classified[category] = classified.get(category, 0) + 1
@@ -5610,6 +5665,8 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     lead.status = LeadStatus.contacted
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": message.sent_at.isoformat()})
     _sync_lead_to_crm(db, user_id, workspace, lead)
+    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
+    record_email_memory(db, workspace=workspace, user_id=user_id, email=message, lead=lead, company=company, event="sent")
     _add_lead_activity(db, request, user_id, workspace, "email.sent", lead, {"email_id": str(message.id), "provider_message_id": message.provider_message_id})
     _notify(db, user_id, NotificationKind.info, "Email sent", message.subject)
     db.commit()
