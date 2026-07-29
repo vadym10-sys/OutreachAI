@@ -90,6 +90,33 @@ def test_sentry_debug_endpoint_throws_only_when_debug_enabled(monkeypatch) -> No
         client.get("/api/debug/sentry-error")
 
 
+def test_sentry_before_send_scrubs_pii_and_secret_fields() -> None:
+    from app.core.observability import _before_send
+
+    event = _before_send(
+        {
+            "request": {
+                "headers": {"authorization": "Bearer token", "x-request-id": "req_1"},
+                "cookies": "sid=secret",
+                "data": {"email_body": "Hi customer@example.com"},
+            },
+            "extra": {"api_key": "sk_test_secret", "status": 500},
+            "contexts": {"outreachai": {"body": "private email content", "endpoint": "/api/workspace-app/emails"}},
+            "user": {"email": "customer@example.com", "id": "user_1"},
+        },
+        {},
+    )
+
+    assert event["request"]["headers"]["authorization"] == "[Filtered]"
+    assert event["request"]["headers"]["x-request-id"] == "req_1"
+    assert event["request"]["cookies"] == "[Filtered]"
+    assert event["request"]["data"] == "[Filtered]"
+    assert event["extra"]["api_key"] == "[Filtered]"
+    assert event["contexts"]["outreachai"]["body"] == "[Filtered]"
+    assert event["user"]["email"] == "[Filtered]"
+    assert event["user"]["id"] == "user_1"
+
+
 def test_website_url_normalization_adds_https_and_rejects_invalid_domains() -> None:
     assert normalize_website_url("example.com") == "https://example.com"
     assert normalize_website_url("https://Example.COM/path?q=1") == "https://example.com/path?q=1"

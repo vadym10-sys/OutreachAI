@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /apps/web
+    schedule:
+      interval: daily
+      time: "04:30"
+    open-pull-requests-limit: 5
+    groups:
+      npm-patch:
+        update-types:
+          - patch
+  - package-ecosystem: pip
+    directory: /apps/api
+    schedule:
+      interval: daily
+      time: "04:45"
+    open-pull-requests-limit: 5
+    groups:
+      pip-patch:
+        update-types:
+          - patch

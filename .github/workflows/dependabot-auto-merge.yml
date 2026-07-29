@@ -1,0 +1,45 @@
+name: Dependabot Safe Patch Auto-Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  allow-safe-patch-auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: dependabot/fetch-metadata@v2
+        id: metadata
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Block sensitive areas
+        id: files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+        run: |
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          echo "$changed"
+          if echo "$changed" | grep -E '(^|/)(auth|billing|security|database|email|mailer|outreach|oauth|stripe|clerk|sentry|webhooks|migrations|models)'; then
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+          elif echo "$DEPENDENCY_NAMES" | grep -Ei '(clerk|stripe|sentry|auth|oauth|security|cryptography|jose|jwt|sqlalchemy|alembic|resend|smtp|gmail|email)'; then
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Enable auto-merge for safe patch updates
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch' && steps.files.outputs.safe == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"

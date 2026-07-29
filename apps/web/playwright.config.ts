@@ -7,6 +7,7 @@ const baseURL = `http://127.0.0.1:${port}`;
 export default defineConfig({
   testDir: ".",
   testMatch: ["e2e/**/*.spec.ts", "tests/**/*.spec.ts"],
+  testIgnore: ["tests/production/**/*.spec.ts"],
   fullyParallel: true,
   forbidOnly: isCI,
   workers: 1,

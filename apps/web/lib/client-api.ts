@@ -75,10 +75,10 @@ async function logApiFailure(path: string, response: Response, requestId: string
         status: response.status,
         request_id: requestId,
         response_request_id: response.headers.get('x-request-id') || '',
-        response_detail: detail.slice(0, 1000)
+        response_detail_class: safeApiMessage(response.status, detail)
       }
     });
-    trackApiLogRocketFailure(path, response.status, `${detail}\nrequest_id=${requestId}`);
+    trackApiLogRocketFailure(path, response.status, `request_id=${requestId}; status=${response.status}`);
     trackApiEvent('api_request_failed', { area: 'customer_action', request_id: requestId, status: response.status });
   }
   return detail;

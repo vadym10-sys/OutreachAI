@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
+    "e2e:production": "playwright test --config=playwright.production.config.ts",
     "e2e:report": "playwright show-report",
+    "qa:production:health": "node scripts/production-health-check.mjs",
+    "qa:production:cleanup": "node scripts/production-cleanup.mjs",
     "qa:diagnose": "node scripts/qa-diagnose.mjs",
     "qa": "npm run lint && npm run typecheck && npm test -- --run && npm run build && npm run e2e"
   },

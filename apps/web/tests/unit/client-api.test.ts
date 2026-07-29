@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { clientApi, friendlyErrorMessage } from "../../lib/client-api";
 import { containsSensitiveTechnicalInfo, sanitizeUserMessage } from "../../lib/safe-errors";
+import { scrubSentryEvent } from "../../lib/sentry-common";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -114,5 +115,36 @@ describe("client API errors", () => {
 
     await expect(clientApi<{ ok: boolean }>("/api/dashboard", "token", { retryDelayMs: 0 })).resolves.toEqual({ ok: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("scrubs Sentry request, extra, context, and user data before telemetry leaves the browser", () => {
+    const event = scrubSentryEvent({
+      request: {
+        headers: { authorization: "Bearer token", cookie: "sid=secret", "x-request-id": "req_1" },
+        cookies: { sid: "secret" },
+        data: { email_body: "Hi person@example.com" }
+      },
+      extra: {
+        response_detail: "customer@example.com",
+        status: 500
+      },
+      contexts: {
+        outreachai: { body: "private email content", endpoint: "/api/workspace-app/emails" }
+      },
+      user: {
+        email: "customer@example.com",
+        id: "user_1"
+      }
+    });
+
+    expect(event.request?.headers?.authorization).toBe("[Filtered]");
+    expect(event.request?.headers?.cookie).toBe("[Filtered]");
+    expect(event.request?.headers?.["x-request-id"]).toBe("req_1");
+    expect(event.request?.cookies).toEqual({ filtered: "[Filtered]" });
+    expect(event.request?.data).toBe("[Filtered]");
+    expect(event.extra?.response_detail).toBe("[Filtered]");
+    expect(event.contexts?.outreachai).toMatchObject({ body: "[Filtered]", endpoint: "/api/workspace-app/emails" });
+    expect(event.user?.email).toBe("[Filtered]");
+    expect(event.user?.id).toBe("user_1");
   });
 });
