@@ -12,6 +12,7 @@ from typing import Any
 from types import SimpleNamespace
 from uuid import UUID
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
@@ -61,7 +62,7 @@ from app.services.emailer import EmailProviderRequestError  # noqa: E402
 from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
 from app.services.autopilot import process_autopilot_email_job  # noqa: E402
 from app.services.secret_box import encrypt_secret  # noqa: E402
-from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteValidationError, normalize_website_url  # noqa: E402
+from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteTemporaryUnavailableError, WebsiteValidationError, collect_website, normalize_website_url  # noqa: E402
 import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -98,6 +99,40 @@ def test_website_url_normalization_adds_https_and_rejects_invalid_domains() -> N
 
     with pytest.raises(WebsiteValidationError):
         normalize_website_url("localhost")
+
+
+def test_website_fetch_retries_429_with_retry_after(monkeypatch) -> None:
+    import app.services.website as website_module
+
+    collect_website.cache_clear()
+    sleeps: list[float] = []
+    calls = {"count": 0}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *args):  # type: ignore[no-untyped-def]
+            return False
+
+        def get(self, url):  # type: ignore[no-untyped-def]
+            calls["count"] += 1
+            request = httpx.Request("GET", url)
+            if calls["count"] == 1:
+                return httpx.Response(429, headers={"retry-after": "2"}, request=request)
+            return httpx.Response(200, headers={"content-type": "text/html"}, text="<title>Recovered</title><p>Recovered website content.</p>", request=request)
+
+    monkeypatch.setattr(website_module.httpx, "Client", FakeClient)
+    monkeypatch.setattr(website_module.time, "sleep", lambda value: sleeps.append(value))
+
+    snapshot = collect_website("https://retry-after.example")
+
+    assert snapshot.title == "Recovered"
+    assert calls["count"] == 2
+    assert sleeps and sleeps[0] >= 2
 
 
 def test_deep_contact_normalizes_domains_and_rejects_invalid_values() -> None:
@@ -513,11 +548,17 @@ def test_ai_customer_finder_google_places_uses_natural_language_search_terms(mon
     from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
     from app.services.google_maps import GooglePlacesSearchResult
 
-    captured = {}
+    captured = []
 
     def fake_search(payload):  # type: ignore[no-untyped-def]
-        captured["payload"] = payload
-        return GooglePlacesSearchResult(leads=[], raw_count=0, duration_ms=1)
+        captured.append(payload)
+        return GooglePlacesSearchResult(
+            leads=[
+                LeadOut(company="Warsaw Balloons", website="https://warsaw-balloons.example", industry="Balloons", country="Poland")
+            ],
+            raw_count=1,
+            duration_ms=1,
+        )
 
     monkeypatch.setattr("app.services.ai_customer_finder.providers.search_google_places", fake_search)
     criteria = CustomerFinderCriteria(
@@ -530,12 +571,51 @@ def test_ai_customer_finder_google_places_uses_natural_language_search_terms(mon
 
     GooglePlacesCustomerSearchProvider().search(criteria, max_candidates=20)
 
-    payload = captured["payload"]
+    payload = captured[0]
     assert payload.city == "Warsaw"
     assert payload.country == "Poland"
     assert "гелевых" in payload.keyword.lower()
     assert payload.industry == ""
     assert payload.category == ""
+
+
+def test_ai_customer_finder_google_places_broadens_query_and_deduplicates(monkeypatch) -> None:
+    from app.services.ai_customer_finder.providers import GooglePlacesCustomerSearchProvider
+    from app.services.ai_customer_finder.schemas import CustomerFinderCriteria
+    from app.services.google_maps import GooglePlacesSearchResult
+
+    queries: list[str] = []
+
+    def fake_search(payload):  # type: ignore[no-untyped-def]
+        queries.append(payload.keyword)
+        if len(queries) == 1:
+            return GooglePlacesSearchResult(leads=[], raw_count=0, duration_ms=1)
+        return GooglePlacesSearchResult(
+            leads=[
+                LeadOut(company="Warsaw Balloonmakers", website="https://balloons.example", industry="Balloons", country="Poland"),
+                LeadOut(company="Warsaw Balloonmakers Duplicate", website="https://balloons.example", industry="Balloons", country="Poland"),
+                LeadOut(company="Helium Party Warsaw", website="https://party.example", industry="Balloons", country="Poland"),
+            ],
+            raw_count=3,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr("app.services.ai_customer_finder.providers.search_google_places", fake_search)
+    criteria = CustomerFinderCriteria(
+        company_description="Найди 3 компании в Варшаве, которые занимаются производством гелевых шариков.",
+        product_or_service="Найди 3 компании в Варшаве, которые занимаются производством гелевых шариков.",
+        desired_customers="Компании в Варшаве по производству гелевых шариков",
+        target_country="Any",
+        target_industry="B2B",
+        max_results=3,
+    )
+
+    candidates = GooglePlacesCustomerSearchProvider().search(criteria, max_candidates=10)
+
+    assert len(queries) >= 2
+    assert "balony z helem" in queries
+    assert len(candidates) == 2
+    assert {candidate.website for candidate in candidates} == {"https://balloons.example", "https://party.example"}
 
 
 def test_ai_customer_finder_rejects_result_without_source_url() -> None:
@@ -926,7 +1006,7 @@ def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monk
     assert payload["summary"]["saved"] == 1
 
 
-def test_ai_customer_finder_rejects_public_icp_fit_without_buying_signal(monkeypatch) -> None:
+def test_ai_customer_finder_retains_relevant_candidate_without_buying_signal(monkeypatch) -> None:
     import app.services.ai_customer_finder.service as finder_service
     from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
 
@@ -978,11 +1058,79 @@ def test_ai_customer_finder_rejects_public_icp_fit_without_buying_signal(monkeyp
     refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
     assert refreshed.status_code == 200, refreshed.text
     payload = refreshed.json()
-    assert payload["status"] == "failed"
-    assert payload["results"] == []
-    assert payload["summary"]["saved"] == 0
-    assert payload["summary"]["rejected"] == 1
-    assert "no public buying" in payload["error_message"]
+    assert payload["status"] == "completed"
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["company_name"] == "Weak ICP Only Co"
+    assert payload["results"][0]["confidence_score"] < 70
+    assert payload["results"][0]["result_tier"] in {"Relevant match", "Weak / needs review"}
+    assert payload["results"][0]["missing_buying_signal"] is True
+    assert "No current buying signal found" in payload["results"][0]["evidence_summary"]
+
+
+def test_ai_customer_finder_website_429_remains_eligible_with_warning(monkeypatch) -> None:
+    import app.services.ai_customer_finder.service as finder_service
+    from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
+
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "customer-finder-429@example.com"}
+
+    class FakeProvider:
+        key = "test_provider"
+
+        def search(self, criteria, *, max_candidates):  # type: ignore[no-untyped-def]
+            return [
+                PublicCustomerCandidate(
+                    company_name="Warsaw Balloonmakers",
+                    website="https://warsaw-balloonmakers.example",
+                    industry="Balloon production",
+                    country="Poland",
+                    source_provider=self.key,
+                    source_payload={"place_id": "place_1", "address": "Warsaw, Poland", "business_category": "Balloon store"},
+                )
+            ]
+
+    def fake_collect_website(url: str) -> WebsiteSnapshot:
+        raise WebsiteTemporaryUnavailableError("Website could not be reached. HTTP status: 429.", status_code=429, retry_after_seconds=2)
+
+    monkeypatch.setattr(finder_service, "provider_for_key", lambda _: FakeProvider())
+    monkeypatch.setattr(finder_service, "collect_website", fake_collect_website)
+
+    created = client.post(
+        "/api/workspace-app/ai-customer-finder/searches",
+        headers=headers,
+        json={
+            "company_description": "Найди 3 компании в Варшаве, которые занимаются производством гелевых шариков.",
+            "product_or_service": "Найди 3 компании в Варшаве, которые занимаются производством гелевых шариков.",
+            "desired_customers": "Компании в Варшаве по производству гелевых шариков",
+            "target_country": "Any",
+            "target_industry": "B2B",
+            "max_results": 3,
+        },
+    )
+    assert created.status_code == 202, created.text
+    job_id = created.json()["id"]
+
+    from app.services.ai_customer_finder.service import claim_next_ai_customer_finder_job, process_ai_customer_finder_job
+
+    db = get_sessionmaker()()
+    try:
+        claimed = claim_next_ai_customer_finder_job(db, worker_id="test-worker:customer-finder-429")
+        assert claimed is not None
+        claim_token = claimed.locked_by
+    finally:
+        db.close()
+
+    assert process_ai_customer_finder_job(UUID(job_id), claim_token=claim_token) is True
+    refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
+    assert refreshed.status_code == 200, refreshed.text
+    payload = refreshed.json()
+    assert payload["status"] == "completed"
+    assert len(payload["results"]) == 1
+    result = payload["results"][0]
+    assert result["company_name"] == "Warsaw Balloonmakers"
+    assert result["website_verification_status"] == "temporarily_unavailable"
+    assert "429" in result["website_verification_warning"]
+    assert result["confidence_score"] < 60
+    assert result["result_tier"] in {"Relevant match", "Weak / needs review"}
 
 
 def test_ai_customer_finder_repeat_search_deduplicates_company_lead_and_draft(monkeypatch) -> None:

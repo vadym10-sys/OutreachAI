@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from html import unescape
@@ -22,6 +23,13 @@ class WebsiteValidationError(WebsiteFetchError):
     pass
 
 
+class WebsiteTemporaryUnavailableError(WebsiteFetchError):
+    def __init__(self, message: str, *, status_code: int | None = None, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
+
+
 @dataclass(frozen=True)
 class WebsiteSnapshot:
     url: str
@@ -38,14 +46,32 @@ def collect_website(url: str) -> WebsiteSnapshot:
         "User-Agent": "OutreachAI/1.0 website analyzer (+https://outreachaiaiai.com)",
         "Accept": "text/html,application/xhtml+xml",
     }
-    try:
-        with httpx.Client(timeout=12, follow_redirects=True, headers=headers) as client:
-            response = retry_operation(lambda: client.get(normalized_url), attempts=2, operation_name="website.fetch")
-            response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise WebsiteFetchError(f"{WEBSITE_UNREACHABLE_MESSAGE} HTTP status: {exc.response.status_code}.") from exc
-    except httpx.HTTPError as exc:
-        raise WebsiteFetchError(WEBSITE_UNREACHABLE_MESSAGE) from exc
+    response: httpx.Response | None = None
+    with httpx.Client(timeout=12, follow_redirects=True, headers=headers) as client:
+        for attempt in range(3):
+            try:
+                response = retry_operation(lambda: client.get(normalized_url), attempts=1, operation_name="website.fetch")
+                response.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code not in {403, 408, 429, 500, 502, 503, 504} or attempt >= 2:
+                    if status_code in {403, 408, 429, 500, 502, 503, 504}:
+                        raise WebsiteTemporaryUnavailableError(
+                            f"{WEBSITE_UNREACHABLE_MESSAGE} HTTP status: {status_code}.",
+                            status_code=status_code,
+                            retry_after_seconds=_retry_after_seconds(exc.response.headers.get("retry-after")),
+                        ) from exc
+                    raise WebsiteFetchError(f"{WEBSITE_UNREACHABLE_MESSAGE} HTTP status: {status_code}.") from exc
+                _sleep_before_retry(attempt, exc.response.headers.get("retry-after"))
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                if attempt >= 2:
+                    raise WebsiteTemporaryUnavailableError(WEBSITE_UNREACHABLE_MESSAGE) from exc
+                _sleep_before_retry(attempt, None)
+            except httpx.HTTPError as exc:
+                raise WebsiteFetchError(WEBSITE_UNREACHABLE_MESSAGE) from exc
+    if response is None:
+        raise WebsiteTemporaryUnavailableError(WEBSITE_UNREACHABLE_MESSAGE)
 
     content_type = response.headers.get("content-type", "")
     if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
@@ -59,6 +85,24 @@ def collect_website(url: str) -> WebsiteSnapshot:
         text=_visible_text(html),
         technologies=_detect_technologies(html, response.headers, str(response.url)),
     )
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, min(30.0, float(value)))
+    except ValueError:
+        return None
+
+
+def _sleep_before_retry(attempt: int, retry_after: str | None) -> None:
+    delay = _retry_after_seconds(retry_after)
+    if delay is None:
+        delay = min(4.0, 0.5 * (2**attempt))
+    # Deterministic bounded jitter avoids synchronized retries without hammering target websites.
+    delay += min(0.25, 0.05 * (attempt + 1))
+    time.sleep(delay)
 
 
 def normalize_website_url(url: str) -> str:
