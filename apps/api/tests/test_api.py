@@ -8,7 +8,7 @@ import logging
 import tempfile
 import os
 import time
-from typing import Any
+from typing import Any, Optional
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects import postgresql
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
@@ -43,7 +44,7 @@ os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 os.environ["CLERK_SECRET_KEY"] = "clerk_test"
 os.environ["CLERK_JWT_ISSUER"] = "https://example.clerk.accounts.dev"
 
-from app.core.database import get_engine, get_sessionmaker, initialize_database_schema  # noqa: E402
+from app.core.database import POSTGRES_MIGRATION_LOCK_KEY, RuntimeSchemaError, get_engine, get_sessionmaker, initialize_database_schema, validate_runtime_schema  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.reliability import database_backup_configured, validate_database_connectivity, validate_required_environment  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
@@ -62,7 +63,7 @@ from app.services.emailer import EmailProviderRequestError  # noqa: E402
 from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
 from app.services.autopilot import process_autopilot_email_job  # noqa: E402
 from app.services.secret_box import encrypt_secret  # noqa: E402
-from app.services.ai_memory import MODE_KEYWORD, MODE_OPENAI_EMBEDDING, _pgvector_retrieval_sql, retrieve_memory, upsert_memory_entry  # noqa: E402
+from app.services.ai_memory import MODE_KEYWORD, MODE_OPENAI_EMBEDDING, _pgvector_retrieval_sql, record_email_memory, retrieve_memory, upsert_memory_entry  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteTemporaryUnavailableError, WebsiteValidationError, collect_website, normalize_website_url  # noqa: E402
 import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
@@ -1688,6 +1689,201 @@ def test_initialize_database_schema_creates_tables_for_sqlite(tmp_path) -> None:
     assert "users" in inspector.get_table_names()
 
 
+class _FakeScalarResult:
+    def __init__(self, value: Any = None, rows: Optional[list[tuple[Any, ...]]] = None):
+        self.value = value
+        self.rows = rows or []
+
+    def scalar(self) -> Any:
+        return self.value
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self.rows
+
+
+class _FakePostgresState:
+    def __init__(self, *, fail_migration: bool = False):
+        import threading
+
+        self.lock = threading.Lock()
+        self.lock_owner = False
+        self.fail_migration = fail_migration
+        self.tables = {"workspaces", "companies", "leads", "contacts", "email_messages"}
+        self.applied_versions: set[str] = set()
+        self.statements: list[str] = []
+        self.migration_executions = 0
+
+
+class _FakePostgresConnection:
+    def __init__(self, state: _FakePostgresState):
+        self.state = state
+
+    def __enter__(self) -> "_FakePostgresConnection":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        if self.state.lock_owner:
+            self.state.lock_owner = False
+            self.state.lock.release()
+
+    def execute(self, statement: Any, params: Optional[dict[str, Any]] = None) -> _FakeScalarResult:
+        sql = str(statement)
+        self.state.statements.append(sql)
+        if "pg_advisory_xact_lock" in sql:
+            assert params and params["lock_key"] == POSTGRES_MIGRATION_LOCK_KEY
+            self.state.lock.acquire()
+            self.state.lock_owner = True
+            return _FakeScalarResult()
+        if "CREATE TABLE IF NOT EXISTS schema_migrations" in sql:
+            self.state.tables.add("schema_migrations")
+            return _FakeScalarResult()
+        if "FROM information_schema.tables" in sql:
+            rows = [(name,) for name in sorted(self.state.tables - {"schema_migrations"})]
+            return _FakeScalarResult(rows=rows)
+        if "SELECT version FROM schema_migrations" in sql:
+            return _FakeScalarResult(rows=[(version,) for version in sorted(self.state.applied_versions)])
+        if "CREATE TABLE IF NOT EXISTS ai_memory_settings" in sql:
+            if self.state.fail_migration:
+                raise RuntimeError("synthetic migration failure")
+            self.state.migration_executions += 1
+            self.state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
+            return _FakeScalarResult()
+        if "INSERT INTO schema_migrations" in sql:
+            assert params
+            self.state.applied_versions.add(params["version"])
+            return _FakeScalarResult()
+        if "to_regclass" in sql:
+            table_name = str(params["name"]).split(".")[-1] if params else "schema_migrations"
+            return _FakeScalarResult(table_name in self.state.tables)
+        if "pg_available_extensions" in sql:
+            return _FakeScalarResult(True)
+        if "pg_extension" in sql:
+            return _FakeScalarResult(False)
+        return _FakeScalarResult()
+
+
+class _FakePostgresEngine:
+    def __init__(self, state: _FakePostgresState):
+        self.state = state
+        self.dialect = SimpleNamespace(name="postgresql")
+
+    def begin(self) -> _FakePostgresConnection:
+        return _FakePostgresConnection(self.state)
+
+    def connect(self) -> _FakePostgresConnection:
+        return _FakePostgresConnection(self.state)
+
+
+def test_postgres_migration_runner_applies_011_to_existing_database_idempotently(tmp_path, monkeypatch) -> None:
+    import app.core.database as database_module
+
+    migration_path = tmp_path / "011_ai_memory.sql"
+    migration_path.write_text(Path("db/migrations/011_ai_memory.sql").read_text(), encoding="utf-8")
+    monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
+    state = _FakePostgresState()
+    engine = _FakePostgresEngine(state)
+
+    initialize_database_schema(engine)  # type: ignore[arg-type]
+    initialize_database_schema(engine)  # type: ignore[arg-type]
+
+    assert state.applied_versions == {"011_ai_memory"}
+    assert {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}.issubset(state.tables)
+    assert state.migration_executions == 1
+    assert sum("pg_advisory_xact_lock" in statement for statement in state.statements) == 2
+    assert validate_runtime_schema(engine).ready is True  # type: ignore[arg-type]
+
+
+def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monkeypatch) -> None:
+    import threading
+    import app.core.database as database_module
+
+    migration_path = tmp_path / "011_ai_memory.sql"
+    migration_path.write_text(Path("db/migrations/011_ai_memory.sql").read_text(), encoding="utf-8")
+    monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
+    state = _FakePostgresState()
+    engine = _FakePostgresEngine(state)
+    errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            initialize_database_schema(engine)  # type: ignore[arg-type]
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run), threading.Thread(target=run)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert errors == []
+    assert state.migration_executions == 1
+    assert state.applied_versions == {"011_ai_memory"}
+    assert sum("pg_advisory_xact_lock" in statement for statement in state.statements) == 2
+
+
+def test_postgres_migration_failure_sets_negative_schema_status(tmp_path, monkeypatch) -> None:
+    import app.core.database as database_module
+
+    migration_path = tmp_path / "011_ai_memory.sql"
+    migration_path.write_text(Path("db/migrations/011_ai_memory.sql").read_text(), encoding="utf-8")
+    monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
+    state = _FakePostgresState(fail_migration=True)
+    engine = _FakePostgresEngine(state)
+
+    with pytest.raises(RuntimeSchemaError):
+        initialize_database_schema(engine)  # type: ignore[arg-type]
+
+    status = database_module.get_runtime_schema_status()
+    assert status.ready is False
+    assert status.pending_migrations == ["011_ai_memory"]
+    assert set(status.missing_tables) == {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
+    assert "synthetic migration failure" in status.error
+
+
+def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
+    root_migration = Path("db/migrations/011_ai_memory.sql").read_text(encoding="utf-8")
+    packaged_migration = Path("apps/api/app/db/migrations/011_ai_memory.sql").read_text(encoding="utf-8")
+
+    assert packaged_migration == root_migration
+    assert Path("apps/api/app/db/schema.sql").exists()
+
+
+def test_ai_memory_migration_has_no_destructive_runtime_sql() -> None:
+    sql = Path("db/migrations/011_ai_memory.sql").read_text(encoding="utf-8")
+    runtime_sql = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--")).upper()
+
+    assert "DROP TABLE" not in runtime_sql
+    assert "TRUNCATE" not in runtime_sql
+    assert "DELETE FROM" not in runtime_sql
+    assert "DROP DATABASE" not in runtime_sql
+
+
+def test_legacy_memory_write_is_non_blocking_when_schema_is_missing() -> None:
+    class BrokenMemoryDb:
+        def begin_nested(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *args):  # type: ignore[no-untyped-def]
+            return False
+
+        def scalar(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise SQLAlchemyError("missing ai_memory_settings")
+
+    record_email_memory(
+        BrokenMemoryDb(),  # type: ignore[arg-type]
+        workspace=SimpleNamespace(id=uuid4()),
+        user_id="user_test",
+        email=SimpleNamespace(id=uuid4(), lead_id=None, subject="Subject", cta="Book", delivery_status="draft"),
+        lead=None,
+        company=None,
+        event="draft",
+    )
+
+
 def test_validate_required_environment_fails_fast_in_production(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.delenv("CLERK_SECRET_KEY", raising=False)
@@ -1824,6 +2020,38 @@ def test_readiness_returns_503_when_database_backups_are_missing_in_production(m
     assert payload["database_backups_configured"] is False
     assert "database_backups_not_confirmed" in payload["warnings"]
     assert any("backups" in failure.lower() for failure in payload["critical_failures"])
+
+
+def test_liveness_survives_schema_drift_but_readiness_fails(monkeypatch) -> None:
+    import app.main as main_module
+    import app.core.database as database_module
+
+    drift_status = database_module.RuntimeSchemaStatus(
+        ready=False,
+        checked_at=datetime.utcnow().isoformat(),
+        pending_migrations=["011_ai_memory"],
+        missing_tables=["ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"],
+        pgvector_available=True,
+        pgvector_installed=False,
+        error="schema drift",
+    )
+    monkeypatch.setattr(main_module, "settings", Settings(app_env="development"))
+    monkeypatch.setattr(main_module, "validate_database_connectivity", lambda settings: None)
+    monkeypatch.setattr(main_module, "validate_runtime_schema", lambda engine: drift_status)
+    monkeypatch.setattr(main_module, "database_backups_operational", lambda db, settings: True)
+    monkeypatch.setattr(main_module, "get_runtime_schema_status", lambda: drift_status)
+
+    live = client.get("/api/live")
+    ready = client.get("/api/ready")
+
+    assert live.status_code == 200
+    assert live.json()["status"] == "alive"
+    assert ready.status_code == 503
+    payload = ready.json()
+    assert payload["schema"]["ready"] is False
+    assert payload["schema"]["pending_migrations"] == ["011_ai_memory"]
+    assert set(payload["schema"]["missing_tables"]) == {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
+    assert any("Database schema is not ready" in failure for failure in payload["critical_failures"])
 
 
 def test_database_backup_readiness_requires_strict_true() -> None:
