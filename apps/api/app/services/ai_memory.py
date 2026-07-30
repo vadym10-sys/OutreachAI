@@ -600,15 +600,19 @@ def record_ai_analysis_memory(
     lead: Lead | None,
     analysis: dict[str, Any],
 ) -> None:
-    if not ensure_memory_settings(db, workspace, user_id).enabled:
+    try:
+        with db.begin_nested():
+            if not ensure_memory_settings(db, workspace, user_id).enabled:
+                return
+            for fact in analysis.get("verified_facts", []) if isinstance(analysis.get("verified_facts"), list) else []:
+                upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=AIMemoryType.verified_fact.value, content=fact, source="ai_sales_analysis.verified_facts", source_id=str(company.id), company_id=company.id, lead_id=lead.id if lead else None, verified=True, confidence=85)
+            for inference in analysis.get("ai_inferences", []) if isinstance(analysis.get("ai_inferences"), list) else []:
+                upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=AIMemoryType.ai_inference.value, content=inference, source="ai_sales_analysis.ai_inferences", source_id=str(company.id), company_id=company.id, lead_id=lead.id if lead else None, confidence=45)
+            summary = str(analysis.get("summary") or analysis.get("company_summary") or "").strip()
+            if summary:
+                upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=AIMemoryType.interaction.value, content=f"AI analysis generated for {company.name}: {summary}", source="ai_sales_analysis", source_id=str(company.id), company_id=company.id, lead_id=lead.id if lead else None, metadata={"memory_context": analysis.get("memory_context", {})}, confidence=60)
+    except SQLAlchemyError:
         return
-    for fact in analysis.get("verified_facts", []) if isinstance(analysis.get("verified_facts"), list) else []:
-        upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=AIMemoryType.verified_fact.value, content=fact, source="ai_sales_analysis.verified_facts", source_id=str(company.id), company_id=company.id, lead_id=lead.id if lead else None, verified=True, confidence=85)
-    for inference in analysis.get("ai_inferences", []) if isinstance(analysis.get("ai_inferences"), list) else []:
-        upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=AIMemoryType.ai_inference.value, content=inference, source="ai_sales_analysis.ai_inferences", source_id=str(company.id), company_id=company.id, lead_id=lead.id if lead else None, confidence=45)
-    summary = str(analysis.get("summary") or analysis.get("company_summary") or "").strip()
-    if summary:
-        upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=AIMemoryType.interaction.value, content=f"AI analysis generated for {company.name}: {summary}", source="ai_sales_analysis", source_id=str(company.id), company_id=company.id, lead_id=lead.id if lead else None, metadata={"memory_context": analysis.get("memory_context", {})}, confidence=60)
 
 
 def record_email_memory(
@@ -622,28 +626,32 @@ def record_email_memory(
     event: str,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    if not ensure_memory_settings(db, workspace, user_id).enabled:
+    try:
+        with db.begin_nested():
+            if not ensure_memory_settings(db, workspace, user_id).enabled:
+                return
+            if event not in OUTCOME_TYPES and event not in {"draft", "approved"}:
+                event = "sent"
+            company_id = company.id if company is not None else None
+            lead_id = lead.id if lead is not None else email.lead_id
+            if event in {"draft", "approved"}:
+                content = f"Selected outreach draft for {lead.company if lead else 'lead'}: subject '{email.subject}', CTA '{email.cta}'."
+                memory_type = AIMemoryType.interaction.value
+                source = f"email.{event}"
+            else:
+                content = f"Email outcome for {lead.company if lead else 'lead'}: {event}. Subject '{email.subject}', CTA '{email.cta}'."
+                memory_type = AIMemoryType.outcome.value
+                source = f"email.{event}"
+            metadata = {
+                "delivery_status": email.delivery_status,
+                "subject": email.subject,
+                "cta": email.cta,
+                "reply_excerpt": redact_sensitive_text(getattr(email, "reply_body", "") or "", max_length=500),
+                **(extra or {}),
+            }
+            upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=memory_type, content=content, source=source, source_id=str(email.id), company_id=company_id, lead_id=lead_id, email_id=email.id, metadata=metadata, verified=memory_type == AIMemoryType.outcome.value, confidence=90 if memory_type == AIMemoryType.outcome.value else 65)
+    except SQLAlchemyError:
         return
-    if event not in OUTCOME_TYPES and event not in {"draft", "approved"}:
-        event = "sent"
-    company_id = company.id if company is not None else None
-    lead_id = lead.id if lead is not None else email.lead_id
-    if event in {"draft", "approved"}:
-        content = f"Selected outreach draft for {lead.company if lead else 'lead'}: subject '{email.subject}', CTA '{email.cta}'."
-        memory_type = AIMemoryType.interaction.value
-        source = f"email.{event}"
-    else:
-        content = f"Email outcome for {lead.company if lead else 'lead'}: {event}. Subject '{email.subject}', CTA '{email.cta}'."
-        memory_type = AIMemoryType.outcome.value
-        source = f"email.{event}"
-    metadata = {
-        "delivery_status": email.delivery_status,
-        "subject": email.subject,
-        "cta": email.cta,
-        "reply_excerpt": redact_sensitive_text(getattr(email, "reply_body", "") or "", max_length=500),
-        **(extra or {}),
-    }
-    upsert_memory_entry(db, workspace=workspace, user_id=user_id, memory_type=memory_type, content=content, source=source, source_id=str(email.id), company_id=company_id, lead_id=lead_id, email_id=email.id, metadata=metadata, verified=memory_type == AIMemoryType.outcome.value, confidence=90 if memory_type == AIMemoryType.outcome.value else 65)
 
 
 def explain_memory_context(analysis: dict[str, Any] | None) -> dict[str, Any]:

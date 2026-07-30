@@ -43,7 +43,7 @@ from app.api.routes import (
     _enforce_usage,
 )
 from app.core.config import get_settings
-from app.core.database import get_db, get_sessionmaker
+from app.core.database import get_db, get_sessionmaker, validate_runtime_schema
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
 from app.models.entities import AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
@@ -7013,8 +7013,19 @@ def _find_existing_company(db: Session, workspace_id: UUID, payload: UsageCompan
     return candidates[0] if candidates else None
 
 
+def _require_ai_memory_schema_ready(db: Session) -> None:
+    status = validate_runtime_schema(db.get_bind())
+    if status.ready:
+        return
+    raise HTTPException(
+        status_code=503,
+        detail="AI Memory schema is not ready. Run database migrations before enabling AI Memory.",
+    )
+
+
 @router.get("/ai-memory/settings")
 def get_ai_memory_settings(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_ai_memory_schema_ready(db)
     workspace = _current_workspace(db, user.user_id, user.email)
     settings = ensure_memory_settings(db, workspace, user.user_id)
     active_count = db.scalar(
@@ -7056,6 +7067,7 @@ def get_ai_memory_settings(user: WorkspaceUserContext, db: Session = Depends(get
 
 @router.patch("/ai-memory/settings")
 def update_ai_memory_settings(payload: AIMemorySettingsIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_ai_memory_schema_ready(db)
     workspace = _current_workspace(db, user.user_id, user.email)
     settings = ensure_memory_settings(db, workspace, user.user_id)
     settings.enabled = payload.enabled
@@ -7075,6 +7087,7 @@ def list_ai_memory_entries(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    _require_ai_memory_schema_ready(db)
     workspace = _current_workspace(db, user.user_id, user.email)
     if company_id:
         _scoped_company(db, workspace.id, company_id)
@@ -7098,6 +7111,7 @@ def list_ai_memory_entries(
 
 @router.post("/ai-memory/entries")
 def add_ai_memory_entry(payload: AIMemoryEntryIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_ai_memory_schema_ready(db)
     workspace = _current_workspace(db, user.user_id, user.email)
     if payload.company_id:
         _scoped_company(db, workspace.id, payload.company_id)
@@ -7127,6 +7141,7 @@ def add_ai_memory_entry(payload: AIMemoryEntryIn, request: Request, user: Worksp
 
 @router.post("/ai-memory/preferences")
 def confirm_ai_memory_preference(payload: AIMemoryPreferenceIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_ai_memory_schema_ready(db)
     workspace = _current_workspace(db, user.user_id, user.email)
     if payload.company_id:
         _scoped_company(db, workspace.id, payload.company_id)
@@ -7150,6 +7165,7 @@ def confirm_ai_memory_preference(payload: AIMemoryPreferenceIn, request: Request
 
 @router.patch("/ai-memory/entries/{memory_id}")
 def correct_ai_memory_entry(memory_id: UUID, payload: AIMemoryCorrectionIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_ai_memory_schema_ready(db)
     workspace = _current_workspace(db, user.user_id, user.email)
     entry = _scoped_memory_entry(db, workspace.id, memory_id)
     if entry.deleted_at is not None:
@@ -7166,6 +7182,7 @@ def correct_ai_memory_entry(memory_id: UUID, payload: AIMemoryCorrectionIn, requ
 
 @router.delete("/ai-memory/entries/{memory_id}")
 def delete_ai_memory_entry(memory_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_ai_memory_schema_ready(db)
     workspace = _current_workspace(db, user.user_id, user.email)
     entry = _scoped_memory_entry(db, workspace.id, memory_id)
     entry.deleted_at = datetime.utcnow()
@@ -7177,6 +7194,7 @@ def delete_ai_memory_entry(memory_id: UUID, request: Request, user: WorkspaceUse
 
 @router.delete("/ai-memory/entries")
 def clear_ai_memory(request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _require_ai_memory_schema_ready(db)
     workspace = _current_workspace(db, user.user_id, user.email)
     entries = list(db.scalars(select(AIMemoryEntry).where(AIMemoryEntry.workspace_id == workspace.id, AIMemoryEntry.deleted_at.is_(None))).all())
     now = datetime.utcnow()
