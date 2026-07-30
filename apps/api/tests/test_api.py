@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwt as jose_jwt
+import jwt
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects import postgresql
@@ -97,6 +97,70 @@ def test_sentry_debug_endpoint_throws_only_when_debug_enabled(monkeypatch) -> No
     monkeypatch.setattr(main_module.settings, "debug", True)
     with pytest.raises(RuntimeError, match="OutreachAI backend development Sentry test error"):
         client.get("/api/debug/sentry-error")
+
+
+def test_sentry_before_send_scrubs_pii_and_secret_fields() -> None:
+    from app.core.observability import _before_send
+
+    event = _before_send(
+        {
+            "message": "Failed to send message to customer@example.com with Bearer token",
+            "exception": {
+                "values": [
+                    {"value": "Email draft for prospect@example.com contains private content"},
+                ],
+            },
+            "breadcrumbs": {
+                "values": [
+                    {
+                        "category": "api",
+                        "message": "POST /api/workspace-app/emails with customer@example.com",
+                        "data": {"authorization": "Bearer token", "safe_id": "req_1"},
+                    }
+                ],
+            },
+            "request": {
+                "headers": {"authorization": "Bearer token", "x-request-id": "req_1"},
+                "cookies": "sid=secret",
+                "data": {"email_body": "Hi customer@example.com"},
+            },
+            "extra": {"api_key": "sk_test_secret", "status": 500},
+            "contexts": {"outreachai": {"body": "private email content", "endpoint": "/api/workspace-app/emails"}},
+            "user": {"email": "customer@example.com", "id": "user_1"},
+        },
+        {},
+    )
+
+    assert event["message"] == "[Filtered]"
+    assert event["exception"]["values"][0]["value"] == "[Filtered]"
+    assert event["breadcrumbs"]["values"][0]["message"] == "[Filtered]"
+    assert event["breadcrumbs"]["values"][0]["data"]["authorization"] == "[Filtered]"
+    assert event["breadcrumbs"]["values"][0]["data"]["safe_id"] == "req_1"
+    assert event["request"]["headers"]["authorization"] == "[Filtered]"
+    assert event["request"]["headers"]["x-request-id"] == "req_1"
+    assert event["request"]["cookies"] == "[Filtered]"
+    assert event["request"]["data"] == "[Filtered]"
+    assert event["extra"]["api_key"] == "[Filtered]"
+    assert event["contexts"]["outreachai"]["body"] == "[Filtered]"
+    assert event["user"]["email"] == "[Filtered]"
+    assert event["user"]["id"] == "user_1"
+
+
+def test_sentry_before_breadcrumb_scrubs_pii_and_secret_fields() -> None:
+    from app.core.observability import _before_breadcrumb
+
+    breadcrumb = _before_breadcrumb(
+        {
+            "category": "api",
+            "message": "POST /api/workspace-app/emails with customer@example.com",
+            "data": {"authorization": "Bearer token", "safe_id": "req_1"},
+        },
+        {},
+    )
+
+    assert breadcrumb["message"] == "[Filtered]"
+    assert breadcrumb["data"]["authorization"] == "[Filtered]"
+    assert breadcrumb["data"]["safe_id"] == "req_1"
 
 
 def test_website_url_normalization_adds_https_and_rejects_invalid_domains() -> None:
@@ -6140,7 +6204,7 @@ def test_production_auth_accepts_verified_clerk_jwt(monkeypatch) -> None:
     monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": issuer, "sub": "user_verified", "aud": audience, "iat": int(time.time()), "exp": int(time.time()) + 300},
         private_pem,
         algorithm="RS256",
@@ -6160,7 +6224,7 @@ def test_production_auth_accepts_standard_clerk_session_jwt_without_audience_whe
     monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": issuer, "sub": "user_standard_session", "iat": int(time.time()), "exp": int(time.time()) + 300},
         private_pem,
         algorithm="RS256",
@@ -6183,7 +6247,7 @@ def test_production_auth_accepts_custom_domain_clerk_issuer_fallback(monkeypatch
     monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": token_issuer, "sub": "user_custom_domain_issuer", "iat": int(time.time()), "exp": int(time.time()) + 300},
         private_pem,
         algorithm="RS256",
@@ -6206,7 +6270,7 @@ def test_production_owner_context_uses_verified_clerk_user_email(monkeypatch) ->
     monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda user_id: "romaniukvadym10@gmail.com")
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": issuer, "sub": "user_owner", "aud": audience, "iat": int(time.time()), "exp": int(time.time()) + 300},
         private_pem,
         algorithm="RS256",
@@ -6230,7 +6294,7 @@ def test_production_auth_rejects_expired_clerk_jwt(monkeypatch) -> None:
     monkeypatch.setattr(security, "_fetch_clerk_jwks", lambda _: jwks)
     get_settings.cache_clear()
 
-    token = jose_jwt.encode(
+    token = jwt.encode(
         {"iss": issuer, "sub": "user_expired", "aud": audience, "iat": int(time.time()) - 600, "exp": int(time.time()) - 300},
         private_pem,
         algorithm="RS256",

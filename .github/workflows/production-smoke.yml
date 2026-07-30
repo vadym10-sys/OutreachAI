@@ -1,0 +1,106 @@
+name: Production Smoke Read-Only
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      require_gmail_connected:
+        description: "Fail if Gmail OAuth is not connected for the test account"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-smoke-read-only
+  cancel-in-progress: false
+
+jobs:
+  health:
+    name: Web, API, Readiness and Worker Health
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL || 'https://outreachaiaiai.com' }}
+      PRODUCTION_API_URL: ${{ vars.PRODUCTION_API_URL }}
+      PRODUCTION_QUEUE_HEALTH_BEARER: ${{ secrets.PRODUCTION_QUEUE_HEALTH_BEARER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web dependencies
+        run: npm --prefix apps/web ci
+      - name: Run read-only production health checks
+        run: |
+          set -o pipefail
+          mkdir -p apps/web/test-artifacts
+          npm --prefix apps/web run qa:production:health | tee apps/web/test-artifacts/production-health.json
+      - name: Upload health logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-health
+          path: apps/web/test-artifacts/production-health.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  smoke:
+    name: Playwright Production Read-Only Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: health
+    env:
+      PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL || 'https://outreachaiaiai.com' }}
+      PRODUCTION_AUTH_STORAGE_STATE: ${{ secrets.PRODUCTION_AUTH_STORAGE_STATE }}
+      PRODUCTION_E2E_EMAIL: ${{ secrets.PRODUCTION_E2E_EMAIL }}
+      PRODUCTION_E2E_PASSWORD: ${{ secrets.PRODUCTION_E2E_PASSWORD }}
+      PRODUCTION_REQUIRE_GMAIL_CONNECTED: ${{ github.event_name == 'workflow_dispatch' && inputs.require_gmail_connected == 'true' && 'true' || vars.PRODUCTION_REQUIRE_GMAIL_CONNECTED }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web dependencies
+        run: npm --prefix apps/web ci
+      - name: Materialize Playwright storage state
+        if: env.PRODUCTION_AUTH_STORAGE_STATE != ''
+        run: |
+          mkdir -p apps/web/.auth
+          printf '%s' "$PRODUCTION_AUTH_STORAGE_STATE" > apps/web/.auth/production-storage-state.json
+          echo "PRODUCTION_AUTH_STORAGE_STATE=.auth/production-storage-state.json" >> "$GITHUB_ENV"
+      - name: Install Playwright browsers
+        run: cd apps/web && npm exec -- playwright install --with-deps chromium
+      - name: Run read-only production Playwright smoke
+        run: npm --prefix apps/web run e2e:production
+      - name: Upload production Playwright HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-playwright-html-report
+          path: apps/web/playwright-report-production
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload production traces, videos and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-playwright-test-results
+          path: apps/web/test-results-production
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Upload production machine reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-playwright-machine-reports
+          path: apps/web/test-artifacts
+          if-no-files-found: ignore
+          retention-days: 14

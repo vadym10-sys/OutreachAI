@@ -8,7 +8,8 @@ from typing import Annotated, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
 import httpx
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError, PyJWK
 from sqlalchemy import and_, func, select
 
 from app.core.config import get_settings
@@ -74,12 +75,12 @@ def _verify_clerk_token(token: str) -> dict:
 
     try:
         header = jwt.get_unverified_header(token)
-    except JWTError as exc:
+    except InvalidTokenError as exc:
         raise _unauthorized() from exc
 
     try:
-        token_claims = jwt.get_unverified_claims(token)
-    except JWTError as exc:
+        token_claims = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
+    except InvalidTokenError as exc:
         raise _unauthorized() from exc
 
     kid = header.get("kid")
@@ -89,7 +90,7 @@ def _verify_clerk_token(token: str) -> dict:
 
     token_has_audience = bool(token_claims.get("aud"))
     should_verify_audience = bool(audience) and token_has_audience
-    last_decode_error: JWTError | None = None
+    last_decode_error: InvalidTokenError | None = None
     for issuer in issuer_candidates:
         try:
             jwks = _fetch_clerk_jwks(issuer)
@@ -107,6 +108,12 @@ def _verify_clerk_token(token: str) -> dict:
         if not key:
             continue
 
+        try:
+            signing_key = PyJWK.from_dict(key).key
+        except (InvalidTokenError, ValueError) as exc:
+            last_decode_error = exc if isinstance(exc, InvalidTokenError) else None
+            continue
+
         decode_options = {"verify_aud": should_verify_audience}
         decode_kwargs = {
             "algorithms": ["RS256"],
@@ -117,9 +124,9 @@ def _verify_clerk_token(token: str) -> dict:
             decode_kwargs["audience"] = audience
 
         try:
-            claims = jwt.decode(token, key, **decode_kwargs)
+            claims = jwt.decode(token, signing_key, **decode_kwargs)
             break
-        except JWTError as exc:
+        except InvalidTokenError as exc:
             last_decode_error = exc
             continue
     else:

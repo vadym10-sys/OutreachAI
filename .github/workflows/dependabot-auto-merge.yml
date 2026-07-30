@@ -1,0 +1,86 @@
+name: Dependabot Safe Auto-Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  allow-safe-dependabot-auto-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve Dependabot pull request
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (pr.user.login !== "dependabot[bot]") return { skip: true };
+            return { skip: false, number: pr.number, url: pr.html_url, headSha: pr.head.sha, baseSha: pr.base.sha };
+      - name: Stop for non-Dependabot events
+        if: fromJSON(steps.pr.outputs.result).skip
+        run: echo "No Dependabot PR to evaluate."
+      - uses: dependabot/fetch-metadata@v2
+        if: ${{ !fromJSON(steps.pr.outputs.result).skip }}
+        id: metadata
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          alert-lookup: true
+          compat-lookup: true
+      - uses: actions/checkout@v4
+        if: ${{ !fromJSON(steps.pr.outputs.result).skip }}
+        with:
+          fetch-depth: 0
+      - name: Require safe dependency scope
+        if: ${{ !fromJSON(steps.pr.outputs.result).skip }}
+        id: files
+        env:
+          BASE_SHA: ${{ fromJSON(steps.pr.outputs.result).baseSha }}
+          HEAD_SHA: ${{ fromJSON(steps.pr.outputs.result).headSha }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+        run: |
+          changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          echo "$changed"
+          if [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+          elif echo "$changed" | grep -E '(^|/)(auth|billing|security|database|email|mailer|outreach|oauth|stripe|clerk|sentry|webhooks|migrations|models)'; then
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+          elif echo "$DEPENDENCY_NAMES" | grep -Ei '(clerk|stripe|sentry|auth|oauth|security|cryptography|jose|jwt|sqlalchemy|alembic|resend|smtp|gmail|email)'; then
+            echo "safe=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "safe=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Require successful CI and Security checks
+        if: ${{ !fromJSON(steps.pr.outputs.result).skip && steps.files.outputs.safe == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = JSON.parse(process.env.PR_CONTEXT);
+            const { data } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: pr.headSha,
+              per_page: 100
+            });
+            const required = ["CI", "Security"];
+            for (const name of required) {
+              const matching = data.check_runs.filter((check) => check.name === name || check.name.startsWith(`${name} /`));
+              if (!matching.length || matching.some((check) => check.conclusion !== "success")) {
+                core.setFailed(`${name} checks are not fully successful for ${pr.headSha}.`);
+              }
+            }
+        env:
+          PR_CONTEXT: ${{ steps.pr.outputs.result }}
+      - name: Enable auto-merge for safe updates
+        if: ${{ !fromJSON(steps.pr.outputs.result).skip && steps.files.outputs.safe == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ fromJSON(steps.pr.outputs.result).url }}
+        run: gh pr merge --auto --squash "$PR_URL"
