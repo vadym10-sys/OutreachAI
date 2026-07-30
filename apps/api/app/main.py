@@ -20,7 +20,7 @@ from app.api.revenue_intelligence import router as revenue_intelligence_router
 from app.api.usage import router as usage_router
 from app.api.webhooks import router as webhook_router
 from app.core.config import get_settings
-from app.core.database import ensure_runtime_schema, get_db, get_engine, get_sessionmaker
+from app.core.database import ensure_runtime_schema, get_db, get_engine, get_runtime_schema_status, get_sessionmaker, validate_runtime_schema
 from app.core.observability import init_sentry, sentry_transaction_name, set_request_context
 from app.core.reliability import required_environment_issues, required_environment_status, validate_database_connectivity, validate_required_environment
 from app.core.security import QueueHealthUser, authenticated_user_id_from_authorization, rate_limit
@@ -259,9 +259,18 @@ def api_readiness() -> JSONResponse:
     critical_failures: list[str] = []
     try:
         validate_database_connectivity(settings)
-        database_ready = True
+        schema_status = validate_runtime_schema(get_engine())
+        database_ready = schema_status.ready
         with get_sessionmaker()() as db:
             database_backups_configured = database_backups_operational(db, settings)
+        if not schema_status.ready:
+            critical_failures.append("Database schema is not ready.")
+            if schema_status.pending_migrations:
+                critical_failures.append(f"Pending migrations: {', '.join(schema_status.pending_migrations)}")
+            if schema_status.missing_tables:
+                critical_failures.append(f"Missing tables: {', '.join(schema_status.missing_tables)}")
+            if schema_status.error:
+                critical_failures.append(f"Schema check failed: {schema_status.error}")
     except Exception as exc:
         logger.exception("Readiness database check failed: %s", exc)
         sentry_sdk.capture_exception(exc)
@@ -286,6 +295,14 @@ def api_readiness() -> JSONResponse:
             "database": database_ready,
             "required_environment": env_status,
             "database_backups_configured": database_backups_configured,
+            "schema": {
+                "ready": get_runtime_schema_status().ready,
+                "pending_migrations": get_runtime_schema_status().pending_migrations,
+                "missing_tables": get_runtime_schema_status().missing_tables,
+                "pgvector_available": get_runtime_schema_status().pgvector_available,
+                "pgvector_installed": get_runtime_schema_status().pgvector_installed,
+                "error": get_runtime_schema_status().error,
+            },
             "warnings": warnings,
             "critical_failures": critical_failures,
         },
@@ -338,8 +355,12 @@ def startup() -> None:
         engine = get_engine()
         validate_database_connectivity(settings)
         logger.info("Startup validation: PostgreSQL connectivity verified")
-        ensure_runtime_schema(engine)
-        logger.info("Database schema verified")
+        try:
+            ensure_runtime_schema(engine)
+            logger.info("Database schema verified")
+        except Exception as exc:
+            logger.exception("Database schema migration failed; /api/ready will remain degraded until migrations succeed: %s", exc)
+            return
         with get_sessionmaker()() as db:
             backup_ready = database_backups_operational(db, settings)
         if not backup_ready:

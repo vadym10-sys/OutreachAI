@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
 import logging
 import time
 
-from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -15,13 +17,45 @@ from app.core.config import get_settings
 from app.core.observability import capture_provider_exception
 
 logger = logging.getLogger("outreachai.database")
+POSTGRES_MIGRATION_LOCK_KEY = 587349211
+REQUIRED_POSTGRES_MIGRATIONS = ("011_ai_memory",)
+REQUIRED_AI_MEMORY_TABLES = ("ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs")
+
+
+class RuntimeSchemaError(RuntimeError):
+    """Raised when the database schema cannot be migrated or validated."""
+
+
+@dataclass
+class RuntimeSchemaStatus:
+    ready: bool
+    checked_at: str
+    pending_migrations: list[str]
+    missing_tables: list[str]
+    pgvector_available: bool
+    pgvector_installed: bool
+    error: str = ""
+
+
+_LAST_RUNTIME_SCHEMA_STATUS = RuntimeSchemaStatus(
+    ready=False,
+    checked_at="",
+    pending_migrations=list(REQUIRED_POSTGRES_MIGRATIONS),
+    missing_tables=list(REQUIRED_AI_MEMORY_TABLES),
+    pgvector_available=False,
+    pgvector_installed=False,
+    error="schema_not_checked",
+)
 
 
 def _resolve_repo_root() -> Path:
     current = Path(__file__).resolve()
+    candidates: list[Path] = []
     for candidate in current.parents:
         if (candidate / "db" / "schema.sql").exists() and (candidate / "db" / "migrations").exists():
-            return candidate
+            candidates.append(candidate)
+    if candidates:
+        return max(candidates, key=lambda path: len(list((path / "db" / "migrations").glob("*.sql"))))
     # Fallback keeps the app bootable even if schema files are missing in a custom runtime image.
     return current.parents[-1]
 
@@ -29,6 +63,9 @@ def _resolve_repo_root() -> Path:
 REPO_ROOT = _resolve_repo_root()
 SCHEMA_PATH = REPO_ROOT / "db" / "schema.sql"
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
+PACKAGED_DB_PATH = Path(__file__).resolve().parents[1] / "db"
+PACKAGED_SCHEMA_PATH = PACKAGED_DB_PATH / "schema.sql"
+PACKAGED_MIGRATIONS_DIR = PACKAGED_DB_PATH / "migrations"
 
 
 class Base(DeclarativeBase):
@@ -77,39 +114,129 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def _execute_sql_script(engine: Engine, script_path: Path) -> None:
+def _safe_schema_error(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {str(exc).splitlines()[0][:240]}"
+
+
+def _set_runtime_schema_status(status: RuntimeSchemaStatus) -> None:
+    global _LAST_RUNTIME_SCHEMA_STATUS
+    _LAST_RUNTIME_SCHEMA_STATUS = status
+
+
+def get_runtime_schema_status() -> RuntimeSchemaStatus:
+    return _LAST_RUNTIME_SCHEMA_STATUS
+
+
+def _migration_paths() -> list[Path]:
+    paths = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    if paths:
+        return paths
+    return sorted(PACKAGED_MIGRATIONS_DIR.glob("*.sql"))
+
+
+def _schema_path() -> Path:
+    return SCHEMA_PATH if SCHEMA_PATH.exists() else PACKAGED_SCHEMA_PATH
+
+
+def _execute_sql_script(connection, script_path: Path) -> None:  # type: ignore[no-untyped-def]
     sql_text = script_path.read_text(encoding="utf-8")
     if not sql_text.strip():
         return
 
-    logger.info("Applying database script %s", script_path.relative_to(REPO_ROOT))
-    with engine.begin() as connection:
-        connection.execute(text(sql_text))
+    try:
+        display_path = script_path.relative_to(REPO_ROOT)
+    except ValueError:
+        display_path = script_path.name
+    logger.info("Applying database script %s", display_path)
+    connection.execute(text(sql_text))
 
 
-def _ensure_schema_migrations_table(engine: Engine) -> None:
-    if engine.dialect.name != "postgresql":
-        return
-
-    with engine.begin() as connection:
-        connection.execute(text("""
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version VARCHAR(255) PRIMARY KEY,
-                applied_at TIMESTAMP NOT NULL DEFAULT now()
-            )
-        """))
+def _ensure_schema_migrations_table(connection) -> None:  # type: ignore[no-untyped-def]
+    connection.execute(text("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version VARCHAR(255) PRIMARY KEY,
+            applied_at TIMESTAMP NOT NULL DEFAULT now()
+        )
+    """))
 
 
-def _applied_migration_versions(engine: Engine) -> set[str]:
-    if engine.dialect.name != "postgresql":
-        return set()
-
-    with engine.connect() as connection:
-        try:
-            rows = connection.execute(text("SELECT version FROM schema_migrations")).fetchall()
-        except Exception:
+def _applied_migration_versions(connection) -> set[str]:  # type: ignore[no-untyped-def]
+    try:
+        has_migrations_table = bool(
+            connection.execute(text("SELECT to_regclass('public.schema_migrations') IS NOT NULL")).scalar()
+        )
+        if not has_migrations_table:
             return set()
+        rows = connection.execute(text("SELECT version FROM schema_migrations")).fetchall()
+    except Exception:
+        return set()
     return {row[0] for row in rows}
+
+
+def _public_table_names(connection) -> set[str]:  # type: ignore[no-untyped-def]
+    rows = connection.execute(text("""
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_type = 'BASE TABLE'
+          AND table_name <> 'schema_migrations'
+    """)).fetchall()
+    return {row[0] for row in rows}
+
+
+def _pg_bool(connection, sql: str) -> bool:  # type: ignore[no-untyped-def]
+    return bool(connection.execute(text(sql)).scalar())
+
+
+def _build_runtime_schema_status(connection, *, error: str = "") -> RuntimeSchemaStatus:  # type: ignore[no-untyped-def]
+    applied = _applied_migration_versions(connection)
+    pending = [version for version in REQUIRED_POSTGRES_MIGRATIONS if version not in applied]
+    missing_tables = [
+        table_name
+        for table_name in REQUIRED_AI_MEMORY_TABLES
+        if not bool(connection.execute(text("SELECT to_regclass(:name) IS NOT NULL"), {"name": f"public.{table_name}"}).scalar())
+    ]
+    pgvector_available = _pg_bool(connection, "SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector')")
+    pgvector_installed = _pg_bool(connection, "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')")
+    return RuntimeSchemaStatus(
+        ready=not pending and not missing_tables and not error,
+        checked_at=datetime.utcnow().isoformat(),
+        pending_migrations=pending,
+        missing_tables=missing_tables,
+        pgvector_available=pgvector_available,
+        pgvector_installed=pgvector_installed,
+        error=error,
+    )
+
+
+def validate_runtime_schema(engine: Engine) -> RuntimeSchemaStatus:
+    if engine.dialect.name != "postgresql":
+        status = RuntimeSchemaStatus(
+            ready=True,
+            checked_at=datetime.utcnow().isoformat(),
+            pending_migrations=[],
+            missing_tables=[],
+            pgvector_available=False,
+            pgvector_installed=False,
+        )
+        _set_runtime_schema_status(status)
+        return status
+
+    try:
+        with engine.connect() as connection:
+            status = _build_runtime_schema_status(connection)
+    except Exception as exc:
+        status = RuntimeSchemaStatus(
+            ready=False,
+            checked_at=datetime.utcnow().isoformat(),
+            pending_migrations=list(REQUIRED_POSTGRES_MIGRATIONS),
+            missing_tables=list(REQUIRED_AI_MEMORY_TABLES),
+            pgvector_available=False,
+            pgvector_installed=False,
+            error=_safe_schema_error(exc),
+        )
+    _set_runtime_schema_status(status)
+    return status
 
 
 def initialize_database_schema(engine: Engine) -> None:
@@ -118,23 +245,65 @@ def initialize_database_schema(engine: Engine) -> None:
 
     if engine.dialect.name != "postgresql":
         Base.metadata.create_all(bind=engine)
+        validate_runtime_schema(engine)
         return
 
-    _ensure_schema_migrations_table(engine)
-    inspector = inspect(engine)
-    existing_tables = set(inspector.get_table_names())
+    migration_paths = _migration_paths()
+    if not migration_paths:
+        raise RuntimeSchemaError("database migration assets are missing from the runtime image")
 
-    if not existing_tables:
-        _execute_sql_script(engine, SCHEMA_PATH)
-
-    applied_versions = _applied_migration_versions(engine)
-    for migration_path in sorted(MIGRATIONS_DIR.glob("*.sql")):
-        version = migration_path.stem
-        if version in applied_versions:
-            continue
-        _execute_sql_script(engine, migration_path)
+    try:
         with engine.begin() as connection:
-            connection.execute(text("INSERT INTO schema_migrations (version) VALUES (:version)"), {"version": version})
+            connection.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": POSTGRES_MIGRATION_LOCK_KEY})
+            _ensure_schema_migrations_table(connection)
+            existing_tables = _public_table_names(connection)
+            applied_versions = _applied_migration_versions(connection)
+
+            if not existing_tables:
+                schema_path = _schema_path()
+                if not schema_path.exists():
+                    raise RuntimeSchemaError("database schema asset is missing from the runtime image")
+                _execute_sql_script(connection, schema_path)
+                applied_versions = _applied_migration_versions(connection)
+
+            for migration_path in migration_paths:
+                version = migration_path.stem
+                if version in applied_versions:
+                    continue
+                _execute_sql_script(connection, migration_path)
+                connection.execute(
+                    text("INSERT INTO schema_migrations (version) VALUES (:version) ON CONFLICT (version) DO NOTHING"),
+                    {"version": version},
+                )
+                applied_versions.add(version)
+
+            status = _build_runtime_schema_status(connection)
+            if not status.ready:
+                raise RuntimeSchemaError(
+                    "database schema is incomplete "
+                    f"pending_migrations={status.pending_migrations} missing_tables={status.missing_tables}"
+                )
+            _set_runtime_schema_status(status)
+    except Exception as exc:
+        safe_error = _safe_schema_error(exc)
+        logger.exception("Database migration failed: %s", safe_error)
+        try:
+            with engine.connect() as connection:
+                status = _build_runtime_schema_status(connection, error=safe_error)
+        except Exception:
+            status = RuntimeSchemaStatus(
+                ready=False,
+                checked_at=datetime.utcnow().isoformat(),
+                pending_migrations=list(REQUIRED_POSTGRES_MIGRATIONS),
+                missing_tables=list(REQUIRED_AI_MEMORY_TABLES),
+                pgvector_available=False,
+                pgvector_installed=False,
+                error=safe_error,
+        )
+        _set_runtime_schema_status(status)
+        if isinstance(exc, RuntimeSchemaError):
+            raise
+        raise RuntimeSchemaError(safe_error) from exc
 
 
 def ensure_runtime_schema(engine: Engine) -> None:
