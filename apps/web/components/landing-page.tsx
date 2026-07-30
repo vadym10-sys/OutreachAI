@@ -50,6 +50,12 @@ const faq = [
   ["What happens with insufficient data?", "Insufficient data stays visible and should be routed to review instead of being treated as a fact."],
 ] as const;
 
+const legalLinks = [
+  { href: "/privacy", label: "Privacy" },
+  { href: "/terms", label: "Terms" },
+  { href: "/security", label: "Security" },
+] as const;
+
 function AuthNavigationLink({
   href,
   className,
@@ -281,10 +287,19 @@ export function LandingPage() {
       </section>
 
       <footer className="border-t border-[var(--ui-border)] bg-white/60 px-4 py-8 text-sm text-[var(--ui-text-soft)] min-[360px]:px-5">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="font-black text-[var(--ui-text)]">OutreachAI</p>
-          <p>{t("Lead intelligence, explainable AI, CRM handoff and reviewed outreach.")}</p>
-          <Wand2 size={18} className="hidden text-[var(--ui-brand)] sm:block" />
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-2">
+            <p className="font-black text-[var(--ui-text)]">OutreachAI</p>
+            <p>{t("Lead intelligence, explainable AI, CRM handoff and reviewed outreach.")}</p>
+          </div>
+          <nav aria-label="Legal" className="flex flex-wrap items-center gap-x-4 gap-y-2 font-bold text-[var(--ui-text)]">
+            {legalLinks.map((link) => (
+              <Link key={link.href} href={link.href} className="focus-ring rounded-sm underline decoration-[var(--ui-border-strong)] underline-offset-4 transition hover:text-[var(--ui-brand)]">
+                {link.label}
+              </Link>
+            ))}
+          </nav>
+          <Wand2 size={18} className="hidden shrink-0 text-[var(--ui-brand)] lg:block" />
         </div>
       </footer>
     </main>
