@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
-import { sentryEnvironment, shouldDropSentryEvent } from "@/lib/sentry-common";
+import { scrubSentryBreadcrumb, scrubSentryEvent, sentryEnvironment, shouldDropSentryEvent } from "@/lib/sentry-common";
 import { shouldUseHeavyClientTelemetry } from "@/lib/client-runtime";
 
 const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
@@ -11,6 +11,7 @@ if (dsn) {
     environment: sentryEnvironment(),
     release: process.env.NEXT_PUBLIC_RELEASE || "outreachai-web@1.0.0",
     enabled: Boolean(dsn),
+    sendDefaultPii: false,
     tracesSampleRate: heavyTelemetryEnabled ? 0.2 : 0.02,
     replaysSessionSampleRate: 0,
     replaysOnErrorSampleRate: heavyTelemetryEnabled ? 1.0 : 0,
@@ -31,7 +32,10 @@ if (dsn) {
       "Non-Error promise rejection captured"
     ],
     beforeSend(event) {
-      return shouldDropSentryEvent(event) ? null : event;
+      return shouldDropSentryEvent(event) ? null : scrubSentryEvent(event);
+    },
+    beforeBreadcrumb(breadcrumb) {
+      return scrubSentryBreadcrumb(breadcrumb);
     }
   });
 }
