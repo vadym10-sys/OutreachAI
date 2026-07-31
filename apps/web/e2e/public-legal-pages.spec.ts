@@ -6,6 +6,12 @@ const pages = [
   { path: "/security", heading: "Security" },
 ] as const;
 
+const landingFooterLinks = [
+  { name: "Privacy", href: "/privacy" },
+  { name: "Terms", href: "/terms" },
+  { name: "Security", href: "/security" },
+] as const;
+
 for (const legalPage of pages) {
   test(`${legalPage.path} opens directly and keeps public navigation`, async ({ page }) => {
     const response = await page.goto(legalPage.path);
@@ -39,5 +45,16 @@ test("public legal pages fit mobile viewport without horizontal overflow", async
 
     expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.innerWidth + 1);
     expect(metrics.bodyScrollWidth).toBeLessThanOrEqual(metrics.innerWidth + 1);
+  }
+});
+
+test("landing footer links to public legal pages", async ({ page }) => {
+  await page.goto("/");
+
+  const footer = page.locator("footer");
+  await expect(footer.getByRole("navigation", { name: "Legal" })).toBeVisible();
+
+  for (const link of landingFooterLinks) {
+    await expect(footer.getByRole("link", { name: link.name })).toHaveAttribute("href", link.href);
   }
 });
