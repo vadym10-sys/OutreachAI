@@ -26,6 +26,7 @@ const blankCommand: AiAssistantCommand = {
   maxResults: 10
 };
 
+const aiFirstInboxPageSize = 100;
 const aiWorkflowLabels = ["Describe business", "AI searches", "AI analyses", "Lead score", "Evidence", "Research profile", "Outreach strategy", "Save to CRM", "Draft email", "Manual approval", "Send"];
 const crmStatuses = ["New", "Qualified", "Draft ready", "Approved", "Sent", "Replied", "Meeting", "Not interested"];
 const fieldClass = "focus-ring mt-2 min-h-11 w-full rounded-xl border border-[var(--ui-border)] bg-white px-3 text-sm text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]";
@@ -840,6 +841,8 @@ function EmailsSection() {
   const api = useAiFirstApi();
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [inbox, setInbox] = useState<Email[]>([]);
+  const [inboxPage, setInboxPage] = useState(1);
+  const [inboxHasMore, setInboxHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [loadError, setLoadError] = useState("");
@@ -850,9 +853,11 @@ function EmailsSection() {
     if (!api.ready) return;
     setLoading(true);
     try {
-      const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails()]);
+      const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails(1, aiFirstInboxPageSize)]);
       setCompanies(nextCompanies);
       setInbox(nextInbox);
+      setInboxPage(1);
+      setInboxHasMore(nextInbox.length === aiFirstInboxPageSize);
       setLoadError("");
     } catch (err) {
       setLoadError(friendlyErrorMessage(err, "Could not load emails."));
@@ -864,6 +869,23 @@ function EmailsSection() {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  async function loadOlderReplies() {
+    if (!api.ready || !inboxHasMore || busy) return;
+    const nextPage = inboxPage + 1;
+    setBusy("inbox:more");
+    setActionError("");
+    try {
+      const olderInbox = await api.listEmails(nextPage, aiFirstInboxPageSize);
+      setInbox((current) => uniqueEmails([], [...current, ...olderInbox]));
+      setInboxPage(nextPage);
+      setInboxHasMore(olderInbox.length === aiFirstInboxPageSize);
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, "Could not load older replies."));
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function approve(email: Email) {
     setBusy(`approve:${email.id}`);
@@ -931,7 +953,7 @@ function EmailsSection() {
           </div>
         </div>
       </PremiumPanel>
-      {loading ? <LoadingStateView title="Loading email approval workspace." /> : emails.length ? <section className="grid gap-4">{emails.map((email) => {
+      {loading ? <LoadingStateView title="Loading email approval workspace." /> : emails.length ? <div className="space-y-4"><section className="grid gap-4">{emails.map((email) => {
         const relatedCompany = companyForEmail(companies, email);
         const replySummary = replyAssistantText(email);
         return <SurfaceCard as="article" key={email.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
@@ -969,7 +991,9 @@ function EmailsSection() {
             </aside>
           </div>
         </SurfaceCard>;
-      })}</section> : <EmptyStateView title="No email drafts yet." copy="Save a verified customer result to CRM to create a draft. AI will not send anything without explicit approval." />}
+      })}</section>{inboxHasMore ? <AppButton variant="secondary" disabled={Boolean(busy)} onClick={() => void loadOlderReplies()}>
+        {busy === "inbox:more" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />} Load older replies
+      </AppButton> : null}</div> : <EmptyStateView title="No email drafts yet." copy="Save a verified customer result to CRM to create a draft. AI will not send anything without explicit approval." />}
     </Frame>
   );
 }

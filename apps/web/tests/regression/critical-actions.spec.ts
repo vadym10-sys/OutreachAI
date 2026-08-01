@@ -119,6 +119,40 @@ test("email approval send and reply tracking stay connected end to end", async (
   await expect(page.getByRole("article").filter({ hasText: "Re: Quick idea for Hill Country Build Co" }).getByText("Hill Country Build Co", { exact: true })).toBeVisible();
 });
 
+test("email workspace can load older inbox reply pages", async ({ page }) => {
+  const replies = Array.from({ length: 101 }, (_, index) => ({
+    id: `99999999-9999-9999-9999-${String(index).padStart(12, "0")}`,
+    campaign_id: null,
+    lead_id: null,
+    subject: index === 100 ? "Older reply 100" : `Reply ${index}`,
+    preview: index === 100 ? "This older reply is on page two." : `Reply preview ${index}`,
+    body: index === 100 ? "This older reply is on page two." : `Reply body ${index}`,
+    cta: "",
+    follow_up_1: "",
+    follow_up_2: "",
+    delivery_status: "replied",
+    sent_at: null,
+    delivered_at: null,
+    opened_at: null,
+    bounced_at: null,
+    replied_at: "2026-08-01T12:00:00.000Z",
+    reply_assistant: { classification: "Interested" },
+    tags: {},
+    created_at: "2026-08-01T12:00:00.000Z"
+  }));
+  await page.unroute("**/api/**");
+  await mockWorkspaceApi(page, { "GET /api/inbox": { body: replies } });
+
+  await page.goto("/dashboard/emails");
+  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByText("Older reply 100")).toHaveCount(0);
+
+  const olderPageResponse = page.waitForResponse((response) => response.url().includes("/api/inbox?page=2&page_size=100"));
+  await page.getByRole("button", { name: "Load older replies" }).click();
+  await expect((await olderPageResponse).ok()).toBe(true);
+  await expect(page.getByText("Older reply 100")).toBeVisible();
+});
+
 test("company workspace explains AI decisions with memory context", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/companies");

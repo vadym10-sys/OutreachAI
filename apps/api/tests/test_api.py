@@ -1923,6 +1923,11 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
 
 
+def test_api_railway_watch_patterns_include_database_migrations() -> None:
+    railway_config = (REPO_ROOT / "apps" / "api" / "railway.toml").read_text(encoding="utf-8")
+    assert '"/apps/api/app/db/**"' in railway_config
+
+
 def test_ai_memory_migration_has_no_destructive_runtime_sql() -> None:
     sql = (REPO_ROOT / "db" / "migrations" / "011_ai_memory.sql").read_text(encoding="utf-8")
     runtime_sql = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--")).upper()

@@ -45,7 +45,7 @@ export type AiFirstApi = {
   saveFinderResult(resultId: string): Promise<FirstCustomerSaveResponse>;
   approveEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
   sendApprovedEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
-  listEmails(): Promise<Email[]>;
+  listEmails(page?: number, pageSize?: number): Promise<Email[]>;
   getWorkspace(): Promise<Workspace>;
   updateWorkspace(payload: Partial<Workspace>): Promise<Workspace>;
   integrations(): Promise<WorkspaceIntegrationStatusResponse>;
@@ -169,7 +169,7 @@ export function useAiFirstApi(): AiFirstApi {
     saveFinderResult: (resultId) => request<FirstCustomerSaveResponse>(`/api/workspace-app/leads/first-customers/results/${resultId}/save`, { method: "POST" }),
     approveEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, { method: "POST" })),
     sendApprovedEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, { method: "POST" })),
-    listEmails: () => request<Email[]>("/api/inbox"),
+    listEmails: (page = 1, pageSize = 100) => request<Email[]>(`/api/inbox?page=${page}&page_size=${pageSize}`),
     getWorkspace: () => request<Workspace>("/api/workspace/me"),
     updateWorkspace: (payload) => request<Workspace>("/api/workspace", {
       method: "PUT",
