@@ -8839,7 +8839,13 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))
     email.delivery_status = "sent"
-    email.tags = {**(email.tags if isinstance(email.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider}
+    provider_thread_id = str(provider_response.get("thread_id") or provider_response.get("threadId") or "").strip()
+    email.tags = {
+        **(email.tags if isinstance(email.tags, dict) else {}),
+        "sender_email": sender_status.sender_email,
+        "sender_provider": sender_status.provider,
+        **({"provider_thread_id": provider_thread_id} if provider_thread_id else {}),
+    }
     lead.status = LeadStatus.contacted
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": email.sent_at.isoformat()})
     _add_lead_activity(db, request, user.user_id, workspace, "email.sent", lead, {"email_id": str(email.id), "provider_message_id": email.provider_message_id})

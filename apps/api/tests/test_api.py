@@ -4046,7 +4046,7 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
 
     def fake_send(**kwargs):
         sent_payload.update(kwargs)
-        return {"id": "workspace-app-send-1"}
+        return {"id": "workspace-app-send-1", "thread_id": "workspace-app-thread-1"}
 
     monkeypatch.setattr("app.api.usage.send_email", fake_send)
     sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
@@ -4057,6 +4057,11 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent_payload["from_email"] == "sales@usage-email.example"
     assert sent_payload["from_name"] == "Usage Sales"
     assert sent_payload["reply_to"] == "reply@usage-email.example"
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.tags["provider_thread_id"] == "workspace-app-thread-1"
 
     send_again = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
     assert send_again.status_code == 409
