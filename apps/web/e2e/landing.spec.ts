@@ -11,6 +11,13 @@ test("landing explains the B2B outbound product and pricing", async ({ page }) =
   await expect(page.getByRole("link", { name: "Start finding customers" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Login" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "View demo dashboard" })).toHaveCount(0);
+  await expect(main.getByText("Business input", { exact: true })).toBeVisible();
+  await expect(main.getByText("Evidence-backed lead", { exact: true })).toBeVisible();
+  await expect(main.getByText("Human approval", { exact: true })).toBeVisible();
+  await expect(main.getByText("Draft email waiting for review before send", { exact: true })).toBeVisible();
+  await expect(main).toContainText("Workspace readiness, usage limits and manually approved outreach");
+  await expect(main).not.toContainText("Clerk");
+  await expect(main).not.toContainText("Stripe");
   await expect(page.getByRole("heading", { name: "AI Lead Intelligence" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Explainable AI" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Starter" }).first()).toBeVisible();
@@ -28,6 +35,9 @@ test("landing follows the selected language without mixed English hero copy", as
   await expect(page.getByRole("link", { name: "Начать поиск клиентов" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Войти" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Посмотреть демо-панель" })).toHaveCount(0);
+  await expect(main.getByText("Описание бизнеса", { exact: true })).toBeVisible();
+  await expect(main.getByText("Лид с доказательствами", { exact: true })).toBeVisible();
+  await expect(main.getByText("Подтверждение человеком", { exact: true })).toBeVisible();
   await expect(main).not.toContainText("AI Sales Employee for B2B Lead Generation");
   await expect(main).not.toContainText("Find qualified companies, analyze their websites");
   await expect(main).not.toContainText("Start free trial");
