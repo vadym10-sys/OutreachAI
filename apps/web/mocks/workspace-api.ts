@@ -323,15 +323,42 @@ const qaSalesAnalysisV1 = {
   version: 1
 };
 
-async function fulfillJson(route: Route, body: unknown, status = 200) {
-  await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+async function fulfillJson(route: Route, body: unknown, status = 200, headers: Record<string, string> = {}) {
+  await route.fulfill({ status, contentType: "application/json", headers, body: JSON.stringify(body) });
 }
 
 function inboxPage(items: unknown[], searchParams: URLSearchParams) {
-  const page = Math.max(1, Number(searchParams.get("page") || "1") || 1);
   const pageSize = Math.max(1, Math.min(200, Number(searchParams.get("page_size") || "100") || 100));
-  const offset = (page - 1) * pageSize;
-  return items.slice(offset, offset + pageSize);
+  const cursor = searchParams.get("cursor") || "";
+  let start = 0;
+  if (cursor) {
+    try {
+      const decoded = JSON.parse(Buffer.from(cursor.padEnd(Math.ceil(cursor.length / 4) * 4, "="), "base64url").toString("utf8"));
+      const cursorCreatedAt = String(decoded.created_at || "");
+      const cursorId = String(decoded.id || "");
+      const index = items.findIndex((item) => {
+        const message = item as { id?: unknown; created_at?: unknown };
+        return String(message.created_at || "") === cursorCreatedAt && String(message.id || "") === cursorId;
+      });
+      start = index >= 0 ? index + 1 : 0;
+    } catch {
+      start = 0;
+    }
+  }
+  const page = items.slice(start, start + pageSize);
+  const hasMore = start + pageSize < items.length;
+  const last = page[page.length - 1] as { id?: unknown; created_at?: unknown } | undefined;
+  const nextCursor = hasMore && last
+    ? Buffer.from(JSON.stringify({ created_at: String(last.created_at || ""), id: String(last.id || "") }), "utf8").toString("base64url")
+    : "";
+  return {
+    body: page,
+    headers: {
+      "X-Has-More": hasMore ? "true" : "false",
+      "X-Next-Cursor": nextCursor,
+      "X-Pagination-Mode": "cursor"
+    }
+  };
 }
 
 type MockOverride = {
@@ -379,8 +406,11 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
     const override = overrides[`${route.request().method()} ${apiPath}${url.search}`] || overrides[`${route.request().method()} ${apiPath}`] || overrides[`${apiPath}${url.search}`] || overrides[apiPath];
     if (override) {
-      const body = apiPath === "/api/inbox" && Array.isArray(override.body) ? inboxPage(override.body, url.searchParams) : override.body;
-      return fulfillJson(route, body, override.status || 200);
+      if (apiPath === "/api/inbox" && Array.isArray(override.body)) {
+        const page = inboxPage(override.body, url.searchParams);
+        return fulfillJson(route, page.body, override.status || 200, page.headers);
+      }
+      return fulfillJson(route, override.body, override.status || 200);
     }
     if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, {
       id: "99999999-9999-9999-9999-999999999999",
@@ -872,7 +902,10 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/sales-employees") return fulfillJson(route, []);
     if (apiPath === "/api/activity") return fulfillJson(route, []);
     if (apiPath === "/api/notifications") return fulfillJson(route, []);
-    if (apiPath === "/api/inbox") return fulfillJson(route, inboxPage(currentInbox, url.searchParams));
+    if (apiPath === "/api/inbox") {
+      const page = inboxPage(currentInbox, url.searchParams);
+      return fulfillJson(route, page.body, 200, page.headers);
+    }
     if (apiPath === "/api/profile") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();

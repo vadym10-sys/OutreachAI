@@ -1791,14 +1791,29 @@ class _FakePostgresConnection:
             self.state.lock_owner = False
             self.state.lock.release()
 
+    def begin(self) -> "_FakePostgresTransaction":
+        return _FakePostgresTransaction(self)
+
+    def commit(self) -> None:
+        return None
+
+    def execution_options(self, **kwargs: Any) -> "_FakePostgresConnection":
+        return self
+
     def execute(self, statement: Any, params: Optional[dict[str, Any]] = None) -> _FakeScalarResult:
         sql = str(statement)
         self.state.statements.append(sql)
-        if "pg_advisory_xact_lock" in sql:
+        if "pg_advisory_lock" in sql:
             assert params and params["lock_key"] == POSTGRES_MIGRATION_LOCK_KEY
             self.state.lock.acquire()
             self.state.lock_owner = True
             return _FakeScalarResult()
+        if "pg_advisory_unlock" in sql:
+            assert params and params["lock_key"] == POSTGRES_MIGRATION_LOCK_KEY
+            if self.state.lock_owner:
+                self.state.lock_owner = False
+                self.state.lock.release()
+            return _FakeScalarResult(True)
         if "CREATE TABLE IF NOT EXISTS schema_migrations" in sql:
             self.state.tables.add("schema_migrations")
             return _FakeScalarResult()
@@ -1827,6 +1842,17 @@ class _FakePostgresConnection:
         return _FakeScalarResult()
 
 
+class _FakePostgresTransaction:
+    def __init__(self, connection: _FakePostgresConnection):
+        self.connection = connection
+
+    def __enter__(self) -> _FakePostgresConnection:
+        return self.connection
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+
 class _FakePostgresEngine:
     def __init__(self, state: _FakePostgresState):
         self.state = state
@@ -1843,7 +1869,7 @@ def test_postgres_migration_runner_applies_011_to_existing_database_idempotently
     import app.core.database as database_module
 
     migration_paths = []
-    for version in ["011_ai_memory", "012_crm_inbox_read_indexes"]:
+    for version in ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]:
         migration_path = tmp_path / f"{version}.sql"
         migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
         migration_paths.append(migration_path)
@@ -1854,10 +1880,11 @@ def test_postgres_migration_runner_applies_011_to_existing_database_idempotently
     initialize_database_schema(engine)  # type: ignore[arg-type]
     initialize_database_schema(engine)  # type: ignore[arg-type]
 
-    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes"}
+    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"}
     assert {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}.issubset(state.tables)
     assert state.migration_executions == 1
-    assert sum("pg_advisory_xact_lock" in statement for statement in state.statements) == 2
+    assert sum("pg_advisory_lock" in statement for statement in state.statements) == 2
+    assert sum("pg_advisory_unlock" in statement for statement in state.statements) == 2
     assert validate_runtime_schema(engine).ready is True  # type: ignore[arg-type]
 
 
@@ -1866,7 +1893,7 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
     import app.core.database as database_module
 
     migration_paths = []
-    for version in ["011_ai_memory", "012_crm_inbox_read_indexes"]:
+    for version in ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]:
         migration_path = tmp_path / f"{version}.sql"
         migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
         migration_paths.append(migration_path)
@@ -1889,8 +1916,9 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
 
     assert errors == []
     assert state.migration_executions == 1
-    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes"}
-    assert sum("pg_advisory_xact_lock" in statement for statement in state.statements) == 2
+    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"}
+    assert sum("pg_advisory_lock" in statement for statement in state.statements) == 2
+    assert sum("pg_advisory_unlock" in statement for statement in state.statements) == 2
 
 
 def test_postgres_migration_failure_sets_negative_schema_status(tmp_path, monkeypatch) -> None:
@@ -1907,7 +1935,7 @@ def test_postgres_migration_failure_sets_negative_schema_status(tmp_path, monkey
 
     status = database_module.get_runtime_schema_status()
     assert status.ready is False
-    assert status.pending_migrations == ["011_ai_memory", "012_crm_inbox_read_indexes"]
+    assert status.pending_migrations == ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]
     assert set(status.missing_tables) == {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
     assert "synthetic migration failure" in status.error
 
@@ -1917,9 +1945,13 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     packaged_migration = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "011_ai_memory.sql").read_text(encoding="utf-8")
     root_read_indexes = (REPO_ROOT / "db" / "migrations" / "012_crm_inbox_read_indexes.sql").read_text(encoding="utf-8")
     packaged_read_indexes = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "012_crm_inbox_read_indexes.sql").read_text(encoding="utf-8")
+    root_hardening = (REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
+    packaged_hardening = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
 
     assert packaged_migration == root_migration
     assert packaged_read_indexes == root_read_indexes
+    assert packaged_hardening == root_hardening
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_logs_workspace_lead_created_id" in root_hardening
     assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
 
 
@@ -3560,14 +3592,71 @@ def test_inbox_defaults_to_bounded_pages() -> None:
         db.commit()
 
     first_page = client.get("/api/inbox", headers=headers)
-    second_page = client.get("/api/inbox?page=2&page_size=75", headers=headers)
+    second_page = client.get(f"/api/inbox?page_size=75&cursor={first_page.headers['x-next-cursor']}", headers=headers)
 
     assert first_page.status_code == 200
     assert len(first_page.json()) == 100
+    assert first_page.headers["x-pagination-mode"] == "cursor"
+    assert first_page.headers["x-has-more"] == "true"
     assert second_page.status_code == 200
     assert len(second_page.json()) == 75
     assert first_page.json()[0]["subject"] == "Reply 0"
-    assert second_page.json()[0]["subject"] == "Reply 75"
+    assert second_page.json()[0]["subject"] == "Reply 100"
+
+
+def test_inbox_cursor_pagination_has_no_duplicates_or_skips_when_new_email_arrives() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-inbox-cursor@example.com"}
+    SessionLocal = get_sessionmaker()
+    expected_existing_ids: list[str] = []
+    with SessionLocal() as db:
+        workspace = Workspace(owner_user_id="usage-inbox-cursor@example.com", name="Usage inbox cursor")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id="usage-inbox-cursor@example.com", email="usage-inbox-cursor@example.com", role=WorkspaceRole.owner, status="active"))
+        now = datetime.utcnow()
+        for index in range(120):
+            message = EmailMessage(
+                user_id="usage-inbox-cursor@example.com",
+                workspace_id=workspace.id,
+                direction="inbound",
+                subject=f"Cursor reply {index}",
+                body="Reply body",
+                delivery_status="received",
+                created_at=now - timedelta(seconds=index),
+            )
+            db.add(message)
+            db.flush()
+            expected_existing_ids.append(str(message.id))
+        db.commit()
+
+    first_page = client.get("/api/inbox?page_size=50", headers=headers)
+    assert first_page.status_code == 200
+    assert len(first_page.json()) == 50
+    cursor = first_page.headers["x-next-cursor"]
+    assert cursor
+
+    with SessionLocal() as db:
+        workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == "usage-inbox-cursor@example.com"))
+        assert workspace is not None
+        db.add(
+            EmailMessage(
+                user_id="usage-inbox-cursor@example.com",
+                workspace_id=workspace.id,
+                direction="inbound",
+                subject="New reply inserted between cursor pages",
+                body="Reply body",
+                delivery_status="received",
+                created_at=datetime.utcnow() + timedelta(seconds=5),
+            )
+        )
+        db.commit()
+
+    second_page = client.get(f"/api/inbox?page_size=50&cursor={cursor}", headers=headers)
+    assert second_page.status_code == 200
+    first_ids = [item["id"] for item in first_page.json()]
+    second_ids = [item["id"] for item in second_page.json()]
+    assert not set(first_ids).intersection(second_ids)
+    assert first_ids + second_ids == expected_existing_ids[:100]
 
 
 def test_workspace_app_manual_company_save_survives_crm_sync_failure(monkeypatch) -> None:
@@ -7780,10 +7869,22 @@ def test_crm_stage_move_and_note_are_persisted(monkeypatch) -> None:
 
 
 def test_crm_pipeline_activity_query_uses_postgres_json_key_extraction() -> None:
-    compiled = str(select(AuditLog.id).where(_audit_log_lead_id_clause(UUID("00000000-0000-0000-0000-000000000001"))).compile(dialect=postgresql.dialect()))
+    compiled = str(
+        select(AuditLog.id)
+        .where(
+            AuditLog.workspace_id == UUID("00000000-0000-0000-0000-000000000002"),
+            _audit_log_lead_id_clause(UUID("00000000-0000-0000-0000-000000000001")),
+        )
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .compile(dialect=postgresql.dialect())
+    )
+    index_sql = (REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
 
     assert "LIKE" not in compiled.upper()
     assert "->>" in compiled
+    assert "idx_audit_logs_workspace_lead_created_id" in index_sql
+    assert "(metadata_json->>'lead_id')" in index_sql
+    assert "created_at DESC, id DESC" in index_sql
 
 
 def test_crm_pipeline_returns_company_cards_with_activity_timeline(monkeypatch) -> None:

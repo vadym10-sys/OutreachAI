@@ -3,7 +3,7 @@
 import { useAuth } from "@clerk/nextjs";
 import { useCallback, useMemo } from "react";
 import { useAuthRuntime } from "@/components/app-providers";
-import { clientApi, type ClientApiInit } from "@/lib/client-api";
+import { clientApi, clientApiWithHeaders, type ClientApiInit } from "@/lib/client-api";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import type {
   AiMemoryEntriesResponse,
@@ -45,7 +45,7 @@ export type AiFirstApi = {
   saveFinderResult(resultId: string): Promise<FirstCustomerSaveResponse>;
   approveEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
   sendApprovedEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
-  listEmails(page?: number, pageSize?: number): Promise<Email[]>;
+  listEmails(cursor?: string, pageSize?: number): Promise<{ messages: Email[]; nextCursor: string; hasMore: boolean }>;
   getWorkspace(): Promise<Workspace>;
   updateWorkspace(payload: Partial<Workspace>): Promise<Workspace>;
   integrations(): Promise<WorkspaceIntegrationStatusResponse>;
@@ -153,6 +153,22 @@ export function useAiFirstApi(): AiFirstApi {
     return clientApi<T>(path, token, init);
   }, [clerkEnabled, getFreshToken, isLoaded, isSignedIn]);
 
+  const requestWithHeaders = useCallback(async function requestWithHeaders<T>(path: string, init: ClientApiInit = {}) {
+    if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
+      return clientApiWithHeaders<T>(path, "dev", init);
+    }
+    if (!clerkEnabled || !isLoaded || !isSignedIn) {
+      redirectToSignIn();
+      throw new Error("Please sign in again before continuing.");
+    }
+    const token = await getFreshToken();
+    if (!token) {
+      redirectToSignIn();
+      throw new Error("Please sign in again before continuing.");
+    }
+    return clientApiWithHeaders<T>(path, token, init);
+  }, [clerkEnabled, getFreshToken, isLoaded, isSignedIn]);
+
   const ready = ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) || (clerkEnabled && isLoaded && Boolean(isSignedIn));
 
   return useMemo(() => ({
@@ -169,7 +185,15 @@ export function useAiFirstApi(): AiFirstApi {
     saveFinderResult: (resultId) => request<FirstCustomerSaveResponse>(`/api/workspace-app/leads/first-customers/results/${resultId}/save`, { method: "POST" }),
     approveEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, { method: "POST" })),
     sendApprovedEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, { method: "POST" })),
-    listEmails: (page = 1, pageSize = 100) => request<Email[]>(`/api/inbox?page=${page}&page_size=${pageSize}`),
+    listEmails: async (cursor = "", pageSize = 100) => {
+      const path = `/api/inbox?page_size=${pageSize}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+      const { data, headers } = await requestWithHeaders<Email[]>(path);
+      return {
+        messages: data,
+        nextCursor: headers.get("x-next-cursor") || "",
+        hasMore: headers.get("x-has-more") === "true"
+      };
+    },
     getWorkspace: () => request<Workspace>("/api/workspace/me"),
     updateWorkspace: (payload) => request<Workspace>("/api/workspace", {
       method: "PUT",
@@ -202,7 +226,7 @@ export function useAiFirstApi(): AiFirstApi {
     deleteMemoryEntry: (memoryId) => request<{ status: string }>(`/api/workspace-app/ai-memory/entries/${memoryId}`, { method: "DELETE" }),
     clearMemory: () => request<{ status: string; deleted: number }>("/api/workspace-app/ai-memory/entries", { method: "DELETE" }),
     explainMemoryDecision: (companyId) => request<AiMemoryExplainResponse>(`/api/workspace-app/ai-memory/decisions/${companyId}/explain`)
-  }), [ready, request]);
+  }), [ready, request, requestWithHeaders]);
 }
 
 export function latestDraftForResult(result: FirstCustomerResult) {

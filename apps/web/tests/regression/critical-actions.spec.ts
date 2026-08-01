@@ -147,7 +147,7 @@ test("email workspace can load older inbox reply pages", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
   await expect(page.getByText("Older reply 100")).toHaveCount(0);
 
-  const olderPageResponse = page.waitForResponse((response) => response.url().includes("/api/inbox?page=2&page_size=100"));
+  const olderPageResponse = page.waitForResponse((response) => response.url().includes("/api/inbox?page_size=100&cursor="));
   await page.getByRole("button", { name: "Load older replies" }).click();
   await expect((await olderPageResponse).ok()).toBe(true);
   await expect(page.getByText("Older reply 100")).toBeVisible();
