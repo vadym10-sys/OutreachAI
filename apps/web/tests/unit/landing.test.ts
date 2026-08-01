@@ -48,6 +48,26 @@ describe("i18n", () => {
     }
   });
 
+  it("localizes the conversion preview and avoids public vendor names", () => {
+    const phrases = [
+      "Business input",
+      "Evidence-backed lead",
+      "Human approval",
+      "Draft email waiting for review before send",
+      "Insufficient data stays visible and is routed to manual review.",
+      "Workspace readiness, usage limits and manually approved outreach for focused customer discovery.",
+      "Secure authentication",
+      "Workspace billing",
+    ];
+
+    for (const phrase of phrases) {
+      expect(translateVisibleText(phrase, "ru"), phrase).not.toBe(phrase);
+    }
+
+    expect(translateVisibleText("Secure authentication", "ru")).not.toMatch(/Clerk/i);
+    expect(translateVisibleText("Workspace billing", "ru")).not.toMatch(/Stripe/i);
+  });
+
   it("keeps AI company intelligence guidance fully Russian", () => {
     const phrases = [
       "The company matches the selected target market; verify the website and contact before outreach.",
