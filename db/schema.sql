@@ -379,6 +379,8 @@ CREATE INDEX IF NOT EXISTS idx_campaigns_user_id ON campaigns(user_id);
 CREATE INDEX IF NOT EXISTS idx_campaigns_workspace_id ON campaigns(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON email_messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_id ON email_messages(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_direction_created ON email_messages(workspace_id, direction, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_lead_created ON email_messages(workspace_id, lead_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_email_messages_provider_message_id ON email_messages(provider_message_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_user_event ON analytics_events(user_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_user_action ON audit_logs(user_id, action);
@@ -418,8 +420,14 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_leads_campaign_id ON leads(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_leads_workspace_id ON leads(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_companies_workspace_updated ON companies(workspace_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_companies_workspace_lead_id ON companies(workspace_id, lead_id);
+CREATE INDEX IF NOT EXISTS idx_contacts_workspace_company_created ON contacts(workspace_id, company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deals_workspace_company_created ON deals(workspace_id, company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notes_workspace_company_created ON notes(workspace_id, company_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_website_analyses_user_id ON website_analyses(user_id);
 CREATE INDEX IF NOT EXISTS idx_website_analyses_workspace_id ON website_analyses(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_website_analyses_workspace_lead_created ON website_analyses(workspace_id, lead_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_workspace_id ON notifications(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_profiles_user_id ON workspace_profiles(user_id);
@@ -432,3 +440,4 @@ CREATE INDEX IF NOT EXISTS idx_sales_employee_lead_insights_employee_id ON sales
 CREATE INDEX IF NOT EXISTS idx_sales_employee_lead_insights_lead_id ON sales_employee_lead_insights(lead_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_events_workspace_id ON analytics_events(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_id ON audit_logs(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_created ON audit_logs(workspace_id, created_at DESC);

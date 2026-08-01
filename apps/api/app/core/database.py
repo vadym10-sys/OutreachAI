@@ -18,7 +18,7 @@ from app.core.observability import capture_provider_exception
 
 logger = logging.getLogger("outreachai.database")
 POSTGRES_MIGRATION_LOCK_KEY = 587349211
-REQUIRED_POSTGRES_MIGRATIONS = ("011_ai_memory",)
+REQUIRED_POSTGRES_MIGRATIONS = ("011_ai_memory", "012_crm_inbox_read_indexes")
 REQUIRED_AI_MEMORY_TABLES = ("ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs")
 
 

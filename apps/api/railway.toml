@@ -11,6 +11,7 @@ watchPatterns = [
 	"/apps/api/app/api/routes.py",
 	"/apps/api/app/api/usage.py",
 	"/apps/api/app/core/**",
+	"/apps/api/app/db/**",
 	"/apps/api/app/models/**",
 	"/apps/api/app/schemas/**",
 	"/apps/api/app/services/**"

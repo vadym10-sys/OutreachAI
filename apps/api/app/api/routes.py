@@ -7,6 +7,8 @@ import json
 import logging
 import secrets
 import time
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 from typing import Any, Optional
@@ -1385,6 +1387,141 @@ def _audit_log_lead_id_clause(lead_id: UUID):
     return AuditLog.metadata_json["lead_id"].as_string() == str(lead_id)
 
 
+CRM_FOUND_ACTIONS = {"lead.found", "lead.imported", "google_maps.company_search", "apollo.company_search", "apollo.contact_search"}
+CRM_SAVED_ACTIONS = {"lead.saved_to_crm"}
+CRM_APPROVED_ACTIONS = {"email.approved"}
+CRM_BATCH_AUDIT_ACTIONS = CRM_FOUND_ACTIONS | CRM_SAVED_ACTIONS | CRM_APPROVED_ACTIONS
+
+
+@dataclass
+class CrmCompanyBatchContext:
+    contacts_by_company: dict[UUID, list[Contact]]
+    deals_by_company: dict[UUID, list[Deal]]
+    notes_by_company: dict[UUID, list[Note]]
+    emails_by_lead: dict[UUID, list[EmailMessage]]
+    activity_by_lead: dict[UUID, list[AuditLog]]
+    leads_by_id: dict[UUID, Lead]
+    website_analyzed_at_by_lead: dict[UUID, datetime]
+    first_audit_by_lead_action: dict[tuple[UUID, str], datetime]
+    latest_audit_by_lead: dict[UUID, datetime]
+
+
+def _group_limited_by(items: list[Any], key_name: str, limit: int | None = None) -> dict[UUID, list[Any]]:
+    grouped: dict[UUID, list[Any]] = defaultdict(list)
+    for item in items:
+        key = getattr(item, key_name, None)
+        if key is not None and (limit is None or len(grouped[key]) < limit):
+            grouped[key].append(item)
+    return dict(grouped)
+
+
+def _audit_log_lead_id(log: AuditLog) -> UUID | None:
+    metadata = log.metadata_json if isinstance(log.metadata_json, dict) else {}
+    raw = metadata.get("lead_id")
+    if not raw:
+        return None
+    try:
+        return UUID(str(raw))
+    except ValueError:
+        return None
+
+
+def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, companies: list[Company]) -> CrmCompanyBatchContext:
+    company_ids = [company.id for company in companies]
+    lead_ids = [company.lead_id for company in companies if company.lead_id]
+    if not company_ids:
+        return CrmCompanyBatchContext({}, {}, {}, {}, {}, {}, {}, {}, {})
+
+    contacts = [
+        contact
+        for contact in db.scalars(
+            select(Contact)
+            .where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id.in_(company_ids))
+            .order_by(Contact.company_id, Contact.created_at.desc())
+        ).all()
+        if _is_customer_visible_contact(contact)
+    ]
+    deals = list(
+        db.scalars(
+            select(Deal)
+            .where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id.in_(company_ids))
+            .order_by(Deal.company_id, Deal.created_at.desc())
+        ).all()
+    )
+    notes = list(
+        db.scalars(
+            select(Note)
+            .where(_workspace_stmt(Note, workspace, user_id), Note.company_id.in_(company_ids))
+            .order_by(Note.company_id, Note.created_at.desc())
+        ).all()
+    )
+
+    emails_by_lead: dict[UUID, list[EmailMessage]] = {}
+    activity_by_lead: dict[UUID, list[AuditLog]] = {}
+    leads_by_id: dict[UUID, Lead] = {}
+    website_analyzed_at_by_lead: dict[UUID, datetime] = {}
+    first_audit_by_lead_action: dict[tuple[UUID, str], datetime] = {}
+    latest_audit_by_lead: dict[UUID, datetime] = {}
+    if lead_ids:
+        leads_by_id = {lead.id: lead for lead in db.scalars(select(Lead).where(_workspace_stmt(Lead, workspace, user_id), Lead.id.in_(lead_ids))).all()}
+        emails = [
+            email
+            for email in db.scalars(
+                select(EmailMessage)
+                .where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id.in_(lead_ids))
+                .order_by(EmailMessage.lead_id, EmailMessage.created_at.desc())
+            ).all()
+            if _is_customer_visible_email(email)
+        ]
+        emails_by_lead = _group_limited_by(emails, "lead_id", 10)
+        website_rows = db.execute(
+            select(WebsiteAnalysis.lead_id, func.max(WebsiteAnalysis.created_at))
+            .where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id.in_(lead_ids))
+            .group_by(WebsiteAnalysis.lead_id)
+        ).all()
+        website_analyzed_at_by_lead = {lead_id: analyzed_at for lead_id, analyzed_at in website_rows if lead_id and analyzed_at}
+
+        audit_lead_id = AuditLog.metadata_json["lead_id"].as_string()
+        audit_logs = list(
+            db.scalars(
+                select(AuditLog)
+                .where(AuditLog.workspace_id == workspace.id, audit_lead_id.in_([str(lead_id) for lead_id in lead_ids]))
+                .order_by(AuditLog.created_at.desc())
+            ).all()
+        )
+        for log in audit_logs:
+            lead_id = _audit_log_lead_id(log)
+            if lead_id is None:
+                continue
+            if len(activity_by_lead.setdefault(lead_id, [])) < 10:
+                activity_by_lead[lead_id].append(log)
+            latest_audit_by_lead[lead_id] = max(latest_audit_by_lead.get(lead_id, log.created_at), log.created_at)
+            if log.action in CRM_BATCH_AUDIT_ACTIONS:
+                key = (lead_id, log.action)
+                current = first_audit_by_lead_action.get(key)
+                if current is None or log.created_at < current:
+                    first_audit_by_lead_action[key] = log.created_at
+
+    return CrmCompanyBatchContext(
+        contacts_by_company=_group_limited_by(contacts, "company_id"),
+        deals_by_company=_group_limited_by(deals, "company_id"),
+        notes_by_company={key: value for key, value in _group_limited_by(notes, "company_id", 20).items()},
+        emails_by_lead=emails_by_lead,
+        activity_by_lead=activity_by_lead,
+        leads_by_id=leads_by_id,
+        website_analyzed_at_by_lead=website_analyzed_at_by_lead,
+        first_audit_by_lead_action=first_audit_by_lead_action,
+        latest_audit_by_lead=latest_audit_by_lead,
+    )
+
+
+def _first_batch_audit_time(context: CrmCompanyBatchContext, lead_id: UUID | None, actions: set[str]) -> datetime | None:
+    if not lead_id:
+        return None
+    values = [context.first_audit_by_lead_action[(lead_id, action)] for action in actions if (lead_id, action) in context.first_audit_by_lead_action]
+    return min(values, default=None)
+
+
 def _add_lead_activity(
     db: Session,
     request: Request,
@@ -1438,24 +1575,37 @@ def _latest_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id:
     )
 
 
-def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: Company) -> CrmCompanyOut:
-    contacts = [contact for contact in db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id).order_by(Contact.created_at.desc())).all() if _is_customer_visible_contact(contact)]
-    deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc())).all())
-    notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc()).limit(20)).all())
-    emails = [email for email in db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc()).limit(20)).all() if _is_customer_visible_email(email)][:10] if company.lead_id else []
-    activity = list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
-    lead = db.get(Lead, company.lead_id) if company.lead_id else None
-    found_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"lead.found", "lead.imported", "google_maps.company_search", "apollo.company_search", "apollo.contact_search"}) or (lead.created_at if lead else company.created_at)
-    saved_to_crm_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"lead.saved_to_crm"}) or company.created_at
-    website_analyzed_at = db.scalar(select(WebsiteAnalysis.created_at).where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == company.lead_id).order_by(WebsiteAnalysis.created_at.desc()).limit(1)) if company.lead_id else None
+def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: Company, batch_context: CrmCompanyBatchContext | None = None) -> CrmCompanyOut:
+    if batch_context:
+        contacts = batch_context.contacts_by_company.get(company.id, [])
+        deals = batch_context.deals_by_company.get(company.id, [])
+        notes = batch_context.notes_by_company.get(company.id, [])
+        emails = batch_context.emails_by_lead.get(company.lead_id, []) if company.lead_id else []
+        activity = batch_context.activity_by_lead.get(company.lead_id, []) if company.lead_id else []
+        lead = batch_context.leads_by_id.get(company.lead_id) if company.lead_id else None
+        found_at = _first_batch_audit_time(batch_context, company.lead_id, CRM_FOUND_ACTIONS) or (lead.created_at if lead else company.created_at)
+        saved_to_crm_at = _first_batch_audit_time(batch_context, company.lead_id, CRM_SAVED_ACTIONS) or company.created_at
+        website_analyzed_at = batch_context.website_analyzed_at_by_lead.get(company.lead_id) if company.lead_id else None
+        email_approved_at = _first_batch_audit_time(batch_context, company.lead_id, CRM_APPROVED_ACTIONS)
+        latest_activity_at = batch_context.latest_audit_by_lead.get(company.lead_id) if company.lead_id else None
+    else:
+        contacts = [contact for contact in db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id).order_by(Contact.created_at.desc())).all() if _is_customer_visible_contact(contact)]
+        deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc())).all())
+        notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc()).limit(20)).all())
+        emails = [email for email in db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc()).limit(20)).all() if _is_customer_visible_email(email)][:10] if company.lead_id else []
+        activity = list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc()).limit(10)).all()) if company.lead_id else []
+        lead = db.get(Lead, company.lead_id) if company.lead_id else None
+        found_at = _first_audit_time(db, workspace, user_id, company.lead_id, CRM_FOUND_ACTIONS) or (lead.created_at if lead else company.created_at)
+        saved_to_crm_at = _first_audit_time(db, workspace, user_id, company.lead_id, CRM_SAVED_ACTIONS) or company.created_at
+        website_analyzed_at = db.scalar(select(WebsiteAnalysis.created_at).where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == company.lead_id).order_by(WebsiteAnalysis.created_at.desc()).limit(1)) if company.lead_id else None
+        email_approved_at = _first_audit_time(db, workspace, user_id, company.lead_id, CRM_APPROVED_ACTIONS)
+        latest_activity_at = _latest_audit_time(db, workspace, user_id, company.lead_id)
     contact_found_at = min([contact.created_at for contact in contacts], default=None)
     email_generated_at = min([email.created_at for email in emails], default=None)
-    email_approved_at = _first_audit_time(db, workspace, user_id, company.lead_id, {"email.approved"})
     email_sent_at = max([email.sent_at for email in emails if email.sent_at], default=None)
     delivered_at = max([email.delivered_at for email in emails if email.delivered_at], default=None)
     opened_at = max([email.opened_at for email in emails if email.opened_at], default=None)
     replied_at = max([email.replied_at for email in emails if email.replied_at], default=None)
-    latest_activity_at = _latest_audit_time(db, workspace, user_id, company.lead_id)
     last_activity_at = max([value for value in [company.updated_at, found_at, saved_to_crm_at, website_analyzed_at, contact_found_at, email_generated_at, email_approved_at, email_sent_at, delivered_at, opened_at, replied_at, latest_activity_at] if value], default=company.updated_at)
     company_metadata = company.metadata_json or {}
     deep_contact_search = company_metadata.get("deep_contact_search") if isinstance(company_metadata.get("deep_contact_search"), dict) else {}
@@ -1829,10 +1979,17 @@ def _company_workflow_statuses(
 
 def _ensure_crm_backfilled(db: Session, user_id: str, workspace: Workspace) -> None:
     leads = list(db.scalars(select(Lead).where(_workspace_stmt(Lead, workspace, user_id)).order_by(Lead.created_at.desc()).limit(500)).all())
+    lead_ids = [lead.id for lead in leads]
+    existing_company_lead_ids = set(
+        db.scalars(
+            select(Company.lead_id).where(_workspace_stmt(Company, workspace, user_id), Company.lead_id.in_(lead_ids))
+        ).all()
+    ) if lead_ids else set()
     changed = False
     for lead in leads:
-        if not db.scalar(select(Company.id).where(_workspace_stmt(Company, workspace, user_id), Company.lead_id == lead.id).limit(1)):
+        if lead.id not in existing_company_lead_ids:
             _sync_lead_to_crm(db, user_id, workspace, lead)
+            existing_company_lead_ids.add(lead.id)
             changed = True
     if changed:
         db.commit()
@@ -4672,7 +4829,8 @@ def crm_companies(
         return sorted(validated, key=lambda item: int(item.overall_score or 0), reverse=True)
     _ensure_crm_backfilled(db, user_id, workspace)
     companies = [company for company in db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(200)).all() if _is_customer_visible_company(company)][:100]
-    output = [_crm_company_out(db, workspace, user_id, company) for company in companies]
+    batch_context = _crm_company_batch_context(db, workspace, user_id, companies)
+    output = [_crm_company_out(db, workspace, user_id, company, batch_context) for company in companies]
     output.sort(key=lambda item: int(item.overall_score or 0), reverse=True)
     set_json(key, [item.model_dump(mode="json") for item in output], app_settings.cache_crm_ttl_seconds)
     return output
@@ -4731,7 +4889,8 @@ def crm_pipeline(user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmPipe
     companies = [company for company in db.scalars(_crm_company_query(workspace, user_id).limit(300)).all() if _is_customer_visible_company(company)][:200]
     deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id)).order_by(Deal.updated_at.desc()).limit(300)).all())
     company_names = {company.id: company.name for company in companies}
-    serialized_companies = [_crm_company_out(db, workspace, user_id, company) for company in companies]
+    batch_context = _crm_company_batch_context(db, workspace, user_id, companies)
+    serialized_companies = [_crm_company_out(db, workspace, user_id, company, batch_context) for company in companies]
     serialized_companies.sort(key=lambda item: int(getattr(item, "overall_score", 0) or 0), reverse=True)
     return CrmPipelineOut(
         stages=CRM_STAGES.copy(),
@@ -5675,9 +5834,20 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
 
 
 @router.get("/inbox", response_model=list[EmailOut])
-def inbox(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[EmailMessage]:
+def inbox(
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=200),
+) -> list[EmailMessage]:
     workspace = _current_workspace(db, user_id)
-    messages = db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.direction == "inbound").order_by(EmailMessage.created_at.desc())).all()
+    messages = db.scalars(
+        select(EmailMessage)
+        .where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.direction == "inbound")
+        .order_by(EmailMessage.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
     return list(messages)
 
 

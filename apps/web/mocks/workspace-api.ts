@@ -327,6 +327,13 @@ async function fulfillJson(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
+function inboxPage(items: unknown[], searchParams: URLSearchParams) {
+  const page = Math.max(1, Number(searchParams.get("page") || "1") || 1);
+  const pageSize = Math.max(1, Math.min(200, Number(searchParams.get("page_size") || "100") || 100));
+  const offset = (page - 1) * pageSize;
+  return items.slice(offset, offset + pageSize);
+}
+
 type MockOverride = {
   status?: number;
   body: unknown;
@@ -370,8 +377,11 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
-    const override = overrides[`${route.request().method()} ${apiPath}`] || overrides[apiPath];
-    if (override) return fulfillJson(route, override.body, override.status || 200);
+    const override = overrides[`${route.request().method()} ${apiPath}${url.search}`] || overrides[`${route.request().method()} ${apiPath}`] || overrides[`${apiPath}${url.search}`] || overrides[apiPath];
+    if (override) {
+      const body = apiPath === "/api/inbox" && Array.isArray(override.body) ? inboxPage(override.body, url.searchParams) : override.body;
+      return fulfillJson(route, body, override.status || 200);
+    }
     if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, {
       id: "99999999-9999-9999-9999-999999999999",
       name: "QA Private Workspace",
@@ -862,7 +872,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/sales-employees") return fulfillJson(route, []);
     if (apiPath === "/api/activity") return fulfillJson(route, []);
     if (apiPath === "/api/notifications") return fulfillJson(route, []);
-    if (apiPath === "/api/inbox") return fulfillJson(route, currentInbox);
+    if (apiPath === "/api/inbox") return fulfillJson(route, inboxPage(currentInbox, url.searchParams));
     if (apiPath === "/api/profile") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();

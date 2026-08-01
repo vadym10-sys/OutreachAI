@@ -19,13 +19,14 @@ from fastapi import HTTPException
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
-from sqlalchemy import func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects import postgresql
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
 if db_path.exists():
     db_path.unlink()
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
 os.environ["AUTO_CREATE_TABLES"] = "true"
@@ -51,7 +52,7 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api.usage import _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _enforce_usage, _lead_ai_payload, _limits_for_workspace, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -1841,16 +1842,19 @@ class _FakePostgresEngine:
 def test_postgres_migration_runner_applies_011_to_existing_database_idempotently(tmp_path, monkeypatch) -> None:
     import app.core.database as database_module
 
-    migration_path = tmp_path / "011_ai_memory.sql"
-    migration_path.write_text(Path("db/migrations/011_ai_memory.sql").read_text(), encoding="utf-8")
-    monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
+    migration_paths = []
+    for version in ["011_ai_memory", "012_crm_inbox_read_indexes"]:
+        migration_path = tmp_path / f"{version}.sql"
+        migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
+        migration_paths.append(migration_path)
+    monkeypatch.setattr(database_module, "_migration_paths", lambda: migration_paths)
     state = _FakePostgresState()
     engine = _FakePostgresEngine(state)
 
     initialize_database_schema(engine)  # type: ignore[arg-type]
     initialize_database_schema(engine)  # type: ignore[arg-type]
 
-    assert state.applied_versions == {"011_ai_memory"}
+    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes"}
     assert {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}.issubset(state.tables)
     assert state.migration_executions == 1
     assert sum("pg_advisory_xact_lock" in statement for statement in state.statements) == 2
@@ -1861,9 +1865,12 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
     import threading
     import app.core.database as database_module
 
-    migration_path = tmp_path / "011_ai_memory.sql"
-    migration_path.write_text(Path("db/migrations/011_ai_memory.sql").read_text(), encoding="utf-8")
-    monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
+    migration_paths = []
+    for version in ["011_ai_memory", "012_crm_inbox_read_indexes"]:
+        migration_path = tmp_path / f"{version}.sql"
+        migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
+        migration_paths.append(migration_path)
+    monkeypatch.setattr(database_module, "_migration_paths", lambda: migration_paths)
     state = _FakePostgresState()
     engine = _FakePostgresEngine(state)
     errors: list[Exception] = []
@@ -1882,7 +1889,7 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
 
     assert errors == []
     assert state.migration_executions == 1
-    assert state.applied_versions == {"011_ai_memory"}
+    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes"}
     assert sum("pg_advisory_xact_lock" in statement for statement in state.statements) == 2
 
 
@@ -1890,7 +1897,7 @@ def test_postgres_migration_failure_sets_negative_schema_status(tmp_path, monkey
     import app.core.database as database_module
 
     migration_path = tmp_path / "011_ai_memory.sql"
-    migration_path.write_text(Path("db/migrations/011_ai_memory.sql").read_text(), encoding="utf-8")
+    migration_path.write_text((REPO_ROOT / "db" / "migrations" / "011_ai_memory.sql").read_text(), encoding="utf-8")
     monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
     state = _FakePostgresState(fail_migration=True)
     engine = _FakePostgresEngine(state)
@@ -1900,21 +1907,29 @@ def test_postgres_migration_failure_sets_negative_schema_status(tmp_path, monkey
 
     status = database_module.get_runtime_schema_status()
     assert status.ready is False
-    assert status.pending_migrations == ["011_ai_memory"]
+    assert status.pending_migrations == ["011_ai_memory", "012_crm_inbox_read_indexes"]
     assert set(status.missing_tables) == {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
     assert "synthetic migration failure" in status.error
 
 
 def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
-    root_migration = Path("db/migrations/011_ai_memory.sql").read_text(encoding="utf-8")
-    packaged_migration = Path("apps/api/app/db/migrations/011_ai_memory.sql").read_text(encoding="utf-8")
+    root_migration = (REPO_ROOT / "db" / "migrations" / "011_ai_memory.sql").read_text(encoding="utf-8")
+    packaged_migration = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "011_ai_memory.sql").read_text(encoding="utf-8")
+    root_read_indexes = (REPO_ROOT / "db" / "migrations" / "012_crm_inbox_read_indexes.sql").read_text(encoding="utf-8")
+    packaged_read_indexes = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "012_crm_inbox_read_indexes.sql").read_text(encoding="utf-8")
 
     assert packaged_migration == root_migration
-    assert Path("apps/api/app/db/schema.sql").exists()
+    assert packaged_read_indexes == root_read_indexes
+    assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
+
+
+def test_api_railway_watch_patterns_include_database_migrations() -> None:
+    railway_config = (REPO_ROOT / "apps" / "api" / "railway.toml").read_text(encoding="utf-8")
+    assert '"/apps/api/app/db/**"' in railway_config
 
 
 def test_ai_memory_migration_has_no_destructive_runtime_sql() -> None:
-    sql = Path("db/migrations/011_ai_memory.sql").read_text(encoding="utf-8")
+    sql = (REPO_ROOT / "db" / "migrations" / "011_ai_memory.sql").read_text(encoding="utf-8")
     runtime_sql = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--")).upper()
 
     assert "DROP TABLE" not in runtime_sql
@@ -2700,7 +2715,7 @@ def test_ai_memory_pgvector_sql_is_workspace_scoped() -> None:
 
 
 def test_ai_memory_migration_optional_vector_permission_failure_is_non_blocking() -> None:
-    migration = Path("db/migrations/011_ai_memory.sql").read_text()
+    migration = (REPO_ROOT / "db" / "migrations" / "011_ai_memory.sql").read_text()
     assert "WHEN insufficient_privilege THEN" in migration
     assert "WHEN undefined_file THEN" in migration
     assert migration.index("CREATE TABLE IF NOT EXISTS ai_memory_settings") > migration.index("optional pgvector setup skipped")
@@ -3451,6 +3466,108 @@ def test_workspace_app_manual_company_save_persists_and_dedupes() -> None:
     filtered = client.get("/api/workspace-app/companies?city=Berlin&industry=Construction&email_status=Found", headers=headers)
     assert filtered.status_code == 200
     assert filtered.json()[0]["id"] == company["id"]
+
+
+def test_workspace_app_companies_batch_load_avoids_per_company_queries() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-company-perf@example.com"}
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = Workspace(owner_user_id="usage-company-perf@example.com", name="Usage company perf")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id="usage-company-perf@example.com", email="usage-company-perf@example.com", role=WorkspaceRole.owner, status="active"))
+        now = datetime.utcnow()
+        for index in range(30):
+            lead = Lead(
+                user_id="usage-company-perf@example.com",
+                workspace_id=workspace.id,
+                company=f"Perf Company {index}",
+                website=f"https://perf-company-{index}.example.com",
+                industry="Construction",
+                country="Germany",
+                city="Berlin",
+                email=f"lead-{index}@example.com",
+                status=LeadStatus.qualified,
+                created_at=now - timedelta(days=index),
+                updated_at=now - timedelta(minutes=index),
+            )
+            db.add(lead)
+            db.flush()
+            company = Company(
+                user_id="usage-company-perf@example.com",
+                workspace_id=workspace.id,
+                lead_id=lead.id,
+                name=lead.company,
+                website=lead.website,
+                city=lead.city,
+                country=lead.country,
+                industry=lead.industry,
+                email=lead.email,
+                crm_stage="Email Draft Ready",
+                email_status="Draft",
+                metadata_json={"overall_score": 80},
+            )
+            db.add(company)
+            db.flush()
+            db.add(Contact(user_id="usage-company-perf@example.com", workspace_id=workspace.id, company_id=company.id, lead_id=lead.id, name=f"Contact {index}", email=f"contact-{index}@example.com"))
+            db.add(Deal(user_id="usage-company-perf@example.com", workspace_id=workspace.id, company_id=company.id, lead_id=lead.id, name=f"Deal {index}", stage="Qualified", value=1000, probability=30))
+            db.add(Note(user_id="usage-company-perf@example.com", workspace_id=workspace.id, company_id=company.id, lead_id=lead.id, body="note"))
+            db.add(WebsiteAnalysis(user_id="usage-company-perf@example.com", workspace_id=workspace.id, lead_id=lead.id, company=lead.company, website=lead.website, description="desc", summary="summary"))
+            db.add(AuditLog(user_id="usage-company-perf@example.com", workspace_id=workspace.id, action="lead.found", metadata_json={"lead_id": str(lead.id)}))
+            db.add(AuditLog(user_id="usage-company-perf@example.com", workspace_id=workspace.id, action="lead.saved_to_crm", metadata_json={"lead_id": str(lead.id)}))
+            db.add(AuditLog(user_id="usage-company-perf@example.com", workspace_id=workspace.id, action="email.approved", metadata_json={"lead_id": str(lead.id)}))
+            db.add(EmailMessage(user_id="usage-company-perf@example.com", workspace_id=workspace.id, lead_id=lead.id, direction="outbound", subject="Draft", body="Body", delivery_status="draft"))
+        db.commit()
+
+    statements: list[str] = []
+
+    def count_statement(conn, cursor, statement, parameters, context, executemany):  # noqa: ANN001
+        statements.append(statement.split()[0].upper())
+
+    engine = get_engine()
+    event.listen(engine, "before_cursor_execute", count_statement)
+    try:
+        response = client.get("/api/workspace-app/companies", headers=headers)
+    finally:
+        event.remove(engine, "before_cursor_execute", count_statement)
+
+    assert response.status_code == 200
+    assert len(response.json()) == 30
+    assert statements.count("SELECT") <= 20
+
+
+def test_inbox_defaults_to_bounded_pages() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-inbox-perf@example.com"}
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace = Workspace(owner_user_id="usage-inbox-perf@example.com", name="Usage inbox perf")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id="usage-inbox-perf@example.com", email="usage-inbox-perf@example.com", role=WorkspaceRole.owner, status="active"))
+        now = datetime.utcnow()
+        for index in range(250):
+            db.add(
+                EmailMessage(
+                    user_id="usage-inbox-perf@example.com",
+                    workspace_id=workspace.id,
+                    direction="inbound",
+                    subject=f"Reply {index}",
+                    body="Reply body",
+                    delivery_status="received",
+                    created_at=now - timedelta(seconds=index),
+                )
+            )
+        db.commit()
+
+    first_page = client.get("/api/inbox", headers=headers)
+    second_page = client.get("/api/inbox?page=2&page_size=75", headers=headers)
+
+    assert first_page.status_code == 200
+    assert len(first_page.json()) == 100
+    assert second_page.status_code == 200
+    assert len(second_page.json()) == 75
+    assert first_page.json()[0]["subject"] == "Reply 0"
+    assert second_page.json()[0]["subject"] == "Reply 75"
 
 
 def test_workspace_app_manual_company_save_survives_crm_sync_failure(monkeypatch) -> None:

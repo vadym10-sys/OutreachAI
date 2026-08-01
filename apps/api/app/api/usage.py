@@ -25,6 +25,7 @@ from app.api.routes import (
     _crm_stage_for_lead,
     _company_duplicate_stmt,
     _current_workspace,
+    _crm_company_batch_context,
     _email_status_for_lead,
     _ensure_crm_backfilled,
     _existing_duplicate_lead,
@@ -7646,7 +7647,8 @@ def list_companies(
         for company in db.scalars(stmt.order_by(Company.updated_at.desc()).limit(200)).all()
         if company.lead_id is not None or _is_customer_visible_company(company)
     ][:100]
-    return [_crm_company_out(db, workspace, user.user_id, company) for company in companies]
+    batch_context = _crm_company_batch_context(db, workspace, user.user_id, companies)
+    return [_crm_company_out(db, workspace, user.user_id, company, batch_context) for company in companies]
 
 
 @router.get("/companies/{company_id}", response_model=CrmCompanyOut)

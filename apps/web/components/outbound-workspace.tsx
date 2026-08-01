@@ -1149,7 +1149,11 @@ function useInboxData() {
   const { api, ready } = useTokenApi();
   const [messages, setMessages] = useState<Email[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState("");
+  const pageSize = 100;
 
   const refresh = useCallback(async () => {
     if (!ready) {
@@ -1159,7 +1163,10 @@ function useInboxData() {
     setLoading(true);
     setError("");
     try {
-      setMessages(safeArray(await api<Email[]>("/api/inbox")));
+      const firstPage = safeArray(await api<Email[]>(`/api/inbox?page=1&page_size=${pageSize}`));
+      setMessages(firstPage);
+      setPage(1);
+      setHasMore(firstPage.length === pageSize);
     } catch (err) {
       reportWidgetFailure(err, "inbox-loader", { endpoint: "/api/inbox" });
       setError(friendlyErrorMessage(err, "Inbox replies are temporarily unavailable."));
@@ -1175,7 +1182,25 @@ function useInboxData() {
     return () => window.clearTimeout(timer);
   }, [refresh]);
 
-  return { messages, loading, error, refresh };
+  const loadMore = useCallback(async () => {
+    if (!ready || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    setError("");
+    const nextPage = page + 1;
+    try {
+      const nextMessages = safeArray(await api<Email[]>(`/api/inbox?page=${nextPage}&page_size=${pageSize}`));
+      setMessages((current) => [...current, ...nextMessages]);
+      setPage(nextPage);
+      setHasMore(nextMessages.length === pageSize);
+    } catch (err) {
+      reportWidgetFailure(err, "inbox-loader", { endpoint: "/api/inbox", page: nextPage });
+      setError(friendlyErrorMessage(err, "Older inbox replies are temporarily unavailable."));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [api, hasMore, loadingMore, page, ready]);
+
+  return { messages, loading, loadingMore, hasMore, error, refresh, loadMore };
 }
 
 function useBillingData() {
@@ -6910,20 +6935,25 @@ export function InboxPage() {
         <MetricCard label="Replies" value={String(metrics.replies || repliedLeads.length || inboundMessages.length)} help="Real replies captured" />
         <MetricCard label="Reply rate" value={`${metrics.reply_rate || 0}%`} help="From tracked campaigns" />
       </section>
-      {hasReplyData ? <section className="grid gap-4 lg:grid-cols-2">
-        {inboundMessages.slice(0, 6).map((message) => <article key={message.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase text-brand">{t("Inbound reply")}</p>
-          <h2 className="mt-2 text-lg font-black text-ink">{message.subject || t("Reply captured")}</h2>
-          <p className="mt-2 line-clamp-3 text-sm leading-6 text-slate-600">{message.preview || message.body || t("Open the related company and decide the next CRM step.")}</p>
-          <Link href="/dashboard/companies" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Open companies")}</Link>
-        </article>)}
-        {repliedLeads.slice(0, 6).map((lead) => <article key={lead.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-bold uppercase text-brand">{t("Reply received")}</p>
-          <h2 className="mt-2 text-lg font-black text-ink">{lead.company}</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-600">{t("Review the reply, update CRM stage and decide the next follow-up.")}</p>
-          <Link href={lead.crm_company_id ? `/dashboard/companies?company=${encodeURIComponent(lead.crm_company_id)}` : "/dashboard/companies"} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Open company")}</Link>
-        </article>)}
-      </section> : <EmptyState
+      {hasReplyData ? <div className="space-y-4">
+        <section className="grid gap-4 lg:grid-cols-2">
+          {inboundMessages.map((message) => <article key={message.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase text-brand">{t("Inbound reply")}</p>
+            <h2 className="mt-2 text-lg font-black text-ink">{message.subject || t("Reply captured")}</h2>
+            <p className="mt-2 line-clamp-3 text-sm leading-6 text-slate-600">{message.preview || message.body || t("Open the related company and decide the next CRM step.")}</p>
+            <Link href="/dashboard/companies" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Open companies")}</Link>
+          </article>)}
+          {repliedLeads.slice(0, 6).map((lead) => <article key={lead.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-xs font-bold uppercase text-brand">{t("Reply received")}</p>
+            <h2 className="mt-2 text-lg font-black text-ink">{lead.company}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{t("Review the reply, update CRM stage and decide the next follow-up.")}</p>
+            <Link href={lead.crm_company_id ? `/dashboard/companies?company=${encodeURIComponent(lead.crm_company_id)}` : "/dashboard/companies"} className="mt-4 inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-4 text-sm font-bold text-white">{t("Open company")}</Link>
+          </article>)}
+        </section>
+        {inbox.hasMore && <button type="button" onClick={inbox.loadMore} disabled={inbox.loadingMore} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 text-sm font-bold text-ink shadow-sm disabled:cursor-not-allowed disabled:opacity-60">
+          {inbox.loadingMore ? <Loader2 className="animate-spin" size={17} /> : <Inbox size={17} />} {t(inbox.loadingMore ? "Loading older replies" : "Load older replies")}
+        </button>}
+      </div> : <EmptyState
         title={activeCampaigns.length ? "No replies yet" : "No active campaign replies yet"}
         copy={activeCampaigns.length ? "Replies will appear here automatically after approved emails receive real responses." : "Approve an email and launch a campaign first. Then OutreachAI will classify replies and show the next sales action here."}
         action={<Link href={approvedOrSent.length ? "/dashboard/campaigns" : "/dashboard/companies"} className="inline-flex min-h-11 items-center rounded-md bg-brand px-4 text-sm font-bold text-white">{t(approvedOrSent.length ? "Review campaigns" : "Prepare email")}</Link>}
