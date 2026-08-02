@@ -13,6 +13,8 @@ const landingFooterLinks = [
   { name: "Security", href: "/security" },
 ] as const;
 
+const supportHref = "mailto:outreachaiaiai@gmail.com";
+
 for (const legalPage of pages) {
   test(`${legalPage.path} opens directly and keeps public navigation`, async ({ page }, testInfo) => {
     const guards = installQaGuards(page, testInfo);
@@ -26,7 +28,7 @@ for (const legalPage of pages) {
     await expect(page.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
     await expect(page.getByRole("link", { name: "Terms of Service" })).toHaveAttribute("href", "/terms");
     await expect(page.getByRole("link", { name: "Security" })).toHaveAttribute("href", "/security");
-    await expect(page.getByRole("link", { name: "Support" })).toHaveAttribute("href", /^mailto:/);
+    await expect(page.getByRole("link", { name: "Support" })).toHaveAttribute("href", supportHref);
     await expect(page.locator("body")).not.toContainText("404");
     await guards.assertClean();
   });
@@ -75,5 +77,5 @@ test("landing footer links to public legal pages and support", async ({ page }) 
   for (const link of landingFooterLinks) {
     await expect(footer.getByRole("link", { name: link.name })).toHaveAttribute("href", link.href);
   }
-  await expect(footer.getByRole("link", { name: "Support" })).toHaveAttribute("href", /^mailto:/);
+  await expect(footer.getByRole("link", { name: "Support" })).toHaveAttribute("href", supportHref);
 });

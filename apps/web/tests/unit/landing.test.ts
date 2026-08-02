@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { locales, translate, translations, translateVisibleText, visiblePhraseTranslations } from "../../lib/i18n/translations";
 import { publicPlans } from "../../lib/plan-catalog";
+import { publicSupportEmail } from "../../lib/public-contact";
 
 describe("pricing plans", () => {
   it("contains the required subscription tiers", () => {
@@ -29,6 +30,13 @@ describe("pricing plans", () => {
       expect(backendPlan).toContain(`"team_members": ${plan.limits.teamMembers}`);
       expect(backendPlan).toContain(`"campaigns": ${plan.limits.campaigns}`);
     }
+  });
+});
+
+describe("public contact configuration", () => {
+  it("uses the confirmed public support mailbox everywhere", () => {
+    expect(publicSupportEmail).toBe("outreachaiaiai@gmail.com");
+    expect(`mailto:${publicSupportEmail}`).toBe("mailto:outreachaiaiai@gmail.com");
   });
 });
 

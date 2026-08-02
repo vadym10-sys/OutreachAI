@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { installQaGuards } from "../tests/helpers/qa-guards";
 
+const supportHref = "mailto:outreachaiaiai@gmail.com";
+
 const visibleLanguageSelect = (page: import("@playwright/test").Page) =>
   page.locator('select[aria-label="Language"]:visible').first();
 
@@ -26,7 +28,7 @@ test("landing explains the B2B outbound product and pricing", async ({ page }, t
   await expect(main.getByRole("link", { name: "Choose Starter" })).toHaveAttribute("href", "/sign-up?plan=Starter");
   await expect(main.getByRole("link", { name: "Choose Pro" })).toHaveAttribute("href", "/sign-up?plan=Pro");
   await expect(main.getByRole("link", { name: "Choose Agency" })).toHaveAttribute("href", "/sign-up?plan=Agency");
-  await expect(page.locator("#contact").getByRole("link", { name: /@/ })).toHaveAttribute("href", /^mailto:/);
+  await expect(page.locator("#contact").getByRole("link", { name: "outreachaiaiai@gmail.com" })).toHaveAttribute("href", supportHref);
   await expect(main).not.toContainText("Clerk");
   await expect(main).not.toContainText("Stripe");
   await expect(page.getByRole("heading", { name: "AI Lead Intelligence" })).toBeVisible();
@@ -54,7 +56,7 @@ test("landing follows the selected language without mixed English hero copy", as
   await expect(main).toContainText("49 EUR/месяц");
   await expect(main).toContainText("14 дней пробного периода");
   await expect(main.getByRole("link", { name: /Выбрать Starter/ })).toBeVisible();
-  await expect(page.locator("#contact").getByRole("link", { name: /@/ })).toHaveAttribute("href", /^mailto:/);
+  await expect(page.locator("#contact").getByRole("link", { name: "outreachaiaiai@gmail.com" })).toHaveAttribute("href", supportHref);
   await expect(main).not.toContainText("AI Sales Employee for B2B Lead Generation");
   await expect(main).not.toContainText("Find qualified companies, analyze their websites");
   await expect(main).not.toContainText("Start free trial");
