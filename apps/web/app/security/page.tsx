@@ -9,39 +9,40 @@ export const metadata: Metadata = {
 const sections = [
   {
     title: "Security approach",
-    body: (
-      <p>OutreachAI is built to separate public pages from authenticated workspace features and to keep sensitive workflow actions behind application access controls. Security work is treated as an ongoing operational responsibility.</p>
-    ),
+    body: [
+      "OutreachAI is built to separate public pages from authenticated workspace features and to keep sensitive workflow actions behind application access controls. Security work is treated as an ongoing operational responsibility.",
+    ],
   },
   {
     title: "Authentication and access",
-    body: (
-      <p>Protected product areas require authentication. Users should keep account credentials, connected provider accounts, and workspace access limited to people who need them.</p>
-    ),
+    body: [
+      "Protected product areas require authentication. Users should keep account credentials, connected provider accounts, and workspace access limited to people who need them.",
+    ],
   },
   {
     title: "Human approval boundaries",
-    body: (
-      <p>AI-assisted sales work is intended to remain reviewable before sensitive actions. Users should verify generated content, recipients, CRM changes, and campaign details before approval.</p>
-    ),
+    body: [
+      "AI-assisted sales work is intended to remain reviewable before sensitive actions. Users should verify generated content, recipients, CRM changes, and campaign details before approval.",
+      "Generated emails are drafts first. Sending requires an approved email and a verified recipient path in the application.",
+    ],
   },
   {
     title: "Data handling",
-    body: (
-      <p>Application data may be processed by the systems required to run OutreachAI, including hosting, authentication, payments, observability, connected integrations, and AI functionality. Access should be limited to operational need.</p>
-    ),
+    body: [
+      "Application data may be processed by the systems required to run OutreachAI, including hosting, authentication, payments, observability, connected integrations, and AI functionality. Access should be limited to operational need.",
+    ],
   },
   {
     title: "Reporting concerns",
-    body: (
-      <p>If you believe you have found a security issue, report it through the support or account channel available to you. Please avoid accessing, changing, deleting, or sharing data that does not belong to you.</p>
-    ),
+    body: [
+      "If you believe you have found a security issue, report it through the confirmed support email listed on this site. Please avoid accessing, changing, deleting, or sharing data that does not belong to you.",
+    ],
   },
   {
     title: "No absolute guarantee",
-    body: (
-      <p>No internet service can promise perfect security. OutreachAI aims to use reasonable safeguards and improve them as the product changes.</p>
-    ),
+    body: [
+      "No internet service can promise perfect security. OutreachAI aims to use reasonable safeguards and improve them as the product changes.",
+    ],
   },
 ];
 

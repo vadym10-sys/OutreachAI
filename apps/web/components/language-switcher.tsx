@@ -1,6 +1,7 @@
 'use client';
 
 import { useAuth } from '@clerk/nextjs';
+import { usePathname } from 'next/navigation';
 import { useAuthRuntime } from '@/components/app-providers';
 import { clientApi } from '@/lib/client-api';
 import { hasClerkPublishableKey, isClerkE2EBypass } from '@/lib/env';
@@ -22,10 +23,12 @@ function useOptionalAuth() {
 export function LanguageSwitcher({ compact = false }: { compact?: boolean }) {
   const { locale, setLocale, t } = useI18n();
   const { getToken, ready } = useOptionalAuth();
+  const pathname = usePathname();
+  const shouldSyncProfile = pathname.startsWith('/dashboard') || pathname.startsWith('/onboarding') || pathname.startsWith('/billing');
 
   async function changeLocale(next: Locale) {
     setLocale(next);
-    if (!ready) return;
+    if (!ready || !shouldSyncProfile) return;
     try {
       const token = await getToken();
       const profile = await clientApi<Profile>('/api/profile', token);

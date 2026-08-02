@@ -18,10 +18,17 @@ test("billing route redirects to settings without exposing payment internals", a
 test("pricing page exposes plan CTAs", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/pricing");
+  const main = page.getByRole("main");
   await expect(page.getByRole("heading", { name: "Starter", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Pro", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agency", exact: true })).toBeVisible();
-  await expect(page.getByRole("link", { name: "View plan" }).first()).toHaveAttribute("href", "/sign-up?plan=Starter");
-  await expect(page.getByRole("link", { name: "Start trial" })).toHaveAttribute("href", "/sign-up?plan=Pro");
+  await expect(main).toContainText("49 EUR/month");
+  await expect(main).toContainText("149 EUR/month");
+  await expect(main).toContainText("499 EUR/month");
+  await expect(main).toContainText("500 leads per month");
+  await expect(main).toContainText("50,000 leads per month");
+  await expect(page.getByRole("link", { name: "Choose Starter" })).toHaveAttribute("href", "/sign-up?plan=Starter");
+  await expect(page.getByRole("link", { name: "Choose Pro" })).toHaveAttribute("href", "/sign-up?plan=Pro");
+  await expect(page.getByRole("link", { name: "Choose Agency" })).toHaveAttribute("href", "/sign-up?plan=Agency");
   await guards.assertClean();
 });
