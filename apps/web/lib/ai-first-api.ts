@@ -43,6 +43,7 @@ export type AiFirstApi = {
   listCustomerFinderJobs(): Promise<FirstCustomerJob[]>;
   getCustomerFinderJob(jobId: string): Promise<FirstCustomerJob>;
   saveFinderResult(resultId: string): Promise<FirstCustomerSaveResponse>;
+  updateEmail(emailId: string, payload: { subject?: string; body?: string; preview?: string }): Promise<WorkspaceAppActionResponse>;
   approveEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
   sendApprovedEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
   listEmails(cursor?: string, pageSize?: number): Promise<{ messages: Email[]; nextCursor: string; hasMore: boolean }>;
@@ -183,9 +184,13 @@ export function useAiFirstApi(): AiFirstApi {
     listCustomerFinderJobs: () => request<FirstCustomerJob[]>("/api/workspace-app/ai-customer-finder/searches"),
     getCustomerFinderJob: (jobId) => request<FirstCustomerJob>(`/api/workspace-app/ai-customer-finder/searches/${jobId}`),
     saveFinderResult: (resultId) => request<FirstCustomerSaveResponse>(`/api/workspace-app/leads/first-customers/results/${resultId}/save`, { method: "POST" }),
+    updateEmail: (emailId, payload) => request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
     approveEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, { method: "POST" })),
     sendApprovedEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, { method: "POST" })),
-    listEmails: async (cursor = "", pageSize = 100) => {
+    listEmails: async (cursor = "", pageSize = 25) => {
       const path = `/api/inbox?page_size=${pageSize}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
       const { data, headers } = await requestWithHeaders<Email[]>(path);
       return {

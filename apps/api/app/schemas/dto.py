@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator
 
 
 PIPELINE_STATUSES = ["New", "Qualified", "Contacted", "Interested", "Meeting", "Won", "Lost", "Archive"]
@@ -648,18 +648,25 @@ class ReplyAssistantOut(BaseModel):
 
 
 class EmailUpdate(BaseModel):
-    subject: Optional[str] = None
-    preview: Optional[str] = None
-    body: Optional[str] = None
-    cta: Optional[str] = None
-    follow_up_1: Optional[str] = None
-    follow_up_2: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    subject: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    preview: Optional[str] = Field(default=None, max_length=500)
+    body: Optional[str] = Field(default=None, min_length=1, max_length=20000)
+
+    @field_validator("subject", "body")
+    @classmethod
+    def require_non_blank_editable_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.strip():
+            raise ValueError("Field cannot be blank.")
+        return value
 
 
 class EmailOut(BaseModel):
     id: UUID
     campaign_id: Optional[UUID]
     lead_id: Optional[UUID]
+    direction: str = "outbound"
     subject: str
     preview: str
     body: str

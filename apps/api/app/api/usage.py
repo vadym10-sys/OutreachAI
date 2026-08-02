@@ -48,7 +48,7 @@ from app.core.database import get_db, get_sessionmaker, validate_runtime_schema
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
 from app.models.entities import AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
-from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
+from app.schemas.dto import CrmCompanyOut, EmailOut, EmailUpdate, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.ai_memory import (
     attach_memory_context,
@@ -8765,8 +8765,12 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
     email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
     if not email:
         raise HTTPException(status_code=404, detail="Email draft not found.")
-    if email.delivery_status == "sent":
-        raise HTTPException(status_code=409, detail="This email has already been sent.")
+    if email.direction != "outbound":
+        raise HTTPException(status_code=409, detail="Only outbound email drafts can be approved.")
+    if email.delivery_status in {"sent", "delivered", "opened", "replied", "bounced", "failed"}:
+        raise HTTPException(status_code=409, detail="Provider email records cannot be approved or edited.")
+    if email.delivery_status not in {"draft", "approved"}:
+        raise HTTPException(status_code=409, detail="Only outbound draft emails can be approved.")
     email.delivery_status = "approved"
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     company = None
@@ -8781,6 +8785,69 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
     return UsageActionOut(
         status="success",
         message="Email approved. It is ready to send, but nothing was sent automatically.",
+        company=_crm_company_out(db, workspace, user.user_id, company) if company else None,
+        email=EmailOut.model_validate(email),
+    )
+
+
+@router.patch("/emails/{email_id}", response_model=UsageActionOut)
+def update_email_draft(email_id: UUID, payload: EmailUpdate, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
+    if not email:
+        raise HTTPException(status_code=404, detail="Email draft not found.")
+    provider_statuses = {"sent", "delivered", "opened", "replied", "bounced", "failed"}
+    if email.direction != "outbound":
+        raise HTTPException(status_code=409, detail="Inbound emails and captured replies are read-only.")
+    if email.delivery_status in provider_statuses or email.provider_message_id or email.sent_at or email.delivered_at or email.opened_at or email.replied_at or email.bounced_at:
+        raise HTTPException(status_code=409, detail="Sent, delivered, opened, replied, bounced, and failed provider records cannot be edited.")
+    if email.delivery_status not in {"draft", "approved"}:
+        raise HTTPException(status_code=409, detail="Only outbound email drafts can be edited.")
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=422, detail="Provide at least one editable draft field.")
+    previous_status = email.delivery_status
+    for key, value in updates.items():
+        setattr(email, key, value)
+    status_transition = ""
+    if previous_status == "approved":
+        email.delivery_status = "draft"
+        status_transition = "approved_to_draft"
+        tags = email.tags if isinstance(email.tags, dict) else {}
+        email.tags = {key: value for key, value in tags.items() if key not in {"approved", "approved_at", "approval_source", "approval_user_id"}}
+
+    lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
+    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc())) if lead else None
+    if lead:
+        if status_transition:
+            metadata = _lead_metadata(lead)
+            metadata.pop("email_approved_at", None)
+            metadata["email_status"] = "Draft Ready"
+            lead.notes = json.dumps(metadata, sort_keys=True)
+            _set_workflow_stage(lead, "approval", "waiting", "Email was edited after approval. Review and approve it again before sending.")
+            company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+        _add_lead_activity(db, request, user.user_id, workspace, "email.edited", lead, {"email_id": str(email.id), "fields": sorted(updates.keys()), **({"status_transition": status_transition} if status_transition else {})})
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="email.edited",
+            metadata_json={
+                "email_id": str(email.id),
+                "lead_id": str(email.lead_id) if email.lead_id else None,
+                "fields": sorted(updates.keys()),
+                "status_before": previous_status,
+                "status_after": email.delivery_status,
+                **({"status_transition": status_transition} if status_transition else {}),
+            },
+        )
+    )
+    db.commit()
+    db.refresh(email)
+    return UsageActionOut(
+        status="success",
+        message="Email draft saved. Review and approve before sending.",
         company=_crm_company_out(db, workspace, user.user_id, company) if company else None,
         email=EmailOut.model_validate(email),
     )
@@ -8839,7 +8906,13 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))
     email.delivery_status = "sent"
-    email.tags = {**(email.tags if isinstance(email.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider}
+    provider_thread_id = str(provider_response.get("thread_id") or provider_response.get("threadId") or "").strip()
+    email.tags = {
+        **(email.tags if isinstance(email.tags, dict) else {}),
+        "sender_email": sender_status.sender_email,
+        "sender_provider": sender_status.provider,
+        **({"provider_thread_id": provider_thread_id} if provider_thread_id else {}),
+    }
     lead.status = LeadStatus.contacted
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": email.sent_at.isoformat()})
     _add_lead_activity(db, request, user.user_id, workspace, "email.sent", lead, {"email_id": str(email.id), "provider_message_id": email.provider_message_id})

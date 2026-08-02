@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandToCriteria, missingQuestion } from "@/components/ai-first-workspace";
+import { canEditEmailDraft, commandToCriteria, missingQuestion } from "@/components/ai-first-workspace";
 
 const blankAdvanced = {
   targetCountry: "",
@@ -49,5 +49,17 @@ describe("AI first workspace command parsing", () => {
   it("asks for more context when the command is empty or too short", () => {
     expect(missingQuestion("")).toBeTruthy();
     expect(missingQuestion("SaaS")).toBeTruthy();
+  });
+});
+
+describe("AI first workspace email edit guards", () => {
+  it("allows only outbound draft or approved emails without provider state", () => {
+    expect(canEditEmailDraft({ delivery_status: "draft", direction: "outbound" })).toBe(true);
+    expect(canEditEmailDraft({ delivery_status: "approved", direction: "outbound" })).toBe(true);
+    expect(canEditEmailDraft({ delivery_status: "received", direction: "inbound" })).toBe(false);
+    expect(canEditEmailDraft({ delivery_status: "replied", direction: "outbound" })).toBe(false);
+    expect(canEditEmailDraft({ delivery_status: "delivered", direction: "outbound" })).toBe(false);
+    expect(canEditEmailDraft({ delivery_status: "failed", direction: "outbound" })).toBe(false);
+    expect(canEditEmailDraft({ delivery_status: "approved", direction: "outbound", sent_at: "2026-08-02T12:00:00Z" })).toBe(false);
   });
 });

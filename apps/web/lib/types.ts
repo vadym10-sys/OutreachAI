@@ -1437,6 +1437,7 @@ export type Email = {
   id: string;
   campaign_id?: string | null;
   lead_id?: string | null;
+  direction?: string;
   subject: string;
   preview: string;
   body: string;

@@ -554,14 +554,53 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === `/api/workspace-app/leads/first-customers/results/${qaCustomerFinderResult.id}/save`) {
       const updated = { ...qaCustomerFinderResult, simple_status: "Письмо подготовлено", email_delivery_status: "draft" };
       currentFinderJob = { ...currentFinderJob, results: [updated] };
+      currentCompany = {
+        ...qaCompany,
+        id: qaCustomerFinderResult.company_id,
+        lead_id: qaCustomerFinderResult.lead_id,
+        name: qaCustomerFinderResult.company_name,
+        website: qaCustomerFinderResult.official_website,
+        domain: "euroscale-crm.co",
+        country: qaCustomerFinderResult.country,
+        city: "",
+        industry: qaCustomerFinderResult.industry,
+        contact: qaCustomerFinderResult.contact_name,
+        email: qaCustomerFinderResult.public_work_contact,
+        source: qaCustomerFinderResult.source_type,
+        ai_summary: qaCustomerFinderResult.fit_explanation,
+        sales_angle: qaCustomerFinderResult.model_inference,
+        email_status: "Verified",
+        crm_stage: "Email Draft Ready",
+        contacts: [{
+          ...qaCompany.contacts[0],
+          id: "55555555-5555-5555-5555-555555555556",
+          company_id: qaCustomerFinderResult.company_id,
+          lead_id: qaCustomerFinderResult.lead_id,
+          company: qaCustomerFinderResult.company_name,
+          name: qaCustomerFinderResult.contact_name,
+          title: qaCustomerFinderResult.contact_title,
+          email: qaCustomerFinderResult.public_work_contact,
+          source: qaCustomerFinderResult.source_type,
+          email_status: "Verified"
+        }],
+        generated_emails: [{
+          ...qaCompany.generated_emails[0],
+          id: qaCustomerFinderResult.email_id,
+          lead_id: qaCustomerFinderResult.lead_id,
+          subject: qaCustomerFinderResult.email_subject,
+          body: qaCustomerFinderResult.email_body,
+          preview: "A personalized draft is ready for manual approval.",
+          delivery_status: "draft"
+        }]
+      };
       return fulfillJson(route, { status: "success", message: "Lead saved to CRM. Outreach draft is ready for manual review.", result: updated });
     }
     if (apiPath === "/api/workspace-app/ai-customer-finder/searches" && route.request().method() === "POST") {
       currentFinderJob = {
         ...qaCustomerFinderJob,
         status: "searching",
-        progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 1, candidates: 3 },
-        results: [qaCustomerFinderResult]
+        progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 0, candidates: 3 },
+        results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "" }]
       };
       return fulfillJson(route, currentFinderJob, 202);
     }
@@ -769,12 +808,19 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, { status: "success", message: "Email draft created for review. Nothing was sent.", company, email });
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") {
-      const email = { ...qaCompany.generated_emails[0], delivery_status: "approved" };
+      const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "approved" };
       currentCompany = { ...currentCompany, crm_stage: "Approved", email_approved_at: now, generated_emails: [email] };
       return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: currentCompany, email });
     }
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333" && route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON() as Partial<typeof qaCompany.generated_emails[0]>;
+      const currentEmail = currentCompany.generated_emails[0];
+      const email = { ...currentEmail, ...body, delivery_status: currentEmail.delivery_status === "approved" ? "draft" : currentEmail.delivery_status };
+      currentCompany = { ...currentCompany, generated_emails: [email] };
+      return fulfillJson(route, { status: "success", message: currentEmail.delivery_status === "approved" ? "Changes saved. This email is back in draft and must be approved again before sending." : "Email draft saved. Review and approve before sending.", company: currentCompany, email });
+    }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
-      const email = { ...qaCompany.generated_emails[0], delivery_status: "sent", sent_at: now };
+      const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "sent", sent_at: now };
       currentCompany = { ...currentCompany, crm_stage: "Sent", email_sent_at: now, generated_emails: [email] };
       return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: currentCompany, email });
     }
