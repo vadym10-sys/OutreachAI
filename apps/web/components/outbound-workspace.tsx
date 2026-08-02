@@ -8,7 +8,7 @@ import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Rocket, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
 import { AiTimeline, AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, OperatingPanel, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
-import { clientApi, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
+import { clientApi, clientApiWithHeaders, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
 import { companyGrowthSignals, companyHiringSignals, companyNewsSignals, executiveTimelineV2, leadScoreV2, nextBestActionV2, outreachCopilotAssetsV2, researchInputsV2 } from "@/lib/ai-sales-operating-system";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
@@ -19,6 +19,7 @@ import type { Activity, AISalesEmployee, BillingStatus, Campaign, CampaignSequen
 import type { AiMemoryEntriesResponse, AiMemoryEntry, AiMemoryExplainResponse, AiMemorySettings, AnalysisResult, FirstCustomerJob, FirstCustomerResult, FirstCustomerSaveResponse, LeadSearchPayload, PaginatedLeads, OutreachSenderStatus, WorkspaceAiSalesAnalysis, WorkspaceAiSalesAnalysisResponse, WorkspaceAiSalesAnalysisVersion, WorkspaceAiSalesRecommendationActionIn, WorkspaceAppActionResponse, WorkspaceAppBootstrapResponse, WorkspaceAppCompanyCreateResponse, WorkspaceAppLeadSearchResponse, WorkspaceDeepContactJobStatusResponse, WorkspaceIntegrationStatus, WorkspaceIntegrationStatusResponse } from "@/lib/customer-api-contracts";
 
 type ApiFn = <T>(path: string, init?: ClientApiInit) => Promise<T>;
+type ApiWithHeadersFn = <T>(path: string, init?: ClientApiInit) => Promise<{ data: T; headers: Headers }>;
 
 type WorkflowStageStatus = "waiting" | "running" | "completed" | "error";
 
@@ -546,6 +547,10 @@ async function devApi<T>(path: string, init: ClientApiInit = {}) {
   return clientApi<T>(path, "dev", init);
 }
 
+async function devApiWithHeaders<T>(path: string, init: ClientApiInit = {}) {
+  return clientApiWithHeaders<T>(path, "dev", init);
+}
+
 function useClerkTokenApi(clerkEnabled: boolean) {
   if (!clerkEnabled || isClerkE2EBypass) {
     return {
@@ -559,7 +564,7 @@ function useClerkTokenApi(clerkEnabled: boolean) {
   return useAuth();
 }
 
-function useTokenApi(): { api: ApiFn; ready: boolean } {
+function useTokenApi(): { api: ApiFn; apiWithHeaders: ApiWithHeadersFn; ready: boolean } {
   const { clerkEnabled } = useAuthRuntime();
   const { getToken, isLoaded, isSignedIn } = useClerkTokenApi(clerkEnabled);
   const disabledApi = useCallback(async () => {
@@ -580,14 +585,20 @@ function useTokenApi(): { api: ApiFn; ready: boolean } {
     if (!token) throw new Error("Please sign in again before continuing.");
     return clientApi<T>(path, token, init);
   }, [getFreshToken, isLoaded, isSignedIn]);
+  const apiWithHeaders = useCallback(async function apiWithHeaders<T>(path: string, init: ClientApiInit = {}) {
+    if (!isLoaded || !isSignedIn) throw new Error("Please sign in again before continuing.");
+    const token = await getFreshToken();
+    if (!token) throw new Error("Please sign in again before continuing.");
+    return clientApiWithHeaders<T>(path, token, init);
+  }, [getFreshToken, isLoaded, isSignedIn]);
 
   if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
-    return { api: devApi, ready: true };
+    return { api: devApi, apiWithHeaders: devApiWithHeaders, ready: true };
   }
   if (!clerkEnabled) {
-    return { api: disabledApi, ready: false };
+    return { api: disabledApi, apiWithHeaders: disabledApi as ApiWithHeadersFn, ready: false };
   }
-  return { api, ready: isLoaded && Boolean(isSignedIn) };
+  return { api, apiWithHeaders, ready: isLoaded && Boolean(isSignedIn) };
 }
 
 function parseNotes(notes?: string | null) {
@@ -1146,11 +1157,11 @@ function useSalesData() {
 }
 
 function useInboxData() {
-  const { api, ready } = useTokenApi();
+  const { apiWithHeaders, ready } = useTokenApi();
   const [messages, setMessages] = useState<Email[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [page, setPage] = useState(1);
+  const [nextCursor, setNextCursor] = useState("");
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState("");
   const pageSize = 100;
@@ -1163,17 +1174,18 @@ function useInboxData() {
     setLoading(true);
     setError("");
     try {
-      const firstPage = safeArray(await api<Email[]>(`/api/inbox?page=1&page_size=${pageSize}`));
-      setMessages(firstPage);
-      setPage(1);
-      setHasMore(firstPage.length === pageSize);
+      const firstPage = await apiWithHeaders<Email[]>(`/api/inbox?page_size=${pageSize}`);
+      const firstMessages = safeArray(firstPage.data);
+      setMessages(firstMessages);
+      setNextCursor(firstPage.headers.get("x-next-cursor") || "");
+      setHasMore(firstPage.headers.get("x-has-more") === "true");
     } catch (err) {
       reportWidgetFailure(err, "inbox-loader", { endpoint: "/api/inbox" });
       setError(friendlyErrorMessage(err, "Inbox replies are temporarily unavailable."));
     } finally {
       setLoading(false);
     }
-  }, [api, ready]);
+  }, [apiWithHeaders, ready]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1186,19 +1198,19 @@ function useInboxData() {
     if (!ready || loadingMore || !hasMore) return;
     setLoadingMore(true);
     setError("");
-    const nextPage = page + 1;
     try {
-      const nextMessages = safeArray(await api<Email[]>(`/api/inbox?page=${nextPage}&page_size=${pageSize}`));
+      const nextPage = await apiWithHeaders<Email[]>(`/api/inbox?page_size=${pageSize}&cursor=${encodeURIComponent(nextCursor)}`);
+      const nextMessages = safeArray(nextPage.data);
       setMessages((current) => [...current, ...nextMessages]);
-      setPage(nextPage);
-      setHasMore(nextMessages.length === pageSize);
+      setNextCursor(nextPage.headers.get("x-next-cursor") || "");
+      setHasMore(nextPage.headers.get("x-has-more") === "true");
     } catch (err) {
-      reportWidgetFailure(err, "inbox-loader", { endpoint: "/api/inbox", page: nextPage });
+      reportWidgetFailure(err, "inbox-loader", { endpoint: "/api/inbox", cursor: nextCursor ? "present" : "missing" });
       setError(friendlyErrorMessage(err, "Older inbox replies are temporarily unavailable."));
     } finally {
       setLoadingMore(false);
     }
-  }, [api, hasMore, loadingMore, page, ready]);
+  }, [apiWithHeaders, hasMore, loadingMore, nextCursor, ready]);
 
   return { messages, loading, loadingMore, hasMore, error, refresh, loadMore };
 }

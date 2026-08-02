@@ -841,7 +841,7 @@ function EmailsSection() {
   const api = useAiFirstApi();
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [inbox, setInbox] = useState<Email[]>([]);
-  const [inboxPage, setInboxPage] = useState(1);
+  const [inboxCursor, setInboxCursor] = useState("");
   const [inboxHasMore, setInboxHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
@@ -853,11 +853,11 @@ function EmailsSection() {
     if (!api.ready) return;
     setLoading(true);
     try {
-      const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails(1, aiFirstInboxPageSize)]);
+      const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails("", aiFirstInboxPageSize)]);
       setCompanies(nextCompanies);
-      setInbox(nextInbox);
-      setInboxPage(1);
-      setInboxHasMore(nextInbox.length === aiFirstInboxPageSize);
+      setInbox(nextInbox.messages);
+      setInboxCursor(nextInbox.nextCursor);
+      setInboxHasMore(nextInbox.hasMore);
       setLoadError("");
     } catch (err) {
       setLoadError(friendlyErrorMessage(err, "Could not load emails."));
@@ -872,14 +872,13 @@ function EmailsSection() {
 
   async function loadOlderReplies() {
     if (!api.ready || !inboxHasMore || busy) return;
-    const nextPage = inboxPage + 1;
     setBusy("inbox:more");
     setActionError("");
     try {
-      const olderInbox = await api.listEmails(nextPage, aiFirstInboxPageSize);
-      setInbox((current) => uniqueEmails([], [...current, ...olderInbox]));
-      setInboxPage(nextPage);
-      setInboxHasMore(olderInbox.length === aiFirstInboxPageSize);
+      const olderInbox = await api.listEmails(inboxCursor, aiFirstInboxPageSize);
+      setInbox((current) => uniqueEmails([], [...current, ...olderInbox.messages]));
+      setInboxCursor(olderInbox.nextCursor);
+      setInboxHasMore(olderInbox.hasMore);
     } catch (err) {
       setActionError(friendlyErrorMessage(err, "Could not load older replies."));
     } finally {
