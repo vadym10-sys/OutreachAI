@@ -1656,6 +1656,15 @@ function OpportunityCard({
   const nextStep = opportunityNextStep(lead, draft);
   const contactSearch = contactSearchDetails(lead);
   const contactNeedsManualStep = !lead.email && (contactSearch.checked || lead.hunter_status === "no_verified_email");
+  const draftSendConfirmationPending = draft?.delivery_status === "send_confirmation_pending";
+  const draftLocked = draft?.delivery_status === "approved" || draft?.delivery_status === "sent" || draftSendConfirmationPending;
+  const draftStatusMessage = draft?.delivery_status === "sent"
+    ? "Approved email was sent. CRM stage updated to Sent."
+    : draft?.delivery_status === "approved"
+      ? "Email approved. Nothing was sent yet."
+      : draftSendConfirmationPending
+        ? "Email delivery could not be confirmed. Check the mailbox before recovering or sending again."
+        : "Review this draft before sending. No email has been sent yet.";
   const dataFacts = opportunityDataFacts(lead, profile, t);
   const dataSummary = dataCollectionSummaryFromFacts(dataFacts, t);
   const leadDecisionReason = copilot?.fit_reason || safeArray(copilot?.reasoning)[0] || profile.opportunityAnalysis || profile.painAnalysis || profile.websiteAnalysis || "Potential fit is not proven yet; verify the company website and decision maker before spending sales time.";
@@ -2854,9 +2863,9 @@ function OpportunityCard({
         </div>
       </section>}
 
-      {draft && (readyToSend || draft.delivery_status === "approved" || draft.delivery_status === "sent") && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+      {draft && (readyToSend || draft.delivery_status === "approved" || draft.delivery_status === "sent" || draftSendConfirmationPending) && <section className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold uppercase text-slate-500">{t("Personalized first email")}</p>
-        <p className="mt-2 rounded-lg bg-teal-50 p-3 text-sm font-semibold text-brand">{draft.delivery_status === "sent" ? t("Approved email was sent. CRM stage updated to Sent.") : draft.delivery_status === "approved" ? t("Email approved. Nothing was sent yet.") : t("Review this draft before sending. No email has been sent yet.")}</p>
+        <p className={`mt-2 rounded-lg p-3 text-sm font-semibold ${draftSendConfirmationPending ? "bg-amber-50 text-amber-800" : "bg-teal-50 text-brand"}`}>{t(draftStatusMessage)}</p>
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           <div className="rounded-lg bg-white p-3 text-sm">
             <span className="font-bold text-slate-700">{t("Recipient")}:</span>{" "}
@@ -2975,8 +2984,8 @@ function OpportunityCard({
       ) : null}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Run all missing steps" : "Refresh AI research")}</PrimaryButton>
-        <SecondaryButton onClick={() => setEditingDraft(true)} disabled={busy || !draft || sending || savingDraft || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{savingDraft ? <Loader2 className="animate-spin" size={17} /> : <FileText size={17} />} {t("Edit email")}</SecondaryButton>
-        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || savingDraft || editingDraft || draft.delivery_status === "approved" || draft.delivery_status === "sent"}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : t("Approve email")}</SecondaryButton>
+        <SecondaryButton onClick={() => setEditingDraft(true)} disabled={busy || !draft || sending || savingDraft || draftLocked}>{savingDraft ? <Loader2 className="animate-spin" size={17} /> : <FileText size={17} />} {t("Edit email")}</SecondaryButton>
+        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || savingDraft || editingDraft || draftLocked}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : draftSendConfirmationPending ? t("Check mailbox") : t("Approve email")}</SecondaryButton>
         <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || savingDraft || editingDraft || senderLoading || draft.delivery_status !== "approved"}>{sending || senderLoading ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </OpportunityCardShell>

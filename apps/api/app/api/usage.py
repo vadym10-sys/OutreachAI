@@ -88,6 +88,8 @@ UsageStatus = Literal["success", "partial_success", "empty", "provider_unavailab
 PLACEHOLDER_EMAIL_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
 MAX_TURNKEY_RESEARCH_LEADS = 10
 EMAIL_SEND_CLAIM_LEASE_SECONDS = 15 * 60
+EMAIL_SEND_CONFIRMATION_PENDING_STATUS = "send_confirmation_pending"
+EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED = {"resend"}
 LOCALE_LANGUAGE_NAMES = {
     "en": "English",
     "en-us": "American English",
@@ -8936,10 +8938,13 @@ def _recover_stale_email_send_claim(db: Session, *, workspace_id: UUID, email_id
     expires_at = _parse_iso_datetime(tags.get("send_claim_expires_at"))
     if expires_at and expires_at > now:
         return False
+    provider = str(tags.get("sender_provider") or "").strip().lower()
+    provider_supports_idempotency = bool(tags.get("provider_idempotency_supported") is True or provider in EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED)
+    restored_status = "approved" if provider_supports_idempotency or not provider else EMAIL_SEND_CONFIRMATION_PENDING_STATUS
     restored_tags = {
         **tags,
         "stale_send_recovered_at": now.isoformat(),
-        "last_send_error": "stale_send_claim_recovered",
+        "last_send_error": "stale_send_claim_recovered" if restored_status == "approved" else "send_confirmation_required_after_interruption",
     }
     result = db.execute(
         update(EmailMessage)
@@ -8950,9 +8955,17 @@ def _recover_stale_email_send_claim(db: Session, *, workspace_id: UUID, email_id
             EmailMessage.provider_message_id.is_(None),
             EmailMessage.sent_at.is_(None),
         )
-        .values(delivery_status="approved", tags=restored_tags)
+        .values(delivery_status=restored_status, tags=restored_tags)
     )
     if result.rowcount == 1:
+        db.add(
+            AuditLog(
+                user_id=current.user_id,
+                workspace_id=workspace_id,
+                action="email.send_recovered" if restored_status == "approved" else "email.send_confirmation_pending",
+                metadata_json={"email_id": str(email_id), "reason": restored_tags["last_send_error"], "sender_provider": provider or None},
+            )
+        )
         db.commit()
         return True
     db.rollback()
@@ -8971,17 +8984,7 @@ def _claim_approved_email_for_send(db: Session, *, workspace_id: UUID, email_id:
         "send_claimed_at": now.isoformat(),
         "send_claim_expires_at": (now + timedelta(seconds=EMAIL_SEND_CLAIM_LEASE_SECONDS)).isoformat(),
     }
-    result = db.execute(
-        update(EmailMessage)
-        .where(
-            EmailMessage.id == email_id,
-            EmailMessage.workspace_id == workspace_id,
-            EmailMessage.delivery_status == "approved",
-            EmailMessage.provider_message_id.is_(None),
-            EmailMessage.sent_at.is_(None),
-        )
-        .values(delivery_status="sending", tags=next_tags)
-    )
+    result = db.execute(_approved_email_send_claim_update(workspace_id=workspace_id, email_id=email_id, values={"delivery_status": "sending", "tags": next_tags}))
     if result.rowcount != 1:
         db.rollback()
         current = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace_id))
@@ -8999,6 +9002,20 @@ def _claim_approved_email_for_send(db: Session, *, workspace_id: UUID, email_id:
     return email
 
 
+def _approved_email_send_claim_update(*, workspace_id: UUID, email_id: UUID, values: dict[str, Any]):
+    return (
+        update(EmailMessage)
+        .where(
+            EmailMessage.id == email_id,
+            EmailMessage.workspace_id == workspace_id,
+            EmailMessage.delivery_status == "approved",
+            EmailMessage.provider_message_id.is_(None),
+            EmailMessage.sent_at.is_(None),
+        )
+        .values(**values)
+    )
+
+
 def _restore_email_send_retry_state(db: Session, *, request: Request, user_id: str, workspace: Workspace, lead: Lead | None, email_id: UUID, reason: str) -> None:
     db.rollback()
     email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
@@ -9011,7 +9028,99 @@ def _restore_email_send_retry_state(db: Session, *, request: Request, user_id: s
         }
     if lead:
         _add_lead_activity(db, request, user_id, workspace, "email.send_failed", lead, {"email_id": str(email_id), "reason": reason, "retryable": True})
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            action="email.send_failed",
+            metadata_json={"email_id": str(email_id), "reason": reason, "retryable": True, "status_after": "approved"},
+        )
+    )
     db.commit()
+
+
+def _mark_email_send_confirmation_pending(db: Session, *, request: Request, user_id: str, workspace: Workspace, lead: Lead | None, email_id: UUID, reason: str, sender_provider: str) -> None:
+    db.rollback()
+    now = datetime.utcnow()
+    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
+    if email and email.delivery_status == "sending" and not email.provider_message_id and not email.sent_at:
+        email.delivery_status = EMAIL_SEND_CONFIRMATION_PENDING_STATUS
+        email.tags = {
+            **(email.tags if isinstance(email.tags, dict) else {}),
+            "last_send_error": reason,
+            "last_send_failed_at": now.isoformat(),
+            "sender_provider": sender_provider,
+            "provider_idempotency_supported": False,
+        }
+    if lead:
+        _add_lead_activity(db, request, user_id, workspace, "email.send_confirmation_pending", lead, {"email_id": str(email_id), "reason": reason, "retryable": False, "sender_provider": sender_provider})
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            action="email.send_confirmation_pending",
+            metadata_json={"email_id": str(email_id), "reason": reason, "retryable": False, "sender_provider": sender_provider, "status_after": EMAIL_SEND_CONFIRMATION_PENDING_STATUS},
+        )
+    )
+    db.commit()
+
+
+def _record_email_send_provider_context(db: Session, *, workspace_id: UUID, email_id: UUID, sender_provider: str, sender_email: str | None) -> None:
+    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace_id))
+    if not email or email.delivery_status != "sending" or email.provider_message_id or email.sent_at:
+        raise HTTPException(status_code=409, detail="This email is already being sent or has a provider record.")
+    email.tags = {
+        **(email.tags if isinstance(email.tags, dict) else {}),
+        "sender_provider": sender_provider,
+        "sender_email": sender_email,
+        "provider_idempotency_supported": sender_provider in EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED,
+    }
+    db.commit()
+
+
+@router.post("/emails/{email_id}/recover", response_model=UsageActionOut)
+def recover_email_send(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
+    if not email:
+        raise HTTPException(status_code=404, detail="Email draft not found.")
+    if email.provider_message_id or email.sent_at:
+        raise HTTPException(status_code=409, detail="Provider email records cannot be recovered to approved.")
+    tags = email.tags if isinstance(email.tags, dict) else {}
+    now = datetime.utcnow()
+    expires_at = _parse_iso_datetime(tags.get("send_claim_expires_at"))
+    if email.delivery_status == "sending" and expires_at and expires_at > now:
+        raise HTTPException(status_code=409, detail="This email is still being sent. Wait for the current send lease to expire before recovery.")
+    if email.delivery_status not in {"sending", EMAIL_SEND_CONFIRMATION_PENDING_STATUS}:
+        raise HTTPException(status_code=409, detail="Only interrupted sends can be recovered.")
+
+    email.delivery_status = "approved"
+    email.tags = {
+        **tags,
+        "last_send_error": "manual_send_recovery",
+        "send_recovered_at": now.isoformat(),
+        "send_recovered_by_user_id": user.user_id,
+    }
+    lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
+    if lead:
+        _add_lead_activity(db, request, user.user_id, workspace, "email.send_recovered", lead, {"email_id": str(email.id), "reason": "manual_send_recovery"})
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="email.send_recovered",
+            metadata_json={"email_id": str(email.id), "reason": "manual_send_recovery", "status_after": "approved"},
+        )
+    )
+    db.commit()
+    db.refresh(email)
+    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc())) if lead else None
+    return UsageActionOut(
+        status="success",
+        message="Interrupted send recovered. Confirm the message was not delivered before sending again.",
+        company=_crm_company_out(db, workspace, user.user_id, company) if company else None,
+        email=EmailOut.model_validate(email),
+    )
 
 
 @router.post("/emails/{email_id}/send", response_model=UsageActionOut)
@@ -9033,6 +9142,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     try:
         sender_status, smtp_config = _outreach_sender_runtime_config(db, user.user_id, workspace)
         _enforce_usage(db, user.user_id, workspace, "email_sends")
+        _record_email_send_provider_context(db, workspace_id=workspace.id, email_id=email.id, sender_provider=sender_status.provider, sender_email=sender_status.sender_email)
         provider_response = send_email(
             to_email=lead.email,
             subject=email.subject,
@@ -9052,15 +9162,23 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
         capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
         raise HTTPException(status_code=409, detail="Email sending needs setup. The approved draft is still saved.") from exc
     except EmailProviderRequestError as exc:
+        sender_provider = str(locals().get("sender_status").provider) if "sender_status" in locals() else ""
+        if sender_provider and sender_provider not in EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED:
+            _mark_email_send_confirmation_pending(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=str(exc), sender_provider=sender_provider)
+            capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
+            raise HTTPException(status_code=502, detail="Email sending could not be confirmed. Check the mailbox before recovering or sending again.") from exc
         _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=str(exc))
         capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
         raise HTTPException(status_code=502, detail="Email sending is temporarily unavailable. The approved draft is still saved.") from exc
     except Exception as exc:
-        email.delivery_status = "failed"
-        _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id)})
-        db.commit()
+        sender_provider = str(locals().get("sender_status").provider) if "sender_status" in locals() else ""
+        if sender_provider and sender_provider not in EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED:
+            _mark_email_send_confirmation_pending(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=exc.__class__.__name__, sender_provider=sender_provider)
+            capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
+            raise HTTPException(status_code=500, detail="Email sending could not be confirmed. Check the mailbox before recovering or sending again.") from exc
+        _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=exc.__class__.__name__)
         capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
-        raise HTTPException(status_code=500, detail="Email sending failed. The approved draft is still saved.") from exc
+        raise HTTPException(status_code=500, detail="Email sending failed before provider confirmation. The approved draft is still saved.") from exc
 
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))

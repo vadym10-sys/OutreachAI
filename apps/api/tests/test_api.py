@@ -52,7 +52,7 @@ from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.reliability import database_backup_configured, validate_database_connectivity, validate_required_environment  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
-from app.api.usage import _parse_lead_command  # noqa: E402
+from app.api.usage import _approved_email_send_claim_update, _parse_lead_command  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _enforce_usage, _lead_ai_payload, _limits_for_workspace, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
 from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
@@ -4535,6 +4535,126 @@ def test_workspace_app_email_provider_failure_uses_non_200_http_status(monkeypat
     retry = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
     assert retry.status_code == 200
     assert retry.json()["email"]["delivery_status"] == "sent"
+
+
+def test_workspace_app_email_unexpected_exception_restores_approved_with_audit(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-unexpected-send-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="Unexpected Send Co")
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Unexpected Sender",
+            "sender_email": "sender@unexpected-send.example",
+            "reply_to": "reply@unexpected-send.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("unexpected provider client bug")))
+    response = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Email sending failed before provider confirmation. The approved draft is still saved."
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.delivery_status == "approved"
+        assert saved_email.provider_message_id is None
+        assert saved_email.sent_at is None
+        assert saved_email.tags["last_send_error"] == "RuntimeError"
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == "email.send_failed", AuditLog.workspace_id == saved_email.workspace_id).order_by(AuditLog.created_at.desc()))
+        assert audit is not None
+        assert audit.metadata_json["email_id"] == email["id"]
+        assert audit.metadata_json["reason"] == "RuntimeError"
+        assert audit.metadata_json["status_after"] == "approved"
+        assert audit.metadata_json["retryable"] is True
+        assert db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.workspace_id == saved_email.workspace_id, AuditLog.action == "email.send_failed")) >= 1
+
+
+def test_workspace_app_non_idempotent_provider_error_requires_delivery_confirmation(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-smtp-confirmation-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="SMTP Confirmation Co")
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    monkeypatch.setattr(
+        "app.api.usage._outreach_sender_runtime_config",
+        lambda db, user_id, workspace: (
+            SimpleNamespace(provider="smtp", sender_email="sender@smtp-confirmation.example", sender_name="SMTP Sender", reply_to="reply@smtp-confirmation.example"),
+            {"host": "smtp.confirmation.example", "port": 587, "username": "sender", "password": "secret", "use_tls": True},
+        ),
+    )
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: (_ for _ in ()).throw(EmailProviderRequestError("SMTP email sending failed.")))
+
+    response = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Email sending could not be confirmed. Check the mailbox before recovering or sending again."
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.delivery_status == "send_confirmation_pending"
+        assert saved_email.provider_message_id is None
+        assert saved_email.sent_at is None
+        assert saved_email.tags["sender_provider"] == "smtp"
+        assert saved_email.tags["provider_idempotency_supported"] is False
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == "email.send_confirmation_pending", AuditLog.workspace_id == saved_email.workspace_id).order_by(AuditLog.created_at.desc()))
+        assert audit is not None
+        assert audit.metadata_json["sender_provider"] == "smtp"
+        assert audit.metadata_json["retryable"] is False
+
+
+def test_workspace_app_email_workspace_isolation_for_approve_send_patch_and_recover(monkeypatch) -> None:
+    owner_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-owner-{uuid4()}@example.com"}
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-other-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(owner_headers, monkeypatch, company_name="Isolation Email Co")
+
+    approve_other = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=other_headers)
+    send_other = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=other_headers)
+    patch_other = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=other_headers, json={"body": "Cross-workspace body"})
+    assert approve_other.status_code == 404
+    assert send_other.status_code == 404
+    assert patch_other.status_code == 404
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        saved_email.delivery_status = "sending"
+        saved_email.tags = {
+            **(saved_email.tags if isinstance(saved_email.tags, dict) else {}),
+            "send_claim_expires_at": (datetime.utcnow() - timedelta(minutes=1)).isoformat(),
+            "sender_provider": "smtp",
+            "provider_idempotency_supported": False,
+        }
+        db.commit()
+
+    recover_other = client.post(f"/api/workspace-app/emails/{email['id']}/recover", headers=other_headers)
+    assert recover_other.status_code == 404
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.delivery_status == "sending"
+
+
+def test_workspace_app_postgresql_send_claim_uses_single_conditional_update() -> None:
+    statement = _approved_email_send_claim_update(
+        workspace_id=uuid4(),
+        email_id=uuid4(),
+        values={"delivery_status": "sending", "tags": {"send_attempt": 1}},
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+    assert compiled.startswith("UPDATE email_messages SET")
+    assert "WHERE email_messages.id = " in compiled
+    assert "email_messages.workspace_id = " in compiled
+    assert "email_messages.delivery_status = " in compiled
+    assert "email_messages.provider_message_id IS NULL" in compiled
+    assert "email_messages.sent_at IS NULL" in compiled
 
 
 def test_workspace_app_parallel_send_claims_approved_email_once(monkeypatch) -> None:
