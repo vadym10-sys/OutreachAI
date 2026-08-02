@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
+import { installQaGuards } from "../tests/helpers/qa-guards";
 
 const visibleLanguageSelect = (page: import("@playwright/test").Page) =>
   page.locator('select[aria-label="Language"]:visible').first();
 
-test("landing explains the B2B outbound product and pricing", async ({ page }) => {
+test("landing explains the B2B outbound product and pricing", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
   await page.goto("/");
   const main = page.getByRole("main");
   await expect(page.getByRole("heading", { name: "Find the right companies. Understand why they will buy. Reach out with AI." })).toBeVisible();
@@ -11,11 +13,20 @@ test("landing explains the B2B outbound product and pricing", async ({ page }) =
   await expect(page.getByRole("link", { name: "Start finding customers" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Login" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "View demo dashboard" })).toHaveCount(0);
-  await expect(main.getByText("Business input", { exact: true })).toBeVisible();
-  await expect(main.getByText("Evidence-backed lead", { exact: true })).toBeVisible();
-  await expect(main.getByText("Human approval", { exact: true })).toBeVisible();
-  await expect(main.getByText("Draft email waiting for review before send", { exact: true })).toBeVisible();
-  await expect(main).toContainText("Workspace readiness, usage limits and manually approved outreach");
+  await expect(main.getByText("Business description", { exact: true })).toBeVisible();
+  await expect(main.getByText("Company with evidence", { exact: true })).toBeVisible();
+  await expect(main.getByText("Manual confirmation", { exact: true })).toBeVisible();
+  await expect(main.getByText("Demo evidence uses safe fixture data, not customer production records.", { exact: true })).toBeVisible();
+  await expect(main).toContainText("49 EUR/month");
+  await expect(main).toContainText("149 EUR/month");
+  await expect(main).toContainText("499 EUR/month");
+  await expect(main).toContainText("500 leads per month");
+  await expect(main).toContainText("50,000 leads per month");
+  await expect(main).toContainText("14 day trial");
+  await expect(main.getByRole("link", { name: "Choose Starter" })).toHaveAttribute("href", "/sign-up?plan=Starter");
+  await expect(main.getByRole("link", { name: "Choose Pro" })).toHaveAttribute("href", "/sign-up?plan=Pro");
+  await expect(main.getByRole("link", { name: "Choose Agency" })).toHaveAttribute("href", "/sign-up?plan=Agency");
+  await expect(page.locator("#contact").getByRole("link", { name: /@/ })).toHaveAttribute("href", /^mailto:/);
   await expect(main).not.toContainText("Clerk");
   await expect(main).not.toContainText("Stripe");
   await expect(page.getByRole("heading", { name: "AI Lead Intelligence" })).toBeVisible();
@@ -23,9 +34,11 @@ test("landing explains the B2B outbound product and pricing", async ({ page }) =
   await expect(page.getByRole("heading", { name: "Starter" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Pro" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agency" }).first()).toBeVisible();
+  await guards.assertClean();
 });
 
-test("landing follows the selected language without mixed English hero copy", async ({ page }) => {
+test("landing follows the selected language without mixed English hero copy", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
   await page.goto("/");
   const main = page.getByRole("main");
   await visibleLanguageSelect(page).selectOption("ru");
@@ -36,11 +49,17 @@ test("landing follows the selected language without mixed English hero copy", as
   await expect(page.getByRole("link", { name: "Войти" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Посмотреть демо-панель" })).toHaveCount(0);
   await expect(main.getByText("Описание бизнеса", { exact: true })).toBeVisible();
-  await expect(main.getByText("Лид с доказательствами", { exact: true })).toBeVisible();
-  await expect(main.getByText("Подтверждение человеком", { exact: true })).toBeVisible();
+  await expect(main.getByText("Компания с доказательствами", { exact: true })).toBeVisible();
+  await expect(main.locator("p", { hasText: "Ручное подтверждение" }).first()).toBeVisible();
+  await expect(main).toContainText("49 EUR/месяц");
+  await expect(main).toContainText("14 дней пробного периода");
+  await expect(main.getByRole("link", { name: /Выбрать Starter/ })).toBeVisible();
+  await expect(page.locator("#contact").getByRole("link", { name: /@/ })).toHaveAttribute("href", /^mailto:/);
   await expect(main).not.toContainText("AI Sales Employee for B2B Lead Generation");
   await expect(main).not.toContainText("Find qualified companies, analyze their websites");
   await expect(main).not.toContainText("Start free trial");
+  await expect(main).not.toContainText("Questions before signing up?");
+  await guards.assertClean();
 });
 
 for (const width of [360, 390, 430]) {

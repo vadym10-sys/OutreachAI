@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { installQaGuards } from "../tests/helpers/qa-guards";
 
 const pages = [
   { path: "/privacy", heading: "Privacy Policy" },
@@ -13,7 +14,8 @@ const landingFooterLinks = [
 ] as const;
 
 for (const legalPage of pages) {
-  test(`${legalPage.path} opens directly and keeps public navigation`, async ({ page }) => {
+  test(`${legalPage.path} opens directly and keeps public navigation`, async ({ page }, testInfo) => {
+    const guards = installQaGuards(page, testInfo);
     const response = await page.goto(legalPage.path);
 
     expect(response?.status()).toBe(200);
@@ -24,9 +26,25 @@ for (const legalPage of pages) {
     await expect(page.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
     await expect(page.getByRole("link", { name: "Terms of Service" })).toHaveAttribute("href", "/terms");
     await expect(page.getByRole("link", { name: "Security" })).toHaveAttribute("href", "/security");
+    await expect(page.getByRole("link", { name: "Support" })).toHaveAttribute("href", /^mailto:/);
     await expect(page.locator("body")).not.toContainText("404");
+    await guards.assertClean();
   });
 }
+
+test("privacy page localizes visible Russian legal copy", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.goto("/privacy");
+  await page.locator('select[aria-label="Language"]:visible').first().selectOption("ru");
+
+  const main = page.getByRole("main");
+  await expect(page.getByRole("heading", { name: "Политика конфиденциальности", level: 1 })).toBeVisible();
+  await expect(main).toContainText("Какие данные мы собираем");
+  await expect(main).toContainText("Запросы по вопросам конфиденциальности и безопасности");
+  await expect(main).not.toContainText("Information we collect");
+  await expect(main).not.toContainText("Last updated");
+  await guards.assertClean();
+});
 
 test("public legal pages fit mobile viewport without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -48,7 +66,7 @@ test("public legal pages fit mobile viewport without horizontal overflow", async
   }
 });
 
-test("landing footer links to public legal pages", async ({ page }) => {
+test("landing footer links to public legal pages and support", async ({ page }) => {
   await page.goto("/");
 
   const footer = page.locator("footer");
@@ -57,4 +75,5 @@ test("landing footer links to public legal pages", async ({ page }) => {
   for (const link of landingFooterLinks) {
     await expect(footer.getByRole("link", { name: link.name })).toHaveAttribute("href", link.href);
   }
+  await expect(footer.getByRole("link", { name: "Support" })).toHaveAttribute("href", /^mailto:/);
 });

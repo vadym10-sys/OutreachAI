@@ -9,42 +9,41 @@ export const metadata: Metadata = {
 const sections = [
   {
     title: "Use of the service",
-    body: (
-      <p>OutreachAI provides software for AI-assisted lead research, explainable sales intelligence, CRM handoff, billing flows, and reviewed outreach workflows. Users are responsible for using the service lawfully and for reviewing outputs before acting on them.</p>
-    ),
+    body: [
+      "OutreachAI provides software for AI-assisted lead research, explainable sales intelligence, CRM handoff, billing flows, and reviewed outreach workflows. Users are responsible for using the service lawfully and for reviewing outputs before acting on them.",
+    ],
   },
   {
     title: "Accounts and access",
-    body: (
-      <p>Users are responsible for maintaining access to their account and for activity performed through their workspace. Access to paid or restricted features may depend on authentication, plan status, usage limits, and connected services.</p>
-    ),
+    body: [
+      "Users are responsible for maintaining access to their account and for activity performed through their workspace. Access to paid or restricted features may depend on authentication, plan status, usage limits, and connected services.",
+    ],
   },
   {
     title: "AI-assisted output",
-    body: (
-      <>
-        <p>AI output can be incomplete, inaccurate, or unsuitable for a specific sales situation. Users should verify company information, contact details, outreach copy, and CRM updates before relying on them.</p>
-        <p>The product is intended to keep generated outreach in a review flow so users can approve, edit, or reject work before sending.</p>
-      </>
-    ),
+    body: [
+      "AI output can be incomplete, inaccurate, or unsuitable for a specific sales situation. Users should verify company information, contact details, outreach copy, and CRM updates before relying on them.",
+      "The product is intended to keep generated outreach in a review flow so users can approve, edit, or reject work before sending.",
+    ],
   },
   {
     title: "Acceptable use",
-    body: (
-      <p>Users must not use OutreachAI to violate law, platform rules, privacy rights, intellectual property rights, anti-spam obligations, or the security of any person, system, or service.</p>
-    ),
+    body: [
+      "Users must not use OutreachAI to violate law, platform rules, privacy rights, intellectual property rights, anti-spam obligations, or the security of any person, system, or service.",
+    ],
   },
   {
     title: "Billing",
-    body: (
-      <p>Paid access, trials, plan limits, renewals, cancellations, and payment handling are managed through the billing flow shown in the product. Users should review the displayed plan details before starting or changing paid access.</p>
-    ),
+    body: [
+      "Paid access, trials, plan limits, renewals, cancellations, and payment handling are managed through the billing flow shown in the product. Users should review the displayed plan details before starting or changing paid access.",
+      "The billing implementation uses monthly Stripe subscription checkout with a 14-day trial. Users can manage or cancel active subscriptions through the billing portal when a subscription is active.",
+    ],
   },
   {
     title: "Availability and changes",
-    body: (
-      <p>OutreachAI may change, suspend, or discontinue parts of the service as the product evolves. These terms may also be updated, and the date on this page shows the latest revision.</p>
-    ),
+    body: [
+      "OutreachAI may change, suspend, or discontinue parts of the service as the product evolves. These terms may also be updated, and the date on this page shows the latest revision.",
+    ],
   },
 ];
 

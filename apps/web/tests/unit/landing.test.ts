@@ -1,9 +1,34 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { locales, translate, translations, translateVisibleText, visiblePhraseTranslations } from "../../lib/i18n/translations";
+import { publicPlans } from "../../lib/plan-catalog";
 
 describe("pricing plans", () => {
   it("contains the required subscription tiers", () => {
     expect(["Starter", "Pro", "Agency"]).toEqual(["Starter", "Pro", "Agency"]);
+  });
+
+  it("matches backend billing prices and plan limits", () => {
+    const dto = readFileSync(resolve(process.cwd(), "../api/app/schemas/dto.py"), "utf8");
+    const billing = readFileSync(resolve(process.cwd(), "../api/app/services/billing.py"), "utf8");
+
+    for (const plan of publicPlans) {
+      const backendPlan = dto.match(new RegExp(`"${plan.name}": \\{([\\s\\S]*?)\\n    \\}`))?.[1] ?? "";
+      const stripePlan = billing.match(new RegExp(`"${plan.name}": \\{([\\s\\S]*?)\\n    \\}`))?.[1] ?? "";
+
+      expect(stripePlan).toContain(`"amount": ${plan.monthlyPrice * 100}`);
+      expect(stripePlan).toContain(`"currency": "${plan.currency.toLowerCase()}"`);
+      expect(stripePlan).toContain("14-day free trial");
+      expect(backendPlan).toContain(`"mrr": ${plan.monthlyPrice}`);
+      expect(backendPlan).toContain(`"leads": ${plan.limits.leads}`);
+      expect(backendPlan).toContain(`"ai_generations": ${plan.limits.aiGenerations}`);
+      expect(backendPlan).toContain(`"email_sends": ${plan.limits.emailSends}`);
+      expect(backendPlan).toContain(`"sales_employees": ${plan.limits.salesEmployees}`);
+      expect(backendPlan).toContain(`"workspaces": ${plan.limits.workspaces}`);
+      expect(backendPlan).toContain(`"team_members": ${plan.limits.teamMembers}`);
+      expect(backendPlan).toContain(`"campaigns": ${plan.limits.campaigns}`);
+    }
   });
 });
 
@@ -50,14 +75,16 @@ describe("i18n", () => {
 
   it("localizes the conversion preview and avoids public vendor names", () => {
     const phrases = [
-      "Business input",
-      "Evidence-backed lead",
-      "Human approval",
-      "Draft email waiting for review before send",
+      "Business description",
+      "Company with evidence",
+      "Manual confirmation",
+      "Demo evidence uses safe fixture data, not customer production records.",
       "Insufficient data stays visible and is routed to manual review.",
-      "Workspace readiness, usage limits and manually approved outreach for focused customer discovery.",
+      "Prices and limits come from the billing catalogue used by the application. All plans renew monthly after the 14-day trial unless canceled.",
       "Secure authentication",
       "Workspace billing",
+      "Questions before signing up?",
+      "Use the confirmed project contact for support, privacy or security questions.",
     ];
 
     for (const phrase of phrases) {
@@ -66,6 +93,24 @@ describe("i18n", () => {
 
     expect(translateVisibleText("Secure authentication", "ru")).not.toMatch(/Clerk/i);
     expect(translateVisibleText("Workspace billing", "ru")).not.toMatch(/Stripe/i);
+  });
+
+  it("localizes public legal and support text in Russian and English", () => {
+    const publicPhrases = [
+      "Privacy Policy",
+      "Terms of Service",
+      "Selected plan",
+      "Unknown plan selected",
+      "Information we collect",
+      "Privacy and security requests should be sent to the confirmed support email listed in the public footer and contact section.",
+      "The billing implementation uses monthly Stripe subscription checkout with a 14-day trial. Users can manage or cancel active subscriptions through the billing portal when a subscription is active.",
+      "Generated emails are drafts first. Sending requires an approved email and a verified recipient path in the application.",
+    ];
+
+    for (const phrase of publicPhrases) {
+      expect(translateVisibleText(phrase, "ru"), phrase).not.toBe(phrase);
+      expect(translateVisibleText(translateVisibleText(phrase, "ru"), "en"), phrase).toBe(phrase);
+    }
   });
 
   it("keeps AI company intelligence guidance fully Russian", () => {

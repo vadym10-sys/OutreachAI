@@ -7,25 +7,26 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleDot,
+  Mail,
   MailCheck,
   Search,
   ShieldCheck,
   Sparkles,
   Wand2,
 } from "lucide-react";
-import { AppBadge, PricingCard, SurfaceCard } from "@/components/design-system";
+import { AppBadge, SurfaceCard } from "@/components/design-system";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useI18n } from "@/lib/i18n/provider";
+import { publicPlans } from "@/lib/plan-catalog";
+import { publicSupportEmail } from "@/lib/public-contact";
 
 const workflow = [
-  "Describe target",
-  "AI finds companies",
-  "AI analyzes websites",
-  "AI scores and explains",
+  "Describe the business",
+  "Find a company with evidence",
   "Save to CRM",
-  "Generate draft",
-  "Approve and send",
-  "Track replies",
+  "Prepare a personal draft",
+  "Approve manually",
+  "Track the reply",
 ] as const;
 
 const features = [
@@ -37,23 +38,19 @@ const features = [
   ["CRM handoff", "Qualified companies can be saved into the existing CRM without turning discovery into a complex pipeline."],
 ] as const;
 
-const plans = [
-  ["Starter", "Workspace readiness, usage limits and manually approved outreach for focused customer discovery.", "View plan"],
-  ["Pro", "Designed for teams that need more AI research, reviewed email drafts and CRM handoff.", "Start trial"],
-  ["Agency", "For higher-volume workspaces with account controls and reviewed sending workflows.", "View plan"],
-] as const;
-
 const faq = [
   ["Does OutreachAI send automatically?", "No. AI prepares drafts only, and every real send requires manual approval."],
   ["Where do scores come from?", "AI Lead Intelligence fields and available evidence in the production lead record."],
   ["Can Gmail be skipped?", "Yes. Users can start discovery first and connect Gmail later from settings."],
   ["What happens with insufficient data?", "Insufficient data stays visible and should be routed to review instead of being treated as a fact."],
+  ["How do I get support?", "Email the confirmed support contact listed on this page."],
 ] as const;
 
 const legalLinks = [
   { href: "/privacy", label: "Privacy" },
   { href: "/terms", label: "Terms" },
   { href: "/security", label: "Security" },
+  { href: `mailto:${publicSupportEmail}`, label: "Support" },
 ] as const;
 
 function AuthNavigationLink({
@@ -86,9 +83,12 @@ function AuthNavigationLink({
 function ProductPreview() {
   const { t } = useI18n();
   const previewSteps = [
-    ["Business input", "Logistics software for mid-market operators in Germany"],
-    ["Evidence-backed lead", "Website quality, hiring signal, technology fit"],
-    ["Human approval", "Draft email waiting for review before send"],
+    ["Business description", "Demo business: logistics software for mid-market operators in Germany."],
+    ["Company with evidence", "Demo candidate shows website context, hiring signal and fit notes before any CRM save."],
+    ["Saved CRM record", "The company is saved as a reviewable opportunity, not as a fake customer result."],
+    ["Personal draft", "AI prepares a draft using available evidence and flags missing proof."],
+    ["Manual confirmation", "The user reviews the draft and approves before any send action is available."],
+    ["Reply tracking", "Replies are tracked only after an approved email is sent through the workspace."],
   ] as const;
 
   return (
@@ -96,7 +96,7 @@ function ProductPreview() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-sm font-black text-[var(--ui-text)]">{t("AI Customer Finder")}</p>
-          <p className="mt-1 text-xs font-bold text-[var(--ui-text-soft)]">{t("Live product preview")}</p>
+          <p className="mt-1 text-xs font-bold text-[var(--ui-text-soft)]">{t("Demonstration fixture")}</p>
         </div>
         <AppBadge tone="brand">{t("Draft-only")}</AppBadge>
       </div>
@@ -105,7 +105,7 @@ function ProductPreview() {
         <div className="flex items-start gap-3">
           <Search className="mt-0.5 shrink-0 text-[var(--ui-brand)]" size={18} aria-hidden="true" />
           <div>
-            <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-muted)]">{t("Describe target")}</p>
+            <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-muted)]">{t("Describe the business")}</p>
             <p className="mt-1 text-sm leading-6 text-[var(--ui-text)]">{t("Find logistics companies in Germany with outdated websites.")}</p>
           </div>
         </div>
@@ -126,12 +126,12 @@ function ProductPreview() {
       <div className="mt-4 grid gap-4 min-[520px]:grid-cols-2">
         <article className="rounded-[1.25rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">
           <p className="text-xs font-bold text-[var(--ui-text-soft)]">{t("Company candidate")}</p>
-          <h3 className="mt-2 text-base font-black text-[var(--ui-text)]">{t("Website analysis ready")}</h3>
+          <h3 className="mt-2 text-base font-black text-[var(--ui-text)]">{t("Evidence shown before action")}</h3>
           <div className="mt-4 flex flex-wrap gap-2">
             <AppBadge tone="success">{t("Overall Lead Score")}</AppBadge>
             <AppBadge tone="brand">{t("Quality Gate")}</AppBadge>
           </div>
-          <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{t("Hiring signal and weak conversion path detected from available evidence.")}</p>
+          <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{t("Demo evidence uses safe fixture data, not customer production records.")}</p>
         </article>
         <article className="rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-brand-soft)] p-4 shadow-sm">
           <p className="text-xs font-bold text-[var(--ui-text-soft)]">{t("AI reasoning")}</p>
@@ -156,7 +156,13 @@ export function LandingPage() {
     name: "OutreachAI",
     applicationCategory: "SalesApplication",
     description: "AI-first sales platform for lead intelligence, explainable research, CRM handoff and manually approved outreach.",
-    offers: plans.map(([name]) => ({ "@type": "Offer", name: `OutreachAI ${name}` })),
+    offers: publicPlans.map((plan) => ({
+      "@type": "Offer",
+      name: `OutreachAI ${plan.name}`,
+      price: plan.monthlyPrice,
+      priceCurrency: plan.currency,
+      availability: "https://schema.org/InStock",
+    })),
   };
 
   return (
@@ -172,7 +178,8 @@ export function LandingPage() {
           <div className="hidden items-center gap-8 text-sm font-bold text-[var(--ui-text-soft)] md:flex">
             <a href="#product" className="hover:text-[var(--ui-text)]">{t("Product")}</a>
             <a href="#pricing" className="hover:text-[var(--ui-text)]">{t("Pricing")}</a>
-            <a href="#faq" className="hover:text-[var(--ui-text)]">FAQ</a>
+            <a href="#faq" className="hover:text-[var(--ui-text)]">{t("FAQ")}</a>
+            <a href="#contact" className="hover:text-[var(--ui-text)]">{t("Support")}</a>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <LanguageSwitcher compact />
@@ -218,7 +225,7 @@ export function LandingPage() {
       <section id="workflow" className="mx-auto max-w-7xl px-4 py-16 min-[360px]:px-5">
         <div className="max-w-3xl">
           <p className="ui-eyebrow">{t("How it works")}</p>
-          <h2 className="ui-title mt-3 text-4xl">{t("AI-first workflow, not a CRM maze")}</h2>
+          <h2 className="ui-title mt-3 text-4xl">{t("A real workflow, shown as a demo fixture")}</h2>
         </div>
         <ol className="mt-8 grid gap-3 md:grid-cols-4">
           {workflow.map((step, index) => (
@@ -269,27 +276,39 @@ export function LandingPage() {
       <section id="pricing" className="mx-auto max-w-7xl px-4 py-16 min-[360px]:px-5">
         <div className="max-w-3xl">
           <p className="ui-eyebrow">{t("Pricing")}</p>
-          <h2 className="ui-title mt-3 text-4xl">{t("Simple pricing")}</h2>
+          <h2 className="ui-title mt-3 text-4xl">{t("Simple monthly pricing")}</h2>
+          <p className="ui-copy mt-3">{t("Prices and limits come from the billing catalogue used by the application. All plans renew monthly after the 14-day trial unless canceled.")}</p>
         </div>
         <div className="mt-8 grid gap-5 lg:grid-cols-3">
-          {plans.map(([plan, copy, action], index) => (
-            <PricingCard
-              key={plan}
-              plan={t(plan)}
-              copy={t(copy)}
-              featured={index === 1}
-              action={(
-                <AuthNavigationLink href={`/sign-up?plan=${encodeURIComponent(plan)}`} className="focus-ring inline-flex min-h-11 items-center justify-center rounded-full bg-[var(--ui-text)] px-4 text-sm font-black text-white">
-                  {t(action)}
-                </AuthNavigationLink>
-              )}
-            />
+          {publicPlans.map((plan, index) => (
+            <SurfaceCard key={plan.name} as="article" className={`rounded-[1.5rem] p-6 ${index === 1 ? "border-[var(--ui-brand)] shadow-glow" : ""}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black text-[var(--ui-text)]">{t(plan.name)}</h3>
+                  <p className="mt-3 text-4xl font-black text-[var(--ui-text)]">{plan.monthlyPrice} EUR<span className="text-base font-bold text-[var(--ui-text-soft)]">/{t("month")}</span></p>
+                </div>
+                <AppBadge tone={index === 1 ? "brand" : "neutral"}>{plan.trialDays} {t("day trial")}</AppBadge>
+              </div>
+              <ul className="mt-6 space-y-2 text-sm leading-6 text-[var(--ui-text-soft)]">
+                <li><strong className="text-[var(--ui-text)]">{plan.limits.leads.toLocaleString()}</strong> {t("leads per month")}</li>
+                <li><strong className="text-[var(--ui-text)]">{plan.limits.aiGenerations.toLocaleString()}</strong> {t("AI generations per month")}</li>
+                <li><strong className="text-[var(--ui-text)]">{plan.limits.emailSends.toLocaleString()}</strong> {t("reviewed email sends per month")}</li>
+                <li><strong className="text-[var(--ui-text)]">{plan.limits.salesEmployees}</strong> {t("AI Sales Employees")}</li>
+                <li>{plan.limits.workspaces === 0 ? t("Unlimited workspaces") : `${plan.limits.workspaces} ${t("workspace limit")}`}</li>
+                <li>{plan.features.semiAutoMode ? t("Semi-auto mode included") : t("Review mode only")}</li>
+                <li>{plan.features.autonomousMode ? t("Autonomous mode included") : t("Autonomous mode not included")}</li>
+                <li>{plan.features.advancedAnalytics ? t("Advanced analytics included") : t("Basic analytics included")}</li>
+              </ul>
+              <AuthNavigationLink href={`/sign-up?plan=${encodeURIComponent(plan.name)}`} className="focus-ring mt-6 inline-flex min-h-11 w-full items-center justify-center rounded-full bg-[var(--ui-text)] px-4 text-sm font-black text-white">
+                {t("Choose")} {t(plan.name)}
+              </AuthNavigationLink>
+            </SurfaceCard>
           ))}
         </div>
       </section>
 
       <section id="faq" className="mx-auto max-w-5xl px-4 py-16 min-[360px]:px-5">
-        <p className="ui-eyebrow">FAQ</p>
+        <p className="ui-eyebrow">{t("FAQ")}</p>
         <h2 className="ui-title mt-3 text-4xl">{t("Built for trust, not theater.")}</h2>
         <div className="mt-8 grid gap-3">
           {faq.map(([question, answer]) => (
@@ -299,6 +318,20 @@ export function LandingPage() {
             </SurfaceCard>
           ))}
         </div>
+      </section>
+
+      <section id="contact" className="mx-auto max-w-7xl px-4 py-16 min-[360px]:px-5">
+        <SurfaceCard className="grid gap-5 rounded-[1.5rem] p-6 md:grid-cols-[0.7fr_0.3fr] md:items-center">
+          <div>
+            <p className="ui-eyebrow">{t("Support")}</p>
+            <h2 className="ui-title mt-3 text-3xl">{t("Questions before signing up?")}</h2>
+            <p className="ui-copy mt-3">{t("Use the confirmed project contact for support, privacy or security questions.")}</p>
+          </div>
+          <a href={`mailto:${publicSupportEmail}`} className="focus-ring inline-flex min-h-12 items-center justify-center gap-2 rounded-full bg-[var(--ui-text)] px-5 text-sm font-black text-white">
+            <Mail size={18} aria-hidden="true" />
+            {publicSupportEmail}
+          </a>
+        </SurfaceCard>
       </section>
 
       <section className="px-4 py-10 min-[360px]:px-5">
@@ -322,7 +355,7 @@ export function LandingPage() {
           <nav aria-label="Legal" className="flex flex-wrap items-center gap-x-4 gap-y-2 font-bold text-[var(--ui-text)]">
             {legalLinks.map((link) => (
               <Link key={link.href} href={link.href} className="focus-ring rounded-sm underline decoration-[var(--ui-border-strong)] underline-offset-4 transition hover:text-[var(--ui-brand)]">
-                {link.label}
+                {t(link.label)}
               </Link>
             ))}
           </nav>

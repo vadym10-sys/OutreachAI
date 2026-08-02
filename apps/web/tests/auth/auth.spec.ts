@@ -32,14 +32,29 @@ test.describe("authentication UX", () => {
     }]);
 
     const guards = installQaGuards(page, testInfo);
-    await page.goto("/sign-up", { waitUntil: "domcontentloaded" });
+    await page.goto("/sign-up?plan=Pro", { waitUntil: "domcontentloaded" });
     await expect(page.locator("main")).toContainText(/Регистрация временно недоступна|Создайте аккаунт/);
+    await expect(page.getByTestId("selected-plan-summary")).toContainText("Выбранный тариф");
+    await expect(page.getByTestId("selected-plan-summary")).toContainText("149");
     await expect(page.locator("main")).not.toContainText("Sign up is temporarily unavailable");
+    await expect(page.getByRole("link", { name: "Поддержка" })).toHaveAttribute("href", /^mailto:/);
 
     await page.goto("/sign-in", { waitUntil: "domcontentloaded" });
     await expect(page.locator("main")).toContainText(/Вход временно недоступен|С возвращением/);
     await expect(page.locator("main")).not.toContainText("Welcome back");
     await expect(page.locator("main")).not.toContainText("Sign in is temporarily unavailable");
+    await guards.assertClean();
+  });
+
+  test("sign-up validates unknown plan query safely", async ({ page }, testInfo) => {
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/sign-up?plan=Enterprise<script>", { waitUntil: "domcontentloaded" });
+
+    await expect(page.getByTestId("selected-plan-summary")).toContainText("Unknown plan selected");
+    await expect(page.getByTestId("selected-plan-summary")).toContainText("registration will continue with Starter");
+    await expect(page.getByTestId("selected-plan-summary")).toContainText("€49.00/month");
+    await expect(page.locator("main")).not.toContainText("<script>");
+    await expect(page.getByRole("link", { name: "Support" })).toHaveAttribute("href", /^mailto:/);
     await guards.assertClean();
   });
 });
