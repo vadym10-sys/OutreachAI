@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import logging
+import re
 import time
 
 from sqlalchemy import Engine, create_engine, text
@@ -66,6 +67,11 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 PACKAGED_DB_PATH = Path(__file__).resolve().parents[1] / "db"
 PACKAGED_SCHEMA_PATH = PACKAGED_DB_PATH / "schema.sql"
 PACKAGED_MIGRATIONS_DIR = PACKAGED_DB_PATH / "migrations"
+CONCURRENT_INDEX_CREATE_RE = re.compile(
+    r"^\s*CREATE\s+INDEX\s+CONCURRENTLY\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)\b",
+    re.IGNORECASE,
+)
+POSTGRES_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class Base(DeclarativeBase):
@@ -159,12 +165,43 @@ def _execute_non_transactional_sql_script(connection, script_path: Path) -> None
         display_path = script_path.name
     logger.info("Applying non-transactional database script %s", display_path)
     for statement in [item.strip() for item in sql_text.split(";") if item.strip()]:
+        _drop_invalid_index_before_concurrent_create(connection, statement)
         connection.execute(text(statement))
 
 
 def _requires_non_transactional_migration(script_path: Path) -> bool:
     sql_text = script_path.read_text(encoding="utf-8").upper()
     return "CREATE INDEX CONCURRENTLY" in sql_text or "DROP INDEX CONCURRENTLY" in sql_text
+
+
+def _drop_invalid_index_before_concurrent_create(connection, statement: str) -> None:  # type: ignore[no-untyped-def]
+    match = CONCURRENT_INDEX_CREATE_RE.match(statement)
+    if not match:
+        return
+    index_name = match.group("name")
+    if not POSTGRES_IDENTIFIER_RE.match(index_name):
+        raise RuntimeSchemaError(f"unsafe concurrent index name in migration: {index_name}")
+    is_invalid = bool(
+        connection.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    JOIN pg_index i ON i.indexrelid = c.oid
+                    WHERE n.nspname = 'public'
+                      AND c.relname = :index_name
+                      AND NOT i.indisvalid
+                )
+                """
+            ),
+            {"index_name": index_name},
+        ).scalar()
+    )
+    if is_invalid:
+        logger.warning("Dropping invalid PostgreSQL index before retrying concurrent create: %s", index_name)
+        connection.execute(text(f'DROP INDEX CONCURRENTLY IF EXISTS public."{index_name}"'))
 
 
 def _ensure_schema_migrations_table(connection) -> None:  # type: ignore[no-untyped-def]

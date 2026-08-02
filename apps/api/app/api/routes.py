@@ -378,6 +378,23 @@ def _is_customer_visible_email(message: EmailMessage) -> bool:
     return True
 
 
+def _customer_visible_contact_predicate() -> Any:
+    email = func.lower(func.coalesce(Contact.email, ""))
+    name = func.lower(func.coalesce(Contact.name, ""))
+    return and_(
+        *[~email.like(f"%@{domain}") for domain in INTERNAL_TEST_DOMAINS],
+        *[~name.like(f"{prefix}%") for prefix in INTERNAL_TEST_NAME_PREFIXES],
+    )
+
+
+def _customer_visible_email_predicate() -> Any:
+    predicates = []
+    for key in ("to_email", "recipient_email", "email"):
+        value = func.lower(func.coalesce(EmailMessage.tags[key].as_string(), ""))
+        predicates.extend(~value.like(f"%@{domain}") for domain in INTERNAL_TEST_DOMAINS)
+    return and_(*predicates)
+
+
 def _is_customer_visible_campaign(campaign: Campaign) -> bool:
     name = (campaign.name or "").strip().lower()
     return not any(name.startswith(prefix) for prefix in ("qa campaign", "test campaign", "demo campaign"))
@@ -1497,7 +1514,7 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
             partition_ids=company_ids,
             limit=10,
             order_column=Contact.created_at,
-            filters=[_workspace_stmt(Contact, workspace, user_id)],
+            filters=[_workspace_stmt(Contact, workspace, user_id), _customer_visible_contact_predicate()],
         )
         if _is_customer_visible_contact(contact)
     ]
@@ -1535,9 +1552,9 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
                 EmailMessage,
                 partition_column=EmailMessage.lead_id,
                 partition_ids=lead_ids,
-                limit=20,
+                limit=10,
                 order_column=EmailMessage.created_at,
-                filters=[_workspace_stmt(EmailMessage, workspace, user_id)],
+                filters=[_workspace_stmt(EmailMessage, workspace, user_id), _customer_visible_email_predicate()],
             )
             if _is_customer_visible_email(email)
         ]
@@ -1677,10 +1694,10 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         email_approved_at = _first_batch_audit_time(batch_context, company.lead_id, CRM_APPROVED_ACTIONS)
         latest_activity_at = batch_context.latest_audit_by_lead.get(company.lead_id) if company.lead_id else None
     else:
-        contacts = [contact for contact in db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id).order_by(Contact.created_at.desc(), Contact.id.desc()).limit(10)).all() if _is_customer_visible_contact(contact)]
+        contacts = [contact for contact in db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id, _customer_visible_contact_predicate()).order_by(Contact.created_at.desc(), Contact.id.desc()).limit(10)).all() if _is_customer_visible_contact(contact)]
         deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc(), Deal.id.desc()).limit(10)).all())
         notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc(), Note.id.desc()).limit(20)).all())
-        emails = [email for email in db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id).order_by(EmailMessage.created_at.desc(), EmailMessage.id.desc()).limit(20)).all() if _is_customer_visible_email(email)][:10] if company.lead_id else []
+        emails = [email for email in db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id, _customer_visible_email_predicate()).order_by(EmailMessage.created_at.desc(), EmailMessage.id.desc()).limit(10)).all() if _is_customer_visible_email(email)] if company.lead_id else []
         activity = list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(10)).all()) if company.lead_id else []
         lead = db.scalar(select(Lead).where(_workspace_stmt(Lead, workspace, user_id), Lead.id == company.lead_id)) if company.lead_id else None
         found_at = _first_audit_time(db, workspace, user_id, company.lead_id, CRM_FOUND_ACTIONS) or (lead.created_at if lead else company.created_at)
