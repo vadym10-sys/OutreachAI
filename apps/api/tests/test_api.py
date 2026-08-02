@@ -4325,11 +4325,157 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
 
     edit_sent = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"body": "Too late"})
     assert edit_sent.status_code == 409
-    assert "Sent emails cannot be edited" in edit_sent.json()["detail"]
+    assert "provider records cannot be edited" in edit_sent.json()["detail"]
 
     approve_sent = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
     assert approve_sent.status_code == 409
-    assert "already been sent" in approve_sent.json()["detail"]
+    assert "Provider email records cannot be approved" in approve_sent.json()["detail"]
+
+
+def _workspace_app_test_draft(headers: dict[str, str], monkeypatch, *, company_name: str = "Patch Safety Co") -> dict[str, Any]:
+    company_response = client.post(
+        "/api/workspace-app/companies",
+        headers=headers,
+        json={"name": company_name, "website": f"https://{company_name.lower().replace(' ', '-')}.example", "country": "Germany", "city": "Berlin", "industry": "SaaS"},
+    )
+    assert company_response.status_code == 200
+    company_id = company_response.json()["company"]["id"]
+    contact = client.post(
+        f"/api/workspace-app/companies/{company_id}/contacts/manual",
+        headers=headers,
+        json={"name": "Patch Owner", "title": "Founder", "email": f"owner-{uuid4().hex[:8]}@patch-safety.example"},
+    )
+    assert contact.status_code == 200
+    monkeypatch.setattr(
+        "app.api.usage.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject=f"Idea for {company_name}",
+            preview="Review this draft.",
+            full_email="Hi, this is a safe draft body.",
+            cta="Book a call",
+            cold_email="Hi, this is a safe draft body.",
+            follow_ups=["Following up once.", "Following up twice."],
+        ),
+    )
+    draft = client.post(f"/api/workspace-app/companies/{company_id}/email-draft", headers=headers)
+    assert draft.status_code == 200
+    return draft.json()["email"]
+
+
+def test_workspace_app_email_patch_state_machine_and_audit_regressions(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"patch-safety-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(headers, monkeypatch)
+
+    cross_workspace = client.patch(
+        f"/api/workspace-app/emails/{email['id']}",
+        headers={"Authorization": "Bearer dev", "X-Test-User-Email": f"patch-other-{uuid4()}@example.com"},
+        json={"subject": "Cross workspace attempt"},
+    )
+    assert cross_workspace.status_code == 404
+
+    invalid_system_fields = client.patch(
+        f"/api/workspace-app/emails/{email['id']}",
+        headers=headers,
+        json={
+            "delivery_status": "approved",
+            "workspace_id": str(uuid4()),
+            "direction": "inbound",
+            "provider_message_id": "provider-1",
+        },
+    )
+    assert invalid_system_fields.status_code == 422
+
+    empty_subject = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"subject": "   "})
+    assert empty_subject.status_code == 422
+
+    draft_edit = client.patch(
+        f"/api/workspace-app/emails/{email['id']}",
+        headers=headers,
+        json={"subject": "Reviewed draft subject", "body": "Reviewed draft body", "preview": "Reviewed preview"},
+    )
+    assert draft_edit.status_code == 200
+    assert draft_edit.json()["email"]["delivery_status"] == "draft"
+    assert draft_edit.json()["email"]["subject"] == "Reviewed draft subject"
+
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
+
+    approved_edit = client.patch(
+        f"/api/workspace-app/emails/{email['id']}",
+        headers=headers,
+        json={"body": "Edited after approval; needs another review."},
+    )
+    assert approved_edit.status_code == 200
+    assert approved_edit.json()["email"]["delivery_status"] == "draft"
+    assert "approve" in approved_edit.json()["message"].lower()
+
+    send_without_reapproval = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert send_without_reapproval.status_code == 409
+    assert "Approve the email before sending" in send_without_reapproval.json()["detail"]
+
+    reapproved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert reapproved.status_code == 200
+    assert reapproved.json()["email"]["delivery_status"] == "approved"
+
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Patch Sender",
+            "sender_email": "sender@patch-safety.example",
+            "reply_to": "reply@patch-safety.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: {"id": "patch-provider-id", "thread_id": "patch-thread-id"})
+    sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert sent.status_code == 200
+    assert sent.json()["email"]["delivery_status"] == "sent"
+
+    edit_sent = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"body": "Too late"})
+    assert edit_sent.status_code == 409
+
+    with get_sessionmaker()() as db:
+        sent_email = db.get(EmailMessage, UUID(email["id"]))
+        assert sent_email is not None
+        workspace_id = sent_email.workspace_id
+        user_id = sent_email.user_id
+        lead_id = sent_email.lead_id
+        assert workspace_id is not None
+        provider_statuses = ["delivered", "opened", "replied", "bounced", "failed"]
+        provider_records = [
+            EmailMessage(user_id=user_id, workspace_id=workspace_id, lead_id=lead_id, direction="outbound", subject=f"{status} subject", body="Provider body", delivery_status=status)
+            for status in provider_statuses
+        ]
+        inbound = EmailMessage(user_id=user_id, workspace_id=workspace_id, lead_id=lead_id, direction="inbound", subject="Inbound reply", body="Inbound body", delivery_status="received", reply_body="Sensitive reply")
+        captured_reply = EmailMessage(user_id=user_id, workspace_id=workspace_id, lead_id=lead_id, direction="outbound", subject="Captured", body="Captured body", delivery_status="replied", replied_at=datetime.utcnow(), reply_body="Sensitive reply")
+        db.add_all([*provider_records, inbound, captured_reply])
+        db.commit()
+        provider_ids = [str(item.id) for item in provider_records]
+        inbound_id = str(inbound.id)
+        captured_reply_id = str(captured_reply.id)
+
+    inbound_edit = client.patch(f"/api/workspace-app/emails/{inbound_id}", headers=headers, json={"subject": "Inbound changed"})
+    assert inbound_edit.status_code == 409
+    for provider_id in [*provider_ids, captured_reply_id]:
+        rejected = client.patch(f"/api/workspace-app/emails/{provider_id}", headers=headers, json={"body": "Provider record changed"})
+        assert rejected.status_code == 409
+
+    with get_sessionmaker()() as db:
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == "email.edited", AuditLog.workspace_id == workspace_id).order_by(AuditLog.created_at.desc()))
+        assert audit is not None
+        assert audit.metadata_json["fields"] == ["body"]
+        assert audit.metadata_json["status_transition"] == "approved_to_draft"
+        assert audit.metadata_json["status_before"] == "approved"
+        assert audit.metadata_json["status_after"] == "draft"
+        serialized_metadata = json.dumps(audit.metadata_json)
+        assert "Edited after approval" not in serialized_metadata
+        assert "Reviewed draft subject" not in serialized_metadata
+        assert "Sensitive reply" not in serialized_metadata
 
 
 def test_workspace_app_email_provider_failure_uses_non_200_http_status(monkeypatch) -> None:

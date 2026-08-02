@@ -814,9 +814,10 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333" && route.request().method() === "PATCH") {
       const body = route.request().postDataJSON() as Partial<typeof qaCompany.generated_emails[0]>;
-      const email = { ...currentCompany.generated_emails[0], ...body };
+      const currentEmail = currentCompany.generated_emails[0];
+      const email = { ...currentEmail, ...body, delivery_status: currentEmail.delivery_status === "approved" ? "draft" : currentEmail.delivery_status };
       currentCompany = { ...currentCompany, generated_emails: [email] };
-      return fulfillJson(route, { status: "success", message: "Email draft saved. Review and approve before sending.", company: currentCompany, email });
+      return fulfillJson(route, { status: "success", message: currentEmail.delivery_status === "approved" ? "Changes saved. This email is back in draft and must be approved again before sending." : "Email draft saved. Review and approve before sending.", company: currentCompany, email });
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
       const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "sent", sent_at: now };

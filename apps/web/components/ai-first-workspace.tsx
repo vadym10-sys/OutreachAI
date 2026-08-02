@@ -38,6 +38,26 @@ function pretty(value: string) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+const providerLockedEmailStatuses = new Set(["sent", "delivered", "opened", "replied", "bounced", "failed"]);
+
+export function canEditEmailDraft(email: Pick<Email, "delivery_status" | "direction" | "sent_at" | "delivered_at" | "opened_at" | "bounced_at" | "replied_at">) {
+  const status = String(email.delivery_status || "").toLowerCase();
+  const direction = String(email.direction || "outbound").toLowerCase();
+  return direction === "outbound" && (status === "draft" || status === "approved") && !providerLockedEmailStatuses.has(status) && !email.sent_at && !email.delivered_at && !email.opened_at && !email.bounced_at && !email.replied_at;
+}
+
+function canSendApprovedEmail(email: Email) {
+  const status = String(email.delivery_status || "").toLowerCase();
+  const direction = String(email.direction || "outbound").toLowerCase();
+  return direction === "outbound" && status === "approved" && !email.sent_at && !email.delivered_at && !email.opened_at && !email.bounced_at && !email.replied_at;
+}
+
+function emailSafetyState(email: Email) {
+  if (!canEditEmailDraft(email)) return "Read-only. Inbound replies and provider delivery records cannot be edited.";
+  if (email.delivery_status === "approved") return "Approved. Editing will return it to draft and require approval again.";
+  return "Manual approval required.";
+}
+
 function providerLabel(provider?: string) {
   if (provider === "gmail") return "Gmail OAuth";
   if (provider === "smtp") return "SMTP";
@@ -243,8 +263,8 @@ function Frame({ title, copy, children }: { title: string; copy: string; childre
   );
 }
 
-function Notice({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "good" | "bad" }) {
-  const toneClass = tone === "good" ? "border-teal-200 bg-teal-50 text-teal-800" : tone === "bad" ? "border-red-200 bg-red-50 text-red-700" : "border-[var(--ui-border)] bg-white text-[var(--ui-text-soft)]";
+function Notice({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "neutral" | "good" | "bad" | "warn" }) {
+  const toneClass = tone === "good" ? "border-teal-200 bg-teal-50 text-teal-800" : tone === "bad" ? "border-red-200 bg-red-50 text-red-700" : tone === "warn" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-[var(--ui-border)] bg-white text-[var(--ui-text-soft)]";
   return <div role={tone === "bad" ? "alert" : "status"} aria-live="polite" className={`rounded-2xl border p-4 text-sm font-semibold leading-6 shadow-sm ${toneClass}`}>{children}</div>;
 }
 
@@ -907,13 +927,18 @@ function EmailsSection() {
   }
 
   async function saveEmailEdits(email: Email) {
+    if (!canEditEmailDraft(email)) {
+      setActionError("Inbound replies and sent provider records are read-only.");
+      return;
+    }
     const edit = draftEdits[email.id] || { subject: email.subject || "", body: email.body || "" };
+    const wasApproved = email.delivery_status === "approved";
     setBusy(`edit:${email.id}`);
     setNotice("");
     setActionError("");
     try {
       const response = await api.updateEmail(email.id, { subject: edit.subject, body: edit.body, preview: edit.body.slice(0, 180) });
-      setNotice(response.message);
+      setNotice(wasApproved ? "Changes saved. This email is back in draft and must be approved again before sending." : response.message);
       await load();
     } catch (err) {
       setActionError(friendlyErrorMessage(err, "Could not save this draft."));
@@ -977,6 +1002,9 @@ function EmailsSection() {
         const relatedCompany = companyForEmail(companies, email);
         const replySummary = replyAssistantText(email);
         const edit = draftEdits[email.id] || { subject: email.subject || "", body: email.body || email.preview || "" };
+        const editable = canEditEmailDraft(email);
+        const approvedEditable = editable && email.delivery_status === "approved";
+        const sendable = canSendApprovedEmail(email);
         return <SurfaceCard as="article" key={email.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
           <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
             <div>
@@ -987,9 +1015,9 @@ function EmailsSection() {
                   <p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void saveEmailEdits(email)} aria-label={`Save email edits ${email.subject || email.id}`}>{busy === `edit:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Save edits</AppButton>
-                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void approve(email)} aria-label={`Approve email ${email.subject || email.id}`}>{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</AppButton>
-                  <AppButton size="sm" disabled={Boolean(busy) || email.delivery_status !== "approved"} onClick={() => void send(email)} aria-label={`Send email ${email.subject || email.id}`}>{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</AppButton>
+                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !editable} onClick={() => void saveEmailEdits(email)} aria-label={`Save email edits ${email.subject || email.id}`}>{busy === `edit:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Save edits</AppButton>
+                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !editable || email.delivery_status === "approved"} onClick={() => void approve(email)} aria-label={`Approve email ${email.subject || email.id}`}>{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</AppButton>
+                  <AppButton size="sm" disabled={Boolean(busy) || !sendable} onClick={() => void send(email)} aria-label={`Send email ${email.subject || email.id}`}>{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</AppButton>
                 </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -997,8 +1025,10 @@ function EmailsSection() {
                 <EvidenceLine label="Company" value={relatedCompany?.name || "Company not linked in this response"} />
               </div>
               <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
-                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Subject<input value={edit.subject} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), subject: event.target.value } }))} disabled={email.delivery_status === "sent"} className={fieldClass} /></label>
-                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body<textarea value={edit.body} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), body: event.target.value } }))} disabled={email.delivery_status === "sent"} className="focus-ring mt-2 min-h-48 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]" /></label>
+                {approvedEditable ? <Notice tone="warn">Editing an approved email returns it to draft. Approve it again before Send is enabled.</Notice> : null}
+                {!editable ? <Notice tone="warn">This message is read-only because it is an inbound reply or provider delivery record.</Notice> : null}
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Subject<input value={edit.subject} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), subject: event.target.value } }))} disabled={!editable} className={fieldClass} /></label>
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body<textarea value={edit.body} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), body: event.target.value } }))} disabled={!editable} className="focus-ring mt-2 min-h-48 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]" /></label>
               </div>
             </div>
             <aside className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
@@ -1007,7 +1037,7 @@ function EmailsSection() {
               <div className="mt-4 grid gap-3">
                 <EvidenceLine label="Evidence used" value={relatedCompany?.opportunity_analysis || relatedCompany?.suggested_offer || "Недостаточно данных"} />
                 <EvidenceLine label="Outreach strategy" value={relatedCompany?.outreach_strategy || relatedCompany?.sales_angle || "No outreach strategy returned yet."} />
-                <EvidenceLine label="Safety state" value={email.delivery_status === "approved" ? "Approved. Send still requires confirmation." : email.delivery_status === "sent" ? "Sent through backend." : "Manual approval required."} />
+                <EvidenceLine label="Safety state" value={emailSafetyState(email)} />
                 <EvidenceLine label="Reply tracking" value={email.delivery_status === "replied" ? (replySummary || "Reply received. Review and respond manually.") : email.replied_at ? "Reply timestamp recorded. Review the conversation before responding." : "No reply tracked yet."} />
               </div>
             </aside>

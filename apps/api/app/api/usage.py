@@ -8765,8 +8765,12 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
     email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
     if not email:
         raise HTTPException(status_code=404, detail="Email draft not found.")
-    if email.delivery_status == "sent":
-        raise HTTPException(status_code=409, detail="This email has already been sent.")
+    if email.direction != "outbound":
+        raise HTTPException(status_code=409, detail="Only outbound email drafts can be approved.")
+    if email.delivery_status in {"sent", "delivered", "opened", "replied", "bounced", "failed"}:
+        raise HTTPException(status_code=409, detail="Provider email records cannot be approved or edited.")
+    if email.delivery_status not in {"draft", "approved"}:
+        raise HTTPException(status_code=409, detail="Only outbound draft emails can be approved.")
     email.delivery_status = "approved"
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     company = None
@@ -8792,23 +8796,51 @@ def update_email_draft(email_id: UUID, payload: EmailUpdate, request: Request, u
     email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
     if not email:
         raise HTTPException(status_code=404, detail="Email draft not found.")
-    if email.delivery_status == "sent":
-        raise HTTPException(status_code=409, detail="Sent emails cannot be edited.")
+    provider_statuses = {"sent", "delivered", "opened", "replied", "bounced", "failed"}
+    if email.direction != "outbound":
+        raise HTTPException(status_code=409, detail="Inbound emails and captured replies are read-only.")
+    if email.delivery_status in provider_statuses or email.provider_message_id or email.sent_at or email.delivered_at or email.opened_at or email.replied_at or email.bounced_at:
+        raise HTTPException(status_code=409, detail="Sent, delivered, opened, replied, bounced, and failed provider records cannot be edited.")
+    if email.delivery_status not in {"draft", "approved"}:
+        raise HTTPException(status_code=409, detail="Only outbound email drafts can be edited.")
 
     updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=422, detail="Provide at least one editable draft field.")
+    previous_status = email.delivery_status
     for key, value in updates.items():
         setattr(email, key, value)
+    status_transition = ""
+    if previous_status == "approved":
+        email.delivery_status = "draft"
+        status_transition = "approved_to_draft"
+        tags = email.tags if isinstance(email.tags, dict) else {}
+        email.tags = {key: value for key, value in tags.items() if key not in {"approved", "approved_at", "approval_source", "approval_user_id"}}
 
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc())) if lead else None
     if lead:
-        _add_lead_activity(db, request, user.user_id, workspace, "email.edited", lead, {"email_id": str(email.id), "fields": sorted(updates.keys())})
+        if status_transition:
+            metadata = _lead_metadata(lead)
+            metadata.pop("email_approved_at", None)
+            metadata["email_status"] = "Draft Ready"
+            lead.notes = json.dumps(metadata, sort_keys=True)
+            _set_workflow_stage(lead, "approval", "waiting", "Email was edited after approval. Review and approve it again before sending.")
+            company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+        _add_lead_activity(db, request, user.user_id, workspace, "email.edited", lead, {"email_id": str(email.id), "fields": sorted(updates.keys()), **({"status_transition": status_transition} if status_transition else {})})
     db.add(
         AuditLog(
             user_id=user.user_id,
             workspace_id=workspace.id,
             action="email.edited",
-            metadata_json={"email_id": str(email.id), "fields": sorted(updates.keys())},
+            metadata_json={
+                "email_id": str(email.id),
+                "lead_id": str(email.lead_id) if email.lead_id else None,
+                "fields": sorted(updates.keys()),
+                "status_before": previous_status,
+                "status_after": email.delivery_status,
+                **({"status_transition": status_transition} if status_transition else {}),
+            },
         )
     )
     db.commit()
