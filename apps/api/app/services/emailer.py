@@ -9,13 +9,12 @@ from email.message import EmailMessage
 from typing import Any, Optional
 
 import httpx
-import resend
-
 from app.core.config import get_settings
 
 logger = logging.getLogger("outreachai.emailer")
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+RESEND_EMAILS_URL = "https://api.resend.com/emails"
 
 
 class EmailProviderConfigurationError(RuntimeError):
@@ -26,7 +25,7 @@ class EmailProviderRequestError(RuntimeError):
     pass
 
 
-def _send_resend_email(*, to_email: str, subject: str, body: str, reply_to: Optional[str], from_email: Optional[str], from_name: Optional[str]) -> dict:
+def _send_resend_email(*, to_email: str, subject: str, body: str, reply_to: Optional[str], from_email: Optional[str], from_name: Optional[str], idempotency_key: Optional[str]) -> dict:
     settings = get_settings()
     if not settings.resend_api_key:
         raise EmailProviderConfigurationError("RESEND_API_KEY is required for production email sending.")
@@ -34,7 +33,6 @@ def _send_resend_email(*, to_email: str, subject: str, body: str, reply_to: Opti
     if not sender_email:
         raise EmailProviderConfigurationError("RESEND_FROM_EMAIL must be a verified production sender.")
 
-    resend.api_key = settings.resend_api_key
     sender = formataddr((from_name.strip(), sender_email)) if from_name and "<" not in sender_email else sender_email
     payload = {
         "from": sender,
@@ -45,14 +43,23 @@ def _send_resend_email(*, to_email: str, subject: str, body: str, reply_to: Opti
     configured_reply_to = reply_to or settings.resend_reply_to
     if configured_reply_to:
         payload["reply_to"] = configured_reply_to
+    headers = {
+        "Authorization": f"Bearer {settings.resend_api_key}",
+        "Content-Type": "application/json",
+    }
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     try:
-        response = resend.Emails.send(payload)
+        with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
+            response = client.post(RESEND_EMAILS_URL, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
     except Exception as exc:
         logger.exception("Resend email send failed")
         raise EmailProviderRequestError(str(exc)) from exc
-    if not isinstance(response, dict) or not response.get("id"):
+    if not isinstance(data, dict) or not data.get("id"):
         raise EmailProviderRequestError("Resend returned an unexpected response.")
-    return response
+    return data
 
 
 def _send_smtp_email(*, to_email: str, subject: str, body: str, reply_to: Optional[str], from_email: Optional[str], from_name: Optional[str], smtp_config: dict[str, Any] | None) -> dict:
@@ -178,9 +185,13 @@ def send_email(
     provider: str = "resend",
     smtp_config: dict[str, Any] | None = None,
     oauth_config: dict[str, Any] | None = None,
+    idempotency_key: Optional[str] = None,
 ) -> dict:
     if provider == "smtp":
         return _send_smtp_email(to_email=to_email, subject=subject, body=body, reply_to=reply_to, from_email=from_email, from_name=from_name, smtp_config=smtp_config)
     if provider == "gmail":
         return _send_gmail_email(to_email=to_email, subject=subject, body=body, reply_to=reply_to, from_email=from_email, from_name=from_name, oauth_config=oauth_config or smtp_config)
-    return _send_resend_email(to_email=to_email, subject=subject, body=body, reply_to=reply_to, from_email=from_email, from_name=from_name)
+    response = _send_resend_email(to_email=to_email, subject=subject, body=body, reply_to=reply_to, from_email=from_email, from_name=from_name, idempotency_key=idempotency_key)
+    if idempotency_key:
+        response = {**response, "idempotency_key": idempotency_key}
+    return response

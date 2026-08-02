@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.api.routes import (
@@ -8853,20 +8853,70 @@ def update_email_draft(email_id: UUID, payload: EmailUpdate, request: Request, u
     )
 
 
+def _email_send_idempotency_key(workspace_id: UUID, email_id: UUID) -> str:
+    return f"workspace-app-email-send:{workspace_id}:{email_id}"
+
+
+def _claim_approved_email_for_send(db: Session, *, workspace_id: UUID, email_id: UUID, idempotency_key: str) -> EmailMessage:
+    current_tags = db.scalar(select(EmailMessage.tags).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace_id))
+    next_tags = {
+        **(current_tags if isinstance(current_tags, dict) else {}),
+        "send_idempotency_key": idempotency_key,
+    }
+    result = db.execute(
+        update(EmailMessage)
+        .where(
+            EmailMessage.id == email_id,
+            EmailMessage.workspace_id == workspace_id,
+            EmailMessage.delivery_status == "approved",
+            EmailMessage.provider_message_id.is_(None),
+            EmailMessage.sent_at.is_(None),
+        )
+        .values(delivery_status="sending", tags=next_tags)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        current = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace_id))
+        if not current:
+            raise HTTPException(status_code=404, detail="Email draft not found.")
+        if current.delivery_status == "sent":
+            raise HTTPException(status_code=409, detail="This email has already been sent.")
+        if current.delivery_status == "sending":
+            raise HTTPException(status_code=409, detail="This email is already being sent. Wait for the current send attempt to finish or retry after it returns to approved.")
+        raise HTTPException(status_code=409, detail="Approve the email before sending.")
+    db.commit()
+    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace_id))
+    if not email:
+        raise HTTPException(status_code=404, detail="Email draft not found.")
+    return email
+
+
+def _restore_email_send_retry_state(db: Session, *, request: Request, user_id: str, workspace: Workspace, lead: Lead | None, email_id: UUID, reason: str) -> None:
+    db.rollback()
+    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
+    if email and email.delivery_status == "sending" and not email.provider_message_id and not email.sent_at:
+        email.delivery_status = "approved"
+        email.tags = {
+            **(email.tags if isinstance(email.tags, dict) else {}),
+            "last_send_error": reason,
+            "last_send_failed_at": datetime.utcnow().isoformat(),
+        }
+    if lead:
+        _add_lead_activity(db, request, user_id, workspace, "email.send_failed", lead, {"email_id": str(email_id), "reason": reason, "retryable": True})
+    db.commit()
+
+
 @router.post("/emails/{email_id}/send", response_model=UsageActionOut)
 def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
-    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
-    if not email:
-        raise HTTPException(status_code=404, detail="Email draft not found.")
-    if email.delivery_status == "sent":
-        raise HTTPException(status_code=409, detail="This email has already been sent.")
-    if email.delivery_status != "approved":
-        raise HTTPException(status_code=409, detail="Approve the email before sending.")
+    idempotency_key = _email_send_idempotency_key(workspace.id, email_id)
+    email = _claim_approved_email_for_send(db, workspace_id=workspace.id, email_id=email_id, idempotency_key=idempotency_key)
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     if not lead or not lead.email:
+        _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason="missing_recipient")
         raise HTTPException(status_code=409, detail="Add a verified recipient email before sending.")
     if _is_placeholder_recipient(lead.email):
+        _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason="placeholder_recipient")
         raise HTTPException(status_code=400, detail="Use a real recipient email before sending.")
 
     try:
@@ -8881,19 +8931,17 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
             reply_to=sender_status.reply_to,
             provider=sender_status.provider,
             smtp_config=smtp_config,
+            idempotency_key=idempotency_key,
         )
     except HTTPException as exc:
+        _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=str(exc.detail))
         raise HTTPException(status_code=exc.status_code if exc.status_code >= 400 else 409, detail=str(exc.detail)) from exc
     except EmailProviderConfigurationError as exc:
-        email.delivery_status = "failed"
-        _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id), "reason": str(exc)})
-        db.commit()
+        _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=str(exc))
         capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
         raise HTTPException(status_code=409, detail="Email sending needs setup. The approved draft is still saved.") from exc
     except EmailProviderRequestError as exc:
-        email.delivery_status = "failed"
-        _add_lead_activity(db, request, user.user_id, workspace, "email.send_failed", lead, {"email_id": str(email.id), "reason": str(exc)})
-        db.commit()
+        _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=str(exc))
         capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
         raise HTTPException(status_code=502, detail="Email sending is temporarily unavailable. The approved draft is still saved.") from exc
     except Exception as exc:
