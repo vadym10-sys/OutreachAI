@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import logging
+import re
 import time
 
 from sqlalchemy import Engine, create_engine, text
@@ -18,7 +19,7 @@ from app.core.observability import capture_provider_exception
 
 logger = logging.getLogger("outreachai.database")
 POSTGRES_MIGRATION_LOCK_KEY = 587349211
-REQUIRED_POSTGRES_MIGRATIONS = ("011_ai_memory", "012_crm_inbox_read_indexes")
+REQUIRED_POSTGRES_MIGRATIONS = ("011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths")
 REQUIRED_AI_MEMORY_TABLES = ("ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs")
 
 
@@ -66,6 +67,11 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 PACKAGED_DB_PATH = Path(__file__).resolve().parents[1] / "db"
 PACKAGED_SCHEMA_PATH = PACKAGED_DB_PATH / "schema.sql"
 PACKAGED_MIGRATIONS_DIR = PACKAGED_DB_PATH / "migrations"
+CONCURRENT_INDEX_CREATE_RE = re.compile(
+    r"^\s*CREATE\s+INDEX\s+CONCURRENTLY\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)\b",
+    re.IGNORECASE,
+)
+POSTGRES_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class Base(DeclarativeBase):
@@ -149,6 +155,53 @@ def _execute_sql_script(connection, script_path: Path) -> None:  # type: ignore[
         display_path = script_path.name
     logger.info("Applying database script %s", display_path)
     connection.execute(text(sql_text))
+
+
+def _execute_non_transactional_sql_script(connection, script_path: Path) -> None:  # type: ignore[no-untyped-def]
+    sql_text = script_path.read_text(encoding="utf-8")
+    try:
+        display_path = script_path.relative_to(REPO_ROOT)
+    except ValueError:
+        display_path = script_path.name
+    logger.info("Applying non-transactional database script %s", display_path)
+    for statement in [item.strip() for item in sql_text.split(";") if item.strip()]:
+        _drop_invalid_index_before_concurrent_create(connection, statement)
+        connection.execute(text(statement))
+
+
+def _requires_non_transactional_migration(script_path: Path) -> bool:
+    sql_text = script_path.read_text(encoding="utf-8").upper()
+    return "CREATE INDEX CONCURRENTLY" in sql_text or "DROP INDEX CONCURRENTLY" in sql_text
+
+
+def _drop_invalid_index_before_concurrent_create(connection, statement: str) -> None:  # type: ignore[no-untyped-def]
+    match = CONCURRENT_INDEX_CREATE_RE.match(statement)
+    if not match:
+        return
+    index_name = match.group("name")
+    if not POSTGRES_IDENTIFIER_RE.match(index_name):
+        raise RuntimeSchemaError(f"unsafe concurrent index name in migration: {index_name}")
+    is_invalid = bool(
+        connection.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    JOIN pg_index i ON i.indexrelid = c.oid
+                    WHERE n.nspname = 'public'
+                      AND c.relname = :index_name
+                      AND NOT i.indisvalid
+                )
+                """
+            ),
+            {"index_name": index_name},
+        ).scalar()
+    )
+    if is_invalid:
+        logger.warning("Dropping invalid PostgreSQL index before retrying concurrent create: %s", index_name)
+        connection.execute(text(f'DROP INDEX CONCURRENTLY IF EXISTS public."{index_name}"'))
 
 
 def _ensure_schema_migrations_table(connection) -> None:  # type: ignore[no-untyped-def]
@@ -253,37 +306,52 @@ def initialize_database_schema(engine: Engine) -> None:
         raise RuntimeSchemaError("database migration assets are missing from the runtime image")
 
     try:
-        with engine.begin() as connection:
-            connection.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": POSTGRES_MIGRATION_LOCK_KEY})
-            _ensure_schema_migrations_table(connection)
-            existing_tables = _public_table_names(connection)
-            applied_versions = _applied_migration_versions(connection)
+        with engine.connect() as connection:
+            connection.execute(text("SELECT pg_advisory_lock(:lock_key)"), {"lock_key": POSTGRES_MIGRATION_LOCK_KEY})
+            connection.commit()
+            try:
+                with connection.begin():
+                    _ensure_schema_migrations_table(connection)
+                    existing_tables = _public_table_names(connection)
+                    applied_versions = _applied_migration_versions(connection)
 
-            if not existing_tables:
-                schema_path = _schema_path()
-                if not schema_path.exists():
-                    raise RuntimeSchemaError("database schema asset is missing from the runtime image")
-                _execute_sql_script(connection, schema_path)
-                applied_versions = _applied_migration_versions(connection)
+                    if not existing_tables:
+                        schema_path = _schema_path()
+                        if not schema_path.exists():
+                            raise RuntimeSchemaError("database schema asset is missing from the runtime image")
+                        _execute_sql_script(connection, schema_path)
+                        applied_versions = _applied_migration_versions(connection)
 
-            for migration_path in migration_paths:
-                version = migration_path.stem
-                if version in applied_versions:
-                    continue
-                _execute_sql_script(connection, migration_path)
-                connection.execute(
-                    text("INSERT INTO schema_migrations (version) VALUES (:version) ON CONFLICT (version) DO NOTHING"),
-                    {"version": version},
-                )
-                applied_versions.add(version)
+                for migration_path in migration_paths:
+                    version = migration_path.stem
+                    with connection.begin():
+                        applied_versions = _applied_migration_versions(connection)
+                        if version in applied_versions:
+                            continue
+                    if _requires_non_transactional_migration(migration_path):
+                        _execute_non_transactional_sql_script(connection.execution_options(isolation_level="AUTOCOMMIT"), migration_path)
+                        connection.commit()
+                    else:
+                        with connection.begin():
+                            _execute_sql_script(connection, migration_path)
+                    with connection.begin():
+                        connection.execute(
+                            text("INSERT INTO schema_migrations (version) VALUES (:version) ON CONFLICT (version) DO NOTHING"),
+                            {"version": version},
+                        )
+                    applied_versions.add(version)
 
-            status = _build_runtime_schema_status(connection)
-            if not status.ready:
-                raise RuntimeSchemaError(
-                    "database schema is incomplete "
-                    f"pending_migrations={status.pending_migrations} missing_tables={status.missing_tables}"
-                )
-            _set_runtime_schema_status(status)
+                with connection.begin():
+                    status = _build_runtime_schema_status(connection)
+                    if not status.ready:
+                        raise RuntimeSchemaError(
+                            "database schema is incomplete "
+                            f"pending_migrations={status.pending_migrations} missing_tables={status.missing_tables}"
+                        )
+                    _set_runtime_schema_status(status)
+            finally:
+                connection.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": POSTGRES_MIGRATION_LOCK_KEY})
+                connection.commit()
     except Exception as exc:
         safe_error = _safe_schema_error(exc)
         logger.exception("Database migration failed: %s", safe_error)

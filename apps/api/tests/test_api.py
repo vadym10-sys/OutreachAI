@@ -1775,6 +1775,7 @@ class _FakePostgresState:
         self.fail_migration = fail_migration
         self.tables = {"workspaces", "companies", "leads", "contacts", "email_messages"}
         self.applied_versions: set[str] = set()
+        self.invalid_indexes: set[str] = set()
         self.statements: list[str] = []
         self.migration_executions = 0
 
@@ -1791,14 +1792,29 @@ class _FakePostgresConnection:
             self.state.lock_owner = False
             self.state.lock.release()
 
+    def begin(self) -> "_FakePostgresTransaction":
+        return _FakePostgresTransaction(self)
+
+    def commit(self) -> None:
+        return None
+
+    def execution_options(self, **kwargs: Any) -> "_FakePostgresConnection":
+        return self
+
     def execute(self, statement: Any, params: Optional[dict[str, Any]] = None) -> _FakeScalarResult:
         sql = str(statement)
         self.state.statements.append(sql)
-        if "pg_advisory_xact_lock" in sql:
+        if "pg_advisory_lock" in sql:
             assert params and params["lock_key"] == POSTGRES_MIGRATION_LOCK_KEY
             self.state.lock.acquire()
             self.state.lock_owner = True
             return _FakeScalarResult()
+        if "pg_advisory_unlock" in sql:
+            assert params and params["lock_key"] == POSTGRES_MIGRATION_LOCK_KEY
+            if self.state.lock_owner:
+                self.state.lock_owner = False
+                self.state.lock.release()
+            return _FakeScalarResult(True)
         if "CREATE TABLE IF NOT EXISTS schema_migrations" in sql:
             self.state.tables.add("schema_migrations")
             return _FakeScalarResult()
@@ -1807,6 +1823,14 @@ class _FakePostgresConnection:
             return _FakeScalarResult(rows=rows)
         if "SELECT version FROM schema_migrations" in sql:
             return _FakeScalarResult(rows=[(version,) for version in sorted(self.state.applied_versions)])
+        if "FROM pg_class c" in sql and "NOT i.indisvalid" in sql:
+            assert params
+            return _FakeScalarResult(params["index_name"] in self.state.invalid_indexes)
+        if "DROP INDEX CONCURRENTLY" in sql:
+            for index_name in list(self.state.invalid_indexes):
+                if index_name in sql:
+                    self.state.invalid_indexes.remove(index_name)
+            return _FakeScalarResult()
         if "CREATE TABLE IF NOT EXISTS ai_memory_settings" in sql:
             if self.state.fail_migration:
                 raise RuntimeError("synthetic migration failure")
@@ -1827,6 +1851,17 @@ class _FakePostgresConnection:
         return _FakeScalarResult()
 
 
+class _FakePostgresTransaction:
+    def __init__(self, connection: _FakePostgresConnection):
+        self.connection = connection
+
+    def __enter__(self) -> _FakePostgresConnection:
+        return self.connection
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+
 class _FakePostgresEngine:
     def __init__(self, state: _FakePostgresState):
         self.state = state
@@ -1843,7 +1878,7 @@ def test_postgres_migration_runner_applies_011_to_existing_database_idempotently
     import app.core.database as database_module
 
     migration_paths = []
-    for version in ["011_ai_memory", "012_crm_inbox_read_indexes"]:
+    for version in ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]:
         migration_path = tmp_path / f"{version}.sql"
         migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
         migration_paths.append(migration_path)
@@ -1854,10 +1889,11 @@ def test_postgres_migration_runner_applies_011_to_existing_database_idempotently
     initialize_database_schema(engine)  # type: ignore[arg-type]
     initialize_database_schema(engine)  # type: ignore[arg-type]
 
-    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes"}
+    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"}
     assert {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}.issubset(state.tables)
     assert state.migration_executions == 1
-    assert sum("pg_advisory_xact_lock" in statement for statement in state.statements) == 2
+    assert sum("pg_advisory_lock" in statement for statement in state.statements) == 2
+    assert sum("pg_advisory_unlock" in statement for statement in state.statements) == 2
     assert validate_runtime_schema(engine).ready is True  # type: ignore[arg-type]
 
 
@@ -1866,7 +1902,7 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
     import app.core.database as database_module
 
     migration_paths = []
-    for version in ["011_ai_memory", "012_crm_inbox_read_indexes"]:
+    for version in ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]:
         migration_path = tmp_path / f"{version}.sql"
         migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
         migration_paths.append(migration_path)
@@ -1889,8 +1925,146 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
 
     assert errors == []
     assert state.migration_executions == 1
-    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes"}
-    assert sum("pg_advisory_xact_lock" in statement for statement in state.statements) == 2
+    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"}
+    assert sum("pg_advisory_lock" in statement for statement in state.statements) == 2
+    assert sum("pg_advisory_unlock" in statement for statement in state.statements) == 2
+
+
+def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(tmp_path, monkeypatch) -> None:
+    import app.core.database as database_module
+
+    migration_path = tmp_path / "013_production_hardening_read_paths.sql"
+    migration_path.write_text((REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(), encoding="utf-8")
+    monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
+    state = _FakePostgresState()
+    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes"}
+    state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
+    state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
+    engine = _FakePostgresEngine(state)
+
+    initialize_database_schema(engine)  # type: ignore[arg-type]
+
+    drop_positions = [index for index, statement in enumerate(state.statements) if "DROP INDEX CONCURRENTLY" in statement and "idx_audit_logs_workspace_lead_created_id" in statement]
+    create_positions = [index for index, statement in enumerate(state.statements) if "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_logs_workspace_lead_created_id" in statement]
+    assert drop_positions
+    assert create_positions
+    assert drop_positions[0] < create_positions[0]
+    assert "idx_audit_logs_workspace_lead_created_id" not in state.invalid_indexes
+    assert "013_production_hardening_read_paths" in state.applied_versions
+
+
+def test_postgres_migration_runner_repairs_real_invalid_concurrent_index(monkeypatch) -> None:
+    database_url = os.getenv("POSTGRES_TEST_DATABASE_URL")
+    if not database_url:
+        pytest.skip("POSTGRES_TEST_DATABASE_URL is required for the real PostgreSQL invalid-index smoke test")
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    import app.core.database as database_module
+
+    base_url = make_url(database_url)
+    if base_url.drivername == "postgresql":
+        base_url = base_url.set(drivername="postgresql+psycopg")
+    temp_db_name = f"outreachai_invalid_index_{uuid4().hex[:12]}"
+    maintenance_engine = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    temp_engine = None
+    temp_database_created = False
+    try:
+        with maintenance_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{temp_db_name}"'))
+            temp_database_created = True
+    except SQLAlchemyError as exc:
+        maintenance_engine.dispose()
+        pytest.skip(f"PostgreSQL invalid-index smoke requires local connectivity and CREATE DATABASE privileges: {exc}")
+
+    try:
+        temp_url = base_url.set(database=temp_db_name)
+        temp_engine = create_engine(temp_url)
+        with temp_engine.begin() as connection:
+            connection.execute(text("CREATE TABLE schema_migrations (version VARCHAR(255) PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT now())"))
+            connection.execute(text("INSERT INTO schema_migrations (version) VALUES ('011_ai_memory'), ('012_crm_inbox_read_indexes')"))
+            connection.execute(text("CREATE TABLE ai_memory_settings (id uuid PRIMARY KEY)"))
+            connection.execute(text("CREATE TABLE ai_memory_entries (id uuid PRIMARY KEY)"))
+            connection.execute(text("CREATE TABLE ai_memory_audit_logs (id uuid PRIMARY KEY)"))
+            connection.execute(text("CREATE TABLE email_messages (id uuid PRIMARY KEY, workspace_id uuid, direction varchar(16), lead_id uuid, created_at timestamp)"))
+            connection.execute(text("CREATE TABLE contacts (id uuid PRIMARY KEY, workspace_id uuid, company_id uuid, created_at timestamp)"))
+            connection.execute(text("CREATE TABLE deals (id uuid PRIMARY KEY, workspace_id uuid, company_id uuid, created_at timestamp)"))
+            connection.execute(text("CREATE TABLE notes (id uuid PRIMARY KEY, workspace_id uuid, company_id uuid, created_at timestamp)"))
+            connection.execute(text("CREATE TABLE audit_logs (id uuid PRIMARY KEY, workspace_id uuid, metadata_json jsonb, created_at timestamp)"))
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO audit_logs (id, workspace_id, metadata_json, created_at)
+                    VALUES (
+                        '00000000-0000-0000-0000-000000000001',
+                        '00000000-0000-0000-0000-000000000002',
+                        '{"lead_id":"00000000-0000-0000-0000-000000000003"}'::jsonb,
+                        now()
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE OR REPLACE FUNCTION fail_invalid_index(input text)
+                    RETURNS text
+                    LANGUAGE plpgsql
+                    IMMUTABLE
+                    AS $$
+                    BEGIN
+                        RAISE EXCEPTION 'synthetic invalid index';
+                    END;
+                    $$;
+                    """
+                )
+            )
+        with temp_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            with pytest.raises(SQLAlchemyError):
+                connection.execute(
+                    text(
+                        """
+                        CREATE INDEX CONCURRENTLY idx_audit_logs_workspace_lead_created_id
+                        ON audit_logs (workspace_id, fail_invalid_index(metadata_json->>'lead_id'), created_at DESC, id DESC)
+                        """
+                    )
+                )
+            assert connection.execute(
+                text(
+                    """
+                    SELECT NOT i.indisvalid
+                    FROM pg_class c
+                    JOIN pg_index i ON i.indexrelid = c.oid
+                    WHERE c.relname = 'idx_audit_logs_workspace_lead_created_id'
+                    """
+                )
+            ).scalar() is True
+        monkeypatch.setattr(database_module, "_migration_paths", lambda: [REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql"])
+
+        initialize_database_schema(temp_engine)
+
+        with temp_engine.connect() as connection:
+            assert connection.execute(text("SELECT version FROM schema_migrations WHERE version = '013_production_hardening_read_paths'")).scalar() == "013_production_hardening_read_paths"
+            assert connection.execute(
+                text(
+                    """
+                    SELECT i.indisvalid
+                    FROM pg_class c
+                    JOIN pg_index i ON i.indexrelid = c.oid
+                    WHERE c.relname = 'idx_audit_logs_workspace_lead_created_id'
+                    """
+                )
+            ).scalar() is True
+    finally:
+        if temp_engine is not None:
+            temp_engine.dispose()
+        if temp_database_created:
+            try:
+                with maintenance_engine.connect() as connection:
+                    connection.execute(text(f'DROP DATABASE IF EXISTS "{temp_db_name}" WITH (FORCE)'))
+            except SQLAlchemyError:
+                pass
+        maintenance_engine.dispose()
 
 
 def test_postgres_migration_failure_sets_negative_schema_status(tmp_path, monkeypatch) -> None:
@@ -1907,7 +2081,7 @@ def test_postgres_migration_failure_sets_negative_schema_status(tmp_path, monkey
 
     status = database_module.get_runtime_schema_status()
     assert status.ready is False
-    assert status.pending_migrations == ["011_ai_memory", "012_crm_inbox_read_indexes"]
+    assert status.pending_migrations == ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]
     assert set(status.missing_tables) == {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
     assert "synthetic migration failure" in status.error
 
@@ -1917,9 +2091,13 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     packaged_migration = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "011_ai_memory.sql").read_text(encoding="utf-8")
     root_read_indexes = (REPO_ROOT / "db" / "migrations" / "012_crm_inbox_read_indexes.sql").read_text(encoding="utf-8")
     packaged_read_indexes = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "012_crm_inbox_read_indexes.sql").read_text(encoding="utf-8")
+    root_hardening = (REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
+    packaged_hardening = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
 
     assert packaged_migration == root_migration
     assert packaged_read_indexes == root_read_indexes
+    assert packaged_hardening == root_hardening
+    assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_logs_workspace_lead_created_id" in root_hardening
     assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
 
 
@@ -7867,10 +8045,96 @@ def test_crm_stage_move_and_note_are_persisted(monkeypatch) -> None:
 
 
 def test_crm_pipeline_activity_query_uses_postgres_json_key_extraction() -> None:
-    compiled = str(select(AuditLog.id).where(_audit_log_lead_id_clause(UUID("00000000-0000-0000-0000-000000000001"))).compile(dialect=postgresql.dialect()))
+    compiled = str(
+        select(AuditLog.id)
+        .where(
+            AuditLog.workspace_id == UUID("00000000-0000-0000-0000-000000000002"),
+            _audit_log_lead_id_clause(UUID("00000000-0000-0000-0000-000000000001")),
+        )
+        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        .compile(dialect=postgresql.dialect())
+    )
+    index_sql = (REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
 
     assert "LIKE" not in compiled.upper()
     assert "->>" in compiled
+    assert "idx_audit_logs_workspace_lead_created_id" in index_sql
+    assert "(metadata_json->>'lead_id')" in index_sql
+    assert "created_at DESC, id DESC" in index_sql
+
+
+def test_crm_batch_loader_returns_older_visible_contacts_and_emails(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    lead_response = client.post(
+        "/api/leads",
+        headers=AUTH,
+        json={"company": "Visible History Build", "website": "https://visible-history.example", "country": "Germany", "city": "Berlin", "industry": "Construction"},
+    )
+    assert lead_response.status_code == 200
+    lead = lead_response.json()
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    now = datetime.utcnow()
+
+    db = get_sessionmaker()()
+    try:
+        company = db.scalar(select(Company).where(Company.lead_id == UUID(lead["id"])))
+        assert company is not None
+        for index in range(12):
+            db.add(
+                Contact(
+                    user_id="dev_user",
+                    workspace_id=UUID(workspace["id"]),
+                    company_id=company.id,
+                    lead_id=UUID(lead["id"]),
+                    name=f"QA hidden contact {index}",
+                    email=f"hidden-{index}@example.com",
+                    created_at=now + timedelta(minutes=index),
+                )
+            )
+            db.add(
+                EmailMessage(
+                    user_id="dev_user",
+                    workspace_id=UUID(workspace["id"]),
+                    lead_id=UUID(lead["id"]),
+                    subject=f"Hidden email {index}",
+                    body="Hidden internal fixture email",
+                    tags={"to_email": f"hidden-{index}@example.com"},
+                    created_at=now + timedelta(minutes=index),
+                )
+            )
+        for index in range(10):
+            db.add(
+                Contact(
+                    user_id="dev_user",
+                    workspace_id=UUID(workspace["id"]),
+                    company_id=company.id,
+                    lead_id=UUID(lead["id"]),
+                    name=f"Visible Contact {index}",
+                    email=f"buyer-{index}@visible-history.example",
+                    created_at=now - timedelta(minutes=index + 1),
+                )
+            )
+            db.add(
+                EmailMessage(
+                    user_id="dev_user",
+                    workspace_id=UUID(workspace["id"]),
+                    lead_id=UUID(lead["id"]),
+                    subject=f"Visible email {index}",
+                    body="Customer visible email",
+                    tags={"to_email": f"buyer-{index}@visible-history.example"},
+                    created_at=now - timedelta(minutes=index + 1),
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/crm/companies?search=Visible%20History", headers=AUTH)
+    assert response.status_code == 200
+    company_out = response.json()[0]
+    assert [contact["name"] for contact in company_out["contacts"]] == [f"Visible Contact {index}" for index in range(10)]
+    assert [email["subject"] for email in company_out["generated_emails"]] == [f"Visible email {index}" for index in range(10)]
 
 
 def test_crm_pipeline_returns_company_cards_with_activity_timeline(monkeypatch) -> None:

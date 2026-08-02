@@ -162,6 +162,81 @@ CREATE TABLE IF NOT EXISTS leads (
   CONSTRAINT uq_user_lead_email UNIQUE (user_id, email)
 );
 
+CREATE TABLE IF NOT EXISTS companies (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+  lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+  name VARCHAR(220) NOT NULL,
+  website VARCHAR(500),
+  domain VARCHAR(220),
+  phone VARCHAR(80),
+  email VARCHAR(320),
+  address VARCHAR(500),
+  city VARCHAR(120),
+  country VARCHAR(120),
+  industry VARCHAR(160),
+  google_rating NUMERIC,
+  place_id VARCHAR(160),
+  source VARCHAR(80) NOT NULL DEFAULT 'manual',
+  ai_summary TEXT NOT NULL DEFAULT '',
+  suggested_offer TEXT NOT NULL DEFAULT '',
+  outreach_strategy TEXT NOT NULL DEFAULT '',
+  sales_angle TEXT NOT NULL DEFAULT '',
+  expected_reply_rate VARCHAR(80) NOT NULL DEFAULT '',
+  email_status VARCHAR(80) NOT NULL DEFAULT 'Not prepared',
+  crm_stage VARCHAR(80) NOT NULL DEFAULT 'New Lead',
+  metadata_json JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
+  lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+  name VARCHAR(180) NOT NULL DEFAULT '',
+  title VARCHAR(180) NOT NULL DEFAULT '',
+  email VARCHAR(320),
+  phone VARCHAR(80),
+  linkedin VARCHAR(500),
+  confidence VARCHAR(80) NOT NULL DEFAULT '',
+  source VARCHAR(80) NOT NULL DEFAULT 'manual',
+  email_status VARCHAR(80) NOT NULL DEFAULT 'Unknown',
+  metadata_json JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS deals (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
+  lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+  name VARCHAR(220) NOT NULL,
+  stage VARCHAR(80) NOT NULL DEFAULT 'New Lead',
+  value NUMERIC NOT NULL DEFAULT 0,
+  probability INTEGER NOT NULL DEFAULT 0,
+  source VARCHAR(80) NOT NULL DEFAULT 'manual',
+  next_step TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notes (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id VARCHAR(128) NOT NULL,
+  workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
+  company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
+  lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
+  body TEXT NOT NULL DEFAULT '',
+  kind VARCHAR(80) NOT NULL DEFAULT 'note',
+  created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS sales_employee_lead_insights (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(128) NOT NULL,
@@ -380,7 +455,9 @@ CREATE INDEX IF NOT EXISTS idx_campaigns_workspace_id ON campaigns(workspace_id)
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON email_messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_id ON email_messages(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_direction_created ON email_messages(workspace_id, direction, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_direction_created_id ON email_messages(workspace_id, direction, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_lead_created ON email_messages(workspace_id, lead_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_messages_workspace_lead_created_id ON email_messages(workspace_id, lead_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_email_messages_provider_message_id ON email_messages(provider_message_id);
 CREATE INDEX IF NOT EXISTS idx_analytics_user_event ON analytics_events(user_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_user_action ON audit_logs(user_id, action);
@@ -423,8 +500,11 @@ CREATE INDEX IF NOT EXISTS idx_leads_workspace_id ON leads(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_companies_workspace_updated ON companies(workspace_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_companies_workspace_lead_id ON companies(workspace_id, lead_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_workspace_company_created ON contacts(workspace_id, company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_contacts_workspace_company_created_id ON contacts(workspace_id, company_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_deals_workspace_company_created ON deals(workspace_id, company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deals_workspace_company_created_id ON deals(workspace_id, company_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_notes_workspace_company_created ON notes(workspace_id, company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notes_workspace_company_created_id ON notes(workspace_id, company_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_website_analyses_user_id ON website_analyses(user_id);
 CREATE INDEX IF NOT EXISTS idx_website_analyses_workspace_id ON website_analyses(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_website_analyses_workspace_lead_created ON website_analyses(workspace_id, lead_id, created_at DESC);
@@ -441,3 +521,4 @@ CREATE INDEX IF NOT EXISTS idx_sales_employee_lead_insights_lead_id ON sales_emp
 CREATE INDEX IF NOT EXISTS idx_analytics_events_workspace_id ON analytics_events(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_id ON audit_logs(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_created ON audit_logs(workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_lead_created_id ON audit_logs(workspace_id, (metadata_json->>'lead_id'), created_at DESC, id DESC);
