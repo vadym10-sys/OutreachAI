@@ -824,6 +824,15 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       currentCompany = { ...currentCompany, crm_stage: "Sent", email_sent_at: now, generated_emails: [email] };
       return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: currentCompany, email });
     }
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/recover") {
+      const body = route.request().postDataJSON() as { confirmed_not_delivered?: boolean };
+      if (body.confirmed_not_delivered !== true) {
+        return fulfillJson(route, { detail: "Confirm that the email is not in Gmail or SMTP Sent before recovering it for retry." }, 409);
+      }
+      const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "approved", sent_at: null };
+      currentCompany = { ...currentCompany, crm_stage: "Approved", email_approved_at: now, email_sent_at: null, generated_emails: [email] };
+      return fulfillJson(route, { status: "success", message: "Interrupted send recovered for retry. Nothing was sent automatically.", company: currentCompany, email });
+    }
     if (apiPath === "/api/outreach/sender/status") return fulfillJson(route, {
       provider: "gmail",
       connected: true,

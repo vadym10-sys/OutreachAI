@@ -234,6 +234,10 @@ class UsageActionOut(BaseModel):
     job_status: str = ""
 
 
+class RecoverEmailSendIn(BaseModel):
+    confirmed_not_delivered: bool
+
+
 class UsageJobStatusOut(BaseModel):
     job_id: str
     job_type: str
@@ -9079,7 +9083,7 @@ def _record_email_send_provider_context(db: Session, *, workspace_id: UUID, emai
 
 
 @router.post("/emails/{email_id}/recover", response_model=UsageActionOut)
-def recover_email_send(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+def recover_email_send(email_id: UUID, payload: RecoverEmailSendIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
     if not email:
@@ -9093,6 +9097,8 @@ def recover_email_send(email_id: UUID, request: Request, user: WorkspaceUserCont
         raise HTTPException(status_code=409, detail="This email is still being sent. Wait for the current send lease to expire before recovery.")
     if email.delivery_status not in {"sending", EMAIL_SEND_CONFIRMATION_PENDING_STATUS}:
         raise HTTPException(status_code=409, detail="Only interrupted sends can be recovered.")
+    if not payload.confirmed_not_delivered:
+        raise HTTPException(status_code=409, detail="Confirm that the email is not in Gmail or SMTP Sent before recovering it for retry.")
 
     email.delivery_status = "approved"
     email.tags = {
@@ -9100,16 +9106,17 @@ def recover_email_send(email_id: UUID, request: Request, user: WorkspaceUserCont
         "last_send_error": "manual_send_recovery",
         "send_recovered_at": now.isoformat(),
         "send_recovered_by_user_id": user.user_id,
+        "send_recovery_confirmed_not_delivered": True,
     }
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     if lead:
-        _add_lead_activity(db, request, user.user_id, workspace, "email.send_recovered", lead, {"email_id": str(email.id), "reason": "manual_send_recovery"})
+        _add_lead_activity(db, request, user.user_id, workspace, "email.send_recovered", lead, {"email_id": str(email.id), "reason": "manual_send_recovery", "user_id": user.user_id, "confirmed_not_delivered": True})
     db.add(
         AuditLog(
             user_id=user.user_id,
             workspace_id=workspace.id,
             action="email.send_recovered",
-            metadata_json={"email_id": str(email.id), "reason": "manual_send_recovery", "status_after": "approved"},
+            metadata_json={"email_id": str(email.id), "reason": "manual_send_recovery", "status_after": "approved", "user_id": user.user_id, "confirmed_not_delivered": True},
         )
     )
     db.commit()
@@ -9117,7 +9124,7 @@ def recover_email_send(email_id: UUID, request: Request, user: WorkspaceUserCont
     company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc())) if lead else None
     return UsageActionOut(
         status="success",
-        message="Interrupted send recovered. Confirm the message was not delivered before sending again.",
+        message="Interrupted send recovered for retry. Nothing was sent automatically.",
         company=_crm_company_out(db, workspace, user.user_id, company) if company else None,
         email=EmailOut.model_validate(email),
     )

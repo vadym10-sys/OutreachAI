@@ -46,6 +46,7 @@ export type AiFirstApi = {
   updateEmail(emailId: string, payload: { subject?: string; body?: string; preview?: string }): Promise<WorkspaceAppActionResponse>;
   approveEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
   sendApprovedEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
+  recoverEmailForRetry(emailId: string, confirmedNotDelivered: boolean): Promise<WorkspaceAppActionResponse>;
   listEmails(cursor?: string, pageSize?: number): Promise<{ messages: Email[]; nextCursor: string; hasMore: boolean }>;
   getWorkspace(): Promise<Workspace>;
   updateWorkspace(payload: Partial<Workspace>): Promise<Workspace>;
@@ -190,6 +191,10 @@ export function useAiFirstApi(): AiFirstApi {
     }),
     approveEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, { method: "POST" })),
     sendApprovedEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, { method: "POST" })),
+    recoverEmailForRetry: async (emailId, confirmedNotDelivered) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/recover`, {
+      method: "POST",
+      body: JSON.stringify({ confirmed_not_delivered: confirmedNotDelivered })
+    })),
     listEmails: async (cursor = "", pageSize = 25) => {
       const path = `/api/inbox?page_size=${pageSize}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
       const { data, headers } = await requestWithHeaders<Email[]>(path);

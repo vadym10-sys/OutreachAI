@@ -1629,7 +1629,9 @@ function OpportunityCard({
   const [readyToSend, setReadyToSend] = useState(() => Boolean(savedDraft && savedDraft.delivery_status !== "approved" && savedDraft.delivery_status !== "sent"));
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
   const [senderStatus, setSenderStatus] = useState<OutreachSenderStatus | null>(null);
   const [senderLoading, setSenderLoading] = useState(false);
   const [status, setStatus] = useState("");
@@ -2180,6 +2182,61 @@ function OpportunityCard({
       });
     } finally {
       setSending(false);
+    }
+  }
+
+  async function recoverDraftForRetry() {
+    if (!draft?.id || !draftSendConfirmationPending) {
+      setError(t("Only emails waiting for delivery confirmation can be recovered."));
+      return;
+    }
+    if (!recoveryConfirmed) {
+      setError(t("Confirm that the message is not in Gmail or SMTP Sent before recovering it for retry."));
+      return;
+    }
+    setRecovering(true);
+    setError("");
+    setStatus(t("Recovering email for retry..."));
+    try {
+      const recovered = await withTimeout(
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}/recover`, {
+          method: "POST",
+          body: JSON.stringify({ confirmed_not_delivered: true })
+        }),
+        15000,
+        "Email recovery timed out. Please try again."
+      );
+      if (!recovered.email || recovered.status !== "success") {
+        throw new Error(recovered.message || "Email recovery could not be completed.");
+      }
+      setDraft(recovered.email);
+      setDraftFields(editableDraftFields(recovered.email));
+      setReadyToSend(false);
+      setSendConfirmOpen(false);
+      setRecoveryConfirmed(false);
+      setStatus(t("Interrupted send recovered for retry. Nothing was sent automatically."));
+      if (recovered.company) {
+        const updatedCompany = normalizeCrmCompany(recovered.company);
+        onCompanyUpdated?.(updatedCompany);
+        onLeadUpdated?.(leadFromCrmCompany(updatedCompany));
+      }
+      trackEvent("email_send_recovered_for_retry", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company
+      });
+    } catch (err) {
+      const reason = friendlyErrorMessage(err, "Email recovery could not be completed. Check the mailbox and try again.");
+      setError(t(reason));
+      setStatus("");
+      trackEvent("email_send_recovery_failed", {
+        lead_id: lead.id,
+        email_id: draft.id,
+        company: lead.company,
+        reason
+      });
+    } finally {
+      setRecovering(false);
     }
   }
 
@@ -2957,6 +3014,23 @@ function OpportunityCard({
         )}
       </section>}
 
+      {draftSendConfirmationPending && <section className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
+        <p className="text-sm font-bold text-ink">{t("Delivery confirmation required")}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-700">{t("Check Gmail or SMTP Sent for this mailbox. Recover for retry only after you confirm this exact email was not sent.")}</p>
+        <label className="mt-3 flex items-start gap-3 text-sm font-bold text-amber-950">
+          <input
+            type="checkbox"
+            checked={recoveryConfirmed}
+            onChange={(event) => setRecoveryConfirmed(event.target.checked)}
+            className="mt-1 h-4 w-4 rounded border-amber-400"
+          />
+          {t("I checked Gmail/SMTP Sent and this email was not sent.")}
+        </label>
+        <div className="mt-4">
+          <SecondaryButton type="button" onClick={recoverDraftForRetry} disabled={recovering || sending || !recoveryConfirmed}>{recovering ? <Loader2 className="animate-spin" size={17} /> : <ShieldCheck size={17} />} {t("Recover for retry")}</SecondaryButton>
+        </div>
+      </section>}
+
       {sendConfirmOpen && draft?.delivery_status === "approved" && <section className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4">
         <p className="text-sm font-bold text-ink">{t("Confirm before sending")}</p>
         <p className="mt-2 text-sm leading-6 text-slate-700">{t("This will send one email to the saved recipient. Nothing is sent until you confirm.")}</p>
@@ -2984,9 +3058,9 @@ function OpportunityCard({
       ) : null}
       <div className="mt-5 flex flex-col gap-2 min-[430px]:flex-row">
         <PrimaryButton onClick={completeResearch} disabled={busy}>{busy ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} {t(missingCoverage.length ? "Run all missing steps" : "Refresh AI research")}</PrimaryButton>
-        <SecondaryButton onClick={() => setEditingDraft(true)} disabled={busy || !draft || sending || savingDraft || draftLocked}>{savingDraft ? <Loader2 className="animate-spin" size={17} /> : <FileText size={17} />} {t("Edit email")}</SecondaryButton>
-        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || savingDraft || editingDraft || draftLocked}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : draftSendConfirmationPending ? t("Check mailbox") : t("Approve email")}</SecondaryButton>
-        <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || savingDraft || editingDraft || senderLoading || draft.delivery_status !== "approved"}>{sending || senderLoading ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
+        <SecondaryButton onClick={() => setEditingDraft(true)} disabled={busy || !draft || sending || recovering || savingDraft || draftLocked}>{savingDraft ? <Loader2 className="animate-spin" size={17} /> : <FileText size={17} />} {t("Edit email")}</SecondaryButton>
+        <SecondaryButton onClick={approveDraft} disabled={busy || !draft || sending || recovering || savingDraft || editingDraft || draftLocked}>{sending ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : draft?.delivery_status === "approved" ? t("Approved") : draftSendConfirmationPending ? t("Check mailbox") : t("Approve email")}</SecondaryButton>
+        <SecondaryButton onClick={() => sendApprovedEmail(false)} disabled={busy || !draft || sending || recovering || savingDraft || editingDraft || senderLoading || draft.delivery_status !== "approved"}>{sending || senderLoading ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />} {draft?.delivery_status === "sent" ? t("Sent") : t("Send approved email")}</SecondaryButton>
       </div>
     </OpportunityCardShell>
   );

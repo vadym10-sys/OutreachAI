@@ -4578,7 +4578,8 @@ def test_workspace_app_email_unexpected_exception_restores_approved_with_audit(m
 
 
 def test_workspace_app_non_idempotent_provider_error_requires_delivery_confirmation(monkeypatch) -> None:
-    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-smtp-confirmation-{uuid4()}@example.com"}
+    test_user_id = f"usage-smtp-confirmation-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": test_user_id}
     email = _workspace_app_test_draft(headers, monkeypatch, company_name="SMTP Confirmation Co")
     approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
     assert approved.status_code == 200
@@ -4590,7 +4591,13 @@ def test_workspace_app_non_idempotent_provider_error_requires_delivery_confirmat
             {"host": "smtp.confirmation.example", "port": 587, "username": "sender", "password": "secret", "use_tls": True},
         ),
     )
-    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: (_ for _ in ()).throw(EmailProviderRequestError("SMTP email sending failed.")))
+    calls: list[dict[str, Any]] = []
+
+    def fail_send(**kwargs):
+        calls.append(kwargs)
+        raise EmailProviderRequestError("SMTP email sending failed.")
+
+    monkeypatch.setattr("app.api.usage.send_email", fail_send)
 
     response = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
     assert response.status_code == 502
@@ -4608,6 +4615,34 @@ def test_workspace_app_non_idempotent_provider_error_requires_delivery_confirmat
         assert audit is not None
         assert audit.metadata_json["sender_provider"] == "smtp"
         assert audit.metadata_json["retryable"] is False
+        workspace_id = saved_email.workspace_id
+
+    missing_confirmation = client.post(f"/api/workspace-app/emails/{email['id']}/recover", headers=headers)
+    assert missing_confirmation.status_code == 422
+    false_confirmation = client.post(f"/api/workspace-app/emails/{email['id']}/recover", headers=headers, json={"confirmed_not_delivered": False})
+    assert false_confirmation.status_code == 409
+    assert "Confirm that the email is not in Gmail or SMTP Sent" in false_confirmation.json()["detail"]
+
+    recovered = client.post(f"/api/workspace-app/emails/{email['id']}/recover", headers=headers, json={"confirmed_not_delivered": True})
+    assert recovered.status_code == 200
+    assert recovered.json()["message"] == "Interrupted send recovered for retry. Nothing was sent automatically."
+    assert recovered.json()["email"]["delivery_status"] == "approved"
+    assert len(calls) == 1
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.delivery_status == "approved"
+        assert saved_email.provider_message_id is None
+        assert saved_email.sent_at is None
+        assert saved_email.tags["send_recovered_by_user_id"] == test_user_id
+        assert saved_email.tags["send_recovery_confirmed_not_delivered"] is True
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == "email.send_recovered", AuditLog.workspace_id == workspace_id).order_by(AuditLog.created_at.desc()))
+        assert audit is not None
+        assert audit.user_id == test_user_id
+        assert audit.metadata_json["user_id"] == test_user_id
+        assert audit.metadata_json["confirmed_not_delivered"] is True
+        assert audit.metadata_json["status_after"] == "approved"
 
 
 def test_workspace_app_email_workspace_isolation_for_approve_send_patch_and_recover(monkeypatch) -> None:
@@ -4634,7 +4669,7 @@ def test_workspace_app_email_workspace_isolation_for_approve_send_patch_and_reco
         }
         db.commit()
 
-    recover_other = client.post(f"/api/workspace-app/emails/{email['id']}/recover", headers=other_headers)
+    recover_other = client.post(f"/api/workspace-app/emails/{email['id']}/recover", headers=other_headers, json={"confirmed_not_delivered": True})
     assert recover_other.status_code == 404
     with get_sessionmaker()() as db:
         saved_email = db.get(EmailMessage, UUID(email["id"]))
