@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockWorkspaceApi } from "../../mocks/workspace-api";
+import { mockWorkspaceApi, qaCompany } from "../../mocks/workspace-api";
 import { installQaGuards } from "../helpers/qa-guards";
 
 test.beforeEach(async ({ page }) => {
@@ -102,6 +102,57 @@ test("email approval send and reply tracking stay connected end to end", async (
   await expect(page.getByText("Re: Quick idea for Hill Country Build Co")).toBeVisible();
   await expect(page.getByText(/Classification: Interested/)).toBeVisible();
   await expect(page.getByRole("article").filter({ hasText: "Re: Quick idea for Hill Country Build Co" }).getByText("Hill Country Build Co", { exact: true })).toBeVisible();
+});
+
+test("email recovery requires mailbox confirmation and does not resend automatically", async ({ page }) => {
+  let currentEmail = {
+    ...qaCompany.generated_emails[0],
+    delivery_status: "send_confirmation_pending",
+    sent_at: null,
+    tags: { sender_provider: "gmail", provider_idempotency_supported: false }
+  };
+  let recoverPayload: unknown = null;
+  let sendRequests = 0;
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const apiPath = url.pathname.replace(/^\/api\/backend/, "");
+    if (apiPath === "/api/inbox" && route.request().method() === "GET") {
+      return route.fulfill({ status: 200, contentType: "application/json", headers: { "X-Has-More": "false", "X-Next-Cursor": "" }, body: JSON.stringify([currentEmail]) });
+    }
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/recover" && route.request().method() === "POST") {
+      recoverPayload = route.request().postDataJSON();
+      currentEmail = { ...currentEmail, delivery_status: "approved" };
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "success", message: "Interrupted send recovered for retry. Nothing was sent automatically.", company: { ...qaCompany, generated_emails: [currentEmail] }, email: currentEmail })
+      });
+    }
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send" && route.request().method() === "POST") {
+      sendRequests += 1;
+      return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "Send should not be called during recovery." }) });
+    }
+    return route.fallback();
+  });
+
+  await page.goto("/dashboard/emails");
+  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByText("Delivery confirmation required")).toBeVisible();
+  await expect(page.getByText("Check Gmail or SMTP Sent for this mailbox.")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Recover for retry/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
+
+  await page.getByLabel("I checked Gmail/SMTP Sent and this email was not sent.").check();
+  const recoverResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/recover")
+  );
+  await page.getByRole("button", { name: /Recover for retry/ }).click();
+  await expect((await recoverResponse).ok()).toBe(true);
+  expect(recoverPayload).toEqual({ confirmed_not_delivered: true });
+  expect(sendRequests).toBe(0);
+  await expect(page.getByText("Interrupted send recovered for retry. Nothing was sent automatically.")).toBeVisible();
+  await expect(page.getByText("Approved", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
 });
 
 test("email workspace can load older inbox reply pages", async ({ page }) => {

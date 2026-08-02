@@ -62,6 +62,12 @@ def _safe_error_message(status_code: int, detail: object) -> str:
         "encryption key missing",
     }:
         return str(raw)
+    if raw in {
+        "Email sending failed before provider confirmation. The approved draft is still saved.",
+        "Email sending could not be confirmed. Check the mailbox before recovering or sending again.",
+        "Confirm that the email is not in Gmail or SMTP Sent before recovering it for retry.",
+    }:
+        return raw
     if "no companies" in lower or "no matching" in lower:
         return "No companies were found. Try a broader location, industry, or company size."
     if any(term in lower for term in ["google", "places", "apollo", "hunter", "lead search"]):

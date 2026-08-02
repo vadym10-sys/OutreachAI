@@ -52,7 +52,14 @@ function canSendApprovedEmail(email: Email) {
   return direction === "outbound" && status === "approved" && !email.sent_at && !email.delivered_at && !email.opened_at && !email.bounced_at && !email.replied_at;
 }
 
+function canRecoverEmailForRetry(email: Email) {
+  const status = String(email.delivery_status || "").toLowerCase();
+  const direction = String(email.direction || "outbound").toLowerCase();
+  return direction === "outbound" && status === "send_confirmation_pending" && !email.sent_at;
+}
+
 function emailSafetyState(email: Email) {
+  if (canRecoverEmailForRetry(email)) return "Delivery is unconfirmed. Check Gmail/SMTP Sent and recover only if the message is not there.";
   if (!canEditEmailDraft(email)) return "Read-only. Inbound replies and provider delivery records cannot be edited.";
   if (email.delivery_status === "approved") return "Approved. Editing will return it to draft and require approval again.";
   return "Manual approval required.";
@@ -864,6 +871,7 @@ function EmailsSection() {
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [inbox, setInbox] = useState<Email[]>([]);
   const [draftEdits, setDraftEdits] = useState<Record<string, { subject: string; body: string }>>({});
+  const [recoverConfirmations, setRecoverConfirmations] = useState<Record<string, boolean>>({});
   const [inboxCursor, setInboxCursor] = useState("");
   const [inboxHasMore, setInboxHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -963,6 +971,27 @@ function EmailsSection() {
     }
   }
 
+  async function recoverForRetry(email: Email) {
+    if (!canRecoverEmailForRetry(email)) return;
+    if (!recoverConfirmations[email.id]) {
+      setActionError("Confirm that the message is not in Gmail or SMTP Sent before recovering it for retry.");
+      return;
+    }
+    setBusy(`recover:${email.id}`);
+    setNotice("");
+    setActionError("");
+    try {
+      const response = await api.recoverEmailForRetry(email.id, true);
+      setNotice(response.message || "Interrupted send recovered for retry. Nothing was sent automatically.");
+      setRecoverConfirmations((current) => ({ ...current, [email.id]: false }));
+      await load();
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, "Could not recover this email for retry."));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function trackReplies() {
     setBusy("reply:sync");
     setNotice("");
@@ -1005,6 +1034,8 @@ function EmailsSection() {
         const editable = canEditEmailDraft(email);
         const approvedEditable = editable && email.delivery_status === "approved";
         const sendable = canSendApprovedEmail(email);
+        const recoverable = canRecoverEmailForRetry(email);
+        const recoveryConfirmed = Boolean(recoverConfirmations[email.id]);
         return <SurfaceCard as="article" key={email.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
           <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
             <div>
@@ -1026,7 +1057,25 @@ function EmailsSection() {
               </div>
               <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
                 {approvedEditable ? <Notice tone="warn">Editing an approved email returns it to draft. Approve it again before Send is enabled.</Notice> : null}
-                {!editable ? <Notice tone="warn">This message is read-only because it is an inbound reply or provider delivery record.</Notice> : null}
+                {recoverable ? <Notice tone="warn">
+                  <div className="space-y-3">
+                    <p className="font-black text-amber-950">Delivery confirmation required</p>
+                    <p>Check Gmail or SMTP Sent for this mailbox. Recover for retry only after you confirm this exact email was not sent.</p>
+                    <label className="flex items-start gap-3 text-sm font-bold text-amber-950">
+                      <input
+                        type="checkbox"
+                        checked={recoveryConfirmed}
+                        onChange={(event) => setRecoverConfirmations((current) => ({ ...current, [email.id]: event.target.checked }))}
+                        className="mt-1 h-4 w-4 rounded border-amber-400"
+                      />
+                      I checked Gmail/SMTP Sent and this email was not sent.
+                    </label>
+                    <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !recoveryConfirmed} onClick={() => void recoverForRetry(email)} aria-label={`Recover for retry ${email.subject || email.id}`}>
+                      {busy === `recover:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />} Recover for retry
+                    </AppButton>
+                  </div>
+                </Notice> : null}
+                {!editable && !recoverable ? <Notice tone="warn">This message is read-only because it is an inbound reply or provider delivery record.</Notice> : null}
                 <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Subject<input value={edit.subject} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), subject: event.target.value } }))} disabled={!editable} className={fieldClass} /></label>
                 <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body<textarea value={edit.body} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), body: event.target.value } }))} disabled={!editable} className="focus-ring mt-2 min-h-48 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]" /></label>
               </div>
