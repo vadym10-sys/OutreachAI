@@ -19,8 +19,8 @@ test("form input is rendered as text and not executed as markup", async ({ page 
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard");
   const customerSearch = page.getByRole("form", { name: "AI customer command" });
-  await customerSearch.getByLabel("AI command").fill("<img src=x onerror=alert(1)>");
-  await expect(customerSearch.getByLabel("AI command")).toHaveValue("<img src=x onerror=alert(1)>");
+  await customerSearch.getByLabel("Опишите, что вы продаёте и кому хотите продавать").fill("<img src=x onerror=alert(1)>");
+  await expect(customerSearch.getByLabel("Опишите, что вы продаёте и кому хотите продавать")).toHaveValue("<img src=x onerror=alert(1)>");
   const injectedImageCount = await page.locator("img[src='x']").count();
   expect(injectedImageCount).toBe(0);
   await guards.assertClean();

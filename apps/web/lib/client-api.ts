@@ -179,6 +179,50 @@ export async function clientApi<T>(path: string, token: string | null, init: Cli
     : new Error('REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
 }
 
+export async function clientApiWithHeaders<T>(path: string, token: string | null, init: ClientApiInit = {}): Promise<{ data: T; headers: Headers }> {
+  const method = requestMethod(init);
+  const retries = typeof init.retries === 'number' ? init.retries : defaultRetriesForMethod(method);
+  const retryDelayMs = typeof init.retryDelayMs === 'number' ? init.retryDelayMs : 750;
+  const effectiveToken = token || (isProtectedApiPath(path) ? await resolveBrowserClerkToken() : null);
+  if (isProtectedApiPath(path) && !effectiveToken) {
+    const authError = new Error('REQUEST_FAILED:Your session has expired. Please sign in again.') as Error & { status?: number };
+    authError.status = 401;
+    throw authError;
+  }
+  let attempt = 0;
+  let lastError: unknown = null;
+  while (attempt <= retries) {
+    try {
+      const response = await clientApiResponse(path, effectiveToken, init, attempt);
+      const raw = await response.text();
+      const data = raw.trim() ? JSON.parse(raw) as T : ({} as T);
+      return { data, headers: response.headers };
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : '';
+      const status = typeof (error as { status?: unknown })?.status === 'number'
+        ? Number((error as { status?: unknown }).status)
+        : undefined;
+      const retryable =
+        attempt < retries
+        && !init.signal?.aborted
+        && (
+          transientStatus(status)
+          ||
+          message.includes('REQUEST_FAILED:This request took too long')
+          || message.includes('REQUEST_FAILED:Something went wrong while processing your request')
+          || message.includes('REQUEST_FAILED:This action is temporarily limited')
+        );
+      if (!retryable) break;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, retryDelayMs * (attempt + 1)));
+      attempt += 1;
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('REQUEST_FAILED:Something went wrong while processing your request. Please try again.');
+}
+
 export async function clientApiBlob(path: string, token: string | null, init: ClientApiInit = {}): Promise<Blob> {
   const method = requestMethod(init);
   const retries = typeof init.retries === 'number' ? init.retries : defaultRetriesForMethod(method);

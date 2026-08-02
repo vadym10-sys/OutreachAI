@@ -19,8 +19,8 @@ import { capturePostHogException, trackEvent } from "@/lib/posthog";
 import { Breadcrumbs, CommandDialog, CommandItem, Kbd } from "@/components/design-system";
 
 const primaryNav = [
-  { href: "/dashboard", labelKey: "AI-помощник", icon: Sparkles, aliases: ["/dashboard/leads", "/dashboard/ai-customer-finder"] },
-  { href: "/dashboard/clients", labelKey: "Клиенты", icon: UsersRound, aliases: ["/dashboard/crm", "/dashboard/companies", "/dashboard/contacts", "/dashboard/deals"] },
+  { href: "/dashboard", labelKey: "AI Поиск", icon: Sparkles, aliases: ["/dashboard/leads", "/dashboard/ai-customer-finder"] },
+  { href: "/dashboard/clients", labelKey: "CRM", icon: UsersRound, aliases: ["/dashboard/crm", "/dashboard/companies", "/dashboard/contacts", "/dashboard/deals"] },
   { href: "/dashboard/emails", labelKey: "Письма", icon: Mail, aliases: ["/dashboard/inbox", "/dashboard/campaigns"] },
   { href: "/dashboard/settings", labelKey: "Настройки", icon: Settings, aliases: ["/dashboard/profile", "/dashboard/billing"] }
 ] as const;
@@ -707,7 +707,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
                     {t("workspace.save")}
                   </button>
                   <Link href="/dashboard" className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-5 text-sm font-black text-ink shadow-sm">
-                    {t("AI-помощник")} <ArrowRight size={17} />
+                    {t("AI Поиск")} <ArrowRight size={17} />
                   </Link>
                 </div>
               </form>

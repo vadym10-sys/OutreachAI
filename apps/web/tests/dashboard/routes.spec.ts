@@ -3,19 +3,19 @@ import { mockWorkspaceApi } from "../../mocks/workspace-api";
 import { expectNoHorizontalOverflow, expectNoSensitiveCustomerText, installQaGuards } from "../helpers/qa-guards";
 
 const sections = [
-  ["/dashboard", "AI-помощник"],
-  ["/dashboard/clients", "Клиенты"],
+  ["/dashboard", "AI Поиск"],
+  ["/dashboard/clients", "CRM"],
   ["/dashboard/emails", "Письма"],
   ["/dashboard/settings", "Настройки"]
 ] as const;
 
 const legacyRoutes = [
-  ["/dashboard/leads", "AI-помощник"],
-  ["/dashboard/ai-customer-finder", "AI-помощник"],
-  ["/dashboard/companies", "Клиенты"],
-  ["/dashboard/contacts", "Клиенты"],
-  ["/dashboard/deals", "Клиенты"],
-  ["/dashboard/crm", "Клиенты"],
+  ["/dashboard/leads", "AI Поиск"],
+  ["/dashboard/ai-customer-finder", "AI Поиск"],
+  ["/dashboard/companies", "CRM"],
+  ["/dashboard/contacts", "CRM"],
+  ["/dashboard/deals", "CRM"],
+  ["/dashboard/crm", "CRM"],
   ["/dashboard/campaigns", "Письма"],
   ["/dashboard/inbox", "Письма"],
   ["/dashboard/billing", "Настройки"],

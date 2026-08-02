@@ -11,59 +11,44 @@ test("AI assistant runs First Customer Finder and shows source-backed companies"
   await page.goto("/dashboard");
 
   const command = page.getByRole("form", { name: "AI customer command" });
-  await expect(command.getByPlaceholder("Вставьте сайт или опишите свой бизнес и кого хотите найти")).toBeVisible();
+  await expect(command.getByLabel("Опишите, что вы продаёте и кому хотите продавать")).toBeVisible();
   await expect(command.getByText("Company website")).toHaveCount(0);
 
   await expect(page.getByText("Что AI делает сейчас")).toBeVisible();
   await expect(page.getByText("Найдено")).toBeVisible();
-  await expect(page.getByText("Подготовлено")).toBeVisible();
+  await expect(page.getByText("Draft", { exact: true })).toBeVisible();
   await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
-  await page.getByText("Подробнее по найденным компаниям").click();
   await expect(page.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
   await expect(page.getByText("Strong match")).toBeVisible();
-  await expect(page.getByText("Website verification")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
+  await expect(page.getByText("Confirmed buying signals")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Сохранить в CRM EuroScale CRM Co" })).toBeVisible();
 });
 
-test("autopilot approval queues backend campaign and supports pause", async ({ page }, testInfo) => {
+test("AI-first flow saves a company to CRM and leaves draft approval manual", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard");
-  await page.getByRole("form", { name: "AI customer command" }).getByLabel("AI command").fill("https://outreachaiaiai.com");
+  await page.getByRole("form", { name: "AI customer command" }).getByLabel("Опишите, что вы продаёте и кому хотите продавать").fill("Продаём AI-продавца B2B SaaS командам");
+  await page.getByLabel("URL сайта, если есть").fill("https://outreachaiaiai.com");
   const searchResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/ai-customer-finder/searches")
   );
   await page.getByRole("button", { name: "Запустить AI" }).click();
   await expect((await searchResponse).status()).toBe(202);
-  await expect(page.getByRole("heading", { name: "AI Autopilot" })).toBeVisible();
-  await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
-  await expect(page.locator('[data-autopilot-state="ready_to_approve"]')).toBeVisible();
-  const allowButton = page.getByRole("button", { name: "Разрешить эту кампанию" });
-  await expect(allowButton).toBeEnabled();
-  const [createCampaignResponse, approveCampaignResponse] = await Promise.all([
-    page.waitForResponse((response) => {
-      const path = new URL(response.url()).pathname;
-      return response.request().method() === "POST" && path.endsWith("/api/campaigns");
-    }),
-    page.waitForResponse((response) =>
-      response.request().method() === "POST" && response.url().includes("/api/campaigns/") && response.url().includes("/autopilot/approve")
-    ),
-    allowButton.click()
-  ]);
-  await expect(createCampaignResponse.ok()).toBe(true);
-  await expect(approveCampaignResponse.ok()).toBe(true);
-  await expect(page.getByText("AI Autopilot approved")).toBeVisible();
-  await expect(page.locator('[data-autopilot-state="ready_to_control"]')).toBeVisible();
-  await expect(allowButton).toBeDisabled();
-  const pauseButton = page.getByRole("button", { name: "Пауза" });
-  await expect(pauseButton).toBeEnabled();
-  const [pauseResponse] = await Promise.all([
-    page.waitForResponse((response) =>
-      response.request().method() === "POST" && response.url().includes("/api/campaigns/") && response.url().includes("/pause")
-    ),
-    pauseButton.click()
-  ]);
-  await expect(pauseResponse.ok()).toBe(true);
-  await expect(page.getByText("Campaign paused in backend.")).toBeVisible();
+  const saveResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/leads/first-customers/results/finder-result-1/save")
+  );
+  await page.getByRole("button", { name: "Сохранить в CRM EuroScale CRM Co" }).click();
+  await expect((await saveResponse).ok()).toBe(true);
+  await expect(page).toHaveURL(/\/dashboard\/clients/);
+
+  await expect(page.getByRole("heading", { name: "CRM", exact: true })).toBeVisible();
+  await expect(page.getByRole("article").filter({ hasText: "EuroScale CRM Co" }).getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+  await expect(page.getByText("draft", { exact: true })).toBeVisible();
+
+  await page.goto("/dashboard/emails");
+  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
+  await expect(page.getByText("Manual approval required.")).toBeVisible();
   await guards.assertClean();
 });
 
@@ -120,13 +105,13 @@ test("email approval send and reply tracking stay connected end to end", async (
 });
 
 test("email workspace can load older inbox reply pages", async ({ page }) => {
-  const replies = Array.from({ length: 101 }, (_, index) => ({
+  const replies = Array.from({ length: 26 }, (_, index) => ({
     id: `99999999-9999-9999-9999-${String(index).padStart(12, "0")}`,
     campaign_id: null,
     lead_id: null,
-    subject: index === 100 ? "Older reply 100" : `Reply ${index}`,
-    preview: index === 100 ? "This older reply is on page two." : `Reply preview ${index}`,
-    body: index === 100 ? "This older reply is on page two." : `Reply body ${index}`,
+    subject: index === 25 ? "Older reply 25" : `Reply ${index}`,
+    preview: index === 25 ? "This older reply is on page two." : `Reply preview ${index}`,
+    body: index === 25 ? "This older reply is on page two." : `Reply body ${index}`,
     cta: "",
     follow_up_1: "",
     follow_up_2: "",
@@ -145,18 +130,18 @@ test("email workspace can load older inbox reply pages", async ({ page }) => {
 
   await page.goto("/dashboard/emails");
   await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
-  await expect(page.getByText("Older reply 100")).toHaveCount(0);
+  await expect(page.getByText("Older reply 25")).toHaveCount(0);
 
-  const olderPageResponse = page.waitForResponse((response) => response.url().includes("/api/inbox?page=2&page_size=100"));
+  const olderPageResponse = page.waitForResponse((response) => response.url().includes("/api/inbox?page_size=25&cursor="));
   await page.getByRole("button", { name: "Load older replies" }).click();
   await expect((await olderPageResponse).ok()).toBe(true);
-  await expect(page.getByText("Older reply 100")).toBeVisible();
+  await expect(page.getByText("Older reply 25")).toBeVisible();
 });
 
 test("company workspace explains AI decisions with memory context", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/companies");
-  await expect(page.getByRole("heading", { name: "Клиенты" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "CRM", exact: true })).toBeVisible();
   const explainResponse = page.waitForResponse((response) =>
     response.request().method() === "GET" && response.url().includes("/api/workspace-app/ai-memory/decisions/44444444-4444-4444-4444-444444444444/explain")
   );

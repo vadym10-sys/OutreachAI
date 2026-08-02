@@ -323,15 +323,23 @@ const qaSalesAnalysisV1 = {
   version: 1
 };
 
-async function fulfillJson(route: Route, body: unknown, status = 200) {
-  await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+async function fulfillJson(route: Route, body: unknown, status = 200, headers: Record<string, string> = {}) {
+  await route.fulfill({ status, contentType: "application/json", headers, body: JSON.stringify(body) });
 }
 
 function inboxPage(items: unknown[], searchParams: URLSearchParams) {
-  const page = Math.max(1, Number(searchParams.get("page") || "1") || 1);
   const pageSize = Math.max(1, Math.min(200, Number(searchParams.get("page_size") || "100") || 100));
-  const offset = (page - 1) * pageSize;
-  return items.slice(offset, offset + pageSize);
+  const cursor = Math.max(0, Number(searchParams.get("cursor") || "0") || 0);
+  const pageItems = items.slice(cursor, cursor + pageSize);
+  const nextCursor = cursor + pageSize < items.length ? String(cursor + pageSize) : "";
+  return {
+    body: pageItems,
+    headers: {
+      "X-Has-More": nextCursor ? "true" : "false",
+      "X-Next-Cursor": nextCursor,
+      "X-Pagination-Mode": "cursor"
+    }
+  };
 }
 
 type MockOverride = {
@@ -379,8 +387,11 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
     const override = overrides[`${route.request().method()} ${apiPath}${url.search}`] || overrides[`${route.request().method()} ${apiPath}`] || overrides[`${apiPath}${url.search}`] || overrides[apiPath];
     if (override) {
-      const body = apiPath === "/api/inbox" && Array.isArray(override.body) ? inboxPage(override.body, url.searchParams) : override.body;
-      return fulfillJson(route, body, override.status || 200);
+      if (apiPath === "/api/inbox" && Array.isArray(override.body)) {
+        const pageResult = inboxPage(override.body, url.searchParams);
+        return fulfillJson(route, pageResult.body, override.status || 200, pageResult.headers);
+      }
+      return fulfillJson(route, override.body, override.status || 200);
     }
     if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, {
       id: "99999999-9999-9999-9999-999999999999",
@@ -524,14 +535,53 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === `/api/workspace-app/leads/first-customers/results/${qaCustomerFinderResult.id}/save`) {
       const updated = { ...qaCustomerFinderResult, simple_status: "Письмо подготовлено", email_delivery_status: "draft" };
       currentFinderJob = { ...currentFinderJob, results: [updated] };
+      currentCompany = {
+        ...qaCompany,
+        id: qaCustomerFinderResult.company_id,
+        lead_id: qaCustomerFinderResult.lead_id,
+        name: qaCustomerFinderResult.company_name,
+        website: qaCustomerFinderResult.official_website,
+        domain: "euroscale-crm.co",
+        country: qaCustomerFinderResult.country,
+        city: "",
+        industry: qaCustomerFinderResult.industry,
+        contact: qaCustomerFinderResult.contact_name,
+        email: qaCustomerFinderResult.public_work_contact,
+        source: qaCustomerFinderResult.source_type,
+        ai_summary: qaCustomerFinderResult.fit_explanation,
+        sales_angle: qaCustomerFinderResult.model_inference,
+        email_status: "Verified",
+        crm_stage: "Email Draft Ready",
+        contacts: [{
+          ...qaCompany.contacts[0],
+          id: "55555555-5555-5555-5555-555555555556",
+          company_id: qaCustomerFinderResult.company_id,
+          lead_id: qaCustomerFinderResult.lead_id,
+          company: qaCustomerFinderResult.company_name,
+          name: qaCustomerFinderResult.contact_name,
+          title: qaCustomerFinderResult.contact_title,
+          email: qaCustomerFinderResult.public_work_contact,
+          source: qaCustomerFinderResult.source_type,
+          email_status: "Verified"
+        }],
+        generated_emails: [{
+          ...qaCompany.generated_emails[0],
+          id: qaCustomerFinderResult.email_id,
+          lead_id: qaCustomerFinderResult.lead_id,
+          subject: qaCustomerFinderResult.email_subject,
+          body: qaCustomerFinderResult.email_body,
+          preview: "A personalized draft is ready for manual approval.",
+          delivery_status: "draft"
+        }]
+      };
       return fulfillJson(route, { status: "success", message: "Lead saved to CRM. Outreach draft is ready for manual review.", result: updated });
     }
     if (apiPath === "/api/workspace-app/ai-customer-finder/searches" && route.request().method() === "POST") {
       currentFinderJob = {
         ...qaCustomerFinderJob,
         status: "searching",
-        progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 1, candidates: 3 },
-        results: [qaCustomerFinderResult]
+        progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 0, candidates: 3 },
+        results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "" }]
       };
       return fulfillJson(route, currentFinderJob, 202);
     }
@@ -739,12 +789,18 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, { status: "success", message: "Email draft created for review. Nothing was sent.", company, email });
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") {
-      const email = { ...qaCompany.generated_emails[0], delivery_status: "approved" };
+      const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "approved" };
       currentCompany = { ...currentCompany, crm_stage: "Approved", email_approved_at: now, generated_emails: [email] };
       return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: currentCompany, email });
     }
+    if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333" && route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON() as Partial<typeof qaCompany.generated_emails[0]>;
+      const email = { ...currentCompany.generated_emails[0], ...body };
+      currentCompany = { ...currentCompany, generated_emails: [email] };
+      return fulfillJson(route, { status: "success", message: "Email draft saved. Review and approve before sending.", company: currentCompany, email });
+    }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
-      const email = { ...qaCompany.generated_emails[0], delivery_status: "sent", sent_at: now };
+      const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "sent", sent_at: now };
       currentCompany = { ...currentCompany, crm_stage: "Sent", email_sent_at: now, generated_emails: [email] };
       return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: currentCompany, email });
     }
@@ -872,7 +928,10 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/sales-employees") return fulfillJson(route, []);
     if (apiPath === "/api/activity") return fulfillJson(route, []);
     if (apiPath === "/api/notifications") return fulfillJson(route, []);
-    if (apiPath === "/api/inbox") return fulfillJson(route, inboxPage(currentInbox, url.searchParams));
+    if (apiPath === "/api/inbox") {
+      const pageResult = inboxPage(currentInbox, url.searchParams);
+      return fulfillJson(route, pageResult.body, 200, pageResult.headers);
+    }
     if (apiPath === "/api/profile") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();

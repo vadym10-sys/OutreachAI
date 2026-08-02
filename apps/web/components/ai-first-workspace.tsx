@@ -2,12 +2,13 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, PauseCircle, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Square, Trash2, UsersRound } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Trash2, UsersRound } from "lucide-react";
 import { AppBadge, AppButton, EmptyStateView, LoadingStateView, SurfaceCard } from "@/components/design-system";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand } from "@/lib/ai-first-api";
 import type { AiMemoryEntry, AiMemoryExplainResponse, AiMemorySettings, FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
-import type { Campaign, CrmCompany, Email, Workspace } from "@/lib/types";
+import type { CrmCompany, Email, Workspace } from "@/lib/types";
 
 type Section = "assistant" | "clients" | "emails" | "settings";
 
@@ -26,8 +27,8 @@ const blankCommand: AiAssistantCommand = {
   maxResults: 10
 };
 
-const aiFirstInboxPageSize = 100;
-const aiWorkflowLabels = ["Describe business", "AI searches", "AI analyses", "Lead score", "Evidence", "Research profile", "Outreach strategy", "Save to CRM", "Draft email", "Manual approval", "Send"];
+const aiFirstInboxPageSize = 25;
+const aiWorkflowLabels = ["Анализируем ваш бизнес", "Ищем компании", "Проверяем соответствие", "Ищем публичные контакты", "Готовим результаты"];
 const crmStatuses = ["New", "Qualified", "Draft ready", "Approved", "Sent", "Replied", "Meeting", "Not interested"];
 const fieldClass = "focus-ring mt-2 min-h-11 w-full rounded-xl border border-[var(--ui-border)] bg-white px-3 text-sm text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]";
 const detailSummaryClass = "flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-2xl px-4 py-3 text-sm font-black text-[var(--ui-text)] transition hover:bg-slate-100";
@@ -157,15 +158,18 @@ function understandingFor(command: string, criteria: AiAssistantCommand) {
   return `Я понял ваш бизнес так: ${criteria.productOrService}. Сначала проанализирую ${source}, затем буду искать ${criteria.desiredCustomers} Подходящие роли: ${criteria.contactTitles.join(", ")}.`;
 }
 
+function composeCommand(description: string, website: string) {
+  const cleanDescription = description.trim();
+  const cleanWebsite = normalizeWebsite(website);
+  if (cleanDescription && cleanWebsite) return `${cleanDescription}\nСайт: ${cleanWebsite}`;
+  return cleanDescription || cleanWebsite;
+}
+
 export function missingQuestion(command: string) {
   const text = command.trim();
   if (!text) return "Вставьте сайт или одним предложением опишите бизнес и кого хотите найти.";
   if (!isWebsiteInput(text) && text.length < 18) return "Что вы продаёте и кому?";
   return "";
-}
-
-function safeToAutoSave(result: FirstCustomerResult) {
-  return Boolean(sourceUrl(result)) && ["verified", "partially_verified"].includes(result.verified_status) && result.confidence_score >= 60 && result.ai_relevance_score >= 60;
 }
 
 function resultNeedsReview(result: FirstCustomerResult) {
@@ -203,6 +207,14 @@ function uniqueEmails(companies: CrmCompany[], inbox: Email[]) {
   for (const company of companies) for (const email of company.generated_emails || []) byId.set(email.id, email);
   for (const email of inbox) byId.set(email.id, email);
   return [...byId.values()];
+}
+
+function mergeDraftEdits(current: Record<string, { subject: string; body: string }>, emails: Email[]) {
+  const next = { ...current };
+  for (const email of emails) {
+    if (!next[email.id]) next[email.id] = { subject: email.subject || "", body: email.body || email.preview || "" };
+  }
+  return next;
 }
 
 function companyForEmail(companies: CrmCompany[], email: Email) {
@@ -367,6 +379,30 @@ function WorkflowStep({ index, label, active }: { index: number; label: string; 
   );
 }
 
+function activeWorkflowIndex(job: FirstCustomerJob | null) {
+  const rawStage = String(job?.progress?.stage || job?.status || "").toLowerCase();
+  if (!job) return -1;
+  if (rawStage.includes("queued") || rawStage.includes("analysis") || rawStage.includes("analy")) return 0;
+  if (rawStage.includes("search") || rawStage.includes("candidate")) return 1;
+  if (rawStage.includes("verify") || rawStage.includes("scor") || rawStage.includes("match")) return 2;
+  if (rawStage.includes("contact") || rawStage.includes("enrich")) return 3;
+  if (["completed", "partially_completed", "failed"].includes(job.status) || rawStage.includes("complete")) return 4;
+  if (job.results.length) return 4;
+  return 1;
+}
+
+function workflowProgressText(job: FirstCustomerJob | null) {
+  if (!job) return "Ожидаю описание бизнеса или URL сайта.";
+  const backendMessage = String(job.progress?.message || job.error_message || "").trim();
+  if (backendMessage) return backendMessage;
+  if (job.status === "queued") return "Задача поставлена в очередь backend.";
+  if (job.status === "running") return "Backend выполняет поиск и проверку результатов.";
+  if (job.status === "failed") return "Backend вернул ошибку поиска.";
+  if (job.status === "partially_completed") return "Результаты готовы частично. Неподтверждённые данные оставлены для проверки.";
+  if (job.status === "completed") return "Результаты готовы.";
+  return "AI is checking backend progress.";
+}
+
 function qualityGateLabel(result: FirstCustomerResult) {
   const review = resultNeedsReview(result);
   if (!review) return "Quality gate passed";
@@ -411,8 +447,8 @@ function ResultCard({
           <p className="mt-1 text-sm text-[var(--ui-text-soft)]">{[result.industry, result.country, result.company_size].filter(Boolean).join(" · ") || "Company profile fields were not found yet."}</p>
         </div>
         {!hideActions ? <div className="flex flex-wrap gap-2">
-          <AppButton size="sm" disabled={Boolean(busy) || saved} onClick={() => onSave(result)} aria-label={`${saved ? "Saved" : "Save to CRM"} ${result.company_name}`}>
-            {busy === `save:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} {saved ? "Saved" : "Save to CRM"}
+          <AppButton size="sm" disabled={Boolean(busy) || saved} onClick={() => onSave(result)} aria-label={`${saved ? "Saved" : "Сохранить в CRM"} ${result.company_name}`}>
+            {busy === `save:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} {saved ? "Saved" : "Сохранить в CRM"}
           </AppButton>
           <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !emailId} onClick={() => onApprove(result)} aria-label={`Approve draft for ${result.company_name}`}>
             {busy === `approve:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />} Approve draft
@@ -423,16 +459,16 @@ function ResultCard({
         </div> : null}
       </div>
       <div className="mt-5 grid gap-3 lg:grid-cols-4">
-        <ScoreTile label="Overall Lead Score" value={overallScore} />
-        <ScoreTile label="AI Confidence" value={aiConfidence} />
-        <ScoreTile label="Contact Confidence" value={contactConfidence} />
-        <ScoreTile label="Outreach Readiness" value={outreachReadiness} />
+        <ScoreTile label="Overall score" value={overallScore} />
+        <ScoreTile label="AI confidence" value={aiConfidence} />
+        <ScoreTile label="Contact verification" value={contactConfidence} />
+        <ScoreTile label="Outreach readiness" value={outreachReadiness} />
       </div>
       <div className="mt-4 grid gap-3 lg:grid-cols-3">
         <EvidenceLine label="Why this company" value={result.fit_explanation || result.signal_description || "No fit explanation returned."} />
-        <EvidenceLine label="Evidence" value={result.evidence_summary || result.observed_fact || "No evidence summary returned."} />
-        <EvidenceLine label="Recommended decision maker" value={[result.contact_name, result.contact_title].filter(Boolean).join(" · ") || result.contact_title || "Decision maker not confirmed"} />
-        <EvidenceLine label="Website verification" value={websiteVerificationLabel(result)} />
+        <EvidenceLine label="Confirmed buying signals" value={result.evidence_summary || result.observed_fact || "Недостаточно подтверждённых buying signals."} />
+        <EvidenceLine label="Source" value={result.source_title || sourceUrl(result) || "Источник не подтверждён"} href={sourceUrl(result)} />
+        <EvidenceLine label="Contact and verification" value={[result.public_work_contact || "Контакт не подтверждён", websiteVerificationLabel(result)].filter(Boolean).join(" · ")} />
       </div>
       <details className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)]">
         <summary className={detailSummaryClass}>Подробнее <ChevronDown size={16} /></summary>
@@ -453,20 +489,19 @@ function ResultCard({
 
 function AssistantSection() {
   const api = useAiFirstApi();
-  const [command, setCommand] = useState("");
+  const router = useRouter();
+  const [businessDescription, setBusinessDescription] = useState("");
+  const [website, setWebsite] = useState("");
   const [advanced, setAdvanced] = useState(blankCommand);
   const [understanding, setUnderstanding] = useState("");
   const [job, setJob] = useState<FirstCustomerJob | null>(null);
   const [jobs, setJobs] = useState<FirstCustomerJob[]>([]);
   const [sender, setSender] = useState<OutreachSenderStatus | null>(null);
-  const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loading, setLoading] = useState(false);
-  const [autoSaving, setAutoSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const autoSaveJobIds = useRef(new Set<string>());
   const mounted = useRef(true);
 
   const loadJobs = useCallback(async () => {
@@ -513,38 +548,11 @@ function AssistantSection() {
     }, 2500);
     return () => window.clearInterval(timer);
   }, [api, job]);
-  useEffect(() => {
-    if (!job || !["completed", "partially_completed"].includes(job.status) || autoSaving || autoSaveJobIds.current.has(job.id)) return;
-    const unsaved = job.results.filter((result) => !result.company_id && !result.lead_id && safeToAutoSave(result));
-    if (!unsaved.length) return;
-    autoSaveJobIds.current.add(job.id);
-    void (async () => {
-      setAutoSaving(true);
-      let saved = 0;
-      try {
-        for (const result of unsaved) {
-          await api.saveFinderResult(result.id);
-          saved += 1;
-        }
-        if (!mounted.current) return;
-        setNotice(`${saved} verified compan${saved === 1 ? "y was" : "ies were"} saved to CRM. Drafts are ready for review.`);
-        setJob(await api.getCustomerFinderJob(job.id));
-      } catch (err) {
-        if (mounted.current) {
-          setError(friendlyErrorMessage(err, "Could not automatically save one verified company."));
-        }
-      } finally {
-        if (mounted.current) {
-          setAutoSaving(false);
-        }
-      }
-    })();
-  }, [api, autoSaving, job]);
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setNotice("");
+    const command = composeCommand(businessDescription, website);
     const question = missingQuestion(command);
     if (question) {
       setError(question);
@@ -557,50 +565,11 @@ function AssistantSection() {
       const next = await api.startCustomerFinder(criteria);
       setJob(next);
       setJobs((current) => [next, ...current.filter((item) => item.id !== next.id)]);
-      setNotice("First Customer Finder started. Verified results will be saved to CRM automatically; unsafe results stay as Требует проверки.");
+      setNotice("AI Поиск запущен. Результаты будут сохранены в CRM только после вашего нажатия.");
     } catch (err) {
       setError(friendlyErrorMessage(err, "AI customer search could not start."));
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function allowCampaign() {
-    if (!job) return;
-    const criteria = commandToCriteria(command || "Find first customers", advanced);
-    const firstSafe = job.results.find((result) => safeToAutoSave(result));
-    setBusy("campaign:allow");
-    try {
-      const created = campaign || await api.createCampaign({
-        name: `AI Autopilot - ${criteria.targetCountry || "First customers"}`,
-        industry: criteria.targetIndustry,
-        countries: criteria.targetCountry && criteria.targetCountry !== "Any" ? [criteria.targetCountry] : [],
-        company_size: criteria.companySize || null,
-        keywords: criteria.keywords,
-        website_filters: criteria.companyWebsite ? [criteria.companyWebsite] : [],
-        language: "Auto by recipient",
-        offer: criteria.productOrService,
-        cta: "Book a quick fit review",
-        email_tone: "Personal and concise",
-        signature: "OutreachAI",
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-        working_hours: "09:00-17:00",
-        daily_send_limit: Math.min(sender?.remaining_today || 10, 10),
-        sequence: [{
-          step_order: 1,
-          name: "Autopilot first email",
-          subject: firstSafe?.email_subject || "Personalized first email",
-          body: firstSafe?.email_body || firstSafe?.draft_email || "Generated per recipient after CRM save.",
-          delay_days: 0
-        }]
-      });
-      const approved = await api.approveAutopilotCampaign(created.id, job.id);
-      setCampaign(approved);
-      setNotice("AI Autopilot approved. Backend queued safe jobs; staging mode blocks real-company sends unless the test mailbox domain is explicitly allowed.");
-    } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not record campaign permission."));
-    } finally {
-      setBusy("");
     }
   }
 
@@ -621,7 +590,7 @@ function AssistantSection() {
   }
 
   async function disconnectMail() {
-    if (!window.confirm("Disconnect this Gmail mailbox from AI Autopilot?")) return;
+    if (!window.confirm("Disconnect this Gmail mailbox from AI Поиск?")) return;
     setBusy("mail:disconnect");
     try {
       setSender(await api.disconnectGmail());
@@ -645,19 +614,51 @@ function AssistantSection() {
     }
   }
 
-  async function autopilotAction(action: "pause" | "stop") {
-    if (!campaign) {
-      setNotice(action === "pause" ? "AI Autopilot paused locally. No emails will be sent." : "AI Autopilot stopped locally. No emails will be sent.");
-      return;
-    }
+  async function saveResult(result: FirstCustomerResult) {
+    setBusy(`save:${result.id}`);
+    setError("");
+    setNotice("");
     try {
-      const actionRequest = api.campaignAction(campaign.id, action);
-      setBusy(`campaign:${action}`);
-      const updated = await actionRequest;
-      setCampaign(updated);
-      setNotice(action === "pause" ? "Campaign paused in backend." : "Campaign stopped in backend.");
+      const response = await api.saveFinderResult(result.id);
+      setNotice(`${response.message} Откройте CRM: карточка компании и draft письма уже подготовлены backend.`);
+      if (job) setJob(await api.getCustomerFinderJob(job.id));
+      router.push("/dashboard/clients");
     } catch (err) {
-      setError(friendlyErrorMessage(err, `Could not ${action} this campaign.`));
+      setError(friendlyErrorMessage(err, "Could not save this company to CRM."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function approveResultDraft(result: FirstCustomerResult) {
+    const emailId = latestDraftForResult(result);
+    if (!emailId) return;
+    setBusy(`approve:${result.id}`);
+    setError("");
+    setNotice("");
+    try {
+      const response = await api.approveEmail(emailId);
+      setNotice(response.message);
+      if (job) setJob(await api.getCustomerFinderJob(job.id));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not approve this draft."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function sendResultDraft(result: FirstCustomerResult) {
+    const emailId = latestDraftForResult(result);
+    if (!emailId || !window.confirm("Send this approved email now? OutreachAI will not send automatically.")) return;
+    setBusy(`send:${result.id}`);
+    setError("");
+    setNotice("");
+    try {
+      const response = await api.sendApprovedEmail(emailId);
+      setNotice(response.message);
+      if (job) setJob(await api.getCustomerFinderJob(job.id));
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not send this email."));
     } finally {
       setBusy("");
     }
@@ -667,32 +668,35 @@ function AssistantSection() {
     setAdvanced((current) => ({ ...current, [key]: value }));
   }
 
+  const command = composeCommand(businessDescription, website);
   const criteria = commandToCriteria(command || "Find first customers", advanced);
   const progress = job?.progress || {};
   const found = job?.results.length || 0;
   const saved = job?.results.filter((result) => result.company_id || result.lead_id).length || Number(progress.saved || 0);
   const prepared = job?.results.filter((result) => result.email_id || result.email_body || result.draft_email).length || 0;
   const needsReview = job?.results.filter((result) => resultNeedsReview(result)).length || 0;
-  const sent = campaign?.sent || 0;
-  const replies = campaign?.replies || 0;
   const senderReady = gmailOAuthReady(sender);
   const canStartGmailOAuth = gmailOAuthStartReady(sender);
-  const campaignApproved = Boolean(campaign);
   const aiControlsReady = Boolean(hydrated && api.ready && sender && job);
-  const canAllowAutopilot = Boolean(aiControlsReady && found > 0 && saved > 0 && prepared > 0 && senderReady && (sender?.remaining_today || 0) > 0 && !campaignApproved);
-  const campaignControlBusy = busy === "campaign:pause" || busy === "campaign:stop";
-  const canControlAutopilot = Boolean(aiControlsReady && campaignApproved && !campaignControlBusy);
-  const autopilotControlState = !aiControlsReady ? "loading" : campaignApproved ? "ready_to_control" : canAllowAutopilot ? "ready_to_approve" : "blocked";
-  const sample = job?.results.find((result) => result.email_body || result.draft_email);
-  const stage = campaign?.status === "Paused" || campaign?.status === "paused" ? "Приостановлен" : autoSaving ? "Сохраняет" : job?.status === "queued" ? "Анализирует" : job?.status === "running" ? "Ищет" : job?.results.length ? (campaign?.status === "Running" || campaign?.status === "running" ? "Отправляет" : "Готовит письма") : "Анализирует";
-  const progressText = job ? `${stage}: ${String(progress.message || job.error_message || "AI is checking backend progress.")}` : "Ожидаю сайт или описание бизнеса.";
+  const activeStep = activeWorkflowIndex(job);
+  const progressText = workflowProgressText(job);
+  const nextAction = !senderReady
+    ? "Подключите Gmail"
+    : prepared > 0 && saved > 0
+      ? "Письмо готово к подтверждению"
+      : found > 0
+        ? "Сохраните подходящую компанию в CRM"
+        : job?.status === "failed"
+          ? "Проверьте описание и запустите поиск ещё раз"
+          : "Опишите бизнес и запустите AI Поиск";
 
   return (
-    <Frame title="AI-помощник" copy="Вставьте сайт или опишите бизнес. OutreachAI сам соберет критерии, запустит First Customer Finder, покажет evidence, сохранит проверенные компании в CRM и подготовит письма для ручного approval.">
+    <Frame title="AI Поиск" copy="Один экран для первого продажного действия: описать бизнес, найти компании с evidence, сохранить в CRM и проверить AI draft перед отправкой.">
       <PremiumPanel className="bg-gradient-to-br from-white via-white to-slate-50">
         <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
           <form aria-label="AI customer command" onSubmit={submit} className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-soft">
-            <label className="block text-sm font-black text-[var(--ui-text)]">AI command<textarea value={command} onChange={(event) => setCommand(event.target.value)} className="focus-ring mt-2 min-h-40 w-full resize-y rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-base leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)] focus:bg-white" placeholder="Вставьте сайт или опишите свой бизнес и кого хотите найти" /></label>
+            <label className="block text-sm font-black text-[var(--ui-text)]">Опишите, что вы продаёте и кому хотите продавать<textarea value={businessDescription} onChange={(event) => setBusinessDescription(event.target.value)} className="focus-ring mt-2 min-h-40 w-full resize-y rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-base leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)] focus:bg-white" placeholder="Например: продаём AI-продавца для B2B SaaS команд, которые хотят находить клиентов и отправлять персональные письма после ручного approval" /></label>
+            <label className="mt-3 block text-sm font-black text-[var(--ui-text)]">URL сайта, если есть<input value={website} onChange={(event) => setWebsite(event.target.value)} className={fieldClass} placeholder="https://example.com" /></label>
             <div className="mt-4 grid grid-cols-2 gap-2">
           <AppButton type="submit" disabled={loading || !hydrated || !api.ready} className="w-full">{loading ? <Loader2 className="animate-spin" size={17} /> : <Sparkles size={17} />} Запустить AI</AppButton>
           <AppButton variant="secondary" onClick={() => void loadJobs()} className="w-full" aria-label="Обновить AI searches"><RefreshCw size={17} /> Обновить</AppButton>
@@ -718,16 +722,12 @@ function AssistantSection() {
             </div>
             <div className="grid gap-2">
               {aiWorkflowLabels.map((label, index) => (
-                <WorkflowStep key={label} index={index + 1} label={label} active={index === (found ? prepared ? 9 : 7 : 0)} />
+                <WorkflowStep key={label} index={index + 1} label={label} active={index === activeStep} />
               ))}
             </div>
           </div>
         </div>
       </PremiumPanel>
-      <div data-ai-controls-ready={aiControlsReady ? "true" : "false"} data-autopilot-state={autopilotControlState} className="grid grid-cols-2 gap-2 rounded-[1.5rem] border border-slate-200 bg-white p-3 shadow-sm">
-        <AppButton variant="secondary" disabled={!canControlAutopilot} onClick={() => void autopilotAction("pause")} className="w-full border-amber-300 text-amber-800"><PauseCircle size={17} /> Пауза</AppButton>
-        <AppButton variant="secondary" disabled={!canControlAutopilot} onClick={() => void autopilotAction("stop")} className="w-full border-red-300 text-red-700"><Square size={17} /> Остановить</AppButton>
-      </div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {error ? <Notice tone="bad">{error}</Notice> : null}
       <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
@@ -735,21 +735,22 @@ function AssistantSection() {
           <p className="text-sm font-black text-ink">Понимание задачи</p>
           <p className="mt-2 text-sm leading-6 text-slate-700">{understanding || understandingFor(command || "https://outreachaiaiai.com", criteria)}</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-5">
-            {[["Найдено", found], ["CRM", saved], ["Подготовлено", prepared], ["Отправлено", sent], ["Ответы", replies]].map(([label, value]) => <div key={String(label)} className="rounded-2xl bg-[var(--ui-surface-subtle)] p-3"><p className="text-xs font-black uppercase text-[var(--ui-text-soft)]">{label}</p><p className="mt-1 text-2xl font-black text-[var(--ui-text)]">{value}</p></div>)}
+            {[["Найдено", found], ["CRM", saved], ["Draft", prepared], ["Review", needsReview], ["Шаг", activeStep + 1 > 0 ? activeStep + 1 : 0]].map(([label, value]) => <div key={String(label)} className="rounded-2xl bg-[var(--ui-surface-subtle)] p-3"><p className="text-xs font-black uppercase text-[var(--ui-text-soft)]">{label}</p><p className="mt-1 text-2xl font-black text-[var(--ui-text)]">{value}</p></div>)}
           </div>
           <div role="status" aria-live="polite" className="mt-4 rounded-2xl bg-[var(--ui-surface-subtle)] p-4">
             <p className="text-xs font-black uppercase text-[var(--ui-text-soft)]">Что AI делает сейчас</p>
-            <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{autoSaving ? "Сохраняю проверенные компании в CRM и создаю черновики через backend." : progressText}</p>
+            <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{progressText}</p>
             {needsReview ? <p className="mt-2 text-sm font-bold text-amber-700">{needsReview} лид(ов) оставлены со статусом «Требует проверки».</p> : null}
           </div>
         </PremiumPanel>
         <PremiumPanel>
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-black text-ink">AI Autopilot</h2>
-            <AppBadge tone={campaign?.status === "Running" || campaign?.status === "running" ? "success" : "warning"}>{campaign?.status || "needs approval"}</AppBadge>
+            <h2 className="text-lg font-black text-ink">Следующее действие</h2>
+            <AppBadge tone={senderReady ? "success" : "warning"}>{senderReady ? "Gmail connected" : "Gmail needed"}</AppBadge>
           </div>
           <div className="mt-3 grid gap-2 text-sm leading-6 text-slate-700">
-            <p><span className="font-black text-ink">Почта:</span> {senderReady ? `${sender?.oauth_mailbox} через Gmail OAuth` : "подключите Gmail OAuth перед автономной отправкой"}</p>
+            <p><span className="font-black text-ink">Рекомендация:</span> {nextAction}</p>
+            <p><span className="font-black text-ink">Почта:</span> {senderReady ? `${sender?.oauth_mailbox} через Gmail OAuth` : "подключите Gmail OAuth перед отправкой"}</p>
             <p><span className="font-black text-ink">Аудитория:</span> {criteria.desiredCustomers}</p>
             <p><span className="font-black text-ink">Страны:</span> {criteria.targetCountry || "Auto"}</p>
             <p><span className="font-black text-ink">Дневной лимит:</span> {Math.min(sender?.remaining_today || 0, 10)} из {sender?.daily_send_limit || 0}</p>
@@ -760,15 +761,16 @@ function AssistantSection() {
             {senderReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void disconnectMail()}>Отключить</AppButton> : null}
           </div>
           {!senderReady && !canStartGmailOAuth ? <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}
-          <details className="mt-3 rounded-2xl border border-[var(--ui-border)]"><summary className={detailSummaryClass}>Пример письма <ChevronDown size={16} /></summary><p className="whitespace-pre-wrap border-t border-[var(--ui-border)] p-3 text-sm leading-6 text-[var(--ui-text-soft)]">{sample?.email_body || sample?.draft_email || "Пример появится после первого найденного и сохраненного результата."}</p></details>
-          <AppButton disabled={!canAllowAutopilot || Boolean(busy)} onClick={() => void allowCampaign()} className="mt-4 w-full">{busy === "campaign:allow" ? <Loader2 className="animate-spin" size={17} /> : <CheckCircle2 size={17} />} Разрешить эту кампанию</AppButton>
-          {!canAllowAutopilot ? <p className="mt-2 text-xs font-bold leading-5 text-slate-500">Autopilot включится только после verified sender, CRM-save, черновиков, публичных источников, лимитов тарифа и дневного лимита.</p> : null}
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            <Link href="/dashboard/clients" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-black text-ink">Открыть CRM</Link>
+            <Link href="/dashboard/emails" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-black text-ink">Проверить письма</Link>
+          </div>
         </PremiumPanel>
       </section>
-      {job?.results.length ? <details className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white shadow-soft"><summary className={detailSummaryClass}>Подробнее по найденным компаниям <ChevronDown size={16} /></summary><div className="grid gap-5 border-t border-[var(--ui-border)] p-4">
-        {job.results.filter((result) => !needsReviewTier(result)).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Verified / Relevant</h2>{job.results.filter((result) => !needsReviewTier(result)).map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</section> : null}
-        {job.results.filter(needsReviewTier).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-amber-700">Needs review</h2>{job.results.filter(needsReviewTier).map((result) => <ResultCard key={result.id} result={result} busy="" onSave={() => undefined} onApprove={() => undefined} onSend={() => undefined} hideActions />)}</section> : null}
-      </div></details> : null}
+      {job?.results.length ? <div className="grid gap-5">
+        {job.results.filter((result) => !needsReviewTier(result)).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Verified / Relevant</h2>{job.results.filter((result) => !needsReviewTier(result)).map((result) => <ResultCard key={result.id} result={result} busy={busy} onSave={saveResult} onApprove={approveResultDraft} onSend={sendResultDraft} />)}</section> : null}
+        {job.results.filter(needsReviewTier).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-amber-700">Needs review</h2>{job.results.filter(needsReviewTier).map((result) => <ResultCard key={result.id} result={result} busy={busy} onSave={saveResult} onApprove={approveResultDraft} onSend={sendResultDraft} />)}</section> : null}
+      </div> : null}
       {jobs.length > 1 ? <details className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white shadow-sm"><summary className={detailSummaryClass}>Previous searches <ChevronDown size={16} /></summary><div className="border-t border-[var(--ui-border)] p-2">{jobs.slice(1).map((item) => <button key={item.id} type="button" onClick={() => setJob(item)} className="focus-ring flex min-h-11 w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition hover:bg-slate-50"><span>{pretty(item.status)}</span><span className="font-bold">{item.results.length} result(s)</span></button>)}</div></details> : null}
     </Frame>
   );
@@ -798,7 +800,7 @@ function ClientsSection() {
   }, [load]);
   const nextCompany = companies.find((company) => !latestEmail(company)) || companies.find((company) => latestEmail(company)?.delivery_status !== "sent") || companies[0];
   return (
-    <Frame title="Клиенты" copy="CRM Queue: только компании, явно сохранённые в текущем workspace. Следующее действие важнее сложного pipeline.">
+    <Frame title="CRM" copy="Простой список компаний: стадия, контакт, последнее действие и следующее рекомендуемое действие.">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap gap-2">
           {crmStatuses.map((status) => <AppBadge key={status} tone="neutral">{status}</AppBadge>)}
@@ -810,7 +812,7 @@ function ClientsSection() {
           <PremiumPanel className="border-teal-200 bg-teal-50">
             <p className="text-xs font-black uppercase tracking-[0.14em] text-teal-800">Next sales action</p>
             <h2 className="mt-2 text-2xl font-black text-ink">{nextCompany?.name || "No company selected"}</h2>
-            <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{nextCompany ? (latestEmail(nextCompany) ? "Review the email approval state, then send only after explicit confirmation." : "Open lead details, verify evidence and create the personalised draft.") : "Find leads from AI-помощник first."}</p>
+            <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{nextCompany ? (latestEmail(nextCompany) ? "Review the email approval state, then send only after explicit confirmation." : "Open lead details, verify evidence and create the personalised draft.") : "Find leads from AI Поиск first."}</p>
           </PremiumPanel>
           {companies.map((company) => (
             <SurfaceCard as="article" key={company.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
@@ -832,7 +834,7 @@ function ClientsSection() {
             </SurfaceCard>
           ))}
         </section>
-      ) : <EmptyStateView title="No clients saved yet." copy="Save verified First Customer Finder results from AI-помощник. Unsafe results stay in review instead of becoming CRM records." />}
+      ) : <EmptyStateView title="No companies saved yet." copy="Save a verified AI Поиск result to CRM. Unsafe results stay in review instead of becoming CRM records." />}
     </Frame>
   );
 }
@@ -841,7 +843,8 @@ function EmailsSection() {
   const api = useAiFirstApi();
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [inbox, setInbox] = useState<Email[]>([]);
-  const [inboxPage, setInboxPage] = useState(1);
+  const [draftEdits, setDraftEdits] = useState<Record<string, { subject: string; body: string }>>({});
+  const [inboxCursor, setInboxCursor] = useState("");
   const [inboxHasMore, setInboxHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
@@ -853,11 +856,12 @@ function EmailsSection() {
     if (!api.ready) return;
     setLoading(true);
     try {
-      const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails(1, aiFirstInboxPageSize)]);
+      const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails("", aiFirstInboxPageSize)]);
       setCompanies(nextCompanies);
-      setInbox(nextInbox);
-      setInboxPage(1);
-      setInboxHasMore(nextInbox.length === aiFirstInboxPageSize);
+      setInbox(nextInbox.messages);
+      setDraftEdits((current) => mergeDraftEdits(current, uniqueEmails(nextCompanies, nextInbox.messages)));
+      setInboxCursor(nextInbox.nextCursor);
+      setInboxHasMore(nextInbox.hasMore);
       setLoadError("");
     } catch (err) {
       setLoadError(friendlyErrorMessage(err, "Could not load emails."));
@@ -872,14 +876,14 @@ function EmailsSection() {
 
   async function loadOlderReplies() {
     if (!api.ready || !inboxHasMore || busy) return;
-    const nextPage = inboxPage + 1;
     setBusy("inbox:more");
     setActionError("");
     try {
-      const olderInbox = await api.listEmails(nextPage, aiFirstInboxPageSize);
-      setInbox((current) => uniqueEmails([], [...current, ...olderInbox]));
-      setInboxPage(nextPage);
-      setInboxHasMore(olderInbox.length === aiFirstInboxPageSize);
+      const olderInbox = await api.listEmails(inboxCursor, aiFirstInboxPageSize);
+      setInbox((current) => uniqueEmails([], [...current, ...olderInbox.messages]));
+      setDraftEdits((current) => mergeDraftEdits(current, olderInbox.messages));
+      setInboxCursor(olderInbox.nextCursor);
+      setInboxHasMore(olderInbox.hasMore);
     } catch (err) {
       setActionError(friendlyErrorMessage(err, "Could not load older replies."));
     } finally {
@@ -897,6 +901,22 @@ function EmailsSection() {
       await load();
     } catch (err) {
       setActionError(friendlyErrorMessage(err, "Could not approve this draft."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveEmailEdits(email: Email) {
+    const edit = draftEdits[email.id] || { subject: email.subject || "", body: email.body || "" };
+    setBusy(`edit:${email.id}`);
+    setNotice("");
+    setActionError("");
+    try {
+      const response = await api.updateEmail(email.id, { subject: edit.subject, body: edit.body, preview: edit.body.slice(0, 180) });
+      setNotice(response.message);
+      await load();
+    } catch (err) {
+      setActionError(friendlyErrorMessage(err, "Could not save this draft."));
     } finally {
       setBusy("");
     }
@@ -956,6 +976,7 @@ function EmailsSection() {
       {loading ? <LoadingStateView title="Loading email approval workspace." /> : emails.length ? <div className="space-y-4"><section className="grid gap-4">{emails.map((email) => {
         const relatedCompany = companyForEmail(companies, email);
         const replySummary = replyAssistantText(email);
+        const edit = draftEdits[email.id] || { subject: email.subject || "", body: email.body || email.preview || "" };
         return <SurfaceCard as="article" key={email.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
           <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
             <div>
@@ -966,6 +987,7 @@ function EmailsSection() {
                   <p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void saveEmailEdits(email)} aria-label={`Save email edits ${email.subject || email.id}`}>{busy === `edit:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Save edits</AppButton>
                   <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || email.delivery_status === "sent"} onClick={() => void approve(email)} aria-label={`Approve email ${email.subject || email.id}`}>{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</AppButton>
                   <AppButton size="sm" disabled={Boolean(busy) || email.delivery_status !== "approved"} onClick={() => void send(email)} aria-label={`Send email ${email.subject || email.id}`}>{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</AppButton>
                 </div>
@@ -974,9 +996,9 @@ function EmailsSection() {
                 <EvidenceLine label="Recipient" value={relatedCompany?.email || "Recipient not returned by this backend response"} />
                 <EvidenceLine label="Company" value={relatedCompany?.name || "Company not linked in this response"} />
               </div>
-              <div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
-                <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body</p>
-                <p className="mt-3 max-w-3xl whitespace-pre-wrap text-sm leading-7 text-[var(--ui-text-soft)]">{email.body || email.preview || "No email body returned."}</p>
+              <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Subject<input value={edit.subject} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), subject: event.target.value } }))} disabled={email.delivery_status === "sent"} className={fieldClass} /></label>
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body<textarea value={edit.body} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), body: event.target.value } }))} disabled={email.delivery_status === "sent"} className="focus-ring mt-2 min-h-48 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]" /></label>
               </div>
             </div>
             <aside className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
@@ -1266,10 +1288,10 @@ export function AiFirstWorkspace({ section }: { section: Section }) {
 
 export function AiFirstHomeLinks() {
   return (
-    <div className="grid gap-3 sm:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-4">
       {[
-        { href: "/dashboard", label: "AI-помощник", icon: Sparkles },
-        { href: "/dashboard/clients", label: "Клиенты", icon: UsersRound },
+        { href: "/dashboard", label: "AI Поиск", icon: Sparkles },
+        { href: "/dashboard/clients", label: "CRM", icon: UsersRound },
         { href: "/dashboard/emails", label: "Письма", icon: Mail },
         { href: "/dashboard/settings", label: "Настройки", icon: Settings }
       ].map((item) => {

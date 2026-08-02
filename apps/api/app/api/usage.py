@@ -48,7 +48,7 @@ from app.core.database import get_db, get_sessionmaker, validate_runtime_schema
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
 from app.models.entities import AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
-from app.schemas.dto import CrmCompanyOut, EmailOut, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
+from app.schemas.dto import CrmCompanyOut, EmailOut, EmailUpdate, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.ai_memory import (
     attach_memory_context,
@@ -8786,6 +8786,41 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
     )
 
 
+@router.patch("/emails/{email_id}", response_model=UsageActionOut)
+def update_email_draft(email_id: UUID, payload: EmailUpdate, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
+    if not email:
+        raise HTTPException(status_code=404, detail="Email draft not found.")
+    if email.delivery_status == "sent":
+        raise HTTPException(status_code=409, detail="Sent emails cannot be edited.")
+
+    updates = payload.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(email, key, value)
+
+    lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
+    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc())) if lead else None
+    if lead:
+        _add_lead_activity(db, request, user.user_id, workspace, "email.edited", lead, {"email_id": str(email.id), "fields": sorted(updates.keys())})
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="email.edited",
+            metadata_json={"email_id": str(email.id), "fields": sorted(updates.keys())},
+        )
+    )
+    db.commit()
+    db.refresh(email)
+    return UsageActionOut(
+        status="success",
+        message="Email draft saved. Review and approve before sending.",
+        company=_crm_company_out(db, workspace, user.user_id, company) if company else None,
+        email=EmailOut.model_validate(email),
+    )
+
+
 @router.post("/emails/{email_id}/send", response_model=UsageActionOut)
 def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
@@ -8839,7 +8874,13 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))
     email.delivery_status = "sent"
-    email.tags = {**(email.tags if isinstance(email.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider}
+    provider_thread_id = str(provider_response.get("thread_id") or provider_response.get("threadId") or "").strip()
+    email.tags = {
+        **(email.tags if isinstance(email.tags, dict) else {}),
+        "sender_email": sender_status.sender_email,
+        "sender_provider": sender_status.provider,
+        **({"provider_thread_id": provider_thread_id} if provider_thread_id else {}),
+    }
     lead.status = LeadStatus.contacted
     lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": email.sent_at.isoformat()})
     _add_lead_activity(db, request, user.user_id, workspace, "email.sent", lead, {"email_id": str(email.id), "provider_message_id": email.provider_message_id})

@@ -3560,14 +3560,71 @@ def test_inbox_defaults_to_bounded_pages() -> None:
         db.commit()
 
     first_page = client.get("/api/inbox", headers=headers)
-    second_page = client.get("/api/inbox?page=2&page_size=75", headers=headers)
+    second_page = client.get(f"/api/inbox?page_size=75&cursor={first_page.headers['x-next-cursor']}", headers=headers)
 
     assert first_page.status_code == 200
     assert len(first_page.json()) == 100
+    assert first_page.headers["x-pagination-mode"] == "cursor"
+    assert first_page.headers["x-has-more"] == "true"
     assert second_page.status_code == 200
     assert len(second_page.json()) == 75
     assert first_page.json()[0]["subject"] == "Reply 0"
-    assert second_page.json()[0]["subject"] == "Reply 75"
+    assert second_page.json()[0]["subject"] == "Reply 100"
+
+
+def test_inbox_cursor_pagination_has_no_duplicates_or_skips_when_new_email_arrives() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "usage-inbox-cursor@example.com"}
+    SessionLocal = get_sessionmaker()
+    expected_existing_ids: list[str] = []
+    with SessionLocal() as db:
+        workspace = Workspace(owner_user_id="usage-inbox-cursor@example.com", name="Usage inbox cursor")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id="usage-inbox-cursor@example.com", email="usage-inbox-cursor@example.com", role=WorkspaceRole.owner, status="active"))
+        now = datetime.utcnow()
+        for index in range(120):
+            message = EmailMessage(
+                user_id="usage-inbox-cursor@example.com",
+                workspace_id=workspace.id,
+                direction="inbound",
+                subject=f"Cursor reply {index}",
+                body="Reply body",
+                delivery_status="received",
+                created_at=now - timedelta(seconds=index),
+            )
+            db.add(message)
+            db.flush()
+            expected_existing_ids.append(str(message.id))
+        db.commit()
+
+    first_page = client.get("/api/inbox?page_size=50", headers=headers)
+    assert first_page.status_code == 200
+    assert len(first_page.json()) == 50
+    cursor = first_page.headers["x-next-cursor"]
+    assert cursor
+
+    with SessionLocal() as db:
+        workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == "usage-inbox-cursor@example.com"))
+        assert workspace is not None
+        db.add(
+            EmailMessage(
+                user_id="usage-inbox-cursor@example.com",
+                workspace_id=workspace.id,
+                direction="inbound",
+                subject="New reply inserted between cursor pages",
+                body="Reply body",
+                delivery_status="received",
+                created_at=datetime.utcnow() + timedelta(seconds=5),
+            )
+        )
+        db.commit()
+
+    second_page = client.get(f"/api/inbox?page_size=50&cursor={cursor}", headers=headers)
+    assert second_page.status_code == 200
+    first_ids = [item["id"] for item in first_page.json()]
+    second_ids = [item["id"] for item in second_page.json()]
+    assert not set(first_ids).intersection(second_ids)
+    assert first_ids + second_ids == expected_existing_ids[:100]
 
 
 def test_workspace_app_manual_company_save_survives_crm_sync_failure(monkeypatch) -> None:
@@ -4019,9 +4076,25 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     email = draft.json()["email"]
     assert email["delivery_status"] == "draft"
 
+    cross_workspace_edit = client.patch(
+        f"/api/workspace-app/emails/{email['id']}",
+        headers={"Authorization": "Bearer dev", "X-Test-User-Email": "other-usage-email@example.com"},
+        json={"body": "Cross-workspace edit attempt"},
+    )
+    assert cross_workspace_edit.status_code == 404
+
     send_before_approval = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
     assert send_before_approval.status_code == 409
     assert "Approve the email before sending" in send_before_approval.json()["detail"]
+
+    edited = client.patch(
+        f"/api/workspace-app/emails/{email['id']}",
+        headers=headers,
+        json={"subject": "Edited idea for Usage Email Build", "body": "Hi Dana, this is the reviewed draft."},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["email"]["subject"] == "Edited idea for Usage Email Build"
+    assert edited.json()["email"]["body"] == "Hi Dana, this is the reviewed draft."
 
     approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
     assert approved.status_code == 200
@@ -4046,7 +4119,7 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
 
     def fake_send(**kwargs):
         sent_payload.update(kwargs)
-        return {"id": "workspace-app-send-1"}
+        return {"id": "workspace-app-send-1", "thread_id": "workspace-app-thread-1"}
 
     monkeypatch.setattr("app.api.usage.send_email", fake_send)
     sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
@@ -4057,10 +4130,24 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent_payload["from_email"] == "sales@usage-email.example"
     assert sent_payload["from_name"] == "Usage Sales"
     assert sent_payload["reply_to"] == "reply@usage-email.example"
+    assert sent_payload["subject"] == "Edited idea for Usage Email Build"
+    assert sent_payload["body"] == "Hi Dana, this is the reviewed draft."
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.tags["provider_thread_id"] == "workspace-app-thread-1"
+        edit_log = db.scalar(select(AuditLog).where(AuditLog.action == "email.edited", AuditLog.workspace_id == saved_email.workspace_id).order_by(AuditLog.created_at.desc()))
+        assert edit_log is not None
+        assert edit_log.metadata_json["fields"] == ["body", "subject"]
 
     send_again = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
     assert send_again.status_code == 409
     assert "already been sent" in send_again.json()["detail"]
+
+    edit_sent = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"body": "Too late"})
+    assert edit_sent.status_code == 409
+    assert "Sent emails cannot be edited" in edit_sent.json()["detail"]
 
     approve_sent = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
     assert approve_sent.status_code == 409

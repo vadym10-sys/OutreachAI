@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import concurrent.futures
 import io
 import json
@@ -17,7 +18,7 @@ from uuid import UUID
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -1391,6 +1392,22 @@ CRM_FOUND_ACTIONS = {"lead.found", "lead.imported", "google_maps.company_search"
 CRM_SAVED_ACTIONS = {"lead.saved_to_crm"}
 CRM_APPROVED_ACTIONS = {"email.approved"}
 CRM_BATCH_AUDIT_ACTIONS = CRM_FOUND_ACTIONS | CRM_SAVED_ACTIONS | CRM_APPROVED_ACTIONS
+
+
+def _encode_inbox_cursor(message: EmailMessage) -> str:
+    payload = json.dumps({"created_at": message.created_at.isoformat(), "id": str(message.id)}, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_inbox_cursor(value: str | None) -> tuple[datetime, UUID] | None:
+    if not value:
+        return None
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        return datetime.fromisoformat(str(payload["created_at"])), UUID(str(payload["id"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid inbox cursor.") from exc
 
 
 @dataclass
@@ -5835,20 +5852,37 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
 
 @router.get("/inbox", response_model=list[EmailOut])
 def inbox(
+    response: Response,
     user_id: CurrentUser,
     db: Session = Depends(get_db),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=200),
+    cursor: Optional[str] = Query(default=None),
 ) -> list[EmailMessage]:
     workspace = _current_workspace(db, user_id)
+    decoded_cursor = _decode_inbox_cursor(cursor)
+    filters = [_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.direction == "inbound"]
+    if decoded_cursor:
+        cursor_created_at, cursor_id = decoded_cursor
+        filters.append(
+            or_(
+                EmailMessage.created_at < cursor_created_at,
+                and_(EmailMessage.created_at == cursor_created_at, EmailMessage.id < cursor_id),
+            )
+        )
     messages = db.scalars(
         select(EmailMessage)
-        .where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.direction == "inbound")
-        .order_by(EmailMessage.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        .where(*filters)
+        .order_by(EmailMessage.created_at.desc(), EmailMessage.id.desc())
+        .limit(page_size + 1)
     ).all()
-    return list(messages)
+    page_messages = list(messages[:page_size])
+    has_more = len(messages) > page_size
+    response.headers["X-Has-More"] = "true" if has_more else "false"
+    response.headers["X-Next-Cursor"] = _encode_inbox_cursor(page_messages[-1]) if has_more and page_messages else ""
+    response.headers["X-Pagination-Mode"] = "cursor"
+    response.headers["X-Deprecated-Page"] = str(page)
+    return page_messages
 
 
 @router.get("/workspace", response_model=WorkspaceOut)

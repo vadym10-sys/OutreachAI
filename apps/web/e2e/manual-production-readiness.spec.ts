@@ -52,14 +52,14 @@ test.describe("manual production-readiness journey", () => {
 
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
-    await expectHealthyPage(page, "AI-помощник");
-    await page.getByRole("form", { name: "AI customer command" }).getByLabel("AI command").fill("Мы продаём AI-систему для B2B. Найди подходящих клиентов в Германии.");
+    await expectHealthyPage(page, "AI Поиск");
+    await page.getByRole("form", { name: "AI customer command" }).getByLabel("Опишите, что вы продаёте и кому хотите продавать").fill("Мы продаём AI-систему для B2B. Найди подходящих клиентов в Германии.");
     await expect(page.getByRole("button", { name: "Запустить AI" })).toBeEnabled({ timeout: 20_000 });
     await page.getByRole("button", { name: "Запустить AI" }).click();
     await expect(page.getByText("Я понял ваш бизнес так")).toBeVisible();
     await expect(page.getByText("qa.sender@example.com через Gmail OAuth")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Разрешить эту кампанию" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Остановить" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Сохранить в CRM EuroScale CRM Co" })).toBeVisible();
+    await expect(page.getByText("Сохраните подходящую компанию в CRM")).toBeVisible();
     await guards.assertClean();
   });
 
@@ -67,8 +67,8 @@ test.describe("manual production-readiness journey", () => {
     test.skip(!["iphone", "android"].includes(testInfo.project.name), "Mobile journey runs on phone-sized projects.");
     const guards = installStrictRuntimeGuards(page, testInfo);
     for (const [route, heading] of [
-      ["/dashboard", "AI-помощник"],
-      ["/dashboard/clients", "Клиенты"],
+      ["/dashboard", "AI Поиск"],
+      ["/dashboard/clients", "CRM"],
       ["/dashboard/emails", "Письма"],
       ["/dashboard/settings", "Настройки"]
     ] as const) {
