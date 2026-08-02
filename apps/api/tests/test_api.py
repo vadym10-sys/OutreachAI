@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import base64
 import hashlib
@@ -7,6 +8,7 @@ import json
 import logging
 import tempfile
 import os
+import threading
 import time
 from typing import Any, Optional
 from types import SimpleNamespace
@@ -4314,6 +4316,7 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     with get_sessionmaker()() as db:
         saved_email = db.get(EmailMessage, UUID(email["id"]))
         assert saved_email is not None
+        assert sent_payload["idempotency_key"] == f"workspace-app-email-send:{saved_email.workspace_id}:{email['id']}:v1"
         assert saved_email.tags["provider_thread_id"] == "workspace-app-thread-1"
         edit_log = db.scalar(select(AuditLog).where(AuditLog.action == "email.edited", AuditLog.workspace_id == saved_email.workspace_id).order_by(AuditLog.created_at.desc()))
         assert edit_log is not None
@@ -4526,7 +4529,175 @@ def test_workspace_app_email_provider_failure_uses_non_200_http_status(monkeypat
 
     refreshed = client.get(f"/api/workspace-app/companies/{company_id}", headers=headers)
     assert refreshed.status_code == 200
-    assert refreshed.json()["generated_emails"][0]["delivery_status"] == "failed"
+    assert refreshed.json()["generated_emails"][0]["delivery_status"] == "approved"
+
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: {"id": "provider-error-retry-ok"})
+    retry = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert retry.status_code == 200
+    assert retry.json()["email"]["delivery_status"] == "sent"
+
+
+def test_workspace_app_parallel_send_claims_approved_email_once(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-concurrent-send-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="Concurrent Send Co")
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Concurrent Sender",
+            "sender_email": "sender@concurrent-send.example",
+            "reply_to": "reply@concurrent-send.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    calls: list[dict[str, Any]] = []
+    call_lock = threading.Lock()
+    release_provider = threading.Event()
+
+    def fake_send(**kwargs):
+        with call_lock:
+            calls.append(kwargs)
+        release_provider.wait(timeout=2)
+        return {"id": "concurrent-provider-id", "thread_id": "concurrent-thread"}
+
+    monkeypatch.setattr("app.api.usage.send_email", fake_send)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(client.post, f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+        for _ in range(20):
+            with call_lock:
+                if calls:
+                    break
+            time.sleep(0.05)
+        second = executor.submit(client.post, f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+        second_response = second.result(timeout=5)
+        release_provider.set()
+        first_response = first.result(timeout=5)
+
+    statuses = sorted([first_response.status_code, second_response.status_code])
+    assert statuses == [200, 409]
+    assert len(calls) == 1
+    rejected = first_response if first_response.status_code == 409 else second_response
+    assert rejected.json()["detail"] in {
+        "This email has already been sent.",
+        "This email is already being sent. Wait for the current send lease to expire before retrying.",
+    }
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert calls[0]["idempotency_key"] == f"workspace-app-email-send:{saved_email.workspace_id}:{email['id']}:v1"
+        assert saved_email.delivery_status == "sent"
+        assert saved_email.provider_message_id == "concurrent-provider-id"
+
+
+def test_workspace_app_email_send_recovers_stale_sending_claim_after_interruption(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-stale-send-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="Stale Send Co")
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Stale Sender",
+            "sender_email": "sender@stale-send.example",
+            "reply_to": "reply@stale-send.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        stale_key = f"workspace-app-email-send:{saved_email.workspace_id}:{email['id']}:v1"
+        saved_email.delivery_status = "sending"
+        saved_email.tags = {
+            **(saved_email.tags if isinstance(saved_email.tags, dict) else {}),
+            "approval_version": 1,
+            "send_attempt": 1,
+            "send_idempotency_key": stale_key,
+            "send_claimed_at": (datetime.utcnow() - timedelta(hours=1)).isoformat(),
+            "send_claim_expires_at": (datetime.utcnow() - timedelta(minutes=30)).isoformat(),
+        }
+        db.commit()
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: calls.append(kwargs) or {"id": "stale-provider-id"})
+    sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert sent.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["idempotency_key"] == stale_key
+    assert sent.json()["email"]["delivery_status"] == "sent"
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.provider_message_id == "stale-provider-id"
+        assert saved_email.tags["send_attempt"] == 2
+        assert saved_email.tags["stale_send_recovered_at"]
+
+
+def test_workspace_app_email_patch_cannot_change_payload_after_send_claim(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-patch-send-race-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="Patch Send Race Co")
+    original_body = email["body"]
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Race Sender",
+            "sender_email": "sender@patch-send-race.example",
+            "reply_to": "reply@patch-send-race.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    sent_payload: dict[str, Any] = {}
+    provider_started = threading.Event()
+    release_provider = threading.Event()
+
+    def fake_send(**kwargs):
+        sent_payload.update(kwargs)
+        provider_started.set()
+        release_provider.wait(timeout=2)
+        return {"id": "patch-send-race-provider-id"}
+
+    monkeypatch.setattr("app.api.usage.send_email", fake_send)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        send_future = executor.submit(client.post, f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+        assert provider_started.wait(timeout=5)
+        patch_response = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"body": "Changed after send claim"})
+        release_provider.set()
+        send_response = send_future.result(timeout=5)
+
+    assert patch_response.status_code == 409
+    assert send_response.status_code == 200
+    assert sent_payload["body"] == original_body
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.body == original_body
+        assert saved_email.delivery_status == "sent"
 
 
 def test_workspace_app_company_creation_queues_enrichment_job() -> None:
