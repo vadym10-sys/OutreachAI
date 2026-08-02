@@ -100,7 +100,7 @@ export function PublicLegalPage({ eyebrow, title, summary, updated, sections, ac
             <LockKeyhole size={21} aria-hidden="true" />
           </div>
           <p className="mt-4 text-xs font-bold uppercase text-[var(--ui-text-soft)]">{t("Last updated")}</p>
-          <p className="mt-1 text-lg font-black text-[var(--ui-text)]">{updated}</p>
+          <p className="mt-1 text-lg font-black text-[var(--ui-text)]">{t(updated)}</p>
           <p className="mt-4 text-sm leading-6 text-[var(--ui-text-soft)]">
             {t("These pages describe the public website and application terms at a product level. They do not add certifications, guarantees, or company details that are not represented elsewhere in the product.")}
           </p>

@@ -45,7 +45,7 @@ test("landing follows the selected language without mixed English hero copy", as
   const main = page.getByRole("main");
   await visibleLanguageSelect(page).selectOption("ru");
 
-  await expect(page.getByRole("heading", { name: "Находите правильные компании. Понимайте, почему они купят. Пишите с AI." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Находите подходящие компании. Понимайте, почему они купят. Готовьте письма с ИИ." })).toBeVisible();
   await expect(page.getByText("OutreachAI понимает ваш бизнес")).toBeVisible();
   await expect(page.getByRole("link", { name: "Начать поиск клиентов" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Войти" }).first()).toBeVisible();
@@ -70,14 +70,14 @@ for (const width of [360, 390, 430]) {
     await page.goto("/");
     await visibleLanguageSelect(page).selectOption("ru");
 
-    await expect(page.getByRole("heading", { name: "Находите правильные компании. Понимайте, почему они купят. Пишите с AI." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Находите подходящие компании. Понимайте, почему они купят. Готовьте письма с ИИ." })).toBeVisible();
     await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("Something went wrong");
 
     const metrics = await page.evaluate(() => {
       const ctaRect = document.querySelector('[data-testid="hero-start-free-trial"]')?.getBoundingClientRect();
       const headingRect = Array.from(document.querySelectorAll("h1"))
-        .find((heading) => heading.textContent?.includes("Находите правильные компании"))
+        .find((heading) => heading.textContent?.includes("Находите подходящие компании"))
         ?.getBoundingClientRect();
       return {
         innerWidth: window.innerWidth,
@@ -111,7 +111,7 @@ test("Russian landing works in Telegram-like in-app mobile browser", async ({ br
   await page.goto("/");
   await visibleLanguageSelect(page).selectOption("ru");
 
-  await expect(page.getByRole("heading", { name: "Находите правильные компании. Понимайте, почему они купят. Пишите с AI." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Находите подходящие компании. Понимайте, почему они купят. Готовьте письма с ИИ." })).toBeVisible();
   await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
   const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1 || document.body.scrollWidth > window.innerWidth + 1);
   expect(hasOverflow).toBe(false);

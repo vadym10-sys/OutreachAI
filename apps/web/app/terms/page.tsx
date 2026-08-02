@@ -24,6 +24,7 @@ const sections = [
     body: [
       "AI output can be incomplete, inaccurate, or unsuitable for a specific sales situation. Users should verify company information, contact details, outreach copy, and CRM updates before relying on them.",
       "The product is intended to keep generated outreach in a review flow so users can approve, edit, or reject work before sending.",
+      "Autonomy may help with search, analysis, and preparation, but every real email send still requires separate user confirmation.",
     ],
   },
   {

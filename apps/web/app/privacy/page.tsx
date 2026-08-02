@@ -19,6 +19,7 @@ const sections = [
     body: [
       "Information is used to operate the product, authenticate users, maintain workspace state, prepare AI-assisted sales research, support billing flows, diagnose reliability issues, and improve product quality.",
       "OutreachAI is designed around human review. AI-generated outreach remains draft-oriented until a user approves the relevant action in the application.",
+      "Autonomy may help with search, analysis, and preparation, but every real email send still requires separate user confirmation.",
     ],
   },
   {

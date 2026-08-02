@@ -39,7 +39,7 @@ const features = [
 ] as const;
 
 const faq = [
-  ["Does OutreachAI send automatically?", "No. AI prepares drafts only, and every real send requires manual approval."],
+  ["Does OutreachAI send automatically?", "No. Autonomy can cover search, analysis, and preparation, but every real email send still requires separate user confirmation."],
   ["Where do scores come from?", "AI Lead Intelligence fields and available evidence in the production lead record."],
   ["Can Gmail be skipped?", "Yes. Users can start discovery first and connect Gmail later from settings."],
   ["What happens with insufficient data?", "Insufficient data stays visible and should be routed to review instead of being treated as a fact."],
@@ -148,8 +148,19 @@ function ProductPreview() {
   );
 }
 
+function russianPlural(value: number, one: string, few: string, many: string) {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
 export function LandingPage() {
-  const { t } = useI18n();
+  const { locale, t, formatNumber } = useI18n();
+  const trialLabel = (value: number) => locale === "ru" ? `${value} ${russianPlural(value, "день пробного периода", "дня пробного периода", "дней пробного периода")}` : `${value} ${t("day trial")}`;
+  const salesEmployeeLimit = (value: number) => locale === "ru" ? `${formatNumber(value)} ${russianPlural(value, "ИИ-сотрудник продаж", "ИИ-сотрудника продаж", "ИИ-сотрудников продаж")}` : `${formatNumber(value)} ${t("AI Sales Employees")}`;
+  const workspaceLimit = (value: number) => locale === "ru" ? `${formatNumber(value)} ${russianPlural(value, "рабочее пространство", "рабочих пространства", "рабочих пространств")}` : `${formatNumber(value)} ${t("workspace limit")}`;
   const schema = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
@@ -287,14 +298,14 @@ export function LandingPage() {
                   <h3 className="text-xl font-black text-[var(--ui-text)]">{t(plan.name)}</h3>
                   <p className="mt-3 text-4xl font-black text-[var(--ui-text)]">{plan.monthlyPrice} EUR<span className="text-base font-bold text-[var(--ui-text-soft)]">/{t("month")}</span></p>
                 </div>
-                <AppBadge tone={index === 1 ? "brand" : "neutral"}>{plan.trialDays} {t("day trial")}</AppBadge>
+                <AppBadge tone={index === 1 ? "brand" : "neutral"}>{trialLabel(plan.trialDays)}</AppBadge>
               </div>
               <ul className="mt-6 space-y-2 text-sm leading-6 text-[var(--ui-text-soft)]">
-                <li><strong className="text-[var(--ui-text)]">{plan.limits.leads.toLocaleString()}</strong> {t("leads per month")}</li>
-                <li><strong className="text-[var(--ui-text)]">{plan.limits.aiGenerations.toLocaleString()}</strong> {t("AI generations per month")}</li>
-                <li><strong className="text-[var(--ui-text)]">{plan.limits.emailSends.toLocaleString()}</strong> {t("reviewed email sends per month")}</li>
-                <li><strong className="text-[var(--ui-text)]">{plan.limits.salesEmployees}</strong> {t("AI Sales Employees")}</li>
-                <li>{plan.limits.workspaces === 0 ? t("Unlimited workspaces") : `${plan.limits.workspaces} ${t("workspace limit")}`}</li>
+                <li><strong className="text-[var(--ui-text)]">{formatNumber(plan.limits.leads)}</strong> {t("leads per month")}</li>
+                <li><strong className="text-[var(--ui-text)]">{formatNumber(plan.limits.aiGenerations)}</strong> {t("AI generations per month")}</li>
+                <li><strong className="text-[var(--ui-text)]">{formatNumber(plan.limits.emailSends)}</strong> {t("reviewed email sends per month")}</li>
+                <li>{salesEmployeeLimit(plan.limits.salesEmployees)}</li>
+                <li>{plan.limits.workspaces === 0 ? t("Unlimited workspaces") : workspaceLimit(plan.limits.workspaces)}</li>
                 <li>{plan.features.semiAutoMode ? t("Semi-auto mode included") : t("Review mode only")}</li>
                 <li>{plan.features.autonomousMode ? t("Autonomous mode included") : t("Autonomous mode not included")}</li>
                 <li>{plan.features.advancedAnalytics ? t("Advanced analytics included") : t("Basic analytics included")}</li>

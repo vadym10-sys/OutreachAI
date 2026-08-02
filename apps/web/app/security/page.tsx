@@ -24,6 +24,7 @@ const sections = [
     body: [
       "AI-assisted sales work is intended to remain reviewable before sensitive actions. Users should verify generated content, recipients, CRM changes, and campaign details before approval.",
       "Generated emails are drafts first. Sending requires an approved email and a verified recipient path in the application.",
+      "Autonomy may help with search, analysis, and preparation, but every real email send still requires separate user confirmation.",
     ],
   },
   {

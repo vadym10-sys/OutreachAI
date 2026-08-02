@@ -19,20 +19,6 @@ type I18nContextValue = {
 
 const I18nContext = createContext<I18nContextValue | null>(null);
 
-function storedLocale(): Locale | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const stored = window.localStorage.getItem(storageKey);
-    if (isLocale(stored)) return stored;
-    const cookie = document.cookie.split('; ').find((item) => item.startsWith(`${cookieKey}=`))?.split('=')[1];
-    if (isLocale(cookie)) return cookie;
-  } catch {
-    // Some mobile in-app browsers and private sessions block storage access.
-    // Falling back to English is expected and should not create customer-visible noise.
-  }
-  return null;
-}
-
 function persistLocale(locale: Locale) {
   try {
     window.localStorage.setItem(storageKey, locale);
@@ -45,29 +31,14 @@ function persistLocale(locale: Locale) {
 
 export function I18nProvider({ children, initialLocale: serverLocale = 'en' }: { children: ReactNode; initialLocale?: Locale }) {
   const [locale, setLocaleState] = useState<Locale>(serverLocale);
-  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    const timer = window.setTimeout(() => {
-      if (!active) return;
-      const next = storedLocale() ?? serverLocale;
-      if (next !== serverLocale) {
-        setLocaleState(next);
-      }
-      persistLocale(next);
-      setLoaded(true);
-    }, 0);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
+    persistLocale(serverLocale);
   }, [serverLocale]);
 
   useEffect(() => {
-    if (!loaded) return;
     persistLocale(locale);
-  }, [loaded, locale]);
+  }, [locale]);
 
   const setLocale = useCallback((next: Locale) => {
     setLocaleState(next);
