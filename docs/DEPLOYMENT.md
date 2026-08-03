@@ -39,6 +39,15 @@ OutreachAI production is split across three Railway services and one PostgreSQL 
 6. Add required service variables (database, auth, billing, mail, provider keys).
 7. Run `db/schema.sql` against the production database.
 
+## Backend Local Audit
+
+The backend runtime and CI use Python 3.12. Run local dependency audits with Python 3.12, not the system Python, so packages with `Requires-Python >=3.10` resolve the same way as Railway and GitHub Actions:
+
+```bash
+python -m pip install --upgrade pip pip-audit
+python -m pip_audit -r apps/api/requirements.txt
+```
+
 ## Deployment Isolation Verification
 
 Expected behavior after current configuration:

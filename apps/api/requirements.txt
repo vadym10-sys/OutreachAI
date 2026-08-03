@@ -7,7 +7,7 @@ pydantic-settings==2.3.4
 email-validator==2.2.0
 PyJWT[crypto]==2.13.0
 passlib[bcrypt]==1.7.4
-cryptography==49.0.0
+cryptography==50.0.0
 httpx==0.28.1
 openai==1.35.3
 resend==2.4.0
