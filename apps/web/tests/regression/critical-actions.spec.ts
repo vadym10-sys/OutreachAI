@@ -82,14 +82,13 @@ test("email approval send and reply tracking stay connected end to end", async (
   await expect((await approveResponse).ok()).toBe(true);
   await expect(page.getByText(/ready to send/i)).toBeVisible();
 
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Send this approved email now");
-    await dialog.accept();
-  });
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("OutreachAI will send this approved email only after this confirmation.")).toBeVisible();
   const sendResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send")
   );
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Confirm Send" }).click();
   await expect((await sendResponse).ok()).toBe(true);
   await expect(page.getByText("Approved email was sent. CRM stage updated.")).toBeVisible();
 
@@ -153,6 +152,103 @@ test("email recovery requires mailbox confirmation and does not resend automatic
   await expect(page.getByText("Interrupted send recovered for retry. Nothing was sent automatically.")).toBeVisible();
   await expect(page.getByText("Approved", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
+});
+
+test("owner production email smoke-test UI stops before final send", async ({ page }) => {
+  let smokeSendRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/send")) {
+      smokeSendRequests += 1;
+    }
+  });
+
+  await page.goto("/dashboard/settings");
+  await expect(page.getByRole("heading", { name: "Production email smoke test" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Recipient email" }).fill("owner@smoke-safety-mail.com");
+  await page.getByLabel("I control this recipient email and want to create isolated production smoke-test records.").check();
+  const createResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/production-email-smoke-test")
+  );
+  await page.getByRole("button", { name: "Production email smoke test" }).click();
+  await expect((await createResponse).ok()).toBe(true);
+  await expect(page.getByRole("main").getByText("QA Private Workspace", { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("main").getByText("qa.sender@example.com", { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("main").getByText("owner@smoke-safety-mail.com", { exact: true }).last()).toBeVisible();
+
+  const activeResponse = page.waitForResponse((response) =>
+    response.request().method() === "GET" && response.url().includes("/api/workspace-app/production-email-smoke-test/active")
+  );
+  await page.reload();
+  await expect((await activeResponse).ok()).toBe(true);
+  await expect(page.getByRole("link", { name: "Open draft" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cleanup smoke test" })).toBeEnabled();
+  await expect(page.getByRole("main").getByText("owner@smoke-safety-mail.com", { exact: true }).last()).toBeVisible();
+
+  await page.getByRole("link", { name: "Open draft" }).click();
+  await expect(page).toHaveURL(/\/dashboard\/emails/);
+  await expect(page.getByText("Production smoke-test draft")).toBeVisible();
+  await expect(page.getByLabel("Body")).toHaveValue(/Internal OutreachAI production email smoke test/);
+  await expect(page.getByTestId("evidence-recipient").getByText("owner@smoke-safety-mail.com", { exact: true })).toBeVisible();
+  await expect(page.getByText("Provider")).toBeVisible();
+  await expect(page.getByText("Smoke test ID", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Subject").fill("[OutreachAI Production Smoke Test] reviewed");
+  const editResponse = page.waitForResponse((response) =>
+    response.request().method() === "PATCH" && response.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111")
+  );
+  await page.getByRole("button", { name: /Save email edits/ }).click();
+  await expect((await editResponse).ok()).toBe(true);
+
+  const approveResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/approve")
+  );
+  await page.getByRole("button", { name: /Approve email/ }).click();
+  await expect((await approveResponse).ok()).toBe(true);
+  await expect(page.getByText("Email approved. It is ready to send, but nothing was sent automatically.")).toBeVisible();
+
+  await page.getByRole("button", { name: /Send email/ }).click();
+  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("owner@smoke-safety-mail.com")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toHaveCount(0);
+  expect(smokeSendRequests).toBe(0);
+
+  await page.goto("/dashboard/settings");
+  const cleanupResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/production-email-smoke-test/cleanup")
+  );
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Cleanup smoke test" }).click();
+  await expect((await cleanupResponse).ok()).toBe(true);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Cleanup smoke test" })).toBeDisabled();
+  await expect(page.getByRole("link", { name: "Open draft" })).toHaveCount(0);
+});
+
+test("owner production email smoke-test route-missing error is explicit", async ({ page }) => {
+  await page.unroute("**/api/**");
+  await mockWorkspaceApi(page, {
+    "POST /api/workspace-app/production-email-smoke-test": {
+      status: 404,
+      body: { detail: "We couldn’t find what you were looking for." }
+    }
+  });
+
+  await page.goto("/dashboard/settings");
+  await expect(page.getByRole("heading", { name: "Production email smoke test" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Recipient email" }).fill("owner@smoke-safety-mail.com");
+  await page.getByLabel("I control this recipient email and want to create isolated production smoke-test records.").check();
+  const createResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/production-email-smoke-test")
+  );
+  await page.getByRole("button", { name: "Production email smoke test" }).click();
+  await expect((await createResponse).status()).toBe(404);
+  await expect(
+    page.getByText(
+      "Production email smoke-test endpoint is not available on the connected backend. Verify this preview is connected to a branch-matched API."
+    )
+  ).toBeVisible();
+  await expect(page.getByText("We couldn’t find what you were looking for.")).toHaveCount(0);
 });
 
 test("email workspace can load older inbox reply pages", async ({ page }) => {

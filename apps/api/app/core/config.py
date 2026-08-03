@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     resend_from_email: str = ""
     resend_reply_to: str = ""
     resend_webhook_secret: str = ""
+    outbound_provider_sends_disabled: bool = False
     apollo_api_key: str = ""
     hunter_api_key: str = ""
     builtwith_api_key: str = ""

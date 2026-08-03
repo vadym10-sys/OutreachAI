@@ -25,7 +25,20 @@ class EmailProviderRequestError(RuntimeError):
     pass
 
 
+class EmailProviderSendingDisabledError(RuntimeError):
+    pass
+
+
+OUTBOUND_SENDS_DISABLED_MESSAGE = "Outbound sending is disabled in this environment."
+
+
+def _raise_if_outbound_sends_disabled() -> None:
+    if get_settings().outbound_provider_sends_disabled:
+        raise EmailProviderSendingDisabledError(OUTBOUND_SENDS_DISABLED_MESSAGE)
+
+
 def _send_resend_email(*, to_email: str, subject: str, body: str, reply_to: Optional[str], from_email: Optional[str], from_name: Optional[str], idempotency_key: Optional[str]) -> dict:
+    _raise_if_outbound_sends_disabled()
     settings = get_settings()
     if not settings.resend_api_key:
         raise EmailProviderConfigurationError("RESEND_API_KEY is required for production email sending.")
@@ -63,6 +76,7 @@ def _send_resend_email(*, to_email: str, subject: str, body: str, reply_to: Opti
 
 
 def _send_smtp_email(*, to_email: str, subject: str, body: str, reply_to: Optional[str], from_email: Optional[str], from_name: Optional[str], smtp_config: dict[str, Any] | None) -> dict:
+    _raise_if_outbound_sends_disabled()
     config = smtp_config or {}
     host = str(config.get("host") or "").strip()
     username = str(config.get("username") or "").strip()
@@ -99,6 +113,7 @@ def _send_smtp_email(*, to_email: str, subject: str, body: str, reply_to: Option
 
 
 def _gmail_access_token(oauth_config: dict[str, Any] | None) -> str:
+    _raise_if_outbound_sends_disabled()
     config = oauth_config or {}
     refresh_token = str(config.get("refresh_token") or "").strip()
     client_id = str(config.get("client_id") or "").strip()
@@ -128,6 +143,7 @@ def _gmail_access_token(oauth_config: dict[str, Any] | None) -> str:
 
 
 def _send_gmail_email(*, to_email: str, subject: str, body: str, reply_to: Optional[str], from_email: Optional[str], from_name: Optional[str], oauth_config: dict[str, Any] | None) -> dict:
+    _raise_if_outbound_sends_disabled()
     sender_email = str(from_email or "").strip()
     if not sender_email:
         raise EmailProviderConfigurationError("Gmail sender email is required.")
@@ -155,6 +171,7 @@ def _send_gmail_email(*, to_email: str, subject: str, body: str, reply_to: Optio
 
 
 def verify_smtp_connection(*, host: str, port: int, username: str, password: str, use_tls: bool = True) -> None:
+    _raise_if_outbound_sends_disabled()
     host = str(host or "").strip()
     username = str(username or "").strip()
     password = str(password or "").strip()
@@ -187,6 +204,7 @@ def send_email(
     oauth_config: dict[str, Any] | None = None,
     idempotency_key: Optional[str] = None,
 ) -> dict:
+    _raise_if_outbound_sends_disabled()
     if provider == "smtp":
         return _send_smtp_email(to_email=to_email, subject=subject, body=body, reply_to=reply_to, from_email=from_email, from_name=from_name, smtp_config=smtp_config)
     if provider == "gmail":

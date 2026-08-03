@@ -16,10 +16,26 @@ logger = logging.getLogger("outreachai.enrichment_queue")
 TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
 ACTIVE_JOB_STATUSES = {"pending", "running", "retrying"}
 MAX_RETRY_BACKOFF_SECONDS = 3600
+PRODUCTION_SMOKE_TEST_SOURCE = "production_smoke_test"
 
 
 def _worker_id() -> str:
     return f"{socket.gethostname()}:{id(object())}"
+
+
+def _lead_metadata(lead: Lead | None) -> dict[str, Any]:
+    if not lead or not lead.notes:
+        return {}
+    try:
+        data = __import__("json").loads(lead.notes)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _automation_disabled_test_lead(lead: Lead | None) -> bool:
+    metadata = _lead_metadata(lead)
+    return metadata.get("source") == PRODUCTION_SMOKE_TEST_SOURCE and metadata.get("is_test") is True and metadata.get("automation_disabled") is True
 
 
 def _claim_is_current(job: EnrichmentJob, claim_token: str) -> bool:
@@ -174,6 +190,8 @@ def enqueue_autopilot_email_job(
     max_attempts: int = 3,
     priority: int = 2,
 ) -> EnrichmentJob:
+    if _automation_disabled_test_lead(lead):
+        raise ValueError("production_smoke_test_automation_disabled")
     idempotency_key = f"autopilot:{campaign_id}:{email_id}"
     existing = db.scalar(
         select(EnrichmentJob)

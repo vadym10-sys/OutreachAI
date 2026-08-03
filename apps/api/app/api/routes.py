@@ -189,7 +189,7 @@ from app.services.workflow_engine import build_company_workflow_engine
 from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
-from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email, verify_smtp_connection
+from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, EmailProviderSendingDisabledError, send_email, verify_smtp_connection
 from app.services.enrichment_queue import enqueue_autopilot_email_job
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
@@ -2150,6 +2150,8 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
 
 
 def _provider_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, EmailProviderSendingDisabledError):
+        return HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError, HunterConfigurationError, GoogleMapsConfigurationError)):
         return HTTPException(status_code=503, detail="This connection is not ready. Please contact the workspace owner.")
     if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError, GoogleMapsRequestError, LeadProviderTimeoutError)):
@@ -4431,7 +4433,8 @@ def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: C
     if action not in mapping:
         raise HTTPException(status_code=400, detail="Unsupported campaign action")
     if action in {"launch", "resume"}:
-        lead_ids = list(db.scalars(select(Lead.id).where(Lead.campaign_id == campaign.id, _workspace_stmt(Lead, workspace, user_id))).all())
+        campaign_leads = list(db.scalars(select(Lead).where(Lead.campaign_id == campaign.id, _workspace_stmt(Lead, workspace, user_id))).all())
+        lead_ids = [lead.id for lead in campaign_leads if not (_lead_metadata(lead).get("source") == "production_smoke_test" and _lead_metadata(lead).get("is_test") is True)]
         if not lead_ids:
             raise HTTPException(status_code=400, detail="Add at least one lead before launching this campaign.")
         approved_count = (
@@ -4502,7 +4505,11 @@ def approve_autopilot_campaign(
     lead_ids = [row.lead_id for row in result_rows if row.lead_id]
     if not lead_ids:
         raise HTTPException(status_code=400, detail="Save verified companies to CRM before enabling AI Autopilot.")
-    leads = db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.user_id == user_id, Lead.id.in_(lead_ids))).all()
+    leads = [
+        lead
+        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.user_id == user_id, Lead.id.in_(lead_ids))).all()
+        if not (_lead_metadata(lead).get("source") == "production_smoke_test" and _lead_metadata(lead).get("is_test") is True)
+    ]
     queued = 0
     approved = 0
     request_id = request.headers.get("x-request-id") or str(uuid4())
@@ -5913,6 +5920,8 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
             provider=sender_status.provider,
             smtp_config=smtp_config,
         )
+    except EmailProviderSendingDisabledError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         message.delivery_status = "failed"
         db.add(message)
@@ -5949,7 +5958,13 @@ def inbox(
 ) -> list[EmailMessage]:
     workspace = _current_workspace(db, user_id)
     decoded_cursor = _decode_inbox_cursor(cursor)
-    filters = [_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.direction == "inbound"]
+    filters = [
+        _workspace_stmt(EmailMessage, workspace, user_id),
+        or_(
+            EmailMessage.direction == "inbound",
+            EmailMessage.tags["source"].as_string() == "production_smoke_test",
+        ),
+    ]
     if decoded_cursor:
         cursor_created_at, cursor_id = decoded_cursor
         filters.append(
