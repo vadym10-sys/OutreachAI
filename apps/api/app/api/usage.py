@@ -859,11 +859,9 @@ def _active_production_smoke_context(db: Session, *, workspace: Workspace) -> Pr
             .where(EmailMessage.workspace_id == workspace.id, EmailMessage.lead_id == lead.id)
             .order_by(EmailMessage.created_at.desc())
         )
-        if company and not _is_production_smoke_test_company(company):
-            continue
-        if email and not _is_production_smoke_test_email(email):
-            continue
-        return _production_smoke_context(db, workspace=workspace, smoke_test_id=smoke_test_id, lead=lead, company=company, email=email)
+        smoke_company = company if _is_production_smoke_test_company(company) else None
+        smoke_email = email if _is_production_smoke_test_email(email) else None
+        return _production_smoke_context(db, workspace=workspace, smoke_test_id=smoke_test_id, lead=lead, company=smoke_company, email=smoke_email)
     emails = [
         email
         for email in db.scalars(select(EmailMessage).where(EmailMessage.workspace_id == workspace.id).order_by(EmailMessage.created_at.desc())).all()

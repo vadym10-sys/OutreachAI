@@ -5044,6 +5044,53 @@ def test_workspace_app_production_email_smoke_test_reload_recovery_and_idempoten
         assert db.get(Lead, real_lead_id) is not None
 
 
+def test_workspace_app_production_email_smoke_test_recovers_orphan_lead_without_deleting_real_company(monkeypatch) -> None:
+    owner_email = f"smoke-orphan-owner-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": owner_email}
+    client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Smoke Orphan Sender",
+            "sender_email": "sender@smoke-orphan.example",
+            "reply_to": "reply@smoke-orphan.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    created = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@smoke-orphan-mail.com", "confirmed_recipient_control": True},
+    )
+    assert created.status_code == 200
+    smoke_test_id = created.json()["smoke_test"]["smoke_test_id"]
+    company_id = created.json()["company"]["id"]
+
+    with get_sessionmaker()() as db:
+        company = db.get(Company, UUID(company_id))
+        assert company is not None
+        company.source = "manual"
+        company.metadata_json = {"source": "manual", "is_test": False}
+        db.commit()
+
+    active = client.get("/api/workspace-app/production-email-smoke-test/active", headers=headers)
+    assert active.status_code == 200
+    assert active.json()["smoke_test"]["smoke_test_id"] == smoke_test_id
+    assert active.json()["smoke_test"]["recipient_email"] == "owner@smoke-orphan-mail.com"
+
+    cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert cleanup.status_code == 200
+    assert cleanup.json()["smoke_test"]["cleanup_deleted"]["leads"] == 1
+    assert cleanup.json()["smoke_test"]["cleanup_deleted"]["companies"] == 0
+
+    with get_sessionmaker()() as db:
+        preserved_company = db.get(Company, UUID(company_id))
+        assert preserved_company is not None
+        assert preserved_company.source == "manual"
+
+
 def test_workspace_app_production_email_smoke_test_rejects_workspace_member(monkeypatch) -> None:
     owner_user_id = f"smoke-workspace-owner-{uuid4()}@example.com"
     member_user_id = f"smoke-workspace-member-{uuid4()}@example.com"
