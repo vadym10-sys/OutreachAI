@@ -189,7 +189,7 @@ from app.services.workflow_engine import build_company_workflow_engine
 from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
-from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email, verify_smtp_connection
+from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, EmailProviderSendingDisabledError, send_email, verify_smtp_connection
 from app.services.enrichment_queue import enqueue_autopilot_email_job
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
@@ -2150,6 +2150,8 @@ def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, messa
 
 
 def _provider_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, EmailProviderSendingDisabledError):
+        return HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError, HunterConfigurationError, GoogleMapsConfigurationError)):
         return HTTPException(status_code=503, detail="This connection is not ready. Please contact the workspace owner.")
     if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError, GoogleMapsRequestError, LeadProviderTimeoutError)):
@@ -5918,6 +5920,8 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
             provider=sender_status.provider,
             smtp_config=smtp_config,
         )
+    except EmailProviderSendingDisabledError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         message.delivery_status = "failed"
         db.add(message)

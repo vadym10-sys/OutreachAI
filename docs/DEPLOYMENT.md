@@ -127,6 +127,34 @@ RESEND_REPLY_TO=...
 RESEND_WEBHOOK_SECRET=...
 ```
 
+## Branch-Matched Staging Email Safety
+
+For PR preview or staging verification, use a non-production Railway API service
+and a separate staging PostgreSQL database. Do not copy production Resend, Gmail,
+SMTP, database, Stripe, or Clerk secrets into staging.
+
+Set this API variable in staging and preview environments:
+
+```env
+OUTBOUND_PROVIDER_SENDS_DISABLED=true
+```
+
+With this guard enabled, backend email drafts, edits, approvals, final send
+confirmation checks, and cleanup still work, but calls to Resend, Gmail, and
+SMTP are blocked before any provider client is invoked. Production behavior is
+unchanged when the variable is unset or `false`.
+
+For a branch-matched Vercel Preview, configure branch-specific preview variables
+only:
+
+```env
+NEXT_PUBLIC_API_URL=https://<staging-api-url>
+BACKEND_API_URL=https://<staging-api-url>
+```
+
+Restrict staging API CORS to the exact Vercel Preview origin being tested. Do
+not use wildcard CORS for email smoke tests.
+
 ## Clerk
 
 1. Enable email/password login.

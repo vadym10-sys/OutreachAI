@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.entities import AppSettings, AuditLog, Campaign, CampaignStatus, Company, EmailMessage, EnrichmentJob, Lead, LeadStatus, UsageCounter
 from app.schemas.dto import PLAN_LIMITS
-from app.services.emailer import send_email
+from app.services.emailer import EmailProviderSendingDisabledError, send_email
 from app.services.enrichment_queue import complete_job, mark_cancelled, update_job_progress
 from app.services.secret_box import decrypt_secret
 
@@ -203,16 +203,19 @@ def process_autopilot_email_job(db: Session, job: EnrichmentJob, *, claim_token:
     if email.delivery_status == "sent":
         return complete_job(db, job, partial=False, claim_token=claim_token)
     update_job_progress(db, job, stage="sending", message="Sending through connected Gmail.", percent=70, claim_token=claim_token)
-    provider_response = send_email(
-        to_email=lead.email or "",
-        subject=email.subject,
-        body=email.body,
-        from_email=sender["sender_email"],
-        from_name=sender["sender_name"],
-        reply_to=sender["reply_to"],
-        provider="gmail",
-        oauth_config=oauth_config,
-    )
+    try:
+        provider_response = send_email(
+            to_email=lead.email or "",
+            subject=email.subject,
+            body=email.body,
+            from_email=sender["sender_email"],
+            from_name=sender["sender_name"],
+            reply_to=sender["reply_to"],
+            provider="gmail",
+            oauth_config=oauth_config,
+        )
+    except EmailProviderSendingDisabledError as exc:
+        return _mark_requires_review(db, job, lead, email, str(exc), claim_token)
     now = datetime.utcnow()
     email.delivery_status = "sent"
     email.sent_at = now

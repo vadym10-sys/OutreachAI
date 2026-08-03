@@ -62,7 +62,7 @@ from app.services.hunter import HunterRequestError  # noqa: E402
 from app.services.ai import ProviderRequestError, ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
 from app.services.backups import _is_past_retention, _verify_restore, backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
-from app.services.emailer import EmailProviderRequestError  # noqa: E402
+from app.services.emailer import EmailProviderRequestError, EmailProviderSendingDisabledError  # noqa: E402
 from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
 from app.services.autopilot import process_autopilot_email_job  # noqa: E402
 from app.services.secret_box import encrypt_secret  # noqa: E402
@@ -4365,6 +4365,71 @@ def _workspace_app_test_draft(headers: dict[str, str], monkeypatch, *, company_n
     return draft.json()["email"]
 
 
+def test_outbound_provider_kill_switch_blocks_provider_boundaries(monkeypatch) -> None:
+    from app.services import emailer
+
+    monkeypatch.setattr(get_settings(), "outbound_provider_sends_disabled", True)
+    provider_calls: list[str] = []
+    monkeypatch.setattr("app.services.emailer._send_resend_email", lambda **kwargs: provider_calls.append("resend") or {"id": "resend"})
+    monkeypatch.setattr("app.services.emailer._send_gmail_email", lambda **kwargs: provider_calls.append("gmail") or {"id": "gmail"})
+    monkeypatch.setattr("app.services.emailer._send_smtp_email", lambda **kwargs: provider_calls.append("smtp") or {"id": "smtp"})
+    monkeypatch.setattr("smtplib.SMTP", lambda *args, **kwargs: provider_calls.append("smtp-verify"))
+
+    for provider in ["resend", "gmail", "smtp"]:
+        with pytest.raises(EmailProviderSendingDisabledError, match="Outbound sending is disabled in this environment."):
+            emailer.send_email(to_email="buyer@safe-mail.example", subject="Subject", body="Body", provider=provider, smtp_config={"host": "smtp.safe-mail.example", "username": "user", "password": "pass"})
+
+    with pytest.raises(EmailProviderSendingDisabledError, match="Outbound sending is disabled in this environment."):
+        emailer.verify_smtp_connection(host="smtp.safe-mail.example", port=587, username="user", password="pass")
+
+    assert provider_calls == []
+
+
+def test_workspace_app_outbound_kill_switch_blocks_send_but_allows_draft_and_approve(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"kill-switch-send-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="Kill Switch Send Co")
+    edited = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"subject": "Reviewed kill switch draft", "body": "Reviewed body"})
+    assert edited.status_code == 200
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
+
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Kill Switch Sender",
+            "sender_email": "sender@kill-switch.example",
+            "reply_to": "reply@kill-switch.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    provider_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("app.services.emailer._send_resend_email", lambda **kwargs: provider_calls.append(kwargs) or {"id": "guard-provider-id"})
+    monkeypatch.setattr(get_settings(), "outbound_provider_sends_disabled", True)
+    blocked = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert blocked.status_code == 503
+    assert blocked.json()["detail"] == "Outbound sending is disabled in this environment."
+    assert provider_calls == []
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.delivery_status == "approved"
+        assert saved_email.provider_message_id is None
+        assert saved_email.sent_at is None
+
+    monkeypatch.setattr(get_settings(), "outbound_provider_sends_disabled", False)
+    sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert sent.status_code == 200
+    assert sent.json()["email"]["delivery_status"] == "sent"
+    assert len(provider_calls) == 1
+
+
 def test_workspace_app_email_patch_state_machine_and_audit_regressions(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"patch-safety-{uuid4()}@example.com"}
     email = _workspace_app_test_draft(headers, monkeypatch)
@@ -4844,6 +4909,63 @@ def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> 
         send_audit = db.scalar(select(AuditLog).where(AuditLog.action == "production_smoke_test.send_confirmed", AuditLog.metadata_json["smoke_test_id"].as_string() == smoke_test_id))
         assert send_audit is not None
         assert send_audit.user_id == owner_email
+
+
+def test_workspace_app_smoke_send_obeys_outbound_provider_kill_switch(monkeypatch) -> None:
+    owner_email = f"smoke-guard-owner-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": owner_email}
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Smoke Guard Sender",
+            "sender_email": "sender@smoke-guard.example",
+            "reply_to": "reply@smoke-guard.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    created = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@smoke-safety-mail.com", "confirmed_recipient_control": True},
+    )
+    assert created.status_code == 200
+    smoke_test_id = created.json()["smoke_test"]["smoke_test_id"]
+    email_id = created.json()["email"]["id"]
+    approved = client.post(f"/api/workspace-app/emails/{email_id}/approve", headers=headers)
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
+
+    provider_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("app.services.emailer._send_resend_email", lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"})
+    monkeypatch.setattr(get_settings(), "outbound_provider_sends_disabled", True)
+    blocked = client.post(
+        f"/api/workspace-app/emails/{email_id}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": smoke_test_id, "recipient_email": "owner@smoke-safety-mail.com"},
+    )
+    assert blocked.status_code == 503
+    assert blocked.json()["detail"] == "Outbound sending is disabled in this environment."
+    assert provider_calls == []
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email_id))
+        assert saved_email is not None
+        assert saved_email.workspace_id == UUID(created.json()["smoke_test"]["workspace_id"])
+        assert saved_email.delivery_status == "approved"
+        assert saved_email.provider_message_id is None
+        assert saved_email.tags["source"] == "production_smoke_test"
+
+    cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert cleanup.status_code == 200
+    deleted = cleanup.json()["smoke_test"]["cleanup_deleted"]
+    assert deleted["leads"] == 1
+    assert deleted["companies"] == 1
+    assert deleted["drafts"] == 1
 
 
 def test_workspace_app_production_email_smoke_test_rejects_workspace_member(monkeypatch) -> None:
@@ -9681,6 +9803,40 @@ def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(monkeypatch
     assert unauthorized.status_code == 401
 
 
+def test_campaign_automation_send_obeys_outbound_provider_kill_switch(monkeypatch) -> None:
+    from app.services import acquisition
+
+    monkeypatch.setattr(get_settings(), "outbound_provider_sends_disabled", True)
+    provider_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("app.services.emailer._send_resend_email", lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"})
+
+    db = get_sessionmaker()()
+    try:
+        workspace = Workspace(owner_user_id="automation-guard-owner", name="Automation Guard Workspace")
+        db.add(workspace)
+        db.flush()
+        campaign = Campaign(user_id=workspace.owner_user_id, workspace_id=workspace.id, name="Automation Guard Campaign", status=CampaignStatus.running, timezone="UTC")
+        db.add(campaign)
+        db.flush()
+        lead = Lead(user_id=workspace.owner_user_id, workspace_id=workspace.id, campaign_id=campaign.id, company="Automation Guard Buyer", email="buyer@automation-guard.example", status=LeadStatus.qualified)
+        db.add(lead)
+        db.flush()
+        message = EmailMessage(user_id=workspace.owner_user_id, workspace_id=workspace.id, campaign_id=campaign.id, lead_id=lead.id, direction="outbound", subject="Automation guard", body="Body", delivery_status="draft", tags={"automation": True})
+        db.add(message)
+        db.commit()
+
+        with pytest.raises(EmailProviderSendingDisabledError, match="Outbound sending is disabled in this environment."):
+            acquisition._send_ready_email(db, workspace, campaign, lead, message)
+        db.refresh(message)
+        db.refresh(lead)
+        assert provider_calls == []
+        assert message.delivery_status == "draft"
+        assert message.provider_message_id is None
+        assert lead.status == LeadStatus.qualified
+    finally:
+        db.close()
+
+
 def test_ai_employee_task_results_persist_csv_and_block_external_send(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.api.routes.plan_sales_employee_task",
@@ -10202,6 +10358,25 @@ def test_autopilot_suppression_and_staging_domain_block_keep_crm_review(monkeypa
         assert lead.status == LeadStatus.qualified
         assert "requires_review" in (lead.notes or "")
         assert company.crm_stage != "Contacted"
+        assert db.query(AuditLog).filter(AuditLog.workspace_id == workspace.id, AuditLog.action == "autopilot.requires_review").count() == 1
+    finally:
+        db.close()
+
+
+def test_autopilot_worker_obeys_outbound_provider_kill_switch(monkeypatch) -> None:
+    provider_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(get_settings(), "outbound_provider_sends_disabled", True)
+    monkeypatch.setattr("app.services.emailer._send_gmail_email", lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"})
+    monkeypatch.setattr("app.services.autopilot._within_working_hours", lambda campaign: True)
+    db, workspace, _campaign, lead, email, job = _autopilot_fixture("autopilot-guard", "Autopilot Guard", "buyer@testmail.local")
+    try:
+        assert process_autopilot_email_job(db, job)
+        db.refresh(email)
+        db.refresh(lead)
+        assert provider_calls == []
+        assert email.delivery_status == "needs_review"
+        assert email.provider_message_id is None
+        assert lead.status == LeadStatus.qualified
         assert db.query(AuditLog).filter(AuditLog.workspace_id == workspace.id, AuditLog.action == "autopilot.requires_review").count() == 1
     finally:
         db.close()

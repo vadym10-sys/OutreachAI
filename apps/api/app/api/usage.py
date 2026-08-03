@@ -63,7 +63,7 @@ from app.services.ai_memory import (
     upsert_memory_entry,
 )
 from app.services.ai_sales_workspace import build_ai_sales_workspace_analysis, read_cached_analysis
-from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, send_email
+from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, EmailProviderSendingDisabledError, send_email
 from app.services.enrichment_queue import cancel_jobs_for_lead, complete_job, enqueue_company_enrichment_job, enqueue_deep_contact_search_job, mark_cancelled, update_job_progress
 from app.services.google_maps import GoogleMapsConfigurationError, GoogleMapsRequestError, get_google_place_details, search_google_places
 from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
@@ -9481,6 +9481,9 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     except HTTPException as exc:
         _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=str(exc.detail))
         raise HTTPException(status_code=exc.status_code if exc.status_code >= 400 else 409, detail=str(exc.detail)) from exc
+    except EmailProviderSendingDisabledError as exc:
+        _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EmailProviderConfigurationError as exc:
         _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason=str(exc))
         capture_provider_exception(exc, provider="email", endpoint="workspace_app.email.send", workspace_id=workspace.id, lead_id=lead.id)
