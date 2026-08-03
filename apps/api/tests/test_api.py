@@ -4742,6 +4742,13 @@ def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> 
     companies = client.get("/api/workspace-app/companies", headers=headers)
     assert companies.status_code == 200
     assert all(item["source"] != "production_smoke_test" for item in companies.json())
+    inbox = client.get("/api/inbox", headers=headers)
+    assert inbox.status_code == 200
+    inbox_messages = inbox.json()
+    assert len(inbox_messages) == 1
+    assert inbox_messages[0]["id"] == email_id
+    assert inbox_messages[0]["tags"]["source"] == "production_smoke_test"
+    assert inbox_messages[0]["tags"]["smoke_test_id"] == smoke_test_id
 
     with get_sessionmaker()() as db:
         lead = db.get(Lead, UUID(lead_id))

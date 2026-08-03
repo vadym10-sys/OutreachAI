@@ -206,6 +206,32 @@ test("owner production email smoke-test UI stops before final send", async ({ pa
   expect(smokeSendRequests).toBe(0);
 });
 
+test("owner production email smoke-test route-missing error is explicit", async ({ page }) => {
+  await page.unroute("**/api/**");
+  await mockWorkspaceApi(page, {
+    "POST /api/workspace-app/production-email-smoke-test": {
+      status: 404,
+      body: { detail: "We couldn’t find what you were looking for." }
+    }
+  });
+
+  await page.goto("/dashboard/settings");
+  await expect(page.getByRole("heading", { name: "Production email smoke test" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Recipient email" }).fill("owner@smoke-safety-mail.com");
+  await page.getByLabel("I control this recipient email and want to create isolated production smoke-test records.").check();
+  const createResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/production-email-smoke-test")
+  );
+  await page.getByRole("button", { name: "Production email smoke test" }).click();
+  await expect((await createResponse).status()).toBe(404);
+  await expect(
+    page.getByText(
+      "Production email smoke-test endpoint is not available on the connected backend. Verify this preview is connected to a branch-matched API."
+    )
+  ).toBeVisible();
+  await expect(page.getByText("We couldn’t find what you were looking for.")).toHaveCount(0);
+});
+
 test("email workspace can load older inbox reply pages", async ({ page }) => {
   const replies = Array.from({ length: 26 }, (_, index) => ({
     id: `99999999-9999-9999-9999-${String(index).padStart(12, "0")}`,

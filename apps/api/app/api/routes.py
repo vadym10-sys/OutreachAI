@@ -5954,7 +5954,13 @@ def inbox(
 ) -> list[EmailMessage]:
     workspace = _current_workspace(db, user_id)
     decoded_cursor = _decode_inbox_cursor(cursor)
-    filters = [_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.direction == "inbound"]
+    filters = [
+        _workspace_stmt(EmailMessage, workspace, user_id),
+        or_(
+            EmailMessage.direction == "inbound",
+            EmailMessage.tags["source"].as_string() == "production_smoke_test",
+        ),
+    ]
     if decoded_cursor:
         cursor_created_at, cursor_id = decoded_cursor
         filters.append(

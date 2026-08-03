@@ -1366,7 +1366,12 @@ function SettingsSection() {
       setLastSmokeTest(response.smoke_test || null);
       setNotice(`${response.message} Workspace: ${response.smoke_test?.workspace_name || workspace?.name || "current"}. Sender: ${response.smoke_test?.sender_email || "not returned"} via ${providerLabel(response.smoke_test?.sender_provider)}. Recipient: ${response.smoke_test?.recipient_email || smokeRecipient}.`);
     } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not create production email smoke test."));
+      const message = friendlyErrorMessage(err, "Could not create production email smoke test.");
+      setError(
+        message.includes("couldn’t find what you were looking for") || message.includes("couldn't find what you were looking for")
+          ? "Production email smoke-test endpoint is not available on the connected backend. Verify this preview is connected to a branch-matched API."
+          : message
+      );
     } finally {
       setBusy("");
     }
