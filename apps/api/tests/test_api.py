@@ -4792,6 +4792,11 @@ def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> 
     assert body["email"]["tags"]["recipient_email"] == "owner@smoke-safety-mail.com"
     assert body["company"]["source"] == "production_smoke_test"
 
+    active = client.get("/api/workspace-app/production-email-smoke-test/active", headers=headers)
+    assert active.status_code == 200
+    assert active.json()["smoke_test"]["smoke_test_id"] == smoke_test_id
+    assert active.json()["smoke_test"]["recipient_email"] == "owner@smoke-safety-mail.com"
+
     duplicate = client.post(
         "/api/workspace-app/production-email-smoke-test",
         headers=headers,
@@ -4814,6 +4819,7 @@ def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> 
     assert inbox_messages[0]["id"] == email_id
     assert inbox_messages[0]["tags"]["source"] == "production_smoke_test"
     assert inbox_messages[0]["tags"]["smoke_test_id"] == smoke_test_id
+    assert inbox_messages[0]["tags"]["recipient_email"] == "owner@smoke-safety-mail.com"
 
     with get_sessionmaker()() as db:
         lead = db.get(Lead, UUID(lead_id))
@@ -4893,12 +4899,25 @@ def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> 
         real_lead_id = real_lead.id
         real_company_id = real_company.id
 
+    other_workspace_cleanup = client.post(
+        "/api/workspace-app/production-email-smoke-test/cleanup",
+        headers={"Authorization": "Bearer dev", "X-Test-User-Email": f"other-cleanup-{uuid4()}@example.com"},
+        json={"smoke_test_id": smoke_test_id},
+    )
+    assert other_workspace_cleanup.status_code == 404
+
     cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
     assert cleanup.status_code == 200
     deleted = cleanup.json()["smoke_test"]["cleanup_deleted"]
     assert deleted["leads"] == 1
     assert deleted["companies"] == 1
     assert deleted["drafts"] == 0
+    assert cleanup.json()["smoke_test"]["cleanup_already_clean"] is False
+
+    repeated_cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert repeated_cleanup.status_code == 200
+    assert repeated_cleanup.json()["smoke_test"]["cleanup_already_clean"] is True
+    assert repeated_cleanup.json()["smoke_test"]["cleanup_deleted"] == {"leads": 0, "companies": 0, "drafts": 0, "activities": 0}
 
     with get_sessionmaker()() as db:
         assert db.get(Lead, UUID(lead_id)) is None
@@ -4966,6 +4985,63 @@ def test_workspace_app_smoke_send_obeys_outbound_provider_kill_switch(monkeypatc
     assert deleted["leads"] == 1
     assert deleted["companies"] == 1
     assert deleted["drafts"] == 1
+
+
+def test_workspace_app_production_email_smoke_test_reload_recovery_and_idempotent_cleanup(monkeypatch) -> None:
+    owner_email = f"smoke-reload-owner-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": owner_email}
+    client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Smoke Reload Sender",
+            "sender_email": "sender@smoke-reload.example",
+            "reply_to": "reply@smoke-reload.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    created = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@smoke-reload-mail.com", "confirmed_recipient_control": True},
+    )
+    assert created.status_code == 200
+    smoke_test_id = created.json()["smoke_test"]["smoke_test_id"]
+    email_id = created.json()["email"]["id"]
+    lead_id = created.json()["email"]["lead_id"]
+
+    active = client.get("/api/workspace-app/production-email-smoke-test/active", headers=headers)
+    assert active.status_code == 200
+    assert active.json()["smoke_test"]["smoke_test_id"] == smoke_test_id
+    assert active.json()["smoke_test"]["sender_email"] == "sender@smoke-reload.example"
+    assert active.json()["smoke_test"]["recipient_email"] == "owner@smoke-reload-mail.com"
+
+    with get_sessionmaker()() as db:
+        workspace_id = db.get(EmailMessage, UUID(email_id)).workspace_id
+        real_lead = Lead(user_id=owner_email, workspace_id=workspace_id, company="Real Not Smoke", email="real@not-smoke-mail.com", notes=json.dumps({"source": "manual"}))
+        db.add(real_lead)
+        db.commit()
+        real_lead_id = real_lead.id
+
+    cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert cleanup.status_code == 200
+    assert cleanup.json()["smoke_test"]["cleanup_deleted"] == {"leads": 1, "companies": 1, "drafts": 1, "activities": 1}
+    assert cleanup.json()["smoke_test"]["cleanup_already_clean"] is False
+
+    active_after_cleanup = client.get("/api/workspace-app/production-email-smoke-test/active", headers=headers)
+    assert active_after_cleanup.status_code == 200
+    assert active_after_cleanup.json()["smoke_test"] is None
+
+    repeated = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert repeated.status_code == 200
+    assert repeated.json()["smoke_test"]["cleanup_already_clean"] is True
+
+    with get_sessionmaker()() as db:
+        assert db.get(Lead, UUID(lead_id)) is None
+        assert db.get(EmailMessage, UUID(email_id)) is None
+        assert db.get(Lead, real_lead_id) is not None
 
 
 def test_workspace_app_production_email_smoke_test_rejects_workspace_member(monkeypatch) -> None:

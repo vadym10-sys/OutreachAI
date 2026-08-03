@@ -298,8 +298,9 @@ function ScoreTile({ label, value, copy }: { label: string; value?: number; copy
 
 function EvidenceLine({ label, value, href }: { label: string; value?: string; href?: string }) {
   const text = String(value || "").trim();
+  const testId = `evidence-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
   return (
-    <div className="min-h-[7.5rem] rounded-2xl border border-[var(--ui-border)] bg-white p-4 transition hover:border-[var(--ui-border-strong)]">
+    <div data-testid={testId} className="min-h-[7.5rem] rounded-2xl border border-[var(--ui-border)] bg-white p-4 transition hover:border-[var(--ui-border-strong)]">
       <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{label}</p>
       {href && text ? (
         <a href={href} target="_blank" rel="noreferrer" className="focus-ring mt-2 inline-flex min-h-10 items-center gap-1 break-all rounded-lg text-sm font-bold leading-6 text-teal-700">
@@ -884,6 +885,7 @@ function EmailsSection() {
   const [loadError, setLoadError] = useState("");
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
+  const [sendConfirmationEmail, setSendConfirmationEmail] = useState<Email | null>(null);
   const emails = useMemo(() => uniqueEmails(companies, inbox), [companies, inbox]);
   const load = useCallback(async () => {
     if (!api.ready) return;
@@ -961,19 +963,20 @@ function EmailsSection() {
   }
 
   async function send(email: Email) {
+    setSendConfirmationEmail(email);
+  }
+
+  async function confirmSend(email: Email) {
     const smokeTest = isProductionSmokeTestEmail(email);
     const smokeTestId = String(email.tags?.smoke_test_id || "");
     const smokeRecipient = String(email.tags?.recipient_email || "");
-    const confirmMessage = smokeTest
-      ? `Final confirmation: send this production smoke-test email only to ${smokeRecipient}? Smoke test ID: ${smokeTestId}`
-      : "Send this approved email now? OutreachAI will not send automatically.";
-    if (!window.confirm(confirmMessage)) return;
     setBusy(`send:${email.id}`);
     setNotice("");
     setActionError("");
     try {
       const response = await api.sendApprovedEmail(email.id, smokeTest ? { confirmed_send: true, smoke_test_id: smokeTestId, recipient_email: smokeRecipient } : undefined);
       setNotice(response.message);
+      setSendConfirmationEmail(null);
       await load();
     } catch (err) {
       setActionError(friendlyErrorMessage(err, "Could not send this email."));
@@ -1064,7 +1067,7 @@ function EmailsSection() {
                 </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <EvidenceLine label="Recipient" value={relatedCompany?.email || "Recipient not returned by this backend response"} />
+                <EvidenceLine label="Recipient" value={String(email.tags?.recipient_email || relatedCompany?.email || "Recipient not returned by this backend response")} />
                 <EvidenceLine label="Company" value={relatedCompany?.name || "Company not linked in this response"} />
                 {smokeTest ? <EvidenceLine label="Workspace" value={String(email.tags?.workspace_name || relatedCompany?.name || "Current workspace")} /> : null}
                 {smokeTest ? <EvidenceLine label="Sender" value={String(email.tags?.sender_email || "Not returned")} /> : null}
@@ -1111,6 +1114,35 @@ function EmailsSection() {
       })}</section>{inboxHasMore ? <AppButton variant="secondary" disabled={Boolean(busy)} onClick={() => void loadOlderReplies()}>
         {busy === "inbox:more" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />} Load older replies
       </AppButton> : null}</div> : <EmptyStateView title="No email drafts yet." copy="Save a verified customer result to CRM to create a draft. AI will not send anything without explicit approval." />}
+      {sendConfirmationEmail ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="send-confirmation-title">
+          <div className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--ui-border)] bg-white p-5 shadow-2xl">
+            <h2 id="send-confirmation-title" className="text-lg font-black text-ink">Final Send confirmation</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">OutreachAI will send this approved email only after this confirmation. Closing this dialog sends nothing.</p>
+            {isProductionSmokeTestEmail(sendConfirmationEmail) ? (
+              <div className="mt-4 grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
+                <EvidenceLine label="Smoke test ID" value={String(sendConfirmationEmail.tags?.smoke_test_id || "")} />
+                <EvidenceLine label="Recipient" value={String(sendConfirmationEmail.tags?.recipient_email || "")} />
+                <EvidenceLine label="Workspace" value={String(sendConfirmationEmail.tags?.workspace_name || "Current workspace")} />
+                <EvidenceLine label="Sender" value={String(sendConfirmationEmail.tags?.sender_email || "Not returned")} />
+                <EvidenceLine label="Provider" value={providerLabel(String(sendConfirmationEmail.tags?.sender_provider || ""))} />
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm">
+                <EvidenceLine label="Subject" value={sendConfirmationEmail.subject || "No subject"} />
+                <EvidenceLine label="Recipient" value={String(sendConfirmationEmail.tags?.recipient_email || companyForEmail(companies, sendConfirmationEmail)?.email || "Recipient not returned by this backend response")} />
+              </div>
+            )}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => setSendConfirmationEmail(null)}>Cancel</AppButton>
+              <AppButton size="sm" disabled={Boolean(busy)} onClick={() => void confirmSend(sendConfirmationEmail)} aria-label={`Confirm Send ${sendConfirmationEmail.subject || sendConfirmationEmail.id}`}>
+                {busy === `send:${sendConfirmationEmail.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}
+                Confirm Send
+              </AppButton>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </Frame>
   );
 }
@@ -1288,10 +1320,11 @@ function SettingsSection() {
     if (!api.ready) return;
     setLoading(true);
     try {
-      const [nextWorkspace, nextIntegrations, nextSender] = await Promise.all([api.getWorkspace(), api.integrations(), api.senderStatus()]);
+      const [nextWorkspace, nextIntegrations, nextSender, activeSmokeTest] = await Promise.all([api.getWorkspace(), api.integrations(), api.senderStatus(), api.getActiveProductionEmailSmokeTest()]);
       setWorkspace(nextWorkspace);
       setIntegrations(nextIntegrations.integrations);
       setSender(nextSender);
+      setLastSmokeTest(activeSmokeTest.smoke_test || null);
       setError("");
     } catch (err) {
       setError(friendlyErrorMessage(err, "Could not load settings."));

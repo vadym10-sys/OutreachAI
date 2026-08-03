@@ -44,6 +44,7 @@ export type ProductionEmailSmokeTestResponse = WorkspaceAppActionResponse & {
     sender_provider: string;
     recipient_email: string;
     cleanup_deleted?: Record<string, number>;
+    cleanup_already_clean?: boolean;
   };
 };
 
@@ -60,6 +61,7 @@ export type AiFirstApi = {
   sendApprovedEmail(emailId: string, payload?: { confirmed_send?: boolean; smoke_test_id?: string; recipient_email?: string }): Promise<WorkspaceAppActionResponse>;
   recoverEmailForRetry(emailId: string, confirmedNotDelivered: boolean): Promise<WorkspaceAppActionResponse>;
   createProductionEmailSmokeTest(payload: { recipient_email: string; confirmed_recipient_control: boolean }): Promise<ProductionEmailSmokeTestResponse>;
+  getActiveProductionEmailSmokeTest(): Promise<ProductionEmailSmokeTestResponse>;
   cleanupProductionEmailSmokeTest(smokeTestId: string): Promise<ProductionEmailSmokeTestResponse>;
   listEmails(cursor?: string, pageSize?: number): Promise<{ messages: Email[]; nextCursor: string; hasMore: boolean }>;
   getWorkspace(): Promise<Workspace>;
@@ -216,6 +218,7 @@ export function useAiFirstApi(): AiFirstApi {
       method: "POST",
       body: JSON.stringify(payload)
     })),
+    getActiveProductionEmailSmokeTest: async () => requireSuccessfulAction(await request<ProductionEmailSmokeTestResponse>("/api/workspace-app/production-email-smoke-test/active")),
     cleanupProductionEmailSmokeTest: async (smokeTestId) => requireSuccessfulAction(await request<ProductionEmailSmokeTestResponse>("/api/workspace-app/production-email-smoke-test/cleanup", {
       method: "POST",
       body: JSON.stringify({ smoke_test_id: smokeTestId })

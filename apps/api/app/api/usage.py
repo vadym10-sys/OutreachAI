@@ -262,6 +262,7 @@ class ProductionEmailSmokeTestContextOut(BaseModel):
     sender_provider: str = ""
     recipient_email: str
     cleanup_deleted: dict[str, int] = Field(default_factory=dict)
+    cleanup_already_clean: bool = False
 
 
 class ProductionEmailSmokeTestOut(UsageActionOut):
@@ -777,6 +778,13 @@ def _is_production_smoke_test_metadata(metadata: Any) -> bool:
     return isinstance(metadata, dict) and metadata.get("source") == PRODUCTION_SMOKE_TEST_SOURCE and metadata.get("is_test") is True
 
 
+def _valid_smoke_test_id(value: Any) -> UUID | None:
+    try:
+        return UUID(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_production_smoke_test_lead(lead: Lead | None) -> bool:
     if not lead:
         return False
@@ -794,6 +802,95 @@ def _is_production_smoke_test_email(email: EmailMessage | None) -> bool:
 def _smoke_test_id_from_email(email: EmailMessage) -> str:
     tags = email.tags if isinstance(email.tags, dict) else {}
     return str(tags.get("smoke_test_id") or "").strip()
+
+
+def _production_smoke_context(
+    db: Session,
+    *,
+    workspace: Workspace,
+    smoke_test_id: UUID,
+    lead: Lead | None = None,
+    company: Company | None = None,
+    email: EmailMessage | None = None,
+    cleanup_deleted: dict[str, int] | None = None,
+    cleanup_already_clean: bool = False,
+) -> ProductionEmailSmokeTestContextOut:
+    tags = email.tags if email and isinstance(email.tags, dict) else {}
+    company_metadata = company.metadata_json if company and isinstance(company.metadata_json, dict) else {}
+    lead_metadata = _lead_metadata(lead) if lead else {}
+    sender_status, _smtp_config = _outreach_sender_runtime_config(db, str(lead.user_id if lead else workspace.owner_user_id), workspace)
+    recipient = str(
+        tags.get("recipient_email")
+        or company_metadata.get("recipient_email")
+        or lead_metadata.get("recipient_email")
+        or (company.email if company else "")
+        or (lead.email if lead else "")
+        or "cleanup@invalid.test"
+    ).strip().lower()
+    return ProductionEmailSmokeTestContextOut(
+        smoke_test_id=smoke_test_id,
+        workspace_id=workspace.id,
+        workspace_name=workspace.name,
+        sender_email=str(tags.get("sender_email") or sender_status.sender_email or ""),
+        sender_provider=str(tags.get("sender_provider") or sender_status.provider or ""),
+        recipient_email=recipient,
+        cleanup_deleted=cleanup_deleted or {},
+        cleanup_already_clean=cleanup_already_clean,
+    )
+
+
+def _active_production_smoke_context(db: Session, *, workspace: Workspace) -> ProductionEmailSmokeTestContextOut | None:
+    leads = [
+        lead
+        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id).order_by(Lead.created_at.desc())).all()
+        if _is_production_smoke_test_lead(lead) and _valid_smoke_test_id(_lead_metadata(lead).get("smoke_test_id"))
+    ]
+    for lead in leads:
+        smoke_test_id = _valid_smoke_test_id(_lead_metadata(lead).get("smoke_test_id"))
+        if smoke_test_id is None:
+            continue
+        company = db.scalar(
+            select(Company)
+            .where(Company.workspace_id == workspace.id, Company.lead_id == lead.id)
+            .order_by(Company.updated_at.desc())
+        )
+        email = db.scalar(
+            select(EmailMessage)
+            .where(EmailMessage.workspace_id == workspace.id, EmailMessage.lead_id == lead.id)
+            .order_by(EmailMessage.created_at.desc())
+        )
+        if company and not _is_production_smoke_test_company(company):
+            continue
+        if email and not _is_production_smoke_test_email(email):
+            continue
+        return _production_smoke_context(db, workspace=workspace, smoke_test_id=smoke_test_id, lead=lead, company=company, email=email)
+    emails = [
+        email
+        for email in db.scalars(select(EmailMessage).where(EmailMessage.workspace_id == workspace.id).order_by(EmailMessage.created_at.desc())).all()
+        if _is_production_smoke_test_email(email) and _valid_smoke_test_id(_smoke_test_id_from_email(email))
+    ]
+    for email in emails:
+        smoke_test_id = _valid_smoke_test_id(_smoke_test_id_from_email(email))
+        if smoke_test_id is None:
+            continue
+        lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
+        company = db.scalar(select(Company).where(Company.lead_id == email.lead_id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc())) if email.lead_id else None
+        return _production_smoke_context(db, workspace=workspace, smoke_test_id=smoke_test_id, lead=lead, company=company, email=email)
+    return None
+
+
+def _production_smoke_exists_outside_workspace(db: Session, *, workspace_id: UUID, smoke_test_id: UUID) -> bool:
+    smoke_id = str(smoke_test_id)
+    for lead in db.scalars(select(Lead).where(Lead.workspace_id != workspace_id)).all():
+        if _is_production_smoke_test_lead(lead) and str(_lead_metadata(lead).get("smoke_test_id") or "") == smoke_id:
+            return True
+    for company in db.scalars(select(Company).where(Company.workspace_id != workspace_id)).all():
+        if _is_production_smoke_test_company(company) and str((company.metadata_json or {}).get("smoke_test_id") or "") == smoke_id:
+            return True
+    for email in db.scalars(select(EmailMessage).where(EmailMessage.workspace_id != workspace_id)).all():
+        if _is_production_smoke_test_email(email) and _smoke_test_id_from_email(email) == smoke_id:
+            return True
+    return False
 
 
 def _smoke_test_cleanup_scope(db: Session, *, workspace_id: UUID, smoke_test_id: UUID) -> tuple[list[Lead], list[Company], list[EmailMessage], list[AuditLog]]:
@@ -817,6 +914,7 @@ def _smoke_test_cleanup_scope(db: Session, *, workspace_id: UUID, smoke_test_id:
         activity
         for activity in db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace_id, AuditLog.action.like("lead.%"))).all()
         if isinstance(activity.metadata_json, dict)
+        and activity.metadata_json.get("source") == PRODUCTION_SMOKE_TEST_SOURCE
         and activity.metadata_json.get("is_test") is True
         and str(activity.metadata_json.get("smoke_test_id") or "") == smoke_id
     ]
@@ -7554,12 +7652,51 @@ def create_production_email_smoke_test(payload: ProductionEmailSmokeTestCreateIn
     )
 
 
+@router.get("/production-email-smoke-test/active", response_model=ProductionEmailSmokeTestOut)
+def get_active_production_email_smoke_test(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
+    active = _active_production_smoke_context(db, workspace=workspace)
+    return ProductionEmailSmokeTestOut(
+        status="success",
+        message="Active production smoke-test state loaded." if active else "No active production smoke-test records for this workspace.",
+        smoke_test=active,
+    )
+
+
 @router.post("/production-email-smoke-test/cleanup", response_model=ProductionEmailSmokeTestOut)
 def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanupIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
     leads, companies, emails, activities = _smoke_test_cleanup_scope(db, workspace_id=workspace.id, smoke_test_id=payload.smoke_test_id)
+    if not leads and not companies and not emails and not activities:
+        if _production_smoke_exists_outside_workspace(db, workspace_id=workspace.id, smoke_test_id=payload.smoke_test_id):
+            raise HTTPException(status_code=404, detail="Production smoke-test record not found in this workspace.")
+        return ProductionEmailSmokeTestOut(
+            status="success",
+            message="Production smoke-test cleanup already clean. No matching active test records remain for this workspace.",
+            smoke_test=_production_smoke_context(
+                db,
+                workspace=workspace,
+                smoke_test_id=payload.smoke_test_id,
+                cleanup_deleted={"leads": 0, "companies": 0, "drafts": 0, "activities": 0},
+                cleanup_already_clean=True,
+            ),
+        )
     draft_emails = [email for email in emails if email.sent_at is None and not email.provider_message_id]
+    if not leads and not companies and not activities and not draft_emails:
+        return ProductionEmailSmokeTestOut(
+            status="success",
+            message="Production smoke-test cleanup already clean. Only preserved sent email records remain for audit.",
+            smoke_test=_production_smoke_context(
+                db,
+                workspace=workspace,
+                smoke_test_id=payload.smoke_test_id,
+                email=emails[0] if emails else None,
+                cleanup_deleted={"leads": 0, "companies": 0, "drafts": 0, "activities": 0},
+                cleanup_already_clean=True,
+            ),
+        )
     deleted = {"leads": 0, "companies": 0, "drafts": 0, "activities": 0}
     for activity in activities:
         db.delete(activity)
@@ -7585,11 +7722,10 @@ def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanup
     return ProductionEmailSmokeTestOut(
         status="success",
         message="Production smoke-test cleanup finished. Only matching test records were affected; send audit history was preserved.",
-        smoke_test=ProductionEmailSmokeTestContextOut(
+        smoke_test=_production_smoke_context(
+            db,
             smoke_test_id=payload.smoke_test_id,
-            workspace_id=workspace.id,
-            workspace_name=workspace.name,
-            recipient_email="cleanup@invalid.test",
+            workspace=workspace,
             cleanup_deleted=deleted,
         ),
     )

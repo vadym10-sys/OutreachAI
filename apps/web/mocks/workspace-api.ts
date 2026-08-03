@@ -662,6 +662,23 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [currentCompany]);
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, currentCompany);
+    if (apiPath === "/api/workspace-app/production-email-smoke-test/active" && route.request().method() === "GET") {
+      const email = currentCompany.generated_emails?.[0];
+      const tags = email?.tags || {};
+      const isSmoke = currentCompany.source === "production_smoke_test" && tags.source === "production_smoke_test" && tags.is_test === true && Boolean(tags.smoke_test_id);
+      return fulfillJson(route, {
+        status: "success",
+        message: isSmoke ? "Active production smoke-test state loaded." : "No active production smoke-test records for this workspace.",
+        smoke_test: isSmoke ? {
+          smoke_test_id: tags.smoke_test_id,
+          workspace_id: "99999999-9999-9999-9999-999999999999",
+          workspace_name: String(tags.workspace_name || "QA Private Workspace"),
+          sender_email: String(tags.sender_email || "qa.sender@example.com"),
+          sender_provider: String(tags.sender_provider || "gmail"),
+          recipient_email: String(tags.recipient_email || currentCompany.email || "")
+        } : null
+      });
+    }
     if (apiPath === "/api/workspace-app/production-email-smoke-test" && route.request().method() === "POST") {
       const body = route.request().postDataJSON() as { recipient_email?: string; confirmed_recipient_control?: boolean };
       if (!body.confirmed_recipient_control) return fulfillJson(route, { detail: "Confirm that you control this recipient email before creating test records." }, 409);
@@ -714,11 +731,12 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       });
     }
     if (apiPath === "/api/workspace-app/production-email-smoke-test/cleanup" && route.request().method() === "POST") {
+      const wasSmoke = currentCompany.source === "production_smoke_test";
       currentCompany = qaCompany;
       return fulfillJson(route, {
         status: "success",
-        message: "Production smoke-test cleanup finished. Only matching test records were affected; send audit history was preserved.",
-        smoke_test: { smoke_test_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", workspace_id: "99999999-9999-9999-9999-999999999999", workspace_name: "QA Private Workspace", sender_email: "", sender_provider: "", recipient_email: "cleanup@invalid.test", cleanup_deleted: { leads: 1, companies: 1, drafts: 1, activities: 1 } }
+        message: wasSmoke ? "Production smoke-test cleanup finished. Only matching test records were affected; send audit history was preserved." : "Production smoke-test cleanup already clean. No matching active test records remain for this workspace.",
+        smoke_test: { smoke_test_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", workspace_id: "99999999-9999-9999-9999-999999999999", workspace_name: "QA Private Workspace", sender_email: "", sender_provider: "", recipient_email: "cleanup@invalid.test", cleanup_deleted: wasSmoke ? { leads: 1, companies: 1, drafts: 1, activities: 1 } : { leads: 0, companies: 0, drafts: 0, activities: 0 }, cleanup_already_clean: !wasSmoke }
       });
     }
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis`) {
