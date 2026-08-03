@@ -35,6 +35,18 @@ export type AiAssistantCommand = {
   maxResults: number;
 };
 
+export type ProductionEmailSmokeTestResponse = WorkspaceAppActionResponse & {
+  smoke_test?: {
+    smoke_test_id: string;
+    workspace_id: string;
+    workspace_name: string;
+    sender_email: string;
+    sender_provider: string;
+    recipient_email: string;
+    cleanup_deleted?: Record<string, number>;
+  };
+};
+
 export type AiFirstApi = {
   ready: boolean;
   bootstrap(): Promise<WorkspaceAppBootstrapResponse>;
@@ -45,8 +57,10 @@ export type AiFirstApi = {
   saveFinderResult(resultId: string): Promise<FirstCustomerSaveResponse>;
   updateEmail(emailId: string, payload: { subject?: string; body?: string; preview?: string }): Promise<WorkspaceAppActionResponse>;
   approveEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
-  sendApprovedEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
+  sendApprovedEmail(emailId: string, payload?: { confirmed_send?: boolean; smoke_test_id?: string; recipient_email?: string }): Promise<WorkspaceAppActionResponse>;
   recoverEmailForRetry(emailId: string, confirmedNotDelivered: boolean): Promise<WorkspaceAppActionResponse>;
+  createProductionEmailSmokeTest(payload: { recipient_email: string; confirmed_recipient_control: boolean }): Promise<ProductionEmailSmokeTestResponse>;
+  cleanupProductionEmailSmokeTest(smokeTestId: string): Promise<ProductionEmailSmokeTestResponse>;
   listEmails(cursor?: string, pageSize?: number): Promise<{ messages: Email[]; nextCursor: string; hasMore: boolean }>;
   getWorkspace(): Promise<Workspace>;
   updateWorkspace(payload: Partial<Workspace>): Promise<Workspace>;
@@ -119,7 +133,7 @@ function finderPayload(command: AiAssistantCommand) {
   };
 }
 
-function requireSuccessfulAction(response: WorkspaceAppActionResponse) {
+function requireSuccessfulAction<T extends WorkspaceAppActionResponse>(response: T) {
   if (response.status !== "success" && response.status !== "partial_success") {
     throw new Error(response.message || "This action could not be completed.");
   }
@@ -190,10 +204,21 @@ export function useAiFirstApi(): AiFirstApi {
       body: JSON.stringify(payload)
     }),
     approveEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, { method: "POST" })),
-    sendApprovedEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, { method: "POST" })),
+    sendApprovedEmail: async (emailId, payload) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, {
+      method: "POST",
+      ...(payload ? { body: JSON.stringify(payload) } : {})
+    })),
     recoverEmailForRetry: async (emailId, confirmedNotDelivered) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/recover`, {
       method: "POST",
       body: JSON.stringify({ confirmed_not_delivered: confirmedNotDelivered })
+    })),
+    createProductionEmailSmokeTest: async (payload) => requireSuccessfulAction(await request<ProductionEmailSmokeTestResponse>("/api/workspace-app/production-email-smoke-test", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    })),
+    cleanupProductionEmailSmokeTest: async (smokeTestId) => requireSuccessfulAction(await request<ProductionEmailSmokeTestResponse>("/api/workspace-app/production-email-smoke-test/cleanup", {
+      method: "POST",
+      body: JSON.stringify({ smoke_test_id: smokeTestId })
     })),
     listEmails: async (cursor = "", pageSize = 25) => {
       const path = `/api/inbox?page_size=${pageSize}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;

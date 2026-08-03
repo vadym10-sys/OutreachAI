@@ -155,6 +155,57 @@ test("email recovery requires mailbox confirmation and does not resend automatic
   await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
 });
 
+test("owner production email smoke-test UI stops before final send", async ({ page }) => {
+  let smokeSendRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/send")) {
+      smokeSendRequests += 1;
+    }
+  });
+
+  await page.goto("/dashboard/settings");
+  await expect(page.getByRole("heading", { name: "Production email smoke test" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Recipient email" }).fill("owner@smoke-safety-mail.com");
+  await page.getByLabel("I control this recipient email and want to create isolated production smoke-test records.").check();
+  const createResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/production-email-smoke-test")
+  );
+  await page.getByRole("button", { name: "Production email smoke test" }).click();
+  await expect((await createResponse).ok()).toBe(true);
+  await expect(page.getByRole("main").getByText("QA Private Workspace", { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("main").getByText("qa.sender@example.com", { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("main").getByText("owner@smoke-safety-mail.com", { exact: true }).last()).toBeVisible();
+
+  await page.getByRole("link", { name: "Open draft" }).click();
+  await expect(page).toHaveURL(/\/dashboard\/emails/);
+  await expect(page.getByText("Production smoke-test draft")).toBeVisible();
+  await expect(page.getByLabel("Body")).toHaveValue(/Internal OutreachAI production email smoke test/);
+  await expect(page.getByText("Provider")).toBeVisible();
+  await expect(page.getByText("Smoke test ID", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Subject").fill("[OutreachAI Production Smoke Test] reviewed");
+  const editResponse = page.waitForResponse((response) =>
+    response.request().method() === "PATCH" && response.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111")
+  );
+  await page.getByRole("button", { name: /Save email edits/ }).click();
+  await expect((await editResponse).ok()).toBe(true);
+
+  const approveResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/approve")
+  );
+  await page.getByRole("button", { name: /Approve email/ }).click();
+  await expect((await approveResponse).ok()).toBe(true);
+  await expect(page.getByText("Email approved. It is ready to send, but nothing was sent automatically.")).toBeVisible();
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Final confirmation");
+    expect(dialog.message()).toContain("owner@smoke-safety-mail.com");
+    await dialog.dismiss();
+  });
+  await page.getByRole("button", { name: /Send email/ }).click();
+  expect(smokeSendRequests).toBe(0);
+});
+
 test("email workspace can load older inbox reply pages", async ({ page }) => {
   const replies = Array.from({ length: 26 }, (_, index) => ({
     id: `99999999-9999-9999-9999-${String(index).padStart(12, "0")}`,

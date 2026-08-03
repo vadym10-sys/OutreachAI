@@ -18,6 +18,7 @@ from app.services.secret_box import decrypt_secret
 
 logger = logging.getLogger("outreachai.autopilot")
 INTERNAL_BETA_OVERRIDE_EMAIL = "romaniukvadym10@gmail.com"
+PRODUCTION_SMOKE_TEST_SOURCE = "production_smoke_test"
 
 
 class AutopilotDeferred(RuntimeError):
@@ -137,6 +138,12 @@ def _mark_requires_review(db: Session, job: EnrichmentJob, lead: Lead | None, em
 
 
 def _recipient_safe(db: Session, job: EnrichmentJob, lead: Lead, email: EmailMessage, settings: AppSettings | None) -> str:
+    metadata = _metadata(lead)
+    if metadata.get("source") == PRODUCTION_SMOKE_TEST_SOURCE and metadata.get("is_test") is True:
+        return "Production smoke-test leads are excluded from sales automation."
+    email_tags = email.tags if isinstance(email.tags, dict) else {}
+    if email_tags.get("source") == PRODUCTION_SMOKE_TEST_SOURCE and email_tags.get("is_test") is True:
+        return "Production smoke-test drafts are excluded from sales automation."
     recipient = (lead.email or "").strip().lower()
     if not recipient or "@" not in recipient:
         return "No confirmed public business email is available."
@@ -146,9 +153,8 @@ def _recipient_safe(db: Session, job: EnrichmentJob, lead: Lead, email: EmailMes
         return "Recipient is suppressed, bounced, unsubscribed, or blocked."
     if db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.workspace_id == job.workspace_id, EmailMessage.lead_id == lead.id, EmailMessage.delivery_status == "sent", EmailMessage.id != email.id)):
         return "This company or contact was already processed."
-    meta = _metadata(lead)
-    confidence = int(meta.get("confidence_score") or meta.get("decision_maker_confidence_score") or 0)
-    source = str(meta.get("source_url") or meta.get("google_maps_url") or meta.get("public_source") or "").strip()
+    confidence = int(metadata.get("confidence_score") or metadata.get("decision_maker_confidence_score") or 0)
+    source = str(metadata.get("source_url") or metadata.get("google_maps_url") or metadata.get("public_source") or "").strip()
     if confidence and confidence < 60:
         return "Contact confidence is too low for autonomous sending."
     if not source and not lead.website:

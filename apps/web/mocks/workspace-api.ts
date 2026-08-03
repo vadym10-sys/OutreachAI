@@ -372,6 +372,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
   let currentCampaign: any = qaCampaign;
   let currentInbox: any[] = [];
   let currentAnalysis: any = { ...qaSalesAnalysisV2 };
+  let smokeProviderCalls = 0;
   const memoryEntry = {
     id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
     memory_type: "verified_fact",
@@ -661,6 +662,65 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace-app/companies") return fulfillJson(route, [currentCompany]);
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}`) return fulfillJson(route, currentCompany);
+    if (apiPath === "/api/workspace-app/production-email-smoke-test" && route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as { recipient_email?: string; confirmed_recipient_control?: boolean };
+      if (!body.confirmed_recipient_control) return fulfillJson(route, { detail: "Confirm that you control this recipient email before creating test records." }, 409);
+      const recipient = String(body.recipient_email || "").trim().toLowerCase();
+      if (!recipient || recipient.endsWith("@example.com")) return fulfillJson(route, { detail: "Use a real recipient email that you control, not a placeholder address." }, 400);
+      const smokeTestId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+      const email = {
+        ...qaCompany.generated_emails[0],
+        id: "aaaaaaaa-1111-4111-8111-aaaaaaaa1111",
+        lead_id: "aaaaaaaa-2222-4222-8222-aaaaaaaa2222",
+        subject: `[OutreachAI Production Smoke Test] ${smokeTestId}`,
+        preview: "Internal owner-only production email smoke test. This is not customer outreach.",
+        body: `Internal OutreachAI production email smoke test.\n\nSmoke test ID: ${smokeTestId}\nWorkspace: QA Private Workspace\nSender: qa.sender@example.com via gmail\nRecipient: ${recipient}`,
+        delivery_status: "draft",
+        tags: {
+          source: "production_smoke_test",
+          is_test: true,
+          automation_disabled: true,
+          smoke_test_id: smokeTestId,
+          recipient_email: recipient,
+          sender_email: "qa.sender@example.com",
+          sender_provider: "gmail",
+          workspace_name: "QA Private Workspace"
+        }
+      };
+      currentCompany = {
+        ...qaCompany,
+        id: "aaaaaaaa-3333-4333-8333-aaaaaaaa3333",
+        lead_id: email.lead_id,
+        name: `Production smoke test ${smokeTestId}`,
+        email: recipient,
+        source: "production_smoke_test",
+        crm_stage: "Internal Test",
+        email_status: "Draft Ready",
+        generated_emails: [email]
+      };
+      return fulfillJson(route, {
+        status: "success",
+        message: "Production email smoke-test draft created. Review, edit, approve, then use a separate final Send confirmation.",
+        company: currentCompany,
+        email,
+        smoke_test: {
+          smoke_test_id: smokeTestId,
+          workspace_id: "99999999-9999-9999-9999-999999999999",
+          workspace_name: "QA Private Workspace",
+          sender_email: "qa.sender@example.com",
+          sender_provider: "gmail",
+          recipient_email: recipient
+        }
+      });
+    }
+    if (apiPath === "/api/workspace-app/production-email-smoke-test/cleanup" && route.request().method() === "POST") {
+      currentCompany = qaCompany;
+      return fulfillJson(route, {
+        status: "success",
+        message: "Production smoke-test cleanup finished. Only matching test records were affected; send audit history was preserved.",
+        smoke_test: { smoke_test_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", workspace_id: "99999999-9999-9999-9999-999999999999", workspace_name: "QA Private Workspace", sender_email: "", sender_provider: "", recipient_email: "cleanup@invalid.test", cleanup_deleted: { leads: 1, companies: 1, drafts: 1, activities: 1 } }
+      });
+    }
     if (apiPath === `/api/workspace-app/companies/${qaCompany.id}/ai-sales-analysis`) {
       if (route.request().method() === "POST") {
         const body = route.request().postDataJSON() as { force?: boolean };
@@ -822,6 +882,29 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
       const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "sent", sent_at: now };
       currentCompany = { ...currentCompany, crm_stage: "Sent", email_sent_at: now, generated_emails: [email] };
+      return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: currentCompany, email });
+    }
+    if (apiPath === "/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/approve") {
+      const email = { ...currentCompany.generated_emails[0], delivery_status: "approved" };
+      currentCompany = { ...currentCompany, generated_emails: [email] };
+      return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: currentCompany, email });
+    }
+    if (apiPath === "/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111" && route.request().method() === "PATCH") {
+      const body = route.request().postDataJSON() as Partial<typeof qaCompany.generated_emails[0]>;
+      const currentEmail = currentCompany.generated_emails[0];
+      const email = { ...currentEmail, ...body, delivery_status: currentEmail.delivery_status === "approved" ? "draft" : currentEmail.delivery_status };
+      currentCompany = { ...currentCompany, generated_emails: [email] };
+      return fulfillJson(route, { status: "success", message: "Email draft saved. Review and approve before sending.", company: currentCompany, email });
+    }
+    if (apiPath === "/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/send") {
+      const body = route.request().postDataJSON() as { confirmed_send?: boolean; smoke_test_id?: string; recipient_email?: string };
+      if (body.confirmed_send !== true || body.smoke_test_id !== "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee") {
+        return fulfillJson(route, { detail: "Final send confirmation is required for production smoke-test email." }, 409);
+      }
+      smokeProviderCalls += 1;
+      if (smokeProviderCalls > 1) return fulfillJson(route, { detail: "Provider called more than once." }, 409);
+      const email = { ...currentCompany.generated_emails[0], delivery_status: "sent", sent_at: now, provider_message_id: "mock-smoke-provider-1" };
+      currentCompany = { ...currentCompany, generated_emails: [email] };
       return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: currentCompany, email });
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/recover") {

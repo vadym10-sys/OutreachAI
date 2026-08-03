@@ -52,7 +52,7 @@ from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.reliability import database_backup_configured, validate_database_connectivity, validate_required_environment  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
-from app.api.usage import _approved_email_send_claim_update, _parse_lead_command  # noqa: E402
+from app.api.usage import _approved_email_send_claim_update, _parse_lead_command, _require_workspace_owner  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _enforce_usage, _lead_ai_payload, _limits_for_workspace, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
 from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
@@ -4675,6 +4675,202 @@ def test_workspace_app_email_workspace_isolation_for_approve_send_patch_and_reco
         saved_email = db.get(EmailMessage, UUID(email["id"]))
         assert saved_email is not None
         assert saved_email.delivery_status == "sending"
+
+
+def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> None:
+    owner_email = f"smoke-owner-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": owner_email}
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Smoke Sender",
+            "sender_email": "sender@smoke-safety.example",
+            "reply_to": "reply@smoke-safety.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    missing_recipient = client.post("/api/workspace-app/production-email-smoke-test", headers=headers, json={"confirmed_recipient_control": True})
+    assert missing_recipient.status_code == 422
+    placeholder = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@example.com", "confirmed_recipient_control": True},
+    )
+    assert placeholder.status_code == 400
+    no_control = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@smoke-safety-mail.com", "confirmed_recipient_control": False},
+    )
+    assert no_control.status_code == 409
+
+    created = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@smoke-safety-mail.com", "confirmed_recipient_control": True},
+    )
+    assert created.status_code == 200
+    body = created.json()
+    smoke_test_id = body["smoke_test"]["smoke_test_id"]
+    email_id = body["email"]["id"]
+    lead_id = body["email"]["lead_id"]
+    company_id = body["company"]["id"]
+    assert body["email"]["delivery_status"] == "draft"
+    assert body["email"]["tags"]["source"] == "production_smoke_test"
+    assert body["email"]["tags"]["is_test"] is True
+    assert body["email"]["tags"]["automation_disabled"] is True
+    assert body["email"]["tags"]["recipient_email"] == "owner@smoke-safety-mail.com"
+    assert body["company"]["source"] == "production_smoke_test"
+
+    duplicate = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner2@smoke-safety-mail.com", "confirmed_recipient_control": True},
+    )
+    assert duplicate.status_code == 409
+
+    bootstrap = client.get("/api/workspace-app/bootstrap", headers=headers)
+    assert bootstrap.status_code == 200
+    assert bootstrap.json()["counts"]["leads"] == 0
+    assert bootstrap.json()["counts"]["companies"] == 0
+    assert bootstrap.json()["counts"]["emails"] == 0
+    companies = client.get("/api/workspace-app/companies", headers=headers)
+    assert companies.status_code == 200
+    assert all(item["source"] != "production_smoke_test" for item in companies.json())
+
+    with get_sessionmaker()() as db:
+        lead = db.get(Lead, UUID(lead_id))
+        assert lead is not None
+        with pytest.raises(ValueError, match="production_smoke_test_automation_disabled"):
+            enqueue_autopilot_email_job(
+                db,
+                user_id=owner_email,
+                workspace_id=lead.workspace_id,
+                lead=lead,
+                campaign_id=uuid4(),
+                email_id=UUID(email_id),
+                request_id="smoke-test",
+                language="English",
+            )
+
+    provider_calls: list[dict[str, Any]] = []
+
+    def fake_send(**kwargs):
+        provider_calls.append(kwargs)
+        return {"id": "smoke-provider-id", "thread_id": "smoke-thread"}
+
+    monkeypatch.setattr("app.api.usage.send_email", fake_send)
+
+    approved = client.post(f"/api/workspace-app/emails/{email_id}/approve", headers=headers)
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
+    assert provider_calls == []
+
+    no_final_confirm = client.post(f"/api/workspace-app/emails/{email_id}/send", headers=headers)
+    assert no_final_confirm.status_code == 409
+    assert "Final send confirmation" in no_final_confirm.json()["detail"]
+    assert provider_calls == []
+
+    wrong_workspace = client.post(
+        f"/api/workspace-app/emails/{email_id}/send",
+        headers={"Authorization": "Bearer dev", "X-Test-User-Email": f"other-smoke-{uuid4()}@example.com"},
+        json={"confirmed_send": True, "smoke_test_id": smoke_test_id, "recipient_email": "owner@smoke-safety-mail.com"},
+    )
+    assert wrong_workspace.status_code == 404
+
+    wrong_recipient = client.post(
+        f"/api/workspace-app/emails/{email_id}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": smoke_test_id, "recipient_email": "wrong@smoke-safety-mail.com"},
+    )
+    assert wrong_recipient.status_code == 409
+    assert provider_calls == []
+
+    sent = client.post(
+        f"/api/workspace-app/emails/{email_id}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": smoke_test_id, "recipient_email": "owner@smoke-safety-mail.com"},
+    )
+    assert sent.status_code == 200
+    assert sent.json()["email"]["delivery_status"] == "sent"
+    assert len(provider_calls) == 1
+    assert provider_calls[0]["to_email"] == "owner@smoke-safety-mail.com"
+    assert provider_calls[0]["idempotency_key"].endswith(":v1")
+
+    second_send = client.post(
+        f"/api/workspace-app/emails/{email_id}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": smoke_test_id, "recipient_email": "owner@smoke-safety-mail.com"},
+    )
+    assert second_send.status_code == 409
+    assert len(provider_calls) == 1
+
+    with get_sessionmaker()() as db:
+        workspace_id = db.get(EmailMessage, UUID(email_id)).workspace_id
+        real_lead = Lead(user_id=owner_email, workspace_id=workspace_id, company="Real Cleanup Co", email="real@cleanup-mail.com", notes=json.dumps({"source": "manual"}))
+        db.add(real_lead)
+        db.flush()
+        real_company = Company(user_id=owner_email, workspace_id=workspace_id, lead_id=real_lead.id, name="Real Cleanup Co", email="real@cleanup-mail.com", source="manual", metadata_json={"source": "manual"})
+        db.add(real_company)
+        db.commit()
+        real_lead_id = real_lead.id
+        real_company_id = real_company.id
+
+    cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert cleanup.status_code == 200
+    deleted = cleanup.json()["smoke_test"]["cleanup_deleted"]
+    assert deleted["leads"] == 1
+    assert deleted["companies"] == 1
+    assert deleted["drafts"] == 0
+
+    with get_sessionmaker()() as db:
+        assert db.get(Lead, UUID(lead_id)) is None
+        assert db.get(Company, UUID(company_id)) is None
+        assert db.get(EmailMessage, UUID(email_id)) is not None
+        assert db.get(Lead, real_lead_id) is not None
+        assert db.get(Company, real_company_id) is not None
+        send_audit = db.scalar(select(AuditLog).where(AuditLog.action == "production_smoke_test.send_confirmed", AuditLog.metadata_json["smoke_test_id"].as_string() == smoke_test_id))
+        assert send_audit is not None
+        assert send_audit.user_id == owner_email
+
+
+def test_workspace_app_production_email_smoke_test_rejects_workspace_member(monkeypatch) -> None:
+    owner_user_id = f"smoke-workspace-owner-{uuid4()}@example.com"
+    member_user_id = f"smoke-workspace-member-{uuid4()}@example.com"
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_user_id, name="Smoke Shared Workspace")
+        db.add(workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=owner_user_id, email=owner_user_id, role=WorkspaceRole.owner, status="active"))
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=member_user_id, email=member_user_id, role=WorkspaceRole.member, status="active"))
+        db.commit()
+        workspace_id = workspace.id
+
+    with get_sessionmaker()() as db:
+        workspace = db.get(Workspace, workspace_id)
+        assert workspace is not None
+        with pytest.raises(HTTPException) as exc_info:
+            _require_workspace_owner(db, workspace=workspace, user_id=member_user_id)
+        assert exc_info.value.status_code == 403
+
+    def shared_workspace(db, user_id, email=""):  # type: ignore[no-untyped-def]
+        del user_id, email
+        workspace = db.get(Workspace, workspace_id)
+        assert workspace is not None
+        return workspace
+
+    monkeypatch.setattr("app.api.usage._current_workspace", shared_workspace)
+    response = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers={"Authorization": "Bearer dev", "X-Test-User-Email": member_user_id},
+        json={"recipient_email": "member@smoke-safety-mail.com", "confirmed_recipient_control": True},
+    )
+    assert response.status_code == 403
 
 
 def test_workspace_app_postgresql_send_claim_uses_single_conditional_update() -> None:

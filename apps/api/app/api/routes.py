@@ -4431,7 +4431,8 @@ def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: C
     if action not in mapping:
         raise HTTPException(status_code=400, detail="Unsupported campaign action")
     if action in {"launch", "resume"}:
-        lead_ids = list(db.scalars(select(Lead.id).where(Lead.campaign_id == campaign.id, _workspace_stmt(Lead, workspace, user_id))).all())
+        campaign_leads = list(db.scalars(select(Lead).where(Lead.campaign_id == campaign.id, _workspace_stmt(Lead, workspace, user_id))).all())
+        lead_ids = [lead.id for lead in campaign_leads if not (_lead_metadata(lead).get("source") == "production_smoke_test" and _lead_metadata(lead).get("is_test") is True)]
         if not lead_ids:
             raise HTTPException(status_code=400, detail="Add at least one lead before launching this campaign.")
         approved_count = (
@@ -4502,7 +4503,11 @@ def approve_autopilot_campaign(
     lead_ids = [row.lead_id for row in result_rows if row.lead_id]
     if not lead_ids:
         raise HTTPException(status_code=400, detail="Save verified companies to CRM before enabling AI Autopilot.")
-    leads = db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.user_id == user_id, Lead.id.in_(lead_ids))).all()
+    leads = [
+        lead
+        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.user_id == user_id, Lead.id.in_(lead_ids))).all()
+        if not (_lead_metadata(lead).get("source") == "production_smoke_test" and _lead_metadata(lead).get("is_test") is True)
+    ]
     queued = 0
     approved = 0
     request_id = request.headers.get("x-request-id") or str(uuid4())

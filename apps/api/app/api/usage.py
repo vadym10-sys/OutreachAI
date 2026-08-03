@@ -47,7 +47,7 @@ from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker, validate_runtime_schema
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext
-from app.models.entities import AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace
+from app.models.entities import AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole
 from app.schemas.dto import CrmCompanyOut, EmailOut, EmailUpdate, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.ai_memory import (
@@ -90,6 +90,7 @@ MAX_TURNKEY_RESEARCH_LEADS = 10
 EMAIL_SEND_CLAIM_LEASE_SECONDS = 15 * 60
 EMAIL_SEND_CONFIRMATION_PENDING_STATUS = "send_confirmation_pending"
 EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED = {"resend"}
+PRODUCTION_SMOKE_TEST_SOURCE = "production_smoke_test"
 LOCALE_LANGUAGE_NAMES = {
     "en": "English",
     "en-us": "American English",
@@ -236,6 +237,35 @@ class UsageActionOut(BaseModel):
 
 class RecoverEmailSendIn(BaseModel):
     confirmed_not_delivered: bool
+
+
+class ProductionEmailSmokeTestCreateIn(BaseModel):
+    recipient_email: EmailStr
+    confirmed_recipient_control: bool = False
+
+
+class ProductionEmailSmokeTestCleanupIn(BaseModel):
+    smoke_test_id: UUID
+
+
+class ProductionEmailSmokeTestSendConfirmIn(BaseModel):
+    confirmed_send: bool = False
+    smoke_test_id: Optional[UUID] = None
+    recipient_email: Optional[EmailStr] = None
+
+
+class ProductionEmailSmokeTestContextOut(BaseModel):
+    smoke_test_id: UUID
+    workspace_id: UUID
+    workspace_name: str
+    sender_email: str = ""
+    sender_provider: str = ""
+    recipient_email: str
+    cleanup_deleted: dict[str, int] = Field(default_factory=dict)
+
+
+class ProductionEmailSmokeTestOut(UsageActionOut):
+    smoke_test: Optional[ProductionEmailSmokeTestContextOut] = None
 
 
 class UsageJobStatusOut(BaseModel):
@@ -602,11 +632,14 @@ def _safe_company_out(db: Session, workspace, user_id: str, company: Company) ->
 
 
 def _workspace_counts(db: Session, workspace_id: UUID) -> UsageCounts:
+    leads = [lead for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace_id)).all() if not _is_production_smoke_test_lead(lead)]
+    companies = [company for company in db.scalars(select(Company).where(Company.workspace_id == workspace_id)).all() if not _is_production_smoke_test_company(company)]
+    emails = [email for email in db.scalars(select(EmailMessage).where(EmailMessage.workspace_id == workspace_id)).all() if not _is_production_smoke_test_email(email)]
     return UsageCounts(
-        leads=db.scalar(select(func.count(Lead.id)).where(Lead.workspace_id == workspace_id)) or 0,
-        companies=db.scalar(select(func.count(Company.id)).where(Company.workspace_id == workspace_id)) or 0,
+        leads=len(leads),
+        companies=len(companies),
         campaigns=db.scalar(select(func.count(Campaign.id)).where(Campaign.workspace_id == workspace_id)) or 0,
-        emails=db.scalar(select(func.count(EmailMessage.id)).where(EmailMessage.workspace_id == workspace_id)) or 0,
+        emails=len(emails),
         deals=db.scalar(select(func.count(Deal.id)).where(Deal.workspace_id == workspace_id)) or 0,
     )
 
@@ -707,6 +740,87 @@ def _is_placeholder_recipient(email: str | None) -> bool:
         return True
     domain = email.rsplit("@", 1)[1].strip().lower()
     return domain in PLACEHOLDER_EMAIL_DOMAINS
+
+
+def _is_workspace_owner(db: Session, *, workspace: Workspace, user_id: str) -> bool:
+    if workspace.owner_user_id == user_id:
+        return True
+    return (
+        db.scalar(
+            select(WorkspaceMember.id).where(
+                WorkspaceMember.workspace_id == workspace.id,
+                WorkspaceMember.user_id == user_id,
+                WorkspaceMember.role == WorkspaceRole.owner,
+                WorkspaceMember.status == "active",
+            )
+        )
+        is not None
+    )
+
+
+def _require_workspace_owner(db: Session, *, workspace: Workspace, user_id: str) -> None:
+    if not _is_workspace_owner(db, workspace=workspace, user_id=user_id):
+        raise HTTPException(status_code=403, detail="Only the workspace owner can run production email smoke tests.")
+
+
+def _production_smoke_metadata(smoke_test_id: UUID, recipient_email: str) -> dict[str, Any]:
+    return {
+        "source": PRODUCTION_SMOKE_TEST_SOURCE,
+        "is_test": True,
+        "automation_disabled": True,
+        "smoke_test_id": str(smoke_test_id),
+        "recipient_email": recipient_email,
+    }
+
+
+def _is_production_smoke_test_metadata(metadata: Any) -> bool:
+    return isinstance(metadata, dict) and metadata.get("source") == PRODUCTION_SMOKE_TEST_SOURCE and metadata.get("is_test") is True
+
+
+def _is_production_smoke_test_lead(lead: Lead | None) -> bool:
+    if not lead:
+        return False
+    return _is_production_smoke_test_metadata(_lead_metadata(lead))
+
+
+def _is_production_smoke_test_company(company: Company | None) -> bool:
+    return bool(company and _is_production_smoke_test_metadata(company.metadata_json if isinstance(company.metadata_json, dict) else {}))
+
+
+def _is_production_smoke_test_email(email: EmailMessage | None) -> bool:
+    return bool(email and _is_production_smoke_test_metadata(email.tags if isinstance(email.tags, dict) else {}))
+
+
+def _smoke_test_id_from_email(email: EmailMessage) -> str:
+    tags = email.tags if isinstance(email.tags, dict) else {}
+    return str(tags.get("smoke_test_id") or "").strip()
+
+
+def _smoke_test_cleanup_scope(db: Session, *, workspace_id: UUID, smoke_test_id: UUID) -> tuple[list[Lead], list[Company], list[EmailMessage], list[AuditLog]]:
+    smoke_id = str(smoke_test_id)
+    leads = [
+        lead
+        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace_id)).all()
+        if _is_production_smoke_test_lead(lead) and str(_lead_metadata(lead).get("smoke_test_id") or "") == smoke_id
+    ]
+    companies = [
+        company
+        for company in db.scalars(select(Company).where(Company.workspace_id == workspace_id)).all()
+        if _is_production_smoke_test_company(company) and str((company.metadata_json or {}).get("smoke_test_id") or "") == smoke_id
+    ]
+    emails = [
+        email
+        for email in db.scalars(select(EmailMessage).where(EmailMessage.workspace_id == workspace_id)).all()
+        if _is_production_smoke_test_email(email) and _smoke_test_id_from_email(email) == smoke_id
+    ]
+    activities = [
+        activity
+        for activity in db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace_id, AuditLog.action.like("lead.%"))).all()
+        if isinstance(activity.metadata_json, dict)
+        and activity.metadata_json.get("is_test") is True
+        and str(activity.metadata_json.get("smoke_test_id") or "") == smoke_id
+    ]
+    return leads, companies, emails, activities
 
 
 def _needs_ai_research(lead: Lead) -> bool:
@@ -7236,7 +7350,7 @@ def bootstrap_workspace_app(user: WorkspaceUserContext, db: Session = Depends(ge
             .limit(20)
         ).all()
     )
-    recent = [item for item in recent if _is_customer_visible_company(item)][:5]
+    recent = [item for item in recent if not _is_production_smoke_test_company(item) and _is_customer_visible_company(item)][:5]
     activity = list(
         db.scalars(
             select(AuditLog)
@@ -7298,6 +7412,186 @@ def integration_status(user: WorkspaceUserContext, db: Session = Depends(get_db)
                 "Needs setup. Billing keys or monthly price IDs are missing.",
             ),
         ]
+    )
+
+
+@router.post("/production-email-smoke-test", response_model=ProductionEmailSmokeTestOut)
+def create_production_email_smoke_test(payload: ProductionEmailSmokeTestCreateIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
+    recipient = str(payload.recipient_email).strip().lower()
+    if not payload.confirmed_recipient_control:
+        raise HTTPException(status_code=409, detail="Confirm that you control this recipient email before creating test records.")
+    if _is_placeholder_recipient(recipient):
+        raise HTTPException(status_code=400, detail="Use a real recipient email that you control, not a placeholder address.")
+    active_smoke = [lead for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id)).all() if _is_production_smoke_test_lead(lead)]
+    if active_smoke:
+        raise HTTPException(status_code=409, detail="Cleanup the existing production smoke-test record before creating another one.")
+    existing_real = [
+        lead
+        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, func.lower(Lead.email) == recipient)).all()
+        if not _is_production_smoke_test_lead(lead)
+    ]
+    if existing_real:
+        raise HTTPException(status_code=409, detail="This recipient already belongs to a real CRM lead. Enter a separate owner-controlled test recipient.")
+
+    sender_status, _smtp_config = _outreach_sender_runtime_config(db, user.user_id, workspace)
+    smoke_test_id = uuid4()
+    metadata = _production_smoke_metadata(smoke_test_id, recipient)
+    now = datetime.utcnow()
+    lead = Lead(
+        user_id=user.user_id,
+        workspace_id=workspace.id,
+        campaign_id=None,
+        sales_employee_id=None,
+        company=f"Production smoke test {smoke_test_id}",
+        website=None,
+        industry="Internal QA",
+        country=workspace.target_country or "",
+        city="",
+        contact="Workspace owner",
+        email=recipient,
+        status=LeadStatus.email_generated,
+        notes=json.dumps(
+            {
+                **metadata,
+                "email_status": "Draft Ready",
+                "email_generated_at": now.isoformat(),
+                "workflow_stages": {
+                    "company_profile": "completed",
+                    "website_analysis": "completed",
+                    "decision_maker": "completed",
+                    "verified_email": "completed",
+                    "ai_email": "completed",
+                    "approval": "waiting",
+                },
+                "workflow_stage_messages": {
+                    "company_profile": "Internal production smoke-test profile.",
+                    "website_analysis": "Skipped for isolated internal smoke-test record.",
+                    "decision_maker": "Owner-confirmed recipient.",
+                    "verified_email": "Owner confirmed control of recipient before creation.",
+                    "ai_email": "Internal smoke-test draft prepared.",
+                    "approval": "Manual approval required before send confirmation.",
+                },
+            },
+            sort_keys=True,
+        ),
+    )
+    db.add(lead)
+    db.flush()
+    company = Company(
+        user_id=user.user_id,
+        workspace_id=workspace.id,
+        lead_id=lead.id,
+        name=lead.company,
+        email=recipient,
+        source=PRODUCTION_SMOKE_TEST_SOURCE,
+        industry="Internal QA",
+        country=workspace.target_country or "",
+        ai_summary="Isolated internal production email smoke-test record. Not a real customer.",
+        suggested_offer="Internal smoke-test only.",
+        outreach_strategy="Manual owner-only draft approval and separate send confirmation.",
+        sales_angle="Internal provider verification only.",
+        expected_reply_rate="Not counted",
+        email_status="Draft Ready",
+        crm_stage="Internal Test",
+        metadata_json=metadata,
+    )
+    db.add(company)
+    draft = EmailMessage(
+        user_id=user.user_id,
+        workspace_id=workspace.id,
+        campaign_id=None,
+        lead_id=lead.id,
+        direction="outbound",
+        subject=f"[OutreachAI Production Smoke Test] {smoke_test_id}",
+        preview="Internal owner-only production email smoke test. This is not customer outreach.",
+        body=(
+            "Internal OutreachAI production email smoke test.\n\n"
+            f"Smoke test ID: {smoke_test_id}\n"
+            f"Workspace: {workspace.name}\n"
+            f"Sender: {sender_status.sender_email or 'not configured'} via {sender_status.provider}\n"
+            f"Recipient: {recipient}\n\n"
+            "This message is sent only after manual draft approval and a separate final Send confirmation by the workspace owner."
+        ),
+        cta="Internal test only",
+        tags={
+            **metadata,
+            "sender_email": sender_status.sender_email,
+            "sender_provider": sender_status.provider,
+            "workspace_name": workspace.name,
+            "owner_user_id": user.user_id,
+            "recipient_control_confirmed": True,
+        },
+        delivery_status="draft",
+    )
+    db.add(draft)
+    _add_lead_activity(db, request, user.user_id, workspace, "lead.production_smoke_test_created", lead, {"email_id": str(draft.id), **metadata})
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="production_smoke_test.created",
+            metadata_json={"smoke_test_id": str(smoke_test_id), "lead_id": str(lead.id), "company_id": str(company.id), "email_id": str(draft.id), "recipient_email": recipient, "sender_provider": sender_status.provider, "sender_email": sender_status.sender_email},
+        )
+    )
+    db.commit()
+    db.refresh(company)
+    db.refresh(draft)
+    return ProductionEmailSmokeTestOut(
+        status="success",
+        message="Production email smoke-test draft created. Review, edit, approve, then use a separate final Send confirmation.",
+        company=_crm_company_out(db, workspace, user.user_id, company),
+        email=EmailOut.model_validate(draft),
+        smoke_test=ProductionEmailSmokeTestContextOut(
+            smoke_test_id=smoke_test_id,
+            workspace_id=workspace.id,
+            workspace_name=workspace.name,
+            sender_email=sender_status.sender_email or "",
+            sender_provider=sender_status.provider,
+            recipient_email=recipient,
+        ),
+    )
+
+
+@router.post("/production-email-smoke-test/cleanup", response_model=ProductionEmailSmokeTestOut)
+def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanupIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
+    leads, companies, emails, activities = _smoke_test_cleanup_scope(db, workspace_id=workspace.id, smoke_test_id=payload.smoke_test_id)
+    draft_emails = [email for email in emails if email.sent_at is None and not email.provider_message_id]
+    deleted = {"leads": 0, "companies": 0, "drafts": 0, "activities": 0}
+    for activity in activities:
+        db.delete(activity)
+        deleted["activities"] += 1
+    for email in draft_emails:
+        db.delete(email)
+        deleted["drafts"] += 1
+    for company in companies:
+        db.delete(company)
+        deleted["companies"] += 1
+    for lead in leads:
+        db.delete(lead)
+        deleted["leads"] += 1
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="production_smoke_test.cleanup",
+            metadata_json={"smoke_test_id": str(payload.smoke_test_id), "deleted": deleted, "preserved_sent_email_records": max(0, len(emails) - len(draft_emails))},
+        )
+    )
+    db.commit()
+    return ProductionEmailSmokeTestOut(
+        status="success",
+        message="Production smoke-test cleanup finished. Only matching test records were affected; send audit history was preserved.",
+        smoke_test=ProductionEmailSmokeTestContextOut(
+            smoke_test_id=payload.smoke_test_id,
+            workspace_id=workspace.id,
+            workspace_name=workspace.name,
+            recipient_email="cleanup@invalid.test",
+            cleanup_deleted=deleted,
+        ),
     )
 
 
@@ -7652,7 +7946,7 @@ def list_companies(
     companies = [
         company
         for company in db.scalars(stmt.order_by(Company.updated_at.desc()).limit(200)).all()
-        if company.lead_id is not None or _is_customer_visible_company(company)
+        if not _is_production_smoke_test_company(company) and (company.lead_id is not None or _is_customer_visible_company(company))
     ][:100]
     batch_context = _crm_company_batch_context(db, workspace, user.user_id, companies)
     return [_crm_company_out(db, workspace, user.user_id, company, batch_context) for company in companies]
@@ -9131,11 +9425,34 @@ def recover_email_send(email_id: UUID, payload: RecoverEmailSendIn, request: Req
 
 
 @router.post("/emails/{email_id}/send", response_model=UsageActionOut)
-def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserContext, payload: Optional[ProductionEmailSmokeTestSendConfirmIn] = None, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     initial_email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
     if not initial_email:
         raise HTTPException(status_code=404, detail="Email draft not found.")
+    initial_lead = db.scalar(select(Lead).where(Lead.id == initial_email.lead_id, Lead.workspace_id == workspace.id)) if initial_email.lead_id else None
+    if _is_production_smoke_test_email(initial_email) or _is_production_smoke_test_lead(initial_lead):
+        _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
+        tags = initial_email.tags if isinstance(initial_email.tags, dict) else {}
+        smoke_test_id = str(tags.get("smoke_test_id") or "").strip()
+        smoke_recipient = str(tags.get("recipient_email") or initial_lead.email or "").strip().lower() if initial_lead else str(tags.get("recipient_email") or "").strip().lower()
+        if not payload or not payload.confirmed_send:
+            raise HTTPException(status_code=409, detail="Final send confirmation is required for production smoke-test email.")
+        if str(payload.smoke_test_id or "") != smoke_test_id:
+            raise HTTPException(status_code=409, detail="Smoke-test ID confirmation does not match this draft.")
+        if str(payload.recipient_email or "").strip().lower() != smoke_recipient:
+            raise HTTPException(status_code=409, detail="Recipient confirmation does not match this smoke-test draft.")
+        if initial_email.campaign_id or (initial_lead and initial_lead.campaign_id):
+            raise HTTPException(status_code=409, detail="Production smoke-test records cannot be attached to campaigns or automations.")
+        db.add(
+            AuditLog(
+                user_id=user.user_id,
+                workspace_id=workspace.id,
+                action="production_smoke_test.send_confirmed",
+                metadata_json={"smoke_test_id": smoke_test_id, "email_id": str(initial_email.id), "recipient_email": smoke_recipient, "user_id": user.user_id},
+            )
+        )
+        db.commit()
     idempotency_key = _email_send_idempotency_key(workspace.id, email_id, _email_approval_version(initial_email))
     email = _claim_approved_email_for_send(db, workspace_id=workspace.id, email_id=email_id, idempotency_key=idempotency_key)
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None

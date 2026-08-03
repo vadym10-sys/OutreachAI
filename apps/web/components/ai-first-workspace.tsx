@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Trash2, UsersRound } from "lucide-react";
 import { AppBadge, AppButton, EmptyStateView, LoadingStateView, SurfaceCard } from "@/components/design-system";
 import { friendlyErrorMessage } from "@/lib/client-api";
-import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand } from "@/lib/ai-first-api";
+import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand, type ProductionEmailSmokeTestResponse } from "@/lib/ai-first-api";
 import type { AiMemoryEntry, AiMemoryExplainResponse, AiMemorySettings, FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
 import type { CrmCompany, Email, Workspace } from "@/lib/types";
 
@@ -56,6 +56,11 @@ function canRecoverEmailForRetry(email: Email) {
   const status = String(email.delivery_status || "").toLowerCase();
   const direction = String(email.direction || "outbound").toLowerCase();
   return direction === "outbound" && status === "send_confirmation_pending" && !email.sent_at;
+}
+
+function isProductionSmokeTestEmail(email: Email) {
+  const tags = email.tags || {};
+  return tags.source === "production_smoke_test" && tags.is_test === true;
 }
 
 function emailSafetyState(email: Email) {
@@ -956,12 +961,18 @@ function EmailsSection() {
   }
 
   async function send(email: Email) {
-    if (!window.confirm("Send this approved email now? OutreachAI will not send automatically.")) return;
+    const smokeTest = isProductionSmokeTestEmail(email);
+    const smokeTestId = String(email.tags?.smoke_test_id || "");
+    const smokeRecipient = String(email.tags?.recipient_email || "");
+    const confirmMessage = smokeTest
+      ? `Final confirmation: send this production smoke-test email only to ${smokeRecipient}? Smoke test ID: ${smokeTestId}`
+      : "Send this approved email now? OutreachAI will not send automatically.";
+    if (!window.confirm(confirmMessage)) return;
     setBusy(`send:${email.id}`);
     setNotice("");
     setActionError("");
     try {
-      const response = await api.sendApprovedEmail(email.id);
+      const response = await api.sendApprovedEmail(email.id, smokeTest ? { confirmed_send: true, smoke_test_id: smokeTestId, recipient_email: smokeRecipient } : undefined);
       setNotice(response.message);
       await load();
     } catch (err) {
@@ -1036,12 +1047,13 @@ function EmailsSection() {
         const sendable = canSendApprovedEmail(email);
         const recoverable = canRecoverEmailForRetry(email);
         const recoveryConfirmed = Boolean(recoverConfirmations[email.id]);
+        const smokeTest = isProductionSmokeTestEmail(email);
         return <SurfaceCard as="article" key={email.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
           <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
             <div>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Editable email draft</p>
+                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{smokeTest ? "Production smoke-test draft" : "Editable email draft"}</p>
                   <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{email.subject || "No subject"}</h2>
                   <p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p>
                 </div>
@@ -1054,6 +1066,10 @@ function EmailsSection() {
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <EvidenceLine label="Recipient" value={relatedCompany?.email || "Recipient not returned by this backend response"} />
                 <EvidenceLine label="Company" value={relatedCompany?.name || "Company not linked in this response"} />
+                {smokeTest ? <EvidenceLine label="Workspace" value={String(email.tags?.workspace_name || relatedCompany?.name || "Current workspace")} /> : null}
+                {smokeTest ? <EvidenceLine label="Sender" value={String(email.tags?.sender_email || "Not returned")} /> : null}
+                {smokeTest ? <EvidenceLine label="Provider" value={providerLabel(String(email.tags?.sender_provider || ""))} /> : null}
+                {smokeTest ? <EvidenceLine label="Smoke test ID" value={String(email.tags?.smoke_test_id || "")} /> : null}
               </div>
               <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
                 {approvedEditable ? <Notice tone="warn">Editing an approved email returns it to draft. Approve it again before Send is enabled.</Notice> : null}
@@ -1264,6 +1280,9 @@ function SettingsSection() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
+  const [smokeRecipient, setSmokeRecipient] = useState("");
+  const [smokeRecipientConfirmed, setSmokeRecipientConfirmed] = useState(false);
+  const [lastSmokeTest, setLastSmokeTest] = useState<ProductionEmailSmokeTestResponse["smoke_test"] | null>(null);
 
   const load = useCallback(async () => {
     if (!api.ready) return;
@@ -1334,6 +1353,47 @@ function SettingsSection() {
     }
   }
 
+  async function createSmokeTest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy("smoke:create");
+    setError("");
+    setNotice("");
+    try {
+      const response = await api.createProductionEmailSmokeTest({
+        recipient_email: smokeRecipient.trim(),
+        confirmed_recipient_control: smokeRecipientConfirmed
+      });
+      setLastSmokeTest(response.smoke_test || null);
+      setNotice(`${response.message} Workspace: ${response.smoke_test?.workspace_name || workspace?.name || "current"}. Sender: ${response.smoke_test?.sender_email || "not returned"} via ${providerLabel(response.smoke_test?.sender_provider)}. Recipient: ${response.smoke_test?.recipient_email || smokeRecipient}.`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not create production email smoke test."));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function cleanupSmokeTest() {
+    if (!lastSmokeTest?.smoke_test_id) {
+      setError("No smoke-test ID is available for cleanup.");
+      return;
+    }
+    if (!window.confirm(`Cleanup production smoke-test records for ${lastSmokeTest.smoke_test_id}?`)) return;
+    setBusy("smoke:cleanup");
+    setError("");
+    setNotice("");
+    try {
+      const response = await api.cleanupProductionEmailSmokeTest(lastSmokeTest.smoke_test_id);
+      setNotice(response.message);
+      setLastSmokeTest(null);
+      setSmokeRecipient("");
+      setSmokeRecipientConfirmed(false);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not cleanup production smoke-test records."));
+    } finally {
+      setBusy("");
+    }
+  }
+
   const gmailReady = gmailOAuthReady(sender);
   const canStartGmailOAuth = gmailOAuthStartReady(sender);
   const currentProvider = providerLabel(sender?.provider);
@@ -1348,6 +1408,37 @@ function SettingsSection() {
         <form onSubmit={save} className="ui-card rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-[var(--ui-text-soft)]">Name<input name="name" defaultValue={workspace?.name || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Company<input name="company" defaultValue={workspace?.company || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Industry<input name="industry" defaultValue={workspace?.industry || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className={fieldClass} /></label></div><AppButton type="submit" size="md" className="mt-4"><CheckCircle2 size={16} /> Save workspace</AppButton></form>
         <div className="grid gap-4"><SurfaceCard className="rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-2xl border border-[var(--ui-border)] p-3 transition hover:border-[var(--ui-border-strong)]"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><AppBadge tone={item.status === "connected" ? "success" : "warning"}>{item.status}</AppBadge></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></SurfaceCard><SurfaceCard className="rounded-[1.75rem] p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><AppBadge tone={gmailReady ? "success" : "warning"}>{gmailReady ? "connected" : "needs OAuth"}</AppBadge></div><div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><AppButton size="sm" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()}><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</AppButton>{gmailReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void disconnectGmail()}>Disconnect</AppButton> : null}<AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void load()} aria-label="Refresh settings"><RefreshCw size={16} /> Refresh</AppButton></div></SurfaceCard></div>
       </section>
+      <SurfaceCard className="rounded-[1.75rem] p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-black text-ink">Production email smoke test</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-600">Owner-only isolated test draft for the current workspace sender.</p>
+          </div>
+          <AppBadge tone="warning">owner only</AppBadge>
+        </div>
+        <form onSubmit={createSmokeTest} className="mt-4 grid gap-3">
+          <label className="text-sm font-bold text-[var(--ui-text-soft)]">
+            Recipient email
+            <input type="email" value={smokeRecipient} onChange={(event) => setSmokeRecipient(event.target.value)} className={fieldClass} placeholder="owner-controlled address" />
+          </label>
+          <label className="flex items-start gap-3 text-sm font-bold text-slate-700">
+            <input type="checkbox" checked={smokeRecipientConfirmed} onChange={(event) => setSmokeRecipientConfirmed(event.target.checked)} className="mt-1 h-4 w-4 rounded border-[var(--ui-border)]" />
+            I control this recipient email and want to create isolated production smoke-test records.
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <AppButton type="submit" size="sm" disabled={Boolean(busy) || !smokeRecipient.trim() || !smokeRecipientConfirmed}>
+              {busy === "smoke:create" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
+              Production email smoke test
+            </AppButton>
+            <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !lastSmokeTest?.smoke_test_id} onClick={() => void cleanupSmokeTest()}>
+              {busy === "smoke:cleanup" ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
+              Cleanup smoke test
+            </AppButton>
+            {lastSmokeTest?.smoke_test_id ? <Link href="/dashboard/emails" className="focus-ring inline-flex min-h-10 items-center rounded-full border border-[var(--ui-border)] bg-white px-3 text-sm font-black text-ink transition hover:border-[var(--ui-brand)]">Open draft</Link> : null}
+          </div>
+        </form>
+        {lastSmokeTest ? <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 sm:grid-cols-2"><EvidenceLine label="Workspace" value={lastSmokeTest.workspace_name} /><EvidenceLine label="Sender" value={lastSmokeTest.sender_email || "Not returned"} /><EvidenceLine label="Provider" value={providerLabel(lastSmokeTest.sender_provider)} /><EvidenceLine label="Recipient" value={lastSmokeTest.recipient_email} /><EvidenceLine label="Smoke test ID" value={lastSmokeTest.smoke_test_id} /></div> : null}
+      </SurfaceCard>
       <section className="grid gap-4 md:grid-cols-3">
         <PremiumPanel><p className="text-sm font-black text-ink">Email safety</p><p className="mt-2 text-sm leading-6 text-slate-600">Manual approval, Pause and Stop remain visible before external sending.</p></PremiumPanel>
         <PremiumPanel><p className="text-sm font-black text-ink">Plan</p><p className="mt-2 text-sm leading-6 text-slate-600">Plan management stays on the existing billing route.</p><Link href="/dashboard/billing" className="focus-ring mt-3 inline-flex min-h-10 items-center rounded-full border border-[var(--ui-border)] bg-white px-3 text-sm font-black text-ink transition hover:border-[var(--ui-brand)]">Open billing</Link></PremiumPanel>
