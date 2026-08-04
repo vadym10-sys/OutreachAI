@@ -1,6 +1,7 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from importlib import metadata as importlib_metadata
 import base64
 import hashlib
 import hmac
@@ -2975,6 +2976,55 @@ def test_ai_memory_feedback_outcome_and_approve_before_send(monkeypatch) -> None
     entries = client.get("/api/workspace-app/ai-memory/entries?memory_type=outcome", headers=headers)
     assert entries.status_code == 200
     assert any("sent" in item["content"].lower() for item in entries.json()["entries"])
+
+
+def test_openai_sdk_is_compatible_with_pinned_httpx_for_ai_memory_embeddings() -> None:
+    from openai import OpenAI
+
+    assert importlib_metadata.version("httpx") == "0.28.1"
+    openai_version = tuple(int(part) for part in importlib_metadata.version("openai").split(".")[:3])
+    assert openai_version >= (1, 55, 3)
+    OpenAI(api_key="sk-test")
+
+
+def test_approve_email_uses_ai_memory_embedding_path_without_openai_httpx_client_error(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-approve-{uuid4()}@example.com"}
+    calls: list[dict[str, Any]] = []
+
+    class FakeEmbeddings:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(data=[SimpleNamespace(embedding=[0.01] * 1536)])
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            calls.append({"client_kwargs": kwargs})
+            self.embeddings = FakeEmbeddings()
+
+    monkeypatch.setattr("app.services.ai_memory.OpenAI", FakeOpenAI)
+    monkeypatch.setattr("app.services.ai_memory._write_pgvector_embedding", lambda db, entry_id, embedding: None)
+    monkeypatch.setattr("app.services.ai_memory._clear_pgvector_embedding", lambda db, entry_id: None)
+    _enable_ai_memory(headers)
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="Memory Approve Embedding Co")
+    service_settings = SimpleNamespace(
+        app_env="production",
+        openai_api_key="openai_test",
+        openai_timeout_seconds=30,
+        openai_embedding_model=get_settings().openai_embedding_model,
+        ai_memory_default_enabled=False,
+        ai_memory_max_items=get_settings().ai_memory_max_items,
+        ai_memory_max_characters=get_settings().ai_memory_max_characters,
+        ai_memory_relevance_threshold=get_settings().ai_memory_relevance_threshold,
+        ai_memory_retention_days=get_settings().ai_memory_retention_days,
+        ai_memory_embeddings_enabled=True,
+    )
+    monkeypatch.setattr("app.services.ai_memory.get_settings", lambda: service_settings)
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
+    assert any(call.get("model") == service_settings.openai_embedding_model for call in calls)
+    assert any("client_kwargs" in call for call in calls)
 
 
 def test_ai_memory_correction_recomputes_keywords_embedding_and_blocks_cross_workspace(monkeypatch) -> None:
