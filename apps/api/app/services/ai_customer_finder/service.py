@@ -185,30 +185,38 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
                 summary={"candidates": len(candidates), "scored": len(verified_signals), "saved": 0, **quality_counts, "warnings": warnings[:10]},
             )
         ranked_signals = _rank_verified_signals(verified_signals)
-        saved = 0
+        persisted = 0
         for signal in ranked_signals[: criteria.max_results]:
             db.refresh(job)
             if job.cancel_requested:
                 _mark_cancelled(db, job, "AI Customer Finder was stopped.", claim_token=claim_token)
                 return True
-            _set_progress(db, job, "enriching", f"Saving top-ranked result for {signal.company_name}.", min(95, 85 + saved * 2), claim_token=claim_token)
+            _set_progress(db, job, "enriching", f"Preparing top-ranked result for {signal.company_name}.", min(95, 85 + persisted * 2), claim_token=claim_token)
             result = _persist_signal(db, job, signal)
-            result_metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
-            if result_metadata.get("result_tier") != "Weak / needs review":
-                _save_signal_to_crm(db, job, result, criteria)
-            saved += 1
+            metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+            result.metadata_json = {
+                **metadata,
+                "authorization": {
+                    **(metadata.get("authorization") if isinstance(metadata.get("authorization"), dict) else {}),
+                    "crm_save_requires_user_action": True,
+                    "outreach_requires_user_action": True,
+                    "search_created_crm_record": False,
+                    "search_sent_message": False,
+                },
+            }
+            persisted += 1
             db.commit()
-        final_status = "completed" if saved > 0 and not warnings else ("partially_completed" if saved > 0 else "failed")
-        message = "AI Customer Finder completed." if final_status == "completed" else ("AI Customer Finder saved partial verified results." if saved else "No verified public-source results were found.")
+        final_status = "completed" if persisted > 0 and not warnings else ("partially_completed" if persisted > 0 else "failed")
+        message = "AI Customer Finder results are ready for review." if persisted else "No verified public-source results were found."
         job.status = final_status
-        job.summary_json = {"saved": saved, "candidates": len(candidates), **quality_counts, "warnings": warnings[:10]}
-        job.progress_json = {"stage": final_status, "message": message, "percent": 100, "warnings": warnings[:10], **quality_counts, "saved": saved, "candidates": len(candidates)}
-        job.error_message = "" if saved else "; ".join(warnings[:3]) or "No verified public-source results were found."
+        job.summary_json = {"results": persisted, "saved": 0, "saved_to_crm": 0, "candidates": len(candidates), **quality_counts, "warnings": warnings[:10]}
+        job.progress_json = {"stage": final_status, "message": message, "percent": 100, "warnings": warnings[:10], **quality_counts, "results": persisted, "saved": 0, "saved_to_crm": 0, "candidates": len(candidates)}
+        job.error_message = "" if persisted else "; ".join(warnings[:3]) or "No verified public-source results were found."
         job.locked_by = ""
         job.locked_at = None
         job.completed_at = datetime.utcnow()
         job.updated_at = datetime.utcnow()
-        db.add(AuditLog(user_id=job.user_id, workspace_id=job.workspace_id, action="ai_customer_finder.completed", metadata_json={"job_id": str(job.id), "status": final_status, "saved": saved}))
+        db.add(AuditLog(user_id=job.user_id, workspace_id=job.workspace_id, action="ai_customer_finder.completed", metadata_json={"job_id": str(job.id), "status": final_status, "results": persisted, "saved_to_crm": 0}))
         db.commit()
         return True
     except Exception as exc:
@@ -1013,7 +1021,7 @@ def _sync_result_email_metadata(result: AICustomerFinderResult, email: EmailMess
             "body": email.body,
             "delivery_status": email.delivery_status,
             "simple_status": simple_status,
-            "can_send": bool(result.public_work_contact and email.delivery_status != "sent"),
+            "can_send": bool(result.public_work_contact and email.delivery_status == "approved"),
         },
     }
 
