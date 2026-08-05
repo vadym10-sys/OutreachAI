@@ -3,11 +3,14 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useUser } from "@clerk/nextjs";
 import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Trash2, UsersRound } from "lucide-react";
 import { AppBadge, AppButton, EmptyStateView, LoadingStateView, SurfaceCard } from "@/components/design-system";
+import { useAuthRuntime } from "@/components/app-providers";
 import { friendlyErrorMessage } from "@/lib/client-api";
 import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand, type ProductionEmailSmokeTestResponse } from "@/lib/ai-first-api";
 import type { AiMemoryEntry, AiMemoryExplainResponse, AiMemorySettings, FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
+import { e2eUserEmail, ownerEmail } from "@/lib/env";
 import type { CrmCompany, Email, Workspace } from "@/lib/types";
 
 type Section = "assistant" | "clients" | "emails" | "settings";
@@ -32,6 +35,9 @@ const aiWorkflowLabels = ["Анализируем ваш бизнес", "Ище�
 const crmStatuses = ["New", "Qualified", "Draft ready", "Approved", "Sent", "Replied", "Meeting", "Not interested"];
 const fieldClass = "focus-ring mt-2 min-h-11 w-full rounded-xl border border-[var(--ui-border)] bg-white px-3 text-sm text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]";
 const detailSummaryClass = "flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-2xl px-4 py-3 text-sm font-black text-[var(--ui-text)] transition hover:bg-slate-100";
+const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
+  && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
+  && (process.env.NEXT_PUBLIC_API_URL === "http://127.0.0.1:8000" || process.env.NEXT_PUBLIC_API_URL === "http://localhost:8000");
 
 function pretty(value: string) {
   const text = value.replace(/_/g, " ");
@@ -94,6 +100,36 @@ function formatDateTime(value?: string) {
   if (!value) return "Not connected";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function currentE2EUserEmail() {
+  try {
+    if (typeof window === "undefined") return e2eUserEmail;
+    return window.localStorage.getItem("outreachai.e2eUserEmail") || e2eUserEmail;
+  } catch {
+    return e2eUserEmail;
+  }
+}
+
+function useIsSystemOwner() {
+  const { clerkEnabled } = useAuthRuntime();
+  const [testEmail, setTestEmail] = useState(e2eUserEmail);
+
+  useEffect(() => {
+    if (!qaAuthEnabled && clerkEnabled) return;
+    const timer = window.setTimeout(() => setTestEmail(currentE2EUserEmail()), 0);
+    return () => window.clearTimeout(timer);
+  }, [clerkEnabled]);
+
+  if (!clerkEnabled || qaAuthEnabled) {
+    return testEmail.trim().toLowerCase() === ownerEmail;
+  }
+
+  // The no-Clerk branch is required for local/E2E builds where ClerkProvider is intentionally not mounted.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const { user } = useUser();
+  const currentEmail = user?.primaryEmailAddress?.emailAddress || user?.emailAddresses?.[0]?.emailAddress || "";
+  return currentEmail.trim().toLowerCase() === ownerEmail;
 }
 
 function isWebsiteInput(value: string) {
@@ -1305,6 +1341,7 @@ function AiFirstMemoryPanel() {
 
 function SettingsSection() {
   const api = useAiFirstApi();
+  const isSystemOwner = useIsSystemOwner();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [integrations, setIntegrations] = useState<WorkspaceIntegrationStatus[]>([]);
   const [sender, setSender] = useState<OutreachSenderStatus | null>(null);
@@ -1320,18 +1357,23 @@ function SettingsSection() {
     if (!api.ready) return;
     setLoading(true);
     try {
-      const [nextWorkspace, nextIntegrations, nextSender, activeSmokeTest] = await Promise.all([api.getWorkspace(), api.integrations(), api.senderStatus(), api.getActiveProductionEmailSmokeTest()]);
+      const [nextWorkspace, nextIntegrations, nextSender, activeSmokeTest] = await Promise.all([
+        api.getWorkspace(),
+        api.integrations(),
+        api.senderStatus(),
+        isSystemOwner ? api.getActiveProductionEmailSmokeTest() : Promise.resolve<ProductionEmailSmokeTestResponse | null>(null)
+      ]);
       setWorkspace(nextWorkspace);
       setIntegrations(nextIntegrations.integrations);
       setSender(nextSender);
-      setLastSmokeTest(activeSmokeTest.smoke_test || null);
+      setLastSmokeTest(activeSmokeTest?.smoke_test || null);
       setError("");
     } catch (err) {
       setError(friendlyErrorMessage(err, "Could not load settings."));
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [api, isSystemOwner]);
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
@@ -1446,7 +1488,7 @@ function SettingsSection() {
         <form onSubmit={save} className="ui-card rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-[var(--ui-text-soft)]">Name<input name="name" defaultValue={workspace?.name || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Company<input name="company" defaultValue={workspace?.company || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Industry<input name="industry" defaultValue={workspace?.industry || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className={fieldClass} /></label></div><AppButton type="submit" size="md" className="mt-4"><CheckCircle2 size={16} /> Save workspace</AppButton></form>
         <div className="grid gap-4"><SurfaceCard className="rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-2xl border border-[var(--ui-border)] p-3 transition hover:border-[var(--ui-border-strong)]"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><AppBadge tone={item.status === "connected" ? "success" : "warning"}>{item.status}</AppBadge></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></SurfaceCard><SurfaceCard className="rounded-[1.75rem] p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><AppBadge tone={gmailReady ? "success" : "warning"}>{gmailReady ? "connected" : "needs OAuth"}</AppBadge></div><div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><AppButton size="sm" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()}><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</AppButton>{gmailReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void disconnectGmail()}>Disconnect</AppButton> : null}<AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void load()} aria-label="Refresh settings"><RefreshCw size={16} /> Refresh</AppButton></div></SurfaceCard></div>
       </section>
-      <SurfaceCard className="rounded-[1.75rem] p-5">
+      {isSystemOwner ? <SurfaceCard className="rounded-[1.75rem] p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 className="text-lg font-black text-ink">Production email smoke test</h2>
@@ -1476,7 +1518,7 @@ function SettingsSection() {
           </div>
         </form>
         {lastSmokeTest ? <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 sm:grid-cols-2"><EvidenceLine label="Workspace" value={lastSmokeTest.workspace_name} /><EvidenceLine label="Sender" value={lastSmokeTest.sender_email || "Not returned"} /><EvidenceLine label="Provider" value={providerLabel(lastSmokeTest.sender_provider)} /><EvidenceLine label="Recipient" value={lastSmokeTest.recipient_email} /><EvidenceLine label="Smoke test ID" value={lastSmokeTest.smoke_test_id} /></div> : null}
-      </SurfaceCard>
+      </SurfaceCard> : null}
       <section className="grid gap-4 md:grid-cols-3">
         <PremiumPanel><p className="text-sm font-black text-ink">Email safety</p><p className="mt-2 text-sm leading-6 text-slate-600">Manual approval, Pause and Stop remain visible before external sending.</p></PremiumPanel>
         <PremiumPanel><p className="text-sm font-black text-ink">Plan</p><p className="mt-2 text-sm leading-6 text-slate-600">Plan management stays on the existing billing route.</p><Link href="/dashboard/billing" className="focus-ring mt-3 inline-flex min-h-10 items-center rounded-full border border-[var(--ui-border)] bg-white px-3 text-sm font-black text-ink transition hover:border-[var(--ui-brand)]">Open billing</Link></PremiumPanel>

@@ -154,7 +154,24 @@ test("email recovery requires mailbox confirmation and does not resend automatic
   await expect(page.getByRole("button", { name: "Send" })).toBeEnabled();
 });
 
+test("ordinary workspace owner cannot see production email smoke-test UI", async ({ page }) => {
+  let activeSmokeRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "GET" && request.url().includes("/api/workspace-app/production-email-smoke-test/active")) {
+      activeSmokeRequests += 1;
+    }
+  });
+
+  await page.goto("/dashboard/settings");
+  await expect(page.getByRole("heading", { name: "Production email smoke test" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Production email smoke test" })).toHaveCount(0);
+  expect(activeSmokeRequests).toBe(0);
+});
+
 test("owner production email smoke-test UI stops before final send", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("outreachai.e2eUserEmail", "romaniukvadym10@gmail.com");
+  });
   let smokeSendRequests = 0;
   page.on("request", (request) => {
     if (request.method() === "POST" && request.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/send")) {
@@ -226,6 +243,9 @@ test("owner production email smoke-test UI stops before final send", async ({ pa
 });
 
 test("owner production email smoke-test route-missing error is explicit", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("outreachai.e2eUserEmail", "romaniukvadym10@gmail.com");
+  });
   await page.unroute("**/api/**");
   await mockWorkspaceApi(page, {
     "POST /api/workspace-app/production-email-smoke-test": {

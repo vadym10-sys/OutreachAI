@@ -5016,9 +5016,30 @@ def test_workspace_app_email_workspace_isolation_for_approve_send_patch_and_reco
         assert saved_email.delivery_status == "sending"
 
 
+def test_workspace_owner_cannot_run_system_production_email_smoke_test() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"workspace-owner-{uuid4()}@example.com"}
+
+    active = client.get("/api/workspace-app/production-email-smoke-test/active", headers=headers)
+    assert active.status_code == 403
+
+    created = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@smoke-safety-mail.com", "confirmed_recipient_control": True},
+    )
+    assert created.status_code == 403
+
+    cleanup = client.post(
+        "/api/workspace-app/production-email-smoke-test/cleanup",
+        headers=headers,
+        json={"smoke_test_id": str(uuid4())},
+    )
+    assert cleanup.status_code == 403
+
+
 def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> None:
-    owner_email = f"smoke-owner-{uuid4()}@example.com"
-    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": owner_email}
+    headers = OWNER_AUTH
+    owner_email = OWNER_AUTH["X-Test-User-Email"]
     sender_setup = client.put(
         "/api/outreach/sender",
         headers=headers,
@@ -5178,7 +5199,7 @@ def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> 
         headers={"Authorization": "Bearer dev", "X-Test-User-Email": f"other-cleanup-{uuid4()}@example.com"},
         json={"smoke_test_id": smoke_test_id},
     )
-    assert other_workspace_cleanup.status_code == 404
+    assert other_workspace_cleanup.status_code == 403
 
     cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
     assert cleanup.status_code == 200
@@ -5205,8 +5226,7 @@ def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> 
 
 
 def test_workspace_app_smoke_send_obeys_outbound_provider_kill_switch(monkeypatch) -> None:
-    owner_email = f"smoke-guard-owner-{uuid4()}@example.com"
-    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": owner_email}
+    headers = OWNER_AUTH
     sender_setup = client.put(
         "/api/outreach/sender",
         headers=headers,
@@ -5262,8 +5282,8 @@ def test_workspace_app_smoke_send_obeys_outbound_provider_kill_switch(monkeypatc
 
 
 def test_workspace_app_production_email_smoke_test_reload_recovery_and_idempotent_cleanup(monkeypatch) -> None:
-    owner_email = f"smoke-reload-owner-{uuid4()}@example.com"
-    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": owner_email}
+    owner_email = OWNER_AUTH["X-Test-User-Email"]
+    headers = OWNER_AUTH
     client.put(
         "/api/outreach/sender",
         headers=headers,
@@ -5306,7 +5326,8 @@ def test_workspace_app_production_email_smoke_test_reload_recovery_and_idempoten
 
     active_after_cleanup = client.get("/api/workspace-app/production-email-smoke-test/active", headers=headers)
     assert active_after_cleanup.status_code == 200
-    assert active_after_cleanup.json()["smoke_test"] is None
+    active_after_cleanup_context = active_after_cleanup.json()["smoke_test"]
+    assert active_after_cleanup_context is None or active_after_cleanup_context["smoke_test_id"] != smoke_test_id
 
     repeated = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
     assert repeated.status_code == 200
@@ -5319,8 +5340,7 @@ def test_workspace_app_production_email_smoke_test_reload_recovery_and_idempoten
 
 
 def test_workspace_app_production_email_smoke_test_recovers_orphan_lead_without_deleting_real_company(monkeypatch) -> None:
-    owner_email = f"smoke-orphan-owner-{uuid4()}@example.com"
-    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": owner_email}
+    headers = OWNER_AUTH
     client.put(
         "/api/outreach/sender",
         headers=headers,
