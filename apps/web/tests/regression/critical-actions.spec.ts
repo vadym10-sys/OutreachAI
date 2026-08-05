@@ -22,6 +22,8 @@ test("AI assistant runs First Customer Finder and shows source-backed companies"
   await expect(page.getByText("Strong match")).toBeVisible();
   await expect(page.getByText("Confirmed buying signals")).toBeVisible();
   await expect(page.getByRole("button", { name: "Сохранить в CRM EuroScale CRM Co" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve draft for EuroScale CRM Co" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Send email for EuroScale CRM Co" })).toBeDisabled();
 });
 
 test("AI-first flow saves a company to CRM and leaves draft approval manual", async ({ page }, testInfo) => {
