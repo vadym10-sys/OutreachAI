@@ -67,7 +67,7 @@ from app.services.emailer import EmailProviderRequestError, EmailProviderSending
 from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
 from app.services.autopilot import process_autopilot_email_job  # noqa: E402
 from app.services.secret_box import encrypt_secret  # noqa: E402
-from app.services.ai_memory import MODE_KEYWORD, MODE_OPENAI_EMBEDDING, _pgvector_retrieval_sql, record_email_memory, retrieve_memory, upsert_memory_entry  # noqa: E402
+from app.services.ai_memory import MODE_KEYWORD, MODE_OPENAI_EMBEDDING, _openai_embedding, _pgvector_retrieval_sql, record_email_memory, retrieve_memory, upsert_memory_entry  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteTemporaryUnavailableError, WebsiteValidationError, collect_website, normalize_website_url  # noqa: E402
 import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
@@ -3028,8 +3028,212 @@ def test_openai_sdk_is_compatible_with_pinned_httpx_for_ai_memory_embeddings() -
 
     assert importlib_metadata.version("httpx") == "0.28.1"
     openai_version = tuple(int(part) for part in importlib_metadata.version("openai").split(".")[:3])
-    assert openai_version >= (1, 55, 3)
+    assert openai_version == (2, 52, 0)
     OpenAI(api_key="sk-test")
+
+
+def _openai_mock_client(handler, *, max_retries: int = 0):
+    from openai import OpenAI
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    return OpenAI(
+        api_key="sk-test",
+        base_url="https://openai.test/v1",
+        http_client=http_client,
+        max_retries=max_retries,
+    )
+
+
+def _embedding_response(request: httpx.Request, embedding: Optional[list[float]] = None) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "object": "list",
+            "data": [{"object": "embedding", "index": 0, "embedding": embedding or [0.01] * 1536}],
+            "model": "text-embedding-3-small",
+            "usage": {"prompt_tokens": 1, "total_tokens": 1},
+        },
+        request=request,
+    )
+
+
+def test_openai_chat_completion_and_embedding_response_parsing_with_mock_transport() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/chat/completions"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-test",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"ok": true}'}, "finish_reason": "stop"}],
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/embeddings"):
+            return _embedding_response(request, [0.02] * 1536)
+        return httpx.Response(404, request=request)
+
+    sdk = _openai_mock_client(handler)
+    chat = sdk.chat.completions.create(model="gpt-test", messages=[{"role": "user", "content": "Return JSON."}])
+    embedding = sdk.embeddings.create(model="text-embedding-3-small", input="hello")
+
+    assert chat.choices[0].message.content == '{"ok": true}'
+    assert embedding.data[0].embedding[:3] == [0.02, 0.02, 0.02]
+    sdk.close()
+
+
+def test_openai_empty_embeddings_response_parsing_with_mock_transport() -> None:
+    sdk = _openai_mock_client(lambda request: httpx.Response(200, json={"object": "list", "data": [], "model": "text-embedding-3-small"}, request=request))
+
+    with pytest.raises(ValueError, match="No embedding data received"):
+        sdk.embeddings.create(model="text-embedding-3-small", input="empty")
+
+    sdk.close()
+
+
+def test_ai_memory_empty_embeddings_response_falls_back_without_error(monkeypatch) -> None:
+    sdk = _openai_mock_client(lambda request: httpx.Response(200, json={"object": "list", "data": [], "model": "text-embedding-3-small"}, request=request))
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = sdk.embeddings
+
+    service_settings = SimpleNamespace(
+        app_env="production",
+        openai_api_key="openai_test",
+        openai_timeout_seconds=30,
+        openai_embedding_model=get_settings().openai_embedding_model,
+    )
+    monkeypatch.setattr("app.services.ai_memory.get_settings", lambda: service_settings)
+    monkeypatch.setattr("app.services.ai_memory.OpenAI", FakeOpenAI)
+
+    assert _openai_embedding("empty provider response") == []
+    sdk.close()
+
+
+@pytest.mark.parametrize("status_code", [429, 500])
+def test_openai_sdk_http_errors_do_not_return_embeddings(status_code: int, monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"error": {"message": "temporary", "type": "server_error"}}, request=request)
+
+    sdk = _openai_mock_client(handler, max_retries=0)
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = sdk.embeddings
+
+    service_settings = SimpleNamespace(
+        app_env="production",
+        openai_api_key="openai_test",
+        openai_timeout_seconds=30,
+        openai_embedding_model=get_settings().openai_embedding_model,
+    )
+    monkeypatch.setattr("app.services.ai_memory.get_settings", lambda: service_settings)
+    monkeypatch.setattr("app.services.ai_memory.OpenAI", FakeOpenAI)
+
+    assert _openai_embedding("temporary provider error") == []
+    sdk.close()
+
+
+def test_openai_sdk_connection_timeout_does_not_return_embeddings(monkeypatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connect timed out", request=request)
+
+    sdk = _openai_mock_client(handler, max_retries=0)
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = sdk.embeddings
+
+    service_settings = SimpleNamespace(
+        app_env="production",
+        openai_api_key="openai_test",
+        openai_timeout_seconds=30,
+        openai_embedding_model=get_settings().openai_embedding_model,
+    )
+    monkeypatch.setattr("app.services.ai_memory.get_settings", lambda: service_settings)
+    monkeypatch.setattr("app.services.ai_memory.OpenAI", FakeOpenAI)
+
+    assert _openai_embedding("timeout") == []
+    sdk.close()
+
+
+def test_openai_retry_after_120_is_not_slept_when_max_retries_zero(monkeypatch) -> None:
+    from openai import OpenAIError
+    import openai._base_client as openai_base_client
+
+    attempts = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(429, headers={"retry-after": "120"}, json={"error": {"message": "rate limited", "type": "rate_limit_error"}}, request=request)
+
+    monkeypatch.setattr(openai_base_client.time, "sleep", lambda seconds: sleeps.append(seconds))
+    sdk = _openai_mock_client(handler, max_retries=0)
+
+    with pytest.raises(OpenAIError):
+        sdk.embeddings.create(model="text-embedding-3-small", input="retry")
+
+    assert attempts == 1
+    assert sleeps == []
+    sdk.close()
+
+
+def test_openai_retry_after_120_is_observed_with_max_retries_one_without_real_sleep(monkeypatch) -> None:
+    import openai._base_client as openai_base_client
+
+    attempts = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, headers={"retry-after": "120"}, json={"error": {"message": "rate limited", "type": "rate_limit_error"}}, request=request)
+        return _embedding_response(request, [0.03] * 1536)
+
+    monkeypatch.setattr(openai_base_client.time, "sleep", lambda seconds: sleeps.append(seconds))
+    sdk = _openai_mock_client(handler, max_retries=1)
+
+    response = sdk.embeddings.create(model="text-embedding-3-small", input="retry")
+
+    assert attempts == 2
+    assert sleeps == [120]
+    assert response.data[0].embedding[:3] == [0.03, 0.03, 0.03]
+    sdk.close()
+
+
+def test_ai_memory_embedding_client_uses_bounded_no_retry_policy(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeEmbeddings:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(data=[SimpleNamespace(embedding=[0.01] * 1536)])
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            calls.append({"client_kwargs": kwargs})
+            self.embeddings = FakeEmbeddings()
+
+    service_settings = SimpleNamespace(
+        app_env="production",
+        openai_api_key="openai_test",
+        openai_timeout_seconds=120,
+        openai_embedding_model=get_settings().openai_embedding_model,
+    )
+    monkeypatch.setattr("app.services.ai_memory.get_settings", lambda: service_settings)
+    monkeypatch.setattr("app.services.ai_memory.OpenAI", FakeOpenAI)
+
+    assert _openai_embedding("bounded") == [0.01] * 1536
+    client_kwargs = next(call["client_kwargs"] for call in calls if "client_kwargs" in call)
+    assert client_kwargs["max_retries"] == 0
+    assert client_kwargs["timeout"].read == 8.0
+    assert client_kwargs["timeout"].connect == 3.0
 
 
 def test_approve_email_uses_ai_memory_embedding_path_without_openai_httpx_client_error(monkeypatch) -> None:
@@ -3070,6 +3274,46 @@ def test_approve_email_uses_ai_memory_embedding_path_without_openai_httpx_client
     assert approved.json()["email"]["delivery_status"] == "approved"
     assert any(call.get("model") == service_settings.openai_embedding_model for call in calls)
     assert any("client_kwargs" in call for call in calls)
+
+
+def test_approve_email_embedding_failure_is_safe_and_does_not_duplicate_memory(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"memory-approve-failure-{uuid4()}@example.com"}
+
+    class FailingEmbeddings:
+        def create(self, **kwargs):
+            raise httpx.ConnectTimeout("embedding provider timeout")
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = FailingEmbeddings()
+
+    monkeypatch.setattr("app.services.ai_memory.OpenAI", FakeOpenAI)
+    _enable_ai_memory(headers)
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="Memory Approve Failure Co")
+    service_settings = SimpleNamespace(
+        app_env="production",
+        openai_api_key="openai_test",
+        openai_timeout_seconds=120,
+        openai_embedding_model=get_settings().openai_embedding_model,
+        ai_memory_default_enabled=False,
+        ai_memory_max_items=get_settings().ai_memory_max_items,
+        ai_memory_max_characters=get_settings().ai_memory_max_characters,
+        ai_memory_relevance_threshold=get_settings().ai_memory_relevance_threshold,
+        ai_memory_retention_days=get_settings().ai_memory_retention_days,
+        ai_memory_embeddings_enabled=True,
+    )
+    monkeypatch.setattr("app.services.ai_memory.get_settings", lambda: service_settings)
+
+    first = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+    second = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    with get_sessionmaker()() as db:
+        rows = db.scalars(select(AIMemoryEntry).where(AIMemoryEntry.email_id == UUID(email["id"]), AIMemoryEntry.source == "email.approved")).all()
+        assert len(rows) == 1
+        assert rows[0].embedding_json == []
+        assert rows[0].embedding_status == "provider_unavailable"
 
 
 def test_ai_memory_correction_recomputes_keywords_embedding_and_blocks_cross_workspace(monkeypatch) -> None:

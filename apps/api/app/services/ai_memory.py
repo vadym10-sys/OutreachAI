@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+import httpx
 from openai import OpenAI, OpenAIError
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,6 +21,8 @@ MEMORY_TYPES = {item.value for item in AIMemoryType}
 TRUSTED_MEMORY_TYPES = {AIMemoryType.verified_fact.value, AIMemoryType.approved_preference.value}
 OUTCOME_TYPES = {"sent", "delivered", "open", "click", "reply", "meeting", "rejection", "unsubscribe", "bounce", "complaint"}
 OPENAI_EMBEDDING_DIMENSIONS = 1536
+OPENAI_EMBEDDING_TIMEOUT_SECONDS = 8.0
+OPENAI_EMBEDDING_CONNECT_TIMEOUT_SECONDS = 3.0
 MODE_PGVECTOR = "pgvector"
 MODE_OPENAI_EMBEDDING = "openai_embedding"
 MODE_KEYWORD = "keyword"
@@ -85,16 +88,29 @@ def _openai_embedding(value: str) -> list[float]:
     if not settings.openai_api_key or settings.app_env == "development":
         return []
     try:
-        response = OpenAI(api_key=settings.openai_api_key, timeout=settings.openai_timeout_seconds, max_retries=1).embeddings.create(
+        response = _openai_embedding_client(settings).embeddings.create(
             model=settings.openai_embedding_model,
             input=value[:6000],
         )
-    except OpenAIError:
+        vector = response.data[0].embedding if response.data else []
+    except (OpenAIError, httpx.HTTPError, IndexError, AttributeError, TypeError, ValueError):
         return []
-    vector = response.data[0].embedding if response.data else []
     if len(vector) < OPENAI_EMBEDDING_DIMENSIONS:
         return []
     return [float(item) for item in vector[:OPENAI_EMBEDDING_DIMENSIONS]]
+
+
+def _openai_embedding_client(settings: Any) -> OpenAI:
+    configured_timeout = float(getattr(settings, "openai_timeout_seconds", 0) or OPENAI_EMBEDDING_TIMEOUT_SECONDS)
+    request_timeout = max(0.1, min(configured_timeout, OPENAI_EMBEDDING_TIMEOUT_SECONDS))
+    connect_timeout = max(0.1, min(request_timeout, OPENAI_EMBEDDING_CONNECT_TIMEOUT_SECONDS))
+    # Approve-email records AI Memory synchronously. OpenAI SDK 2.52.0 honors Retry-After
+    # up to 120s, so embeddings use a bounded no-retry client and fall back to keywords.
+    return OpenAI(
+        api_key=settings.openai_api_key,
+        timeout=httpx.Timeout(request_timeout, connect=connect_timeout),
+        max_retries=0,
+    )
 
 
 def _embedding_literal(embedding: list[float]) -> str:
