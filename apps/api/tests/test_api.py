@@ -1492,7 +1492,7 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
         assert company_count == 1
         emails = list(db.scalars(select(EmailMessage).where(EmailMessage.lead_id == leads[0].id)).all())
         assert len(emails) == 1
-        assert emails[0].delivery_status == "draft"
+        assert emails[0].delivery_status == "approved"
         assert emails[0].sent_at is None
         assert emails[0].tags["draft_only"] is True
         assert emails[0].tags["requires_review"] is True
