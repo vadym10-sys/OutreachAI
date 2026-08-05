@@ -807,7 +807,7 @@ def test_deep_contact_search_endpoint_saves_verified_decision_maker(monkeypatch)
     assert "Next.js" in job_payload["company"]["technologies"]
 
 
-def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch) -> None:
+def test_ai_customer_finder_search_requires_manual_crm_save(monkeypatch) -> None:
     import app.services.ai_customer_finder.service as finder_service
     from app.services.ai_customer_finder.schemas import PublicCustomerCandidate
 
@@ -876,9 +876,12 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert payload["results"][0]["company_name"] == "Verified Finder Co"
     assert payload["results"][0]["source_url"] == "https://verified-finder.example"
     assert payload["results"][0]["verified_status"] == "verified"
-    assert payload["results"][0]["company_id"]
+    assert payload["results"][0]["company_id"] == ""
+    assert payload["results"][0]["lead_id"] == ""
     assert payload["summary"]["verified"] == 1
     assert payload["summary"]["rejected"] == 0
+    assert payload["summary"]["saved"] == 0
+    assert payload["summary"]["saved_to_crm"] == 0
     assert payload["results"][0]["canonical_source_url"] == "https://verified-finder.example"
     assert payload["results"][0]["publication_date"] == "Unknown"
     assert payload["results"][0]["observed_fact"]
@@ -897,13 +900,33 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
     assert payload["results"][0]["first_line_opener"]
     assert payload["results"][0]["draft_email"]
     assert payload["results"][0]["public_work_contact"] == "sales@verified-finder.example"
-    assert payload["results"][0]["simple_status"] == "Письмо подготовлено"
-    assert payload["results"][0]["email_id"]
+    assert payload["results"][0]["simple_status"] == ""
+    assert payload["results"][0]["email_id"] == ""
     assert payload["results"][0]["email_subject"] == "Quick idea for Verified Finder Co"
     assert payload["results"][0]["email_body"]
-    assert payload["results"][0]["email_delivery_status"] == "draft"
-    assert payload["results"][0]["can_send"] is True
+    assert payload["results"][0]["email_delivery_status"] == ""
+    assert payload["results"][0]["can_send"] is False
     assert "Draft only" in payload["results"][0]["draft_email"]
+
+    crm = client.get("/api/workspace-app/companies?search=Verified%20Finder", headers=headers)
+    assert crm.status_code == 200, crm.text
+    assert crm.json() == []
+    db = get_sessionmaker()()
+    try:
+        assert db.scalar(select(func.count()).select_from(Lead).where(Lead.email == "sales@verified-finder.example")) == 0
+        assert db.scalar(select(func.count()).select_from(Company).where(Company.website == "https://verified-finder.example")) == 0
+        assert db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["result_id"].as_string() == payload["results"][0]["id"])) == 0
+    finally:
+        db.close()
+
+    save = client.post(f"/api/workspace-app/leads/first-customers/results/{payload['results'][0]['id']}/save", headers=headers)
+    assert save.status_code == 200, save.text
+    saved = save.json()["result"]
+    assert saved["company_id"]
+    assert saved["lead_id"]
+    assert saved["email_id"]
+    assert saved["email_delivery_status"] == "draft"
+    assert saved["can_send"] is False
 
     crm = client.get("/api/workspace-app/companies?search=Verified%20Finder", headers=headers)
     assert crm.status_code == 200, crm.text
@@ -921,9 +944,9 @@ def test_ai_customer_finder_job_saves_verified_public_results_to_crm(monkeypatch
         assert metadata["simple_customer_finder"]["simple_status"] == "Письмо подготовлено"
         assert metadata["simple_customer_finder"]["ai_research_profile"]["Company Summary"]["value"] != "Недостаточно данных."
         assert metadata["simple_customer_finder"]["outreach_strategy"]["should_contact_now"] is True
-        assert metadata["ai_research_profile"]["Overall Lead Score"]["score"] == payload["results"][0]["overall_lead_score"]
+        assert metadata["ai_research_profile"]["Overall Lead Score"]["score"] == saved["overall_lead_score"]
         assert metadata["outreach_strategy"]["recommended_channel"] == "Email"
-        email = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == UUID(payload["results"][0]["lead_id"])))
+        email = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == UUID(saved["lead_id"])))
         assert email is not None
         assert email.delivery_status == "draft"
         assert email.tags["draft_only"] is True
@@ -3042,9 +3065,29 @@ def test_openai_chat_completion_and_embedding_response_parsing_with_mock_transpo
 def test_openai_empty_embeddings_response_parsing_with_mock_transport() -> None:
     sdk = _openai_mock_client(lambda request: httpx.Response(200, json={"object": "list", "data": [], "model": "text-embedding-3-small"}, request=request))
 
-    response = sdk.embeddings.create(model="text-embedding-3-small", input="empty")
+    with pytest.raises(ValueError, match="No embedding data received"):
+        sdk.embeddings.create(model="text-embedding-3-small", input="empty")
 
-    assert response.data == []
+    sdk.close()
+
+
+def test_ai_memory_empty_embeddings_response_falls_back_without_error(monkeypatch) -> None:
+    sdk = _openai_mock_client(lambda request: httpx.Response(200, json={"object": "list", "data": [], "model": "text-embedding-3-small"}, request=request))
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = sdk.embeddings
+
+    service_settings = SimpleNamespace(
+        app_env="production",
+        openai_api_key="openai_test",
+        openai_timeout_seconds=30,
+        openai_embedding_model=get_settings().openai_embedding_model,
+    )
+    monkeypatch.setattr("app.services.ai_memory.get_settings", lambda: service_settings)
+    monkeypatch.setattr("app.services.ai_memory.OpenAI", FakeOpenAI)
+
+    assert _openai_embedding("empty provider response") == []
     sdk.close()
 
 
