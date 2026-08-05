@@ -902,7 +902,7 @@ def test_ai_customer_finder_search_requires_manual_crm_save(monkeypatch) -> None
     assert payload["results"][0]["public_work_contact"] == "sales@verified-finder.example"
     assert payload["results"][0]["simple_status"] == ""
     assert payload["results"][0]["email_id"] == ""
-    assert payload["results"][0]["email_subject"] == "Quick idea for Verified Finder Co"
+    assert payload["results"][0]["email_subject"] == ""
     assert payload["results"][0]["email_body"]
     assert payload["results"][0]["email_delivery_status"] == ""
     assert payload["results"][0]["can_send"] is False
@@ -1039,7 +1039,9 @@ def test_ai_customer_finder_job_ranks_by_outreach_success_probability(monkeypatc
     assert len(payload["results"]) == 1
     assert payload["results"][0]["company_name"] == "Later Strong Co"
     assert payload["results"][0]["lead_intelligence"]["components"]["company_momentum"] > 0
-    assert payload["summary"]["saved"] == 1
+    assert payload["summary"]["results"] == 1
+    assert payload["summary"]["saved"] == 0
+    assert payload["summary"]["saved_to_crm"] == 0
 
 
 def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monkeypatch) -> None:
@@ -1103,7 +1105,9 @@ def test_ai_customer_finder_partial_provider_failure_keeps_verified_results(monk
     assert len(payload["results"]) == 1
     assert payload["results"][0]["company_name"] == "Partial Good Co"
     assert payload["summary"]["unknown"] == 1
-    assert payload["summary"]["saved"] == 1
+    assert payload["summary"]["results"] == 1
+    assert payload["summary"]["saved"] == 0
+    assert payload["summary"]["saved_to_crm"] == 0
 
 
 def test_ai_customer_finder_retains_relevant_candidate_without_buying_signal(monkeypatch) -> None:
@@ -1285,6 +1289,11 @@ def test_ai_customer_finder_repeat_search_deduplicates_company_lead_and_draft(mo
         finally:
             db.close()
         assert process_ai_customer_finder_job(UUID(job_id), claim_token=claim_token) is True
+        refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
+        assert refreshed.status_code == 200, refreshed.text
+        result_id = refreshed.json()["results"][0]["id"]
+        saved = client.post(f"/api/workspace-app/leads/first-customers/results/{result_id}/save", headers=headers)
+        assert saved.status_code == 200, saved.text
 
     job_id = job_ids[-1]
     refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
@@ -1359,6 +1368,11 @@ def test_ai_customer_finder_draft_action_keeps_email_unsent(monkeypatch) -> None
 
     refreshed = client.get(f"/api/workspace-app/ai-customer-finder/searches/{job_id}", headers=headers)
     result = refreshed.json()["results"][0]
+    blocked = client.post(f"/api/workspace-app/ai-customer-finder/results/{result['id']}/draft", headers=headers)
+    assert blocked.status_code == 409, blocked.text
+
+    save = client.post(f"/api/workspace-app/leads/first-customers/results/{result['id']}/save", headers=headers)
+    assert save.status_code == 200, save.text
     action = client.post(f"/api/workspace-app/ai-customer-finder/results/{result['id']}/draft", headers=headers)
     assert action.status_code == 200, action.text
     payload = action.json()
@@ -1457,7 +1471,15 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
     assert saved["company_id"]
     assert saved["lead_id"]
     assert saved["email_delivery_status"] == "draft"
-    assert saved["can_send"] is True
+    assert saved["can_send"] is False
+
+    approved = client.post(f"/api/workspace-app/emails/{saved['email_id']}/approve", headers=headers)
+    assert approved.status_code == 200, approved.text
+    refreshed_after_approve = client.get(f"/api/workspace-app/ai-customer-finder/searches/{payload['id']}", headers=headers)
+    assert refreshed_after_approve.status_code == 200, refreshed_after_approve.text
+    approved_result = refreshed_after_approve.json()["results"][0]
+    assert approved_result["email_delivery_status"] == "approved"
+    assert approved_result["can_send"] is True
 
     duplicate_save = client.post(f"/api/workspace-app/leads/first-customers/results/{result['id']}/save", headers=headers)
     assert duplicate_save.status_code == 200, duplicate_save.text

@@ -47,7 +47,7 @@ from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker, validate_runtime_schema
 from app.core.observability import capture_provider_exception
 from app.core.security import WorkspaceUserContext, require_owner
-from app.models.entities import AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole
+from app.models.entities import AICustomerFinderResult, AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole
 from app.schemas.dto import CrmCompanyOut, EmailOut, EmailUpdate, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
 from app.services.ai_memory import (
@@ -9201,6 +9201,46 @@ def cancel_company_auto_enrichment(company_id: UUID, request: Request, user: Wor
     )
 
 
+def _sync_ai_customer_finder_result_email_state(db: Session, email: EmailMessage) -> None:
+    tags = email.tags if isinstance(email.tags, dict) else {}
+    if tags.get("source") != "ai_customer_finder":
+        return
+    result_id = str(tags.get("result_id") or "")
+    if not result_id:
+        return
+    try:
+        parsed_result_id = UUID(result_id)
+    except ValueError:
+        return
+    result = db.scalar(
+        select(AICustomerFinderResult).where(
+            AICustomerFinderResult.id == parsed_result_id,
+            AICustomerFinderResult.workspace_id == email.workspace_id,
+        )
+    )
+    if result is None:
+        return
+    metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+    simple_status = "Письмо отправлено" if email.delivery_status == "sent" else "Письмо подтверждено" if email.delivery_status == "approved" else "Письмо подготовлено"
+    result.metadata_json = {
+        **metadata,
+        "simple_customer_finder": {
+            **(metadata.get("simple_customer_finder") if isinstance(metadata.get("simple_customer_finder"), dict) else {}),
+            "lead_status": simple_status,
+            "simple_status": simple_status,
+        },
+        "email": {
+            **(metadata.get("email") if isinstance(metadata.get("email"), dict) else {}),
+            "email_id": str(email.id),
+            "subject": email.subject,
+            "body": email.body,
+            "delivery_status": email.delivery_status,
+            "simple_status": simple_status,
+            "can_send": bool(email.delivery_status == "approved"),
+        },
+    }
+
+
 @router.post("/emails/{email_id}/approve", response_model=UsageActionOut)
 def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
@@ -9234,6 +9274,7 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
         _add_lead_activity(db, request, user.user_id, workspace, "email.approved", lead, {"email_id": str(email.id)})
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
         record_email_memory(db, workspace=workspace, user_id=user.user_id, email=email, lead=lead, company=company, event="approved")
+    _sync_ai_customer_finder_result_email_state(db, email)
     db.commit()
     db.refresh(email)
     return UsageActionOut(
@@ -9321,6 +9362,7 @@ def update_email_draft(email_id: UUID, payload: EmailUpdate, request: Request, u
             _set_workflow_stage(lead, "approval", "waiting", "Email was edited after approval. Review and approve it again before sending.")
             company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
         _add_lead_activity(db, request, user.user_id, workspace, "email.edited", lead, {"email_id": str(email.id), "fields": sorted(updates.keys()), **({"status_transition": status_transition} if status_transition else {})})
+    _sync_ai_customer_finder_result_email_state(db, email)
     db.add(
         AuditLog(
             user_id=user.user_id,
@@ -9546,6 +9588,7 @@ def recover_email_send(email_id: UUID, payload: RecoverEmailSendIn, request: Req
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     if lead:
         _add_lead_activity(db, request, user.user_id, workspace, "email.send_recovered", lead, {"email_id": str(email.id), "reason": "manual_send_recovery", "user_id": user.user_id, "confirmed_not_delivered": True})
+    _sync_ai_customer_finder_result_email_state(db, email)
     db.add(
         AuditLog(
             user_id=user.user_id,
@@ -9663,6 +9706,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     _add_lead_activity(db, request, user.user_id, workspace, "email.sent", lead, {"email_id": str(email.id), "provider_message_id": email.provider_message_id})
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     record_email_memory(db, workspace=workspace, user_id=user.user_id, email=email, lead=lead, company=company, event="sent")
+    _sync_ai_customer_finder_result_email_state(db, email)
     db.commit()
     db.refresh(email)
     db.refresh(company)
