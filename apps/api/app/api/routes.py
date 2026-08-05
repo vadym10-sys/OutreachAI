@@ -1904,6 +1904,7 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
     roles_searched = company_metadata.get("decision_maker_roles_searched")
     intelligence_quality = company_metadata.get("intelligence_quality") if isinstance(company_metadata.get("intelligence_quality"), dict) else {}
     company_intelligence = company_metadata.get("company_intelligence") if isinstance(company_metadata.get("company_intelligence"), dict) else {}
+    customer_finder_scores = _customer_finder_score_metadata(company_metadata)
     workflow_stages, workflow_stage_messages = _company_workflow_statuses(
         company=company,
         metadata=company_metadata,
@@ -1966,6 +1967,12 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         confidence=int(company_metadata["confidence"]) if str(company_metadata.get("confidence") or "").isdigit() else None,
         priority_score=int(company_metadata["priority_score"]) if str(company_metadata.get("priority_score") or "").isdigit() else None,
         confidence_score=int(company_metadata["confidence_score"]) if str(company_metadata.get("confidence_score") or "").isdigit() else None,
+        overall_lead_score=customer_finder_scores["overall_lead_score"],
+        website_quality_score=customer_finder_scores["website_quality_score"],
+        contact_confidence_score=customer_finder_scores["contact_confidence_score"],
+        outreach_readiness_score=customer_finder_scores["outreach_readiness_score"],
+        lead_score_explanation=customer_finder_scores["lead_score_explanation"] or "",
+        lead_intelligence=customer_finder_scores["lead_intelligence"],
         next_recommended_action=str(company_metadata.get("next_recommended_action") or ""),
         email_status=company.email_status,
         crm_stage=company.crm_stage,
@@ -2026,6 +2033,34 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         technologies=[str(item) for item in technologies if item],
         last_enriched_at=last_enriched_at,
     )
+
+
+def _score_int_or_none(value: Any) -> int | None:
+    try:
+        if isinstance(value, bool) or value is None:
+            return None
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(100, number))
+
+
+def _customer_finder_score_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    simple = metadata.get("simple_customer_finder") if isinstance(metadata.get("simple_customer_finder"), dict) else {}
+    lead_intelligence = metadata.get("lead_intelligence") if isinstance(metadata.get("lead_intelligence"), dict) else {}
+    if not lead_intelligence:
+        lead_intelligence = simple.get("lead_intelligence") if isinstance(simple.get("lead_intelligence"), dict) else {}
+    components = lead_intelligence.get("components") if isinstance(lead_intelligence.get("components"), dict) else {}
+    scoring = metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
+    explanation = str(scoring.get("explanation") or metadata.get("fit_explanation") or simple.get("why_this_company") or "")
+    return {
+        "overall_lead_score": _score_int_or_none(lead_intelligence.get("overall_lead_score")),
+        "website_quality_score": _score_int_or_none(components.get("website_quality")),
+        "contact_confidence_score": _score_int_or_none(components.get("contact_confidence")),
+        "outreach_readiness_score": _score_int_or_none(components.get("outreach_readiness")),
+        "lead_score_explanation": explanation,
+        "lead_intelligence": lead_intelligence,
+    }
 
 
 def _company_workflow_statuses(

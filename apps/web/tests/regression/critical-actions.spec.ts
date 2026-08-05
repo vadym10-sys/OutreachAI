@@ -44,7 +44,13 @@ test("AI-first flow saves a company to CRM and leaves draft approval manual", as
   await expect(page).toHaveURL(/\/dashboard\/clients/);
 
   await expect(page.getByRole("heading", { name: "CRM", exact: true })).toBeVisible();
-  await expect(page.getByRole("article").filter({ hasText: "EuroScale CRM Co" }).getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+  const savedCompany = page.getByRole("article").filter({ hasText: "EuroScale CRM Co" });
+  await expect(savedCompany.getByRole("heading", { name: "EuroScale CRM Co" })).toBeVisible();
+  await expect(savedCompany.getByLabel(/Overall Lead Score: 84 (out of 100|из 100)/)).toBeVisible();
+  await expect(savedCompany.getByLabel(/Website Quality: 71 (out of 100|из 100)/)).toBeVisible();
+  await expect(savedCompany.getByLabel(/Contact Confidence: 78 (out of 100|из 100)/)).toBeVisible();
+  await expect(savedCompany.getByLabel(/Outreach Readiness: 66 (out of 100|из 100)/)).toBeVisible();
+  await expect(savedCompany.getByLabel(/Outreach Readiness: 80 (out of 100|из 100)/)).toHaveCount(0);
   await expect(page.getByText("draft", { exact: true })).toBeVisible();
 
   await page.goto("/dashboard/emails");
@@ -52,6 +58,79 @@ test("AI-first flow saves a company to CRM and leaves draft approval manual", as
   await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
   await expect(page.getByText("Manual approval required.")).toBeVisible();
   await guards.assertClean();
+});
+
+test("CRM cards do not invent Customer Finder scores when scoring evidence is absent", async ({ page }) => {
+  await page.unroute("**/api/**");
+  const noScoringCompany = {
+    ...qaCompany,
+    overall_score: 99,
+    priority_score: 98,
+    icp_score: 97,
+    confidence_score: 96,
+    ai_company_predictions: { sales_readiness: { score: 95 } },
+    overall_lead_score: null,
+    website_quality_score: null,
+    contact_confidence_score: null,
+    outreach_readiness_score: null,
+    lead_score_explanation: "",
+    lead_intelligence: {}
+  };
+  await mockWorkspaceApi(page, {
+    "GET /api/workspace-app/companies": { body: [noScoringCompany] }
+  });
+
+  await page.goto("/dashboard/clients");
+  const company = page.getByRole("article").filter({ hasText: "Hill Country Build Co" });
+  await expect(company.getByLabel(/Overall Lead Score: (Insufficient data|Недостаточно данных)/)).toBeVisible();
+  await expect(company.getByLabel(/Website Quality: (Insufficient data|Недостаточно данных)/)).toBeVisible();
+  await expect(company.getByLabel(/Contact Confidence: (Insufficient data|Недостаточно данных)/)).toBeVisible();
+  await expect(company.getByLabel(/Outreach Readiness: (Insufficient data|Недостаточно данных)/)).toBeVisible();
+  await expect(company.getByLabel(/Outreach Readiness: 80 (out of 100|из 100)/)).toHaveCount(0);
+});
+
+test("CRM cards render partial Customer Finder scoring without falling back to generic scores", async ({ page }) => {
+  await page.unroute("**/api/**");
+  const partialScoringCompany = {
+    ...qaCompany,
+    overall_score: 99,
+    priority_score: 98,
+    icp_score: 97,
+    confidence_score: 96,
+    ai_company_predictions: { sales_readiness: { score: 95 } },
+    overall_lead_score: 64,
+    website_quality_score: null,
+    contact_confidence_score: null,
+    outreach_readiness_score: 55,
+    lead_score_explanation: "Partial score from confirmed Customer Finder evidence.",
+    lead_intelligence: {
+      overall_lead_score: 64,
+      components: { outreach_readiness: 55 },
+      insufficient_data: ["website_quality", "contact_confidence"]
+    }
+  };
+  await mockWorkspaceApi(page, {
+    "GET /api/workspace-app/companies": { body: [partialScoringCompany] }
+  });
+
+  await page.goto("/dashboard/clients");
+  const company = page.getByRole("article").filter({ hasText: "Hill Country Build Co" });
+  await expect(company.getByLabel(/Overall Lead Score: 64 (out of 100|из 100)/)).toBeVisible();
+  await expect(company.getByLabel(/Website Quality: (Insufficient data|Недостаточно данных)/)).toBeVisible();
+  await expect(company.getByLabel(/Contact Confidence: (Insufficient data|Недостаточно данных)/)).toBeVisible();
+  await expect(company.getByLabel(/Outreach Readiness: 55 (out of 100|из 100)/)).toBeVisible();
+  await expect(company.getByLabel(/Outreach Readiness: 80 (out of 100|из 100)/)).toHaveCount(0);
+  await expect(company.getByText("Partial score from confirmed Customer Finder evidence.")).toBeVisible();
+});
+
+test("mobile CRM card keeps full Customer Finder scoring visible", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/dashboard/clients");
+  const company = page.getByRole("article").filter({ hasText: "Hill Country Build Co" });
+  await expect(company.getByLabel(/Overall Lead Score: 84 (out of 100|из 100)/)).toBeVisible();
+  await expect(company.getByLabel(/Website Quality: 71 (out of 100|из 100)/)).toBeVisible();
+  await expect(company.getByLabel(/Contact Confidence: 78 (out of 100|из 100)/)).toBeVisible();
+  await expect(company.getByLabel(/Outreach Readiness: 66 (out of 100|из 100)/)).toBeVisible();
 });
 
 test("email action HTTP errors are shown as failures, not success notices", async ({ page }) => {

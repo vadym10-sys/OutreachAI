@@ -85,6 +85,25 @@ export const qaCompany = {
   outreach_strategy: qaLead.outreach_strategy,
   sales_angle: qaLead.sales_angle,
   expected_reply_rate: qaLead.expected_reply_rate,
+  overall_lead_score: 84,
+  website_quality_score: 71,
+  contact_confidence_score: 78,
+  outreach_readiness_score: 66,
+  lead_score_explanation: "Lead score uses confirmed public evidence, website quality, contact confidence and outreach readiness components.",
+  lead_intelligence: {
+    overall_lead_score: 84,
+    score_model: "outreach_success_probability",
+    components: {
+      website_quality: 71,
+      contact_confidence: 78,
+      outreach_readiness: 66
+    },
+    insufficient_data: [],
+    evidence: {
+      buying_intent_terms: ["hiring"],
+      technology_terms: ["CRM"]
+    }
+  },
   email_status: "Verified",
   crm_stage: "Contact Found",
   contacts: [
@@ -187,6 +206,24 @@ const qaCustomerFinderResult = {
   icp_fit_score: 76,
   buying_intent_score: 84,
   revenue_opportunity_score: 79,
+  overall_lead_score: 84,
+  website_quality_score: 71,
+  contact_confidence_score: 78,
+  outreach_readiness_score: 66,
+  lead_intelligence: {
+    overall_lead_score: 84,
+    score_model: "outreach_success_probability",
+    components: {
+      website_quality: 71,
+      contact_confidence: 78,
+      outreach_readiness: 66
+    },
+    insufficient_data: [],
+    evidence: {
+      buying_intent_terms: ["hiring"],
+      technology_terms: ["CRM"]
+    }
+  },
   first_line_opener: "I noticed EuroScale CRM Co's public site shows hiring-related workflow evidence tied to SDR growth.",
   email_id: "33333333-3333-3333-3333-333333333333",
   email_subject: "Quick idea for EuroScale CRM Co",

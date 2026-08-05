@@ -378,6 +378,12 @@ export type CrmCompany = {
   confidence?: number | null;
   priority_score?: number | null;
   confidence_score?: number | null;
+  overall_lead_score?: number | null;
+  website_quality_score?: number | null;
+  contact_confidence_score?: number | null;
+  outreach_readiness_score?: number | null;
+  lead_score_explanation?: string | null;
+  lead_intelligence?: Record<string, unknown> | null;
   next_recommended_action?: string | null;
   email_status: string;
   crm_stage: string;
