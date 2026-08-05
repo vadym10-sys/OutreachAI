@@ -46,7 +46,7 @@ from app.api.routes import (
 from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker, validate_runtime_schema
 from app.core.observability import capture_provider_exception
-from app.core.security import WorkspaceUserContext
+from app.core.security import WorkspaceUserContext, require_owner
 from app.models.entities import AIMemoryEntry, AIMemoryType, AISalesWorkspaceAnalysis, AppSettings, AuditLog, Campaign, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole
 from app.schemas.dto import CrmCompanyOut, EmailOut, EmailUpdate, LeadFinderRequest, LeadOut, PersonalizeRequest, WorkspaceOut
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, personalize_email
@@ -761,7 +761,14 @@ def _is_workspace_owner(db: Session, *, workspace: Workspace, user_id: str) -> b
 
 def _require_workspace_owner(db: Session, *, workspace: Workspace, user_id: str) -> None:
     if not _is_workspace_owner(db, workspace=workspace, user_id=user_id):
-        raise HTTPException(status_code=403, detail="Only the workspace owner can run production email smoke tests.")
+        raise HTTPException(status_code=403, detail="Only the workspace owner can run this action.")
+
+
+def _require_production_smoke_owner(db: Session, *, user: Any) -> None:
+    try:
+        require_owner(user, db=db)
+    except HTTPException:
+        raise HTTPException(status_code=403, detail="Only the system owner can run production email smoke tests.") from None
 
 
 def _production_smoke_metadata(smoke_test_id: UUID, recipient_email: str) -> dict[str, Any]:
@@ -7513,8 +7520,8 @@ def integration_status(user: WorkspaceUserContext, db: Session = Depends(get_db)
 
 @router.post("/production-email-smoke-test", response_model=ProductionEmailSmokeTestOut)
 def create_production_email_smoke_test(payload: ProductionEmailSmokeTestCreateIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
+    _require_production_smoke_owner(db, user=user)
     workspace = _current_workspace(db, user.user_id, user.email)
-    _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
     recipient = str(payload.recipient_email).strip().lower()
     if not payload.confirmed_recipient_control:
         raise HTTPException(status_code=409, detail="Confirm that you control this recipient email before creating test records.")
@@ -7652,8 +7659,8 @@ def create_production_email_smoke_test(payload: ProductionEmailSmokeTestCreateIn
 
 @router.get("/production-email-smoke-test/active", response_model=ProductionEmailSmokeTestOut)
 def get_active_production_email_smoke_test(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
+    _require_production_smoke_owner(db, user=user)
     workspace = _current_workspace(db, user.user_id, user.email)
-    _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
     active = _active_production_smoke_context(db, workspace=workspace)
     return ProductionEmailSmokeTestOut(
         status="success",
@@ -7664,8 +7671,8 @@ def get_active_production_email_smoke_test(user: WorkspaceUserContext, db: Sessi
 
 @router.post("/production-email-smoke-test/cleanup", response_model=ProductionEmailSmokeTestOut)
 def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanupIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
+    _require_production_smoke_owner(db, user=user)
     workspace = _current_workspace(db, user.user_id, user.email)
-    _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
     leads, companies, emails, activities = _smoke_test_cleanup_scope(db, workspace_id=workspace.id, smoke_test_id=payload.smoke_test_id)
     if not leads and not companies and not emails and not activities:
         if _production_smoke_exists_outside_workspace(db, workspace_id=workspace.id, smoke_test_id=payload.smoke_test_id):
@@ -9566,7 +9573,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
         raise HTTPException(status_code=404, detail="Email draft not found.")
     initial_lead = db.scalar(select(Lead).where(Lead.id == initial_email.lead_id, Lead.workspace_id == workspace.id)) if initial_email.lead_id else None
     if _is_production_smoke_test_email(initial_email) or _is_production_smoke_test_lead(initial_lead):
-        _require_workspace_owner(db, workspace=workspace, user_id=user.user_id)
+        _require_production_smoke_owner(db, user=user)
         tags = initial_email.tags if isinstance(initial_email.tags, dict) else {}
         smoke_test_id = str(tags.get("smoke_test_id") or "").strip()
         smoke_recipient = str(tags.get("recipient_email") or initial_lead.email or "").strip().lower() if initial_lead else str(tags.get("recipient_email") or "").strip().lower()
