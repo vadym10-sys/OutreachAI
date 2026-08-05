@@ -192,7 +192,7 @@ const qaCustomerFinderResult = {
   email_subject: "Quick idea for EuroScale CRM Co",
   email_body: "Hi Sarah,\n\nI noticed EuroScale CRM Co is hiring SDRs while replacing manual spreadsheet CRM workflows.\n\nOutreachAI helps sales teams find verified companies, save them to CRM, and prepare short personalized first emails.\n\nWorth a quick fit review?",
   email_delivery_status: "draft",
-  can_send: true,
+  can_send: false,
   lead_status: "Письмо подготовлено",
   simple_status: "Письмо подготовлено",
   draft_email: "Hi Head of Sales,\n\nI noticed EuroScale CRM Co's public site shows hiring-related workflow evidence tied to SDR growth.\n\nWe help B2B SaaS teams with AI sales research and outreach. This signal may indicate timing for reviewed outbound.\n\nWould it be worth a quick fit review?\n\nDraft only — review before sending.",
@@ -400,7 +400,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     ...qaCustomerFinderJob,
     status: "completed",
     progress: { ...qaCustomerFinderJob.progress, stage: "completed", message: "AI Customer Finder completed." },
-    results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "" }]
+    results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "", can_send: false }]
   };
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -594,14 +594,15 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
           delivery_status: "draft"
         }]
       };
-      return fulfillJson(route, { status: "success", message: "Lead saved to CRM. Outreach draft is ready for manual review.", result: updated });
+      currentFinderJob = { ...currentFinderJob, results: [{ ...updated, can_send: false }] };
+      return fulfillJson(route, { status: "success", message: "Lead saved to CRM. Outreach draft is ready for manual review.", result: { ...updated, can_send: false } });
     }
     if (apiPath === "/api/workspace-app/ai-customer-finder/searches" && route.request().method() === "POST") {
       currentFinderJob = {
         ...qaCustomerFinderJob,
         status: "searching",
         progress: { stage: "verifying", message: "First verified result is ready while the search continues.", percent: 55, verified: 1, partially_verified: 0, unknown: 1, rejected: 1, saved: 0, candidates: 3 },
-        results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "" }]
+        results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "", can_send: false }]
       };
       return fulfillJson(route, currentFinderJob, 202);
     }
@@ -614,7 +615,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, currentFinderJob);
     }
     if (apiPath === `/api/workspace-app/ai-customer-finder/results/${qaCustomerFinderResult.id}/draft`) {
-      const updated = { ...qaCustomerFinderResult, email_delivery_status: "draft", simple_status: "Письмо подготовлено", can_send: true };
+      const updated = { ...qaCustomerFinderResult, email_delivery_status: "draft", simple_status: "Письмо подготовлено", can_send: false };
       currentFinderJob = { ...currentFinderJob, results: [updated] };
       return fulfillJson(route, { status: "success", message: "Draft saved in CRM.", result: updated });
     }
@@ -888,6 +889,12 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") {
       const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "approved" };
       currentCompany = { ...currentCompany, crm_stage: "Approved", email_approved_at: now, generated_emails: [email] };
+      currentFinderJob = {
+        ...currentFinderJob,
+        results: currentFinderJob.results.map((result: any) =>
+          result.email_id === email.id ? { ...result, email_delivery_status: "approved", simple_status: "Письмо подтверждено", can_send: true } : result
+        )
+      };
       return fulfillJson(route, { status: "success", message: "Email approved. It is ready to send, but nothing was sent automatically.", company: currentCompany, email });
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333" && route.request().method() === "PATCH") {
