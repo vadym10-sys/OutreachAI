@@ -313,6 +313,12 @@ class CrmCompanyOut(BaseModel):
     confidence: Optional[int] = None
     priority_score: Optional[int] = None
     confidence_score: Optional[int] = None
+    overall_lead_score: Optional[int] = None
+    website_quality_score: Optional[int] = None
+    contact_confidence_score: Optional[int] = None
+    outreach_readiness_score: Optional[int] = None
+    lead_score_explanation: str = ""
+    lead_intelligence: dict[str, Any] = Field(default_factory=dict)
     next_recommended_action: str = ""
     email_status: str = "Not prepared"
     crm_stage: str = "New Lead"

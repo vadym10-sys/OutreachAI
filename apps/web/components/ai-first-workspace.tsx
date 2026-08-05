@@ -11,6 +11,7 @@ import { friendlyErrorMessage } from "@/lib/client-api";
 import { latestDraftForResult, useAiFirstApi, type AiAssistantCommand, type ProductionEmailSmokeTestResponse } from "@/lib/ai-first-api";
 import type { AiMemoryEntry, AiMemoryExplainResponse, AiMemorySettings, FirstCustomerJob, FirstCustomerResult, OutreachSenderStatus, WorkspaceIntegrationStatus } from "@/lib/customer-api-contracts";
 import { e2eUserEmail, ownerEmail } from "@/lib/env";
+import { useI18n } from "@/lib/i18n/provider";
 import type { CrmCompany, Email, Workspace } from "@/lib/types";
 
 type Section = "assistant" | "clients" | "emails" | "settings";
@@ -320,13 +321,13 @@ function PremiumPanel({ children, className = "" }: { children: React.ReactNode;
   return <SurfaceCard className={`rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5 motion-safe:hover:shadow-raised ${className}`}>{children}</SurfaceCard>;
 }
 
-function ScoreTile({ label, value, copy }: { label: string; value?: number; copy?: string }) {
+function ScoreTile({ label, value, copy, insufficientLabel = "Insufficient data", scoreSuffix = "out of 100" }: { label: string; value?: number | null; copy?: string; insufficientLabel?: string; scoreSuffix?: string }) {
   const score = typeof value === "number" ? Math.max(0, Math.min(100, Math.round(value))) : null;
   const tone = score === null ? "text-slate-500" : score >= 75 ? "text-teal-700" : score >= 50 ? "text-amber-700" : "text-red-700";
   return (
-    <div aria-label={`${label}: ${score === null ? "Недостаточно данных" : `${score} из 100`}`} className="min-h-[8.5rem] rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 transition hover:border-[var(--ui-border-strong)]">
+    <div aria-label={`${label}: ${score === null ? insufficientLabel : `${score} ${scoreSuffix}`}`} className="min-h-[8.5rem] rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 transition hover:border-[var(--ui-border-strong)]">
       <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{label}</p>
-      <p className={`mt-2 text-3xl font-black tracking-tight ${tone}`}>{score === null ? "Недостаточно данных" : score}</p>
+      <p className={`mt-2 text-3xl font-black tracking-tight ${tone}`}>{score === null ? insufficientLabel : score}</p>
       {copy ? <p className="mt-2 text-sm font-semibold leading-6 text-[var(--ui-text-soft)]">{copy}</p> : null}
     </div>
   );
@@ -554,6 +555,21 @@ function ResultCard({
       </details>
     </SurfaceCard>
   );
+}
+
+function evidenceScore(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function customerFinderScoreTiles(company: CrmCompany) {
+  return {
+    overallLeadScore: evidenceScore(company.overall_lead_score),
+    websiteQuality: evidenceScore(company.website_quality_score),
+    contactConfidence: evidenceScore(company.contact_confidence_score),
+    outreachReadiness: evidenceScore(company.outreach_readiness_score),
+    explanation: String(company.lead_score_explanation || "").trim()
+  };
 }
 
 function AssistantSection() {
@@ -847,6 +863,7 @@ function AssistantSection() {
 
 function ClientsSection() {
   const api = useAiFirstApi();
+  const { t, locale } = useI18n();
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -868,6 +885,8 @@ function ClientsSection() {
     return () => window.clearTimeout(timer);
   }, [load]);
   const nextCompany = companies.find((company) => !latestEmail(company)) || companies.find((company) => latestEmail(company)?.delivery_status !== "sent") || companies[0];
+  const insufficientLabel = t("Insufficient data");
+  const scoreSuffix = t("out of 100");
   return (
     <Frame title="CRM" copy="Простой список компаний: стадия, контакт, последнее действие и следующее рекомендуемое действие.">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -883,7 +902,10 @@ function ClientsSection() {
             <h2 className="mt-2 text-2xl font-black text-ink">{nextCompany?.name || "No company selected"}</h2>
             <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{nextCompany ? (latestEmail(nextCompany) ? "Review the email approval state, then send only after explicit confirmation." : "Open lead details, verify evidence and create the personalised draft.") : "Find leads from AI Поиск first."}</p>
           </PremiumPanel>
-          {companies.map((company) => (
+          {companies.map((company) => {
+            const scoring = customerFinderScoreTiles(company);
+            const scoreCopy = scoring.explanation || (locale === "ru" ? "Оценка рассчитана из подтверждённых AI Search evidence." : "Score calculated from confirmed AI Search evidence.");
+            return (
             <SurfaceCard as="article" key={company.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0"><h2 className="text-xl font-black tracking-tight text-ink">{company.name}</h2><p className="mt-1 text-sm text-slate-600">{[company.industry, company.city, company.country].filter(Boolean).join(" · ") || "No company profile fields yet."}</p><p className="mt-2 text-sm leading-6 text-slate-700">{company.ai_summary || company.opportunity_analysis || "AI research has not filled a summary yet."}</p></div>
@@ -893,15 +915,16 @@ function ClientsSection() {
                 </div>
               </div>
               <div className="mt-4 grid gap-3 lg:grid-cols-4">
-                <ScoreTile label="Overall Lead Score" value={Number(company.overall_score || company.priority_score || company.icp_score || 0) || undefined} />
-                <ScoreTile label="Website Quality" value={Number(company.ai_company_predictions?.sales_readiness?.score || company.icp_score || 0) || undefined} />
-                <ScoreTile label="Contact Confidence" value={Number(company.confidence_score || 0) || undefined} />
-                <ScoreTile label="Outreach Readiness" value={latestEmail(company) ? 80 : undefined} />
+                <ScoreTile label="Overall Lead Score" value={scoring.overallLeadScore} copy={scoring.overallLeadScore === null ? undefined : scoreCopy} insufficientLabel={insufficientLabel} scoreSuffix={scoreSuffix} />
+                <ScoreTile label="Website Quality" value={scoring.websiteQuality} insufficientLabel={insufficientLabel} scoreSuffix={scoreSuffix} />
+                <ScoreTile label="Contact Confidence" value={scoring.contactConfidence} insufficientLabel={insufficientLabel} scoreSuffix={scoreSuffix} />
+                <ScoreTile label="Outreach Readiness" value={scoring.outreachReadiness} insufficientLabel={insufficientLabel} scoreSuffix={scoreSuffix} />
               </div>
               <CompanyMemoryExplain company={company} />
               <details className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)]"><summary className={detailSummaryClass}>Подробнее <ChevronDown size={16} /></summary><div className="grid gap-3 border-t border-[var(--ui-border)] p-4 text-sm leading-6 text-[var(--ui-text-soft)] lg:grid-cols-3"><EvidenceLine label="Website" value={company.website || "Not found"} href={company.website || undefined} /><EvidenceLine label="Lead Reasoning" value={company.reasoning || company.suggested_offer || "No backend reason yet."} /><EvidenceLine label="Email draft" value={latestEmail(company)?.subject || "No draft yet."} /><EvidenceLine label="Research Profile" value={company.ai_summary || company.opportunity_analysis || "Недостаточно данных"} /><EvidenceLine label="Outreach Strategy" value={company.outreach_strategy || company.sales_angle || "No outreach strategy yet."} /><EvidenceLine label="Manual Review" value={latestEmail(company)?.delivery_status === "approved" ? "Approved. Send still requires explicit confirmation." : "Review required before any send."} /></div></details>
             </SurfaceCard>
-          ))}
+            );
+          })}
         </section>
       ) : <EmptyStateView title="No companies saved yet." copy="Save a verified AI Поиск result to CRM. Unsafe results stay in review instead of becoming CRM records." />}
     </Frame>

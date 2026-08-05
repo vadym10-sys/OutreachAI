@@ -935,6 +935,11 @@ def test_ai_customer_finder_search_requires_manual_crm_save(monkeypatch) -> None
     assert companies[0]["source"] == "ai_customer_finder"
     assert companies[0]["crm_stage"] == "Письмо подготовлено"
     assert companies[0]["email_status"] == "Verified"
+    assert companies[0]["overall_lead_score"] == saved["overall_lead_score"]
+    assert companies[0]["website_quality_score"] == saved["website_quality_score"]
+    assert companies[0]["contact_confidence_score"] == saved["contact_confidence_score"]
+    assert companies[0]["outreach_readiness_score"] == saved["outreach_readiness_score"]
+    assert companies[0]["lead_intelligence"]["components"]["outreach_readiness"] == saved["lead_intelligence"]["components"]["outreach_readiness"]
     db = get_sessionmaker()()
     try:
         company = db.get(Company, UUID(companies[0]["id"]))
