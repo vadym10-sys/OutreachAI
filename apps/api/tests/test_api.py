@@ -5282,7 +5282,7 @@ def test_workspace_app_owner_production_email_smoke_test_safety(monkeypatch) -> 
     repeated_cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
     assert repeated_cleanup.status_code == 200
     assert repeated_cleanup.json()["smoke_test"]["cleanup_already_clean"] is True
-    assert repeated_cleanup.json()["smoke_test"]["cleanup_deleted"] == {"leads": 0, "companies": 0, "drafts": 0, "activities": 0}
+    assert repeated_cleanup.json()["smoke_test"]["cleanup_deleted"] == {"leads": 0, "companies": 0, "drafts": 0, "activities": 0, "memories": 0}
 
     with get_sessionmaker()() as db:
         assert db.get(Lead, UUID(lead_id)) is None
@@ -5351,6 +5351,144 @@ def test_workspace_app_smoke_send_obeys_outbound_provider_kill_switch(monkeypatc
     assert deleted["drafts"] == 1
 
 
+def test_workspace_app_production_email_smoke_cleanup_soft_deletes_ai_memory_without_sending(monkeypatch) -> None:
+    headers = OWNER_AUTH
+    owner_email = OWNER_AUTH["X-Test-User-Email"]
+    monkeypatch.setattr("app.services.ai_memory._openai_embedding", lambda value: [])
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: pytest.fail("cleanup must not send email"))
+    _enable_ai_memory(headers)
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    other_workspace = client.get("/api/workspace/me", headers=USER_B_AUTH).json()
+    client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Smoke Memory Sender",
+            "sender_email": "sender@smoke-memory.example",
+            "reply_to": "reply@smoke-memory.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    created = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@smoke-memory-mail.com", "confirmed_recipient_control": True},
+    )
+    assert created.status_code == 200
+    smoke_test_id = created.json()["smoke_test"]["smoke_test_id"]
+    email_id = created.json()["email"]["id"]
+
+    approved = client.post(f"/api/workspace-app/emails/{email_id}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    with get_sessionmaker()() as db:
+        memory = db.scalar(select(AIMemoryEntry).where(AIMemoryEntry.workspace_id == UUID(workspace["id"]), AIMemoryEntry.source == "email.approved", AIMemoryEntry.source_id == email_id))
+        assert memory is not None
+        real_memory = upsert_memory_entry(
+            db,
+            workspace=db.get(Workspace, UUID(workspace["id"])),
+            user_id=owner_email,
+            memory_type="interaction",
+            content="Selected outreach draft for a real customer: subject 'Keep me'.",
+            source="email.approved",
+            source_id=str(uuid4()),
+            confidence=60,
+        )
+        other_memory = upsert_memory_entry(
+            db,
+            workspace=db.get(Workspace, UUID(other_workspace["id"])),
+            user_id=USER_B_AUTH["X-Test-User-Email"],
+            memory_type="interaction",
+            content=f"Selected outreach draft for Production smoke test {smoke_test_id}: other workspace.",
+            source="email.approved",
+            source_id=email_id,
+            confidence=60,
+        )
+        db.commit()
+        memory_id = memory.id
+        real_memory_id = real_memory.id
+        other_memory_id = other_memory.id
+
+    cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert cleanup.status_code == 200
+    assert cleanup.json()["smoke_test"]["cleanup_deleted"] == {"leads": 1, "companies": 1, "drafts": 1, "activities": 1, "memories": 1}
+
+    repeated = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert repeated.status_code == 200
+    assert repeated.json()["smoke_test"]["cleanup_already_clean"] is True
+    assert repeated.json()["smoke_test"]["cleanup_deleted"] == {"leads": 0, "companies": 0, "drafts": 0, "activities": 0, "memories": 0}
+
+    with get_sessionmaker()() as db:
+        assert db.get(EmailMessage, UUID(email_id)) is None
+        assert db.get(AIMemoryEntry, memory_id).deleted_at is not None
+        assert db.get(AIMemoryEntry, real_memory_id).deleted_at is None
+        assert db.get(AIMemoryEntry, other_memory_id).deleted_at is None
+        assert db.scalar(select(AuditLog).where(AuditLog.action == "production_smoke_test.send_confirmed", AuditLog.metadata_json["smoke_test_id"].as_string() == smoke_test_id)) is None
+
+
+def test_workspace_app_production_email_smoke_cleanup_recovers_orphan_ai_memory(monkeypatch) -> None:
+    headers = OWNER_AUTH
+    monkeypatch.setattr("app.services.ai_memory._openai_embedding", lambda value: [])
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: pytest.fail("cleanup must not send email"))
+    _enable_ai_memory(headers)
+    client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Smoke Orphan Memory Sender",
+            "sender_email": "sender@smoke-orphan-memory.example",
+            "reply_to": "reply@smoke-orphan-memory.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    created = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": "owner@smoke-orphan-memory-mail.com", "confirmed_recipient_control": True},
+    )
+    assert created.status_code == 200
+    smoke_test_id = created.json()["smoke_test"]["smoke_test_id"]
+    email_id = created.json()["email"]["id"]
+    lead_id = created.json()["email"]["lead_id"]
+    company_id = created.json()["company"]["id"]
+
+    approved = client.post(f"/api/workspace-app/emails/{email_id}/approve", headers=headers)
+    assert approved.status_code == 200
+
+    with get_sessionmaker()() as db:
+        memory = db.scalar(select(AIMemoryEntry).where(AIMemoryEntry.source == "email.approved", AIMemoryEntry.source_id == email_id))
+        assert memory is not None
+        workspace_id = memory.workspace_id
+        memory.email_id = None
+        memory.lead_id = None
+        memory.company_id = None
+        activity = db.scalar(select(AuditLog).where(AuditLog.workspace_id == workspace_id, AuditLog.action.like("lead.%"), AuditLog.metadata_json["smoke_test_id"].as_string() == smoke_test_id))
+        if activity is not None:
+            db.delete(activity)
+        db.delete(db.get(EmailMessage, UUID(email_id)))
+        db.delete(db.get(Company, UUID(company_id)))
+        db.delete(db.get(Lead, UUID(lead_id)))
+        db.commit()
+        memory_id = memory.id
+
+    cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert cleanup.status_code == 200
+    assert cleanup.json()["smoke_test"]["cleanup_deleted"] == {"leads": 0, "companies": 0, "drafts": 0, "activities": 0, "memories": 1}
+    assert cleanup.json()["smoke_test"]["cleanup_already_clean"] is False
+
+    repeated = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
+    assert repeated.status_code == 200
+    assert repeated.json()["smoke_test"]["cleanup_already_clean"] is True
+    assert repeated.json()["smoke_test"]["cleanup_deleted"] == {"leads": 0, "companies": 0, "drafts": 0, "activities": 0, "memories": 0}
+
+    with get_sessionmaker()() as db:
+        assert db.get(AIMemoryEntry, memory_id).deleted_at is not None
+
+
 def test_workspace_app_production_email_smoke_test_reload_recovery_and_idempotent_cleanup(monkeypatch) -> None:
     owner_email = OWNER_AUTH["X-Test-User-Email"]
     headers = OWNER_AUTH
@@ -5391,7 +5529,7 @@ def test_workspace_app_production_email_smoke_test_reload_recovery_and_idempoten
 
     cleanup = client.post("/api/workspace-app/production-email-smoke-test/cleanup", headers=headers, json={"smoke_test_id": smoke_test_id})
     assert cleanup.status_code == 200
-    assert cleanup.json()["smoke_test"]["cleanup_deleted"] == {"leads": 1, "companies": 1, "drafts": 1, "activities": 1}
+    assert cleanup.json()["smoke_test"]["cleanup_deleted"] == {"leads": 1, "companies": 1, "drafts": 1, "activities": 1, "memories": 0}
     assert cleanup.json()["smoke_test"]["cleanup_already_clean"] is False
 
     active_after_cleanup = client.get("/api/workspace-app/production-email-smoke-test/active", headers=headers)

@@ -926,6 +926,28 @@ def _smoke_test_cleanup_scope(db: Session, *, workspace_id: UUID, smoke_test_id:
     return leads, companies, emails, activities
 
 
+def _smoke_test_memory_cleanup_scope(db: Session, *, workspace_id: UUID, smoke_test_id: UUID, draft_emails: list[EmailMessage]) -> list[AIMemoryEntry]:
+    smoke_marker = f"Production smoke test {smoke_test_id}"
+    draft_email_ids = {str(email.id) for email in draft_emails}
+    entries = db.scalars(
+        select(AIMemoryEntry).where(
+            AIMemoryEntry.workspace_id == workspace_id,
+            AIMemoryEntry.deleted_at.is_(None),
+            AIMemoryEntry.source.in_(["email.draft", "email.approved"]),
+        )
+    ).all()
+    scoped_entries: list[AIMemoryEntry] = []
+    for entry in entries:
+        email_id = str(entry.email_id) if entry.email_id is not None else ""
+        source_id = str(entry.source_id or "")
+        if draft_email_ids and (email_id in draft_email_ids or source_id in draft_email_ids):
+            scoped_entries.append(entry)
+            continue
+        if smoke_marker in (entry.content or "") or smoke_marker in (entry.summary or ""):
+            scoped_entries.append(entry)
+    return scoped_entries
+
+
 def _needs_ai_research(lead: Lead) -> bool:
     metadata = _lead_metadata(lead)
     return not all(
@@ -7674,7 +7696,9 @@ def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanup
     _require_production_smoke_owner(db, user=user)
     workspace = _current_workspace(db, user.user_id, user.email)
     leads, companies, emails, activities = _smoke_test_cleanup_scope(db, workspace_id=workspace.id, smoke_test_id=payload.smoke_test_id)
-    if not leads and not companies and not emails and not activities:
+    draft_emails = [email for email in emails if email.sent_at is None and not email.provider_message_id]
+    memories = _smoke_test_memory_cleanup_scope(db, workspace_id=workspace.id, smoke_test_id=payload.smoke_test_id, draft_emails=draft_emails)
+    if not leads and not companies and not emails and not activities and not memories:
         if _production_smoke_exists_outside_workspace(db, workspace_id=workspace.id, smoke_test_id=payload.smoke_test_id):
             raise HTTPException(status_code=404, detail="Production smoke-test record not found in this workspace.")
         return ProductionEmailSmokeTestOut(
@@ -7684,12 +7708,11 @@ def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanup
                 db,
                 workspace=workspace,
                 smoke_test_id=payload.smoke_test_id,
-                cleanup_deleted={"leads": 0, "companies": 0, "drafts": 0, "activities": 0},
+                cleanup_deleted={"leads": 0, "companies": 0, "drafts": 0, "activities": 0, "memories": 0},
                 cleanup_already_clean=True,
             ),
         )
-    draft_emails = [email for email in emails if email.sent_at is None and not email.provider_message_id]
-    if not leads and not companies and not activities and not draft_emails:
+    if not leads and not companies and not activities and not draft_emails and not memories:
         return ProductionEmailSmokeTestOut(
             status="success",
             message="Production smoke-test cleanup already clean. Only preserved sent email records remain for audit.",
@@ -7698,11 +7721,17 @@ def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanup
                 workspace=workspace,
                 smoke_test_id=payload.smoke_test_id,
                 email=emails[0] if emails else None,
-                cleanup_deleted={"leads": 0, "companies": 0, "drafts": 0, "activities": 0},
+                cleanup_deleted={"leads": 0, "companies": 0, "drafts": 0, "activities": 0, "memories": 0},
                 cleanup_already_clean=True,
             ),
         )
-    deleted = {"leads": 0, "companies": 0, "drafts": 0, "activities": 0}
+    deleted = {"leads": 0, "companies": 0, "drafts": 0, "activities": 0, "memories": 0}
+    now = datetime.utcnow()
+    for entry in memories:
+        entry.deleted_at = now
+        entry.updated_at = now
+        log_memory_event(db, workspace_id=workspace.id, user_id=user.user_id, action="memory.deleted", entry_id=entry.id, metadata={"source": "production_smoke_test.cleanup", "smoke_test_id": str(payload.smoke_test_id)})
+        deleted["memories"] += 1
     for activity in activities:
         db.delete(activity)
         deleted["activities"] += 1
