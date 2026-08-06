@@ -4832,6 +4832,19 @@ def test_workspace_app_email_patch_state_machine_and_audit_regressions(monkeypat
     assert approved.status_code == 200
     assert approved.json()["email"]["delivery_status"] == "approved"
 
+    approved_recipient_edit = client.patch(
+        f"/api/workspace-app/emails/{email['id']}",
+        headers=headers,
+        json={"recipient_email": "approved-change@patch-safety.example"},
+    )
+    assert approved_recipient_edit.status_code == 409
+    assert "Recipient email can only be changed while the email is a draft" in approved_recipient_edit.json()["detail"]
+    with get_sessionmaker()() as db:
+        unchanged_email = db.get(EmailMessage, UUID(email["id"]))
+        assert unchanged_email is not None
+        assert unchanged_email.delivery_status == "approved"
+        assert unchanged_email.recipient_email == "reviewed.recipient@patch-safety.example"
+
     approved_edit = client.patch(
         f"/api/workspace-app/emails/{email['id']}",
         headers=headers,
@@ -4893,7 +4906,7 @@ def test_workspace_app_email_patch_state_machine_and_audit_regressions(monkeypat
     inbound_edit = client.patch(f"/api/workspace-app/emails/{inbound_id}", headers=headers, json={"subject": "Inbound changed"})
     assert inbound_edit.status_code == 409
     for provider_id in [*provider_ids, captured_reply_id]:
-        rejected = client.patch(f"/api/workspace-app/emails/{provider_id}", headers=headers, json={"body": "Provider record changed"})
+        rejected = client.patch(f"/api/workspace-app/emails/{provider_id}", headers=headers, json={"recipient_email": "provider-change@patch-safety.example", "body": "Provider record changed"})
         assert rejected.status_code == 409
 
     with get_sessionmaker()() as db:

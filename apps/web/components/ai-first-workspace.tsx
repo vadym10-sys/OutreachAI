@@ -1013,11 +1013,17 @@ function EmailsSection() {
     }
     const edit = draftEdits[email.id] || { recipient_email: emailRecipient(email, companyForEmail(companies, email)), subject: email.subject || "", body: email.body || "" };
     const wasApproved = email.delivery_status === "approved";
+    const canEditRecipient = String(email.delivery_status || "").toLowerCase() === "draft";
     setBusy(`edit:${email.id}`);
     setNotice("");
     setActionError("");
     try {
-      const response = await api.updateEmail(email.id, { recipient_email: (edit.recipient_email || emailRecipient(email, companyForEmail(companies, email))).trim(), subject: edit.subject, body: edit.body, preview: edit.body.slice(0, 180) });
+      const response = await api.updateEmail(email.id, {
+        ...(canEditRecipient ? { recipient_email: (edit.recipient_email || emailRecipient(email, companyForEmail(companies, email))).trim() } : {}),
+        subject: edit.subject,
+        body: edit.body,
+        preview: edit.body.slice(0, 180)
+      });
       setNotice(wasApproved ? "Changes saved. This email is back in draft and must be approved again before sending." : response.message);
       await load();
     } catch (err) {
@@ -1112,6 +1118,7 @@ function EmailsSection() {
         const edit = draftEdits[email.id] || { recipient_email: emailRecipient(email, relatedCompany), subject: email.subject || "", body: email.body || email.preview || "" };
         const editable = canEditEmailDraft(email);
         const approvedEditable = editable && email.delivery_status === "approved";
+        const recipientEditable = editable && email.delivery_status === "draft";
         const recipient = emailRecipient(email, relatedCompany);
         const sendable = canSendApprovedEmail(email) && Boolean(recipient);
         const recoverable = canRecoverEmailForRetry(email);
@@ -1161,7 +1168,7 @@ function EmailsSection() {
                   </div>
                 </Notice> : null}
                 {!editable && !recoverable ? <Notice tone="warn">This message is read-only because it is an inbound reply or provider delivery record.</Notice> : null}
-                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Recipient email<input type="email" value={edit.recipient_email} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), recipient_email: event.target.value } }))} disabled={!editable} className={fieldClass} /></label>
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Recipient email<input type="email" value={edit.recipient_email} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), recipient_email: event.target.value } }))} disabled={!recipientEditable} className={fieldClass} /></label>
                 <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Subject<input value={edit.subject} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), subject: event.target.value } }))} disabled={!editable} className={fieldClass} /></label>
                 <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body<textarea value={edit.body} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), body: event.target.value } }))} disabled={!editable} className="focus-ring mt-2 min-h-48 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]" /></label>
               </div>

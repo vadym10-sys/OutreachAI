@@ -178,6 +178,7 @@ test("non-owner can edit draft recipient before approve and send confirmation us
   );
   await page.getByRole("button", { name: "Approve" }).click();
   await expect((await approveResponse).ok()).toBe(true);
+  await expect(page.getByLabel("Recipient email")).toBeDisabled();
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
   await expect(page.getByRole("dialog").getByText("reviewed.recipient@recipient-safety-mail.com")).toBeVisible();

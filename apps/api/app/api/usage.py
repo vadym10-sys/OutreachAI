@@ -9337,6 +9337,8 @@ def update_email_draft(email_id: UUID, payload: EmailUpdate, request: Request, u
     if not updates:
         raise HTTPException(status_code=422, detail="Provide at least one editable draft field.")
     previous_status = email.delivery_status
+    if "recipient_email" in updates and previous_status != "draft":
+        raise HTTPException(status_code=409, detail="Recipient email can only be changed while the email is a draft.")
     status_transition = ""
     next_status = previous_status
     next_tags = email.tags if isinstance(email.tags, dict) else {}
