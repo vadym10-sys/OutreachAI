@@ -56,7 +56,7 @@ export type AiFirstApi = {
   listCustomerFinderJobs(): Promise<FirstCustomerJob[]>;
   getCustomerFinderJob(jobId: string): Promise<FirstCustomerJob>;
   saveFinderResult(resultId: string): Promise<FirstCustomerSaveResponse>;
-  updateEmail(emailId: string, payload: { subject?: string; body?: string; preview?: string }): Promise<WorkspaceAppActionResponse>;
+  updateEmail(emailId: string, payload: { recipient_email?: string; subject?: string; body?: string; preview?: string }): Promise<WorkspaceAppActionResponse>;
   approveEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
   sendApprovedEmail(emailId: string, payload?: { confirmed_send?: boolean; smoke_test_id?: string; recipient_email?: string }): Promise<WorkspaceAppActionResponse>;
   recoverEmailForRetry(emailId: string, confirmedNotDelivered: boolean): Promise<WorkspaceAppActionResponse>;

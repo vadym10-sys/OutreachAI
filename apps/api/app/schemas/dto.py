@@ -656,6 +656,7 @@ class ReplyAssistantOut(BaseModel):
 class EmailUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    recipient_email: Optional[EmailStr] = Field(default=None, max_length=320)
     subject: Optional[str] = Field(default=None, min_length=1, max_length=300)
     preview: Optional[str] = Field(default=None, max_length=500)
     body: Optional[str] = Field(default=None, min_length=1, max_length=20000)
@@ -667,6 +668,20 @@ class EmailUpdate(BaseModel):
             raise ValueError("Field cannot be blank.")
         return value
 
+    @field_validator("recipient_email", mode="before")
+    @classmethod
+    def require_non_blank_recipient(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not str(value).strip():
+            raise ValueError("Recipient email cannot be blank.")
+        return value
+
+    @field_validator("recipient_email")
+    @classmethod
+    def normalize_recipient_email(cls, value: Optional[EmailStr]) -> Optional[str]:
+        if value is None:
+            return None
+        return str(value).strip().lower()
+
 
 class EmailOut(BaseModel):
     id: UUID
@@ -674,6 +689,7 @@ class EmailOut(BaseModel):
     lead_id: Optional[UUID]
     direction: str = "outbound"
     subject: str
+    recipient_email: Optional[EmailStr] = None
     preview: str
     body: str
     cta: str

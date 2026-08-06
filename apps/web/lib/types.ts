@@ -1445,6 +1445,7 @@ export type Email = {
   lead_id?: string | null;
   direction?: string;
   subject: string;
+  recipient_email?: string | null;
   preview: string;
   body: string;
   cta: string;

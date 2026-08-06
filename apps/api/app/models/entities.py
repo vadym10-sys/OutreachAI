@@ -628,6 +628,7 @@ class EmailMessage(Base):
     lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"))
     direction: Mapped[str] = mapped_column(String(16), default="outbound")
     subject: Mapped[str] = mapped_column(String(300))
+    recipient_email: Mapped[Optional[str]] = mapped_column(String(320), index=True)
     preview: Mapped[str] = mapped_column(String(500), default="")
     body: Mapped[str] = mapped_column(Text)
     cta: Mapped[str] = mapped_column(String(220), default="")

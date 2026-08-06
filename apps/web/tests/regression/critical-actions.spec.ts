@@ -152,6 +152,38 @@ test("email action HTTP errors are shown as failures, not success notices", asyn
   await expect(page.getByText("Email approved. It is ready to send")).toHaveCount(0);
 });
 
+test("non-owner can edit draft recipient before approve and send confirmation uses it", async ({ page }) => {
+  let patchPayload: Record<string, unknown> | null = null;
+  page.on("request", (request) => {
+    if (request.method() === "PATCH" && request.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333")) {
+      patchPayload = request.postDataJSON() as Record<string, unknown>;
+    }
+  });
+  await page.goto("/dashboard/emails");
+  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await page.getByLabel("Recipient email").fill("reviewed.recipient@recipient-safety-mail.com");
+  const editResponse = page.waitForResponse((response) =>
+    response.request().method() === "PATCH" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333")
+  );
+  await page.getByRole("button", { name: /Save email edits/ }).click();
+  await expect((await editResponse).ok()).toBe(true);
+  expect(patchPayload).toMatchObject({
+    recipient_email: "reviewed.recipient@recipient-safety-mail.com",
+    subject: "Quick idea for Hill Country Build Co"
+  });
+  await expect(page.getByText("reviewed.recipient@recipient-safety-mail.com")).toBeVisible();
+
+  const approveResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve")
+  );
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect((await approveResponse).ok()).toBe(true);
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("reviewed.recipient@recipient-safety-mail.com")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+});
+
 test("email approval send and reply tracking stay connected end to end", async ({ page }) => {
   await page.goto("/dashboard/emails");
   await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();

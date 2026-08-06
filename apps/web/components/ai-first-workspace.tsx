@@ -278,10 +278,12 @@ function uniqueEmails(companies: CrmCompany[], inbox: Email[]) {
   return [...byId.values()];
 }
 
-function mergeDraftEdits(current: Record<string, { subject: string; body: string }>, emails: Email[]) {
+type EmailDraftEdit = { recipient_email: string; subject: string; body: string };
+
+function mergeDraftEdits(current: Record<string, EmailDraftEdit>, emails: Email[]) {
   const next = { ...current };
   for (const email of emails) {
-    if (!next[email.id]) next[email.id] = { subject: email.subject || "", body: email.body || email.preview || "" };
+    if (!next[email.id]) next[email.id] = { recipient_email: email.recipient_email || "", subject: email.subject || "", body: email.body || email.preview || "" };
   }
   return next;
 }
@@ -290,6 +292,10 @@ function companyForEmail(companies: CrmCompany[], email: Email) {
   return companies.find((company) => company.generated_emails?.some((item) => item.id === email.id))
     || companies.find((company) => Boolean(email.lead_id) && company.lead_id === email.lead_id)
     || null;
+}
+
+function emailRecipient(email: Email, company?: CrmCompany | null) {
+  return String(email.recipient_email || email.tags?.recipient_email || company?.email || "").trim();
 }
 
 function replyAssistantText(email: Email) {
@@ -935,7 +941,7 @@ function EmailsSection() {
   const api = useAiFirstApi();
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [inbox, setInbox] = useState<Email[]>([]);
-  const [draftEdits, setDraftEdits] = useState<Record<string, { subject: string; body: string }>>({});
+  const [draftEdits, setDraftEdits] = useState<Record<string, EmailDraftEdit>>({});
   const [recoverConfirmations, setRecoverConfirmations] = useState<Record<string, boolean>>({});
   const [inboxCursor, setInboxCursor] = useState("");
   const [inboxHasMore, setInboxHasMore] = useState(false);
@@ -1005,13 +1011,13 @@ function EmailsSection() {
       setActionError("Inbound replies and sent provider records are read-only.");
       return;
     }
-    const edit = draftEdits[email.id] || { subject: email.subject || "", body: email.body || "" };
+    const edit = draftEdits[email.id] || { recipient_email: emailRecipient(email, companyForEmail(companies, email)), subject: email.subject || "", body: email.body || "" };
     const wasApproved = email.delivery_status === "approved";
     setBusy(`edit:${email.id}`);
     setNotice("");
     setActionError("");
     try {
-      const response = await api.updateEmail(email.id, { subject: edit.subject, body: edit.body, preview: edit.body.slice(0, 180) });
+      const response = await api.updateEmail(email.id, { recipient_email: (edit.recipient_email || emailRecipient(email, companyForEmail(companies, email))).trim(), subject: edit.subject, body: edit.body, preview: edit.body.slice(0, 180) });
       setNotice(wasApproved ? "Changes saved. This email is back in draft and must be approved again before sending." : response.message);
       await load();
     } catch (err) {
@@ -1028,7 +1034,7 @@ function EmailsSection() {
   async function confirmSend(email: Email) {
     const smokeTest = isProductionSmokeTestEmail(email);
     const smokeTestId = String(email.tags?.smoke_test_id || "");
-    const smokeRecipient = String(email.tags?.recipient_email || "");
+    const smokeRecipient = emailRecipient(email);
     setBusy(`send:${email.id}`);
     setNotice("");
     setActionError("");
@@ -1103,10 +1109,11 @@ function EmailsSection() {
       {loading ? <LoadingStateView title="Loading email approval workspace." /> : emails.length ? <div className="space-y-4"><section className="grid gap-4">{emails.map((email) => {
         const relatedCompany = companyForEmail(companies, email);
         const replySummary = replyAssistantText(email);
-        const edit = draftEdits[email.id] || { subject: email.subject || "", body: email.body || email.preview || "" };
+        const edit = draftEdits[email.id] || { recipient_email: emailRecipient(email, relatedCompany), subject: email.subject || "", body: email.body || email.preview || "" };
         const editable = canEditEmailDraft(email);
         const approvedEditable = editable && email.delivery_status === "approved";
-        const sendable = canSendApprovedEmail(email);
+        const recipient = emailRecipient(email, relatedCompany);
+        const sendable = canSendApprovedEmail(email) && Boolean(recipient);
         const recoverable = canRecoverEmailForRetry(email);
         const recoveryConfirmed = Boolean(recoverConfirmations[email.id]);
         const smokeTest = isProductionSmokeTestEmail(email);
@@ -1126,7 +1133,7 @@ function EmailsSection() {
                 </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <EvidenceLine label="Recipient" value={String(email.tags?.recipient_email || relatedCompany?.email || "Recipient not returned by this backend response")} />
+                <EvidenceLine label="Recipient" value={recipient || "Recipient not returned by this backend response"} />
                 <EvidenceLine label="Company" value={relatedCompany?.name || "Company not linked in this response"} />
                 {smokeTest ? <EvidenceLine label="Workspace" value={String(email.tags?.workspace_name || relatedCompany?.name || "Current workspace")} /> : null}
                 {smokeTest ? <EvidenceLine label="Sender" value={String(email.tags?.sender_email || "Not returned")} /> : null}
@@ -1154,6 +1161,7 @@ function EmailsSection() {
                   </div>
                 </Notice> : null}
                 {!editable && !recoverable ? <Notice tone="warn">This message is read-only because it is an inbound reply or provider delivery record.</Notice> : null}
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Recipient email<input type="email" value={edit.recipient_email} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), recipient_email: event.target.value } }))} disabled={!editable} className={fieldClass} /></label>
                 <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Subject<input value={edit.subject} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), subject: event.target.value } }))} disabled={!editable} className={fieldClass} /></label>
                 <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body<textarea value={edit.body} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), body: event.target.value } }))} disabled={!editable} className="focus-ring mt-2 min-h-48 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]" /></label>
               </div>
@@ -1181,7 +1189,7 @@ function EmailsSection() {
             {isProductionSmokeTestEmail(sendConfirmationEmail) ? (
               <div className="mt-4 grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
                 <EvidenceLine label="Smoke test ID" value={String(sendConfirmationEmail.tags?.smoke_test_id || "")} />
-                <EvidenceLine label="Recipient" value={String(sendConfirmationEmail.tags?.recipient_email || "")} />
+                <EvidenceLine label="Recipient" value={emailRecipient(sendConfirmationEmail)} />
                 <EvidenceLine label="Workspace" value={String(sendConfirmationEmail.tags?.workspace_name || "Current workspace")} />
                 <EvidenceLine label="Sender" value={String(sendConfirmationEmail.tags?.sender_email || "Not returned")} />
                 <EvidenceLine label="Provider" value={providerLabel(String(sendConfirmationEmail.tags?.sender_provider || ""))} />
@@ -1189,7 +1197,7 @@ function EmailsSection() {
             ) : (
               <div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm">
                 <EvidenceLine label="Subject" value={sendConfirmationEmail.subject || "No subject"} />
-                <EvidenceLine label="Recipient" value={String(sendConfirmationEmail.tags?.recipient_email || companyForEmail(companies, sendConfirmationEmail)?.email || "Recipient not returned by this backend response")} />
+                <EvidenceLine label="Recipient" value={emailRecipient(sendConfirmationEmail, companyForEmail(companies, sendConfirmationEmail)) || "Recipient not returned by this backend response"} />
               </div>
             )}
             <div className="mt-5 flex flex-wrap justify-end gap-2">
