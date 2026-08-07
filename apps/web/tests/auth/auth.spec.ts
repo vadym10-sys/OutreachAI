@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { mockWorkspaceApi } from "../../mocks/workspace-api";
-import { expectNoBrokenImages, installQaGuards } from "../helpers/qa-guards";
+import { expectNoBrokenImages, expectNoHorizontalOverflow, installQaGuards } from "../helpers/qa-guards";
 
 const supportHref = "mailto:outreachaiaiai@gmail.com";
 
@@ -19,6 +19,64 @@ test.describe("authentication UX", () => {
     await mockWorkspaceApi(page);
     await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: "AI Поиск" })).toBeVisible();
+  });
+
+  test("new user registration fallback reaches dashboard and creates one workspace", async ({ page }) => {
+    const workspaceRequests: string[] = [];
+    await mockWorkspaceApi(page);
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === "/api/backend/api/workspace/me") workspaceRequests.push(request.method());
+    });
+
+    await page.goto("/sign-up", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Create account" }).click();
+    await page.waitForURL("**/dashboard");
+    await expect(page.getByRole("heading", { name: "AI Поиск" })).toBeVisible();
+    expect(workspaceRequests.filter((method) => method === "GET").length).toBeLessThanOrEqual(1);
+  });
+
+  test("existing user signs in and returns to dashboard", async ({ page }) => {
+    await mockWorkspaceApi(page);
+    await page.goto("/sign-in", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Continue to workspace" }).click();
+    await page.waitForURL("**/dashboard");
+    await expect(page.getByRole("heading", { name: "AI Поиск" })).toBeVisible();
+  });
+
+  test("auth callback recovery does not render a blank screen", async ({ page }) => {
+    await page.goto("/sso-callback", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Completing sign in" })).toBeVisible();
+    await expect(page.locator("main")).not.toBeEmpty();
+  });
+
+  test("sign-up has CAPTCHA render target and retryable auth controls", async ({ page }, testInfo) => {
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/sign-up?redirect_url=/dashboard", { waitUntil: "domcontentloaded" });
+    await expect(page.getByTestId("clerk-captcha-render-target")).toBeAttached();
+    await expect(page.getByRole("button", { name: "Create account" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Back to home" })).toHaveAttribute("href", "/");
+    await guards.assertClean();
+  });
+
+  test("signed-in user does not remain on auth pages and redirect loop is absent", async ({ page }) => {
+    await mockWorkspaceApi(page);
+    await page.goto("/sign-in", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Continue to workspace" }).click();
+    await page.waitForURL("**/dashboard");
+    await page.goto("/sign-up?redirect_url=/sign-in", { waitUntil: "domcontentloaded" });
+    await page.waitForURL("**/dashboard");
+    await expect(page).not.toHaveURL(/\/sign-(in|up)/);
+  });
+
+  test("mobile sign-up page is usable without overflow", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const guards = installQaGuards(page, testInfo);
+    await page.goto("/sign-up", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "Create your account" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Create account" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await guards.assertClean();
   });
 
   test("selected Russian language also localizes auth fallbacks", async ({ page }, testInfo) => {

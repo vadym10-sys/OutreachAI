@@ -1,11 +1,12 @@
 "use client";
 
-import { SignIn, SignUp, useAuth, useClerk } from "@clerk/nextjs";
+import { SignIn, SignUp, useAuth } from "@clerk/nextjs";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { Loader2, Mail } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft, Loader2, Mail } from "lucide-react";
 import { useEffect } from "react";
 import { AppBadge, SurfaceCard } from "@/components/design-system";
+import { safeAuthRedirectUrl } from "@/lib/auth-redirect";
 import { useI18n } from "@/lib/i18n/provider";
 import { e2eUserEmail } from "@/lib/env";
 import { planByName, selectedPlanFromQuery } from "@/lib/plan-catalog";
@@ -68,16 +69,24 @@ function MissingClerkConfig({ mode }: { mode: AuthMode }) {
 
 function QaAuthPage({ mode }: { mode: AuthMode }) {
   const { t } = useI18n();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const rawPlan = mode === "sign-up" ? searchParams.get("plan") : null;
   const selectedPlan = selectedPlanFromQuery(rawPlan);
   const unknownPlan = rawPlan && !selectedPlan ? rawPlan : null;
   const isSignUp = mode === "sign-up";
+  const completeUrl = safeAuthRedirectUrl(searchParams.get("redirect_url"));
+
+  useEffect(() => {
+    if (window.localStorage.getItem("outreachai.e2eSignedOut") === "false") {
+      router.replace(completeUrl);
+    }
+  }, [completeUrl, router]);
 
   function continueAsQaUser() {
     window.localStorage.setItem("outreachai.e2eSignedOut", "false");
     window.localStorage.setItem("outreachai.e2eUserEmail", e2eUserEmail);
-    window.location.assign(isSignUp ? "/dashboard/billing" : "/dashboard");
+    window.location.assign(completeUrl);
   }
 
   return (
@@ -89,9 +98,13 @@ function QaAuthPage({ mode }: { mode: AuthMode }) {
           {t("This test-only flow is enabled only when the app runs in the isolated Playwright environment.")}
         </p>
         {isSignUp ? <PlanSummary selectedPlan={selectedPlan} unknownPlan={unknownPlan} /> : null}
+        {isSignUp ? <div id="clerk-captcha" className="mb-4 min-h-0 w-full" data-testid="clerk-captcha-render-target" /> : null}
         <button type="button" onClick={continueAsQaUser} className="focus-ring mt-6 inline-flex min-h-12 w-full items-center justify-center rounded-full bg-[var(--ui-brand)] px-4 py-2 text-sm font-black text-white shadow-soft">
-          {isSignUp ? t("Continue to billing") : t("Continue to workspace")}
+          {isSignUp ? t("Create account") : t("Continue to workspace")}
         </button>
+        <Link href="/" className="focus-ring mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-full border border-[var(--ui-border)] bg-white px-4 text-sm font-black text-[var(--ui-text)]">
+          <ArrowLeft size={16} aria-hidden="true" /> {t("Back to home")}
+        </Link>
         <SupportLink />
       </SurfaceCard>
     </main>
@@ -106,38 +119,6 @@ function AuthLoadingState() {
       <Loader2 className="mx-auto animate-spin text-brand" size={28} />
       <h1 className="mt-4 text-xl font-black text-[var(--ui-text)]">{t("Preparing secure sign in")}</h1>
       <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{t("This usually takes a few seconds.")}</p>
-    </SurfaceCard>
-  );
-}
-
-function AlreadySignedInState({ mode }: { mode: AuthMode }) {
-  const { t } = useI18n();
-  const { signOut } = useClerk();
-  const isSignUp = mode === "sign-up";
-
-  async function switchAccount() {
-    await signOut({ redirectUrl: isSignUp ? "/sign-up" : "/sign-in" });
-  }
-
-  return (
-    <SurfaceCard className="w-full max-w-md rounded-[1.75rem] p-6 text-center shadow-raised">
-      <AppBadge tone="success">{t("Account ready")}</AppBadge>
-      <h1 className="mt-4 text-3xl font-black tracking-normal text-[var(--ui-text)]">
-        {isSignUp ? t("You are already signed in") : t("You are already signed in")}
-      </h1>
-      <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">
-        {isSignUp
-          ? t("To create a different account, sign out first. To start your 14-day trial, continue to billing.")
-          : t("Continue to your workspace, or sign out if you want to use another account.")}
-      </p>
-      <div className="mt-6 grid gap-3">
-        <Link href={isSignUp ? "/dashboard/billing" : "/dashboard"} className="focus-ring inline-flex min-h-12 items-center justify-center rounded-full bg-[var(--ui-brand)] px-4 py-2 text-sm font-black text-white shadow-soft">
-          {isSignUp ? t("Start 14-day trial") : t("Open workspace")}
-        </Link>
-        <button type="button" onClick={switchAccount} className="focus-ring inline-flex min-h-12 items-center justify-center rounded-full border border-[var(--ui-border)] bg-white px-4 py-2 text-sm font-black text-[var(--ui-text)] shadow-sm">
-          {isSignUp ? t("Sign out and create a new account") : t("Sign out and use another account")}
-        </button>
-      </div>
     </SurfaceCard>
   );
 }
@@ -166,13 +147,14 @@ const clerkAppearance = {
 function ClerkAuthPage({ mode }: { mode: AuthMode }) {
   const { t } = useI18n();
   const { isLoaded, isSignedIn } = useAuth();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const isSignUp = mode === "sign-up";
   const rawPlan = searchParams.get("plan");
   const selectedPlanDetails = selectedPlanFromQuery(rawPlan);
   const selectedPlan = selectedPlanDetails?.name ?? null;
   const unknownPlan = rawPlan && !selectedPlanDetails ? rawPlan : null;
-  const authCompleteUrl = selectedPlan ? "/dashboard/billing" : "/dashboard";
+  const authCompleteUrl = safeAuthRedirectUrl(searchParams.get("redirect_url"));
 
   useEffect(() => {
     if (!selectedPlan) return;
@@ -182,6 +164,12 @@ function ClerkAuthPage({ mode }: { mode: AuthMode }) {
       // Some private mobile browsers block storage. Registration should still work.
     }
   }, [selectedPlan]);
+
+  useEffect(() => {
+    if (isLoaded && isSignedIn) {
+      router.replace(authCompleteUrl);
+    }
+  }, [authCompleteUrl, isLoaded, isSignedIn, router]);
 
   if (!isLoaded) {
     return (
@@ -194,7 +182,7 @@ function ClerkAuthPage({ mode }: { mode: AuthMode }) {
   if (isSignedIn) {
     return (
       <main className="flex min-h-screen items-center justify-center overflow-x-hidden bg-[var(--ui-bg)] px-4 py-6 min-[360px]:px-5">
-        <AlreadySignedInState mode={mode} />
+        <AuthLoadingState />
       </main>
     );
   }
@@ -219,14 +207,17 @@ function ClerkAuthPage({ mode }: { mode: AuthMode }) {
         </div>
         {isSignUp ? <PlanSummary selectedPlan={selectedPlanDetails} unknownPlan={unknownPlan} /> : null}
         {isSignUp ? (
-          <SignUp
-            routing="path"
-            path="/sign-up"
-            signInUrl="/sign-in"
-            fallbackRedirectUrl={authCompleteUrl}
-            forceRedirectUrl={authCompleteUrl}
-            appearance={clerkAppearance}
-          />
+          <>
+            <div id="clerk-captcha" className="mb-4 min-h-0 w-full" data-testid="clerk-captcha-render-target" />
+            <SignUp
+              routing="path"
+              path="/sign-up"
+              signInUrl="/sign-in"
+              fallbackRedirectUrl={authCompleteUrl}
+              forceRedirectUrl={authCompleteUrl}
+              appearance={clerkAppearance}
+            />
+          </>
         ) : (
           <>
             <SignIn
@@ -245,6 +236,9 @@ function ClerkAuthPage({ mode }: { mode: AuthMode }) {
           </>
         )}
         <div className="mt-4 text-center">
+          <Link href="/" className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-[var(--ui-border)] bg-white px-4 text-sm font-black text-[var(--ui-text)]">
+            <ArrowLeft size={16} aria-hidden="true" /> {t("Back to home")}
+          </Link>
           <SupportLink />
         </div>
       </div>

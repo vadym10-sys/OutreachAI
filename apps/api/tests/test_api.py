@@ -2599,6 +2599,36 @@ def test_admin_summary_and_logs_are_owner_only() -> None:
     assert logs.status_code == 200
 
 
+def test_workspace_is_created_once_for_repeated_first_login() -> None:
+    email = f"repeat-login-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": email}
+
+    first = client.get("/api/workspace/me", headers=headers)
+    second = client.get("/api/workspace/me", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    with get_sessionmaker()() as db:
+        workspaces = list(db.scalars(select(Workspace).where(Workspace.owner_user_id == email)).all())
+        members = list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == email)).all())
+    assert len(workspaces) == 1
+    assert len(members) == 1
+    assert members[0].role == WorkspaceRole.owner
+
+
+def test_non_owner_customer_does_not_get_owner_or_admin_access_after_signup() -> None:
+    email = f"customer-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": email}
+
+    workspace = client.get("/api/workspace/me", headers=headers)
+    denied_admin = client.get("/api/admin/summary", headers=headers)
+
+    assert workspace.status_code == 200
+    assert denied_admin.status_code == 403
+    assert workspace.json()["members"][0]["role"] == WorkspaceRole.owner.value
+
+
 def test_admin_queue_health_is_owner_only_and_reports_metrics() -> None:
     denied = client.get("/api/admin/queue/health", headers=NON_OWNER_AUTH)
     assert denied.status_code == 403
