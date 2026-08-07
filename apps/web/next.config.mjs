@@ -2,7 +2,9 @@ import { withSentryConfig } from "@sentry/nextjs";
 
 const clerkDomains = [
   "https://clerk.outreachaiaiai.com",
-  "https://*.clerk.accounts.dev"
+  "https://*.clerk.accounts.dev",
+  "https://challenges.cloudflare.com",
+  "https://*.protect.clerk.com"
 ];
 
 const stripeDomains = [
@@ -34,7 +36,7 @@ const cspDirectives = [
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.outreachaiaiai.com https://*.clerk.accounts.dev https://js.stripe.com https://vercel.live https://va.vercel-scripts.com https://cdn.logr-in.com",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
-  "img-src 'self' data: blob: https:",
+  "img-src 'self' data: blob: https: https://img.clerk.com",
   `connect-src 'self'${isTestRuntime ? " http://127.0.0.1:8000 http://localhost:8000 ws://127.0.0.1:3000 ws://localhost:3000" : ""} https://outreachai-api-production.up.railway.app https://*.railway.app ${clerkDomains.join(" ")} ${stripeDomains.join(" ")} ${analyticsDomains.join(" ")} wss://clerk.outreachaiaiai.com wss://*.clerk.accounts.dev`,
   `frame-src 'self' ${clerkDomains.join(" ")} ${stripeDomains.join(" ")}`,
   "worker-src 'self' blob:",

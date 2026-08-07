@@ -98,7 +98,6 @@ function QaAuthPage({ mode }: { mode: AuthMode }) {
           {t("This test-only flow is enabled only when the app runs in the isolated Playwright environment.")}
         </p>
         {isSignUp ? <PlanSummary selectedPlan={selectedPlan} unknownPlan={unknownPlan} /> : null}
-        {isSignUp ? <div id="clerk-captcha" className="mb-4 min-h-0 w-full" data-testid="clerk-captcha-render-target" /> : null}
         <button type="button" onClick={continueAsQaUser} className="focus-ring mt-6 inline-flex min-h-12 w-full items-center justify-center rounded-full bg-[var(--ui-brand)] px-4 py-2 text-sm font-black text-white shadow-soft">
           {isSignUp ? t("Create account") : t("Continue to workspace")}
         </button>
@@ -207,17 +206,14 @@ function ClerkAuthPage({ mode }: { mode: AuthMode }) {
         </div>
         {isSignUp ? <PlanSummary selectedPlan={selectedPlanDetails} unknownPlan={unknownPlan} /> : null}
         {isSignUp ? (
-          <>
-            <div id="clerk-captcha" className="mb-4 min-h-0 w-full" data-testid="clerk-captcha-render-target" />
-            <SignUp
-              routing="path"
-              path="/sign-up"
-              signInUrl="/sign-in"
-              fallbackRedirectUrl={authCompleteUrl}
-              forceRedirectUrl={authCompleteUrl}
-              appearance={clerkAppearance}
-            />
-          </>
+          <SignUp
+            routing="path"
+            path="/sign-up"
+            signInUrl="/sign-in"
+            fallbackRedirectUrl={authCompleteUrl}
+            forceRedirectUrl={authCompleteUrl}
+            appearance={clerkAppearance}
+          />
         ) : (
           <>
             <SignIn

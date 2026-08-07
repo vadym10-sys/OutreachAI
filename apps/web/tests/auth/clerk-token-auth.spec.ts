@@ -25,7 +25,8 @@ test.describe("Clerk production-style auth with testing tokens", () => {
     test.skip(!newEmail || !newPassword, "New Clerk test user env vars are required.");
     await setupClerkTestingToken({ page });
     await page.goto("/sign-up?redirect_url=/dashboard", { waitUntil: "domcontentloaded" });
-    await expect(page.locator("#clerk-captcha")).toBeAttached();
+    expect(await page.locator("#clerk-captcha").count()).toBeLessThanOrEqual(1);
+    await expect(page.getByTestId("clerk-captcha-render-target")).toHaveCount(0);
 
     const firstNameInput = page.locator("input[name=firstName]");
     if (await firstNameInput.isVisible()) await firstNameInput.fill("Test");

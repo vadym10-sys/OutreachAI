@@ -50,13 +50,21 @@ test.describe("authentication UX", () => {
     await expect(page.locator("main")).not.toBeEmpty();
   });
 
-  test("sign-up has CAPTCHA render target and retryable auth controls", async ({ page }, testInfo) => {
+  test("sign-up lets Clerk own CAPTCHA rendering without duplicate manual target", async ({ page }, testInfo) => {
     const guards = installQaGuards(page, testInfo);
     await page.goto("/sign-up?redirect_url=/dashboard", { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("clerk-captcha-render-target")).toBeAttached();
+    await expect(page.locator("#clerk-captcha")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Create account" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Back to home" })).toHaveAttribute("href", "/");
     await guards.assertClean();
+  });
+
+  test("auth CSP allows Clerk bot protection and Turnstile resources", async ({ page }) => {
+    const response = await page.goto("/sign-up", { waitUntil: "domcontentloaded" });
+    const csp = response?.headers()["content-security-policy"] || "";
+    expect(csp).toContain("https://challenges.cloudflare.com");
+    expect(csp).toContain("https://*.protect.clerk.com");
+    expect(csp).toContain("https://img.clerk.com");
   });
 
   test("signed-in user does not remain on auth pages and redirect loop is absent", async ({ page }) => {
