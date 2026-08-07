@@ -5705,6 +5705,7 @@ def _create_review_email_draft(db: Session, request: Request, user_id: str, work
         user_id=user_id,
         workspace_id=workspace.id,
         lead_id=lead.id,
+        recipient_email=str(lead.email or "").strip().lower() or None,
         subject=variant.subject or f"Quick idea for {lead.company}",
         preview=variant.preview,
         body=variant.full_email or variant.cold_email,
@@ -7629,6 +7630,7 @@ def create_production_email_smoke_test(payload: ProductionEmailSmokeTestCreateIn
         campaign_id=None,
         lead_id=lead.id,
         direction="outbound",
+        recipient_email=recipient,
         subject=f"[OutreachAI Production Smoke Test] {smoke_test_id}",
         preview="Internal owner-only production email smoke test. This is not customer outreach.",
         body=(
@@ -8835,6 +8837,7 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
         user_id=user.user_id,
         workspace_id=workspace.id,
         lead_id=lead.id,
+        recipient_email=str(lead.email or "").strip().lower() or None,
         subject=variant.subject or f"Quick idea for {lead.company}",
         preview=variant.preview,
         body=variant.full_email or variant.cold_email,
@@ -9261,6 +9264,7 @@ def _sync_ai_customer_finder_result_email_state(db: Session, email: EmailMessage
         "email": {
             **(metadata.get("email") if isinstance(metadata.get("email"), dict) else {}),
             "email_id": str(email.id),
+            "recipient_email": email.recipient_email or "",
             "subject": email.subject,
             "body": email.body,
             "delivery_status": email.delivery_status,
@@ -9333,6 +9337,8 @@ def update_email_draft(email_id: UUID, payload: EmailUpdate, request: Request, u
     if not updates:
         raise HTTPException(status_code=422, detail="Provide at least one editable draft field.")
     previous_status = email.delivery_status
+    if "recipient_email" in updates and previous_status != "draft":
+        raise HTTPException(status_code=409, detail="Recipient email can only be changed while the email is a draft.")
     status_transition = ""
     next_status = previous_status
     next_tags = email.tags if isinstance(email.tags, dict) else {}
@@ -9648,7 +9654,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
         _require_production_smoke_owner(db, user=user)
         tags = initial_email.tags if isinstance(initial_email.tags, dict) else {}
         smoke_test_id = str(tags.get("smoke_test_id") or "").strip()
-        smoke_recipient = str(tags.get("recipient_email") or initial_lead.email or "").strip().lower() if initial_lead else str(tags.get("recipient_email") or "").strip().lower()
+        smoke_recipient = str(tags.get("recipient_email") or initial_email.recipient_email or (initial_lead.email if initial_lead else "") or "").strip().lower()
         if not payload or not payload.confirmed_send:
             raise HTTPException(status_code=409, detail="Final send confirmation is required for production smoke-test email.")
         if str(payload.smoke_test_id or "") != smoke_test_id:
@@ -9669,10 +9675,11 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     idempotency_key = _email_send_idempotency_key(workspace.id, email_id, _email_approval_version(initial_email))
     email = _claim_approved_email_for_send(db, workspace_id=workspace.id, email_id=email_id, idempotency_key=idempotency_key)
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
-    if not lead or not lead.email:
+    recipient_email = str(email.recipient_email or (lead.email if lead else "") or "").strip().lower()
+    if not lead or not recipient_email:
         _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason="missing_recipient")
         raise HTTPException(status_code=409, detail="Add a verified recipient email before sending.")
-    if _is_placeholder_recipient(lead.email):
+    if _is_placeholder_recipient(recipient_email):
         _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason="placeholder_recipient")
         raise HTTPException(status_code=400, detail="Use a real recipient email before sending.")
 
@@ -9681,7 +9688,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
         _enforce_usage(db, user.user_id, workspace, "email_sends")
         _record_email_send_provider_context(db, workspace_id=workspace.id, email_id=email.id, sender_provider=sender_status.provider, sender_email=sender_status.sender_email)
         provider_response = send_email(
-            to_email=lead.email,
+            to_email=recipient_email,
             subject=email.subject,
             body=email.body,
             from_email=sender_status.sender_email,

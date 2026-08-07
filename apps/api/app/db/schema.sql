@@ -285,6 +285,7 @@ CREATE TABLE IF NOT EXISTS email_messages (
   lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
   direction VARCHAR(16) NOT NULL,
   subject VARCHAR(300) NOT NULL,
+  recipient_email VARCHAR(320),
   preview VARCHAR(500) NOT NULL DEFAULT '',
   body TEXT NOT NULL,
   cta VARCHAR(220) NOT NULL DEFAULT '',

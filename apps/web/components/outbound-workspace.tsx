@@ -31,7 +31,7 @@ type OpportunityReadiness = {
   ready: number;
 };
 
-type EditableDraftFields = Pick<Email, "subject" | "preview" | "body" | "cta" | "follow_up_1" | "follow_up_2">;
+type EditableDraftFields = Pick<Email, "recipient_email" | "subject" | "preview" | "body" | "cta" | "follow_up_1" | "follow_up_2">;
 
 const emptyMetrics: DashboardMetrics = {
   leads: 0,
@@ -133,6 +133,7 @@ function latestCompanyEmail(company: CrmCompany): Email | undefined {
 
 function editableDraftFields(email?: Email | null): EditableDraftFields {
   return {
+    recipient_email: email?.recipient_email || "",
     subject: email?.subject || "",
     preview: email?.preview || "",
     body: email?.body || "",
@@ -1679,7 +1680,7 @@ function OpportunityCard({
     { label: "Best next action", value: bestNextAction, tone: "ink" }
   ];
   const summaryParts = [profile.industry, profile.location, profile.size !== unavailable ? profileSizeText(profile, t) : ""].filter((item) => item && item !== unavailable);
-  const recipientEmail = String(lead.email || "").trim();
+  const recipientEmail = String(draft?.recipient_email || lead.email || "").trim();
   const opportunityScore = leadOpportunityScoreForWorkspace(lead);
   const buyingIntent = leadBuyingIntentForWorkspace(lead);
   const confidence = leadConfidenceForWorkspace(lead);
@@ -2082,15 +2083,23 @@ function OpportunityCard({
     setStatus(t("Saving email edits..."));
     try {
       const updated = await withTimeout(
-        api<Email>(`/api/emails/${draft.id}`, {
+        api<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${draft.id}`, {
           method: "PATCH",
-          body: JSON.stringify(draftFields)
+          body: JSON.stringify({
+            recipient_email: String(draftFields.recipient_email || "").trim(),
+            subject: draftFields.subject,
+            preview: draftFields.preview,
+            body: draftFields.body
+          })
         }),
         15000,
         "Email edits could not be saved. Please try again."
       );
-      setDraft(updated);
-      setDraftFields(editableDraftFields(updated));
+      if (!updated.email || updated.status !== "success") {
+        throw new Error(updated.message || "Email edits could not be saved.");
+      }
+      setDraft(updated.email);
+      setDraftFields(editableDraftFields(updated.email));
       setEditingDraft(false);
       setReadyToSend(true);
       setStatus(t("Email edits saved. Review and approve when ready."));
@@ -2935,6 +2944,15 @@ function OpportunityCard({
         </div>
         {editingDraft ? (
           <div className="mt-4 space-y-3">
+            <label className="block text-sm font-semibold text-slate-700">
+              {t("Recipient email")}
+              <input
+                type="email"
+                value={draftFields.recipient_email || ""}
+                onChange={(event) => setDraftFields((current) => ({ ...current, recipient_email: event.target.value }))}
+                className="mt-2 min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+              />
+            </label>
             <label className="block text-sm font-semibold text-slate-700">
               {t("Subject")}
               <input

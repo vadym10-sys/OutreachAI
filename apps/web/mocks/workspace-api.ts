@@ -145,7 +145,7 @@ export const qaCompany = {
     { id: "88888888-8888-8888-8888-888888888888", action: "lead.found", metadata_json: {}, created_at: now }
   ],
   generated_emails: [
-    { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: qaLead.id, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "draft" }
+    { id: "33333333-3333-3333-3333-333333333333", campaign_id: null, lead_id: qaLead.id, recipient_email: qaLead.email, subject: "Quick idea for Hill Country Build Co", preview: "A reviewed draft is ready.", body: "Hi Jane, I noticed a website conversion opportunity.", cta: "Book a growth audit", follow_up_1: "Worth a quick look?", follow_up_2: "Should I send the audit outline?", delivery_status: "draft" }
   ],
   created_at: now,
   updated_at: now,
@@ -727,6 +727,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
         ...qaCompany.generated_emails[0],
         id: "aaaaaaaa-1111-4111-8111-aaaaaaaa1111",
         lead_id: "aaaaaaaa-2222-4222-8222-aaaaaaaa2222",
+        recipient_email: recipient,
         subject: `[OutreachAI Production Smoke Test] ${smokeTestId}`,
         preview: "Internal owner-only production email smoke test. This is not customer outreach.",
         body: `Internal OutreachAI production email smoke test.\n\nSmoke test ID: ${smokeTestId}\nWorkspace: QA Private Workspace\nSender: qa.sender@example.com via gmail\nRecipient: ${recipient}`,

@@ -947,6 +947,7 @@ def _ensure_customer_finder_email_draft(db: Session, *, job: AICustomerFinderJob
         workspace_id=job.workspace_id,
         lead_id=lead.id,
         direction="outbound",
+        recipient_email=str(lead.email or "").strip().lower() or None,
         subject=subject,
         preview=(body.replace("\n", " ")[:220] if body else ""),
         body=body or _draft_email(criteria, result.company_name, _first_line_opener(result.company_name, result.signal_description), result.fit_explanation),

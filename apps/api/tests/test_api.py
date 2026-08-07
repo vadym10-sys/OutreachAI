@@ -1931,7 +1931,7 @@ def test_postgres_migration_runner_applies_011_to_existing_database_idempotently
     import app.core.database as database_module
 
     migration_paths = []
-    for version in ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]:
+    for version in database_module.REQUIRED_POSTGRES_MIGRATIONS:
         migration_path = tmp_path / f"{version}.sql"
         migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
         migration_paths.append(migration_path)
@@ -1942,7 +1942,7 @@ def test_postgres_migration_runner_applies_011_to_existing_database_idempotently
     initialize_database_schema(engine)  # type: ignore[arg-type]
     initialize_database_schema(engine)  # type: ignore[arg-type]
 
-    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"}
+    assert state.applied_versions == set(database_module.REQUIRED_POSTGRES_MIGRATIONS)
     assert {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}.issubset(state.tables)
     assert state.migration_executions == 1
     assert sum("pg_advisory_lock" in statement for statement in state.statements) == 2
@@ -1955,7 +1955,7 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
     import app.core.database as database_module
 
     migration_paths = []
-    for version in ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]:
+    for version in database_module.REQUIRED_POSTGRES_MIGRATIONS:
         migration_path = tmp_path / f"{version}.sql"
         migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
         migration_paths.append(migration_path)
@@ -1978,7 +1978,7 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
 
     assert errors == []
     assert state.migration_executions == 1
-    assert state.applied_versions == {"011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"}
+    assert state.applied_versions == set(database_module.REQUIRED_POSTGRES_MIGRATIONS)
     assert sum("pg_advisory_lock" in statement for statement in state.statements) == 2
     assert sum("pg_advisory_unlock" in statement for statement in state.statements) == 2
 
@@ -1990,7 +1990,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(t
     migration_path.write_text((REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(), encoding="utf-8")
     monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
     state = _FakePostgresState()
-    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes"}
+    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes", "014_email_message_recipient_email"}
     state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
     engine = _FakePostgresEngine(state)
@@ -2092,12 +2092,13 @@ def test_postgres_migration_runner_repairs_real_invalid_concurrent_index(monkeyp
                     """
                 )
             ).scalar() is True
-        monkeypatch.setattr(database_module, "_migration_paths", lambda: [REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql"])
+        monkeypatch.setattr(database_module, "_migration_paths", lambda: [REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql", REPO_ROOT / "db" / "migrations" / "014_email_message_recipient_email.sql"])
 
         initialize_database_schema(temp_engine)
 
         with temp_engine.connect() as connection:
             assert connection.execute(text("SELECT version FROM schema_migrations WHERE version = '013_production_hardening_read_paths'")).scalar() == "013_production_hardening_read_paths"
+            assert connection.execute(text("SELECT version FROM schema_migrations WHERE version = '014_email_message_recipient_email'")).scalar() == "014_email_message_recipient_email"
             assert connection.execute(
                 text(
                     """
@@ -2134,7 +2135,7 @@ def test_postgres_migration_failure_sets_negative_schema_status(tmp_path, monkey
 
     status = database_module.get_runtime_schema_status()
     assert status.ready is False
-    assert status.pending_migrations == ["011_ai_memory", "012_crm_inbox_read_indexes", "013_production_hardening_read_paths"]
+    assert status.pending_migrations == list(database_module.REQUIRED_POSTGRES_MIGRATIONS)
     assert set(status.missing_tables) == {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
     assert "synthetic migration failure" in status.error
 
@@ -2146,11 +2147,15 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     packaged_read_indexes = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "012_crm_inbox_read_indexes.sql").read_text(encoding="utf-8")
     root_hardening = (REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
     packaged_hardening = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
+    root_recipient = (REPO_ROOT / "db" / "migrations" / "014_email_message_recipient_email.sql").read_text(encoding="utf-8")
+    packaged_recipient = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "014_email_message_recipient_email.sql").read_text(encoding="utf-8")
 
     assert packaged_migration == root_migration
     assert packaged_read_indexes == root_read_indexes
     assert packaged_hardening == root_hardening
+    assert packaged_recipient == root_recipient
     assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_logs_workspace_lead_created_id" in root_hardening
+    assert "ADD COLUMN IF NOT EXISTS recipient_email" in root_recipient
     assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
 
 
@@ -4599,6 +4604,7 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert draft.json()["status"] == "success"
     email = draft.json()["email"]
     assert email["delivery_status"] == "draft"
+    assert email["recipient_email"] == "dana@usage-email.example"
 
     cross_workspace_edit = client.patch(
         f"/api/workspace-app/emails/{email['id']}",
@@ -4614,9 +4620,10 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     edited = client.patch(
         f"/api/workspace-app/emails/{email['id']}",
         headers=headers,
-        json={"subject": "Edited idea for Usage Email Build", "body": "Hi Dana, this is the reviewed draft."},
+        json={"recipient_email": "  Safe.Recipient+Draft@Recipient-Safety-Mail.com  ", "subject": "Edited idea for Usage Email Build", "body": "Hi Dana, this is the reviewed draft."},
     )
     assert edited.status_code == 200
+    assert edited.json()["email"]["recipient_email"] == "safe.recipient+draft@recipient-safety-mail.com"
     assert edited.json()["email"]["subject"] == "Edited idea for Usage Email Build"
     assert edited.json()["email"]["body"] == "Hi Dana, this is the reviewed draft."
 
@@ -4639,9 +4646,11 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     )
     assert sender_setup.status_code == 200
 
+    provider_calls: list[dict[str, object]] = []
     sent_payload: dict[str, object] = {}
 
     def fake_send(**kwargs):
+        provider_calls.append(kwargs)
         sent_payload.update(kwargs)
         return {"id": "workspace-app-send-1", "thread_id": "workspace-app-thread-1"}
 
@@ -4654,23 +4663,29 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert sent_payload["from_email"] == "sales@usage-email.example"
     assert sent_payload["from_name"] == "Usage Sales"
     assert sent_payload["reply_to"] == "reply@usage-email.example"
+    assert sent_payload["to_email"] == "safe.recipient+draft@recipient-safety-mail.com"
     assert sent_payload["subject"] == "Edited idea for Usage Email Build"
     assert sent_payload["body"] == "Hi Dana, this is the reviewed draft."
 
     with get_sessionmaker()() as db:
         saved_email = db.get(EmailMessage, UUID(email["id"]))
         assert saved_email is not None
+        assert saved_email.recipient_email == "safe.recipient+draft@recipient-safety-mail.com"
+        saved_lead = db.get(Lead, saved_email.lead_id)
+        assert saved_lead is not None
+        assert saved_lead.email == "dana@usage-email.example"
         assert sent_payload["idempotency_key"] == f"workspace-app-email-send:{saved_email.workspace_id}:{email['id']}:v1"
         assert saved_email.tags["provider_thread_id"] == "workspace-app-thread-1"
         edit_log = db.scalar(select(AuditLog).where(AuditLog.action == "email.edited", AuditLog.workspace_id == saved_email.workspace_id).order_by(AuditLog.created_at.desc()))
         assert edit_log is not None
-        assert edit_log.metadata_json["fields"] == ["body", "subject"]
+        assert edit_log.metadata_json["fields"] == ["body", "recipient_email", "subject"]
 
     send_again = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
     assert send_again.status_code == 409
     assert "already been sent" in send_again.json()["detail"]
+    assert len(provider_calls) == 1
 
-    edit_sent = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"body": "Too late"})
+    edit_sent = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"recipient_email": "too-late@example.com", "body": "Too late"})
     assert edit_sent.status_code == 409
     assert "provider records cannot be edited" in edit_sent.json()["detail"]
 
@@ -4800,18 +4815,35 @@ def test_workspace_app_email_patch_state_machine_and_audit_regressions(monkeypat
     empty_subject = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"subject": "   "})
     assert empty_subject.status_code == 422
 
+    invalid_recipient = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"recipient_email": "not-an-email"})
+    assert invalid_recipient.status_code == 422
+
     draft_edit = client.patch(
         f"/api/workspace-app/emails/{email['id']}",
         headers=headers,
-        json={"subject": "Reviewed draft subject", "body": "Reviewed draft body", "preview": "Reviewed preview"},
+        json={"recipient_email": "Reviewed.Recipient@Patch-Safety.Example", "subject": "Reviewed draft subject", "body": "Reviewed draft body", "preview": "Reviewed preview"},
     )
     assert draft_edit.status_code == 200
     assert draft_edit.json()["email"]["delivery_status"] == "draft"
+    assert draft_edit.json()["email"]["recipient_email"] == "reviewed.recipient@patch-safety.example"
     assert draft_edit.json()["email"]["subject"] == "Reviewed draft subject"
 
     approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
     assert approved.status_code == 200
     assert approved.json()["email"]["delivery_status"] == "approved"
+
+    approved_recipient_edit = client.patch(
+        f"/api/workspace-app/emails/{email['id']}",
+        headers=headers,
+        json={"recipient_email": "approved-change@patch-safety.example"},
+    )
+    assert approved_recipient_edit.status_code == 409
+    assert "Recipient email can only be changed while the email is a draft" in approved_recipient_edit.json()["detail"]
+    with get_sessionmaker()() as db:
+        unchanged_email = db.get(EmailMessage, UUID(email["id"]))
+        assert unchanged_email is not None
+        assert unchanged_email.delivery_status == "approved"
+        assert unchanged_email.recipient_email == "reviewed.recipient@patch-safety.example"
 
     approved_edit = client.patch(
         f"/api/workspace-app/emails/{email['id']}",
@@ -4874,7 +4906,7 @@ def test_workspace_app_email_patch_state_machine_and_audit_regressions(monkeypat
     inbound_edit = client.patch(f"/api/workspace-app/emails/{inbound_id}", headers=headers, json={"subject": "Inbound changed"})
     assert inbound_edit.status_code == 409
     for provider_id in [*provider_ids, captured_reply_id]:
-        rejected = client.patch(f"/api/workspace-app/emails/{provider_id}", headers=headers, json={"body": "Provider record changed"})
+        rejected = client.patch(f"/api/workspace-app/emails/{provider_id}", headers=headers, json={"recipient_email": "provider-change@patch-safety.example", "body": "Provider record changed"})
         assert rejected.status_code == 409
 
     with get_sessionmaker()() as db:
