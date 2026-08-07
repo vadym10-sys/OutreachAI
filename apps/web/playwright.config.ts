@@ -3,6 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 const isCI = Boolean(process.env.CI);
 const port = Number(process.env.PLAYWRIGHT_PORT || 3000);
 const baseURL = `http://127.0.0.1:${port}`;
+const clerkDependencies = ["clerk setup"];
 
 export default defineConfig({
   testDir: ".",
@@ -51,13 +52,14 @@ export default defineConfig({
     video: "retain-on-failure"
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "firefox", use: { ...devices["Desktop Firefox"] }, testMatch: ["tests/**/*.spec.ts"] },
-    { name: "webkit", use: { ...devices["Desktop Safari"] }, testMatch: ["tests/**/*.spec.ts"] },
-    { name: "laptop", use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 } }, testMatch: ["tests/dashboard/**/*.spec.ts", "tests/auth/**/*.spec.ts"] },
-    { name: "tablet", use: { ...devices["iPad Pro 11"] }, testMatch: ["tests/dashboard/**/*.spec.ts", "tests/accessibility/**/*.spec.ts"] },
-    { name: "iphone", use: { ...devices["iPhone 13"] }, testMatch: ["e2e/**/*.spec.ts", "tests/**/*.spec.ts"] },
-    { name: "android", use: { ...devices["Pixel 5"], browserName: "chromium" }, testMatch: ["e2e/**/*.spec.ts", "tests/**/*.spec.ts"] },
-    { name: "mobile-landscape", use: { ...devices["Pixel 5 landscape"], browserName: "chromium" }, testMatch: ["tests/dashboard/**/*.spec.ts", "tests/mobile/**/*.spec.ts", "tests/accessibility/**/*.spec.ts"] }
+    { name: "clerk setup", testMatch: ["tests/auth/clerk.setup.ts"] },
+    { name: "chromium", dependencies: clerkDependencies, use: { ...devices["Desktop Chrome"] } },
+    { name: "firefox", dependencies: clerkDependencies, use: { ...devices["Desktop Firefox"] }, testMatch: ["tests/**/*.spec.ts"] },
+    { name: "webkit", dependencies: clerkDependencies, use: { ...devices["Desktop Safari"] }, testMatch: ["tests/**/*.spec.ts"] },
+    { name: "laptop", dependencies: clerkDependencies, use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 768 } }, testMatch: ["tests/dashboard/**/*.spec.ts", "tests/auth/**/*.spec.ts"] },
+    { name: "tablet", dependencies: clerkDependencies, use: { ...devices["iPad Pro 11"] }, testMatch: ["tests/dashboard/**/*.spec.ts", "tests/accessibility/**/*.spec.ts"] },
+    { name: "iphone", dependencies: clerkDependencies, use: { ...devices["iPhone 13"] }, testMatch: ["e2e/**/*.spec.ts", "tests/**/*.spec.ts"] },
+    { name: "android", dependencies: clerkDependencies, use: { ...devices["Pixel 5"], browserName: "chromium" }, testMatch: ["e2e/**/*.spec.ts", "tests/**/*.spec.ts"] },
+    { name: "mobile-landscape", dependencies: clerkDependencies, use: { ...devices["Pixel 5 landscape"], browserName: "chromium" }, testMatch: ["tests/dashboard/**/*.spec.ts", "tests/mobile/**/*.spec.ts", "tests/accessibility/**/*.spec.ts"] }
   ]
 });

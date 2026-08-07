@@ -30,6 +30,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@clerk/testing": "^2.2.18",
     "@playwright/test": "^1.44.1",
     "@testing-library/react": "^15.0.7",
     "@types/node": "^20.14.8",

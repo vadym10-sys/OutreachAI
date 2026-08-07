@@ -20,7 +20,7 @@ from uuid import uuid4
 import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
-from sqlalchemy import and_, asc, desc, func, or_, select
+from sqlalchemy import and_, asc, desc, func, or_, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.orm.attributes import flag_modified
@@ -258,29 +258,12 @@ def _private_workspace_name(email: str = "") -> str:
     return "Private workspace"
 
 
-def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
-    workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
-    if workspace is not None:
-        if workspace.name in {"Outreach workspace", "Private workspace"}:
-            workspace.name = _private_workspace_name(email)
-            db.add(workspace)
-            db.flush()
-        existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
-        if existing_member:
-            existing_member.email = email or existing_member.email
-            existing_member.role = WorkspaceRole.owner
-            existing_member.status = "active"
-            db.add(existing_member)
-        else:
-            db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=email, role=WorkspaceRole.owner, status="active"))
-        db.commit()
-        db.refresh(workspace)
-        set_workspace_context(workspace.id)
-        return workspace
+def _lock_workspace_creation(db: Session, user_id: str) -> None:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"workspace:{user_id}"})
 
-    workspace = Workspace(owner_user_id=user_id, name=_private_workspace_name(email))
-    db.add(workspace)
-    db.flush()
+
+def _ensure_workspace_owner_member(db: Session, workspace: Workspace, user_id: str, email: str = "") -> None:
     existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
     if existing_member:
         existing_member.email = email or existing_member.email
@@ -289,6 +272,26 @@ def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
         db.add(existing_member)
     else:
         db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=email, role=WorkspaceRole.owner, status="active"))
+
+
+def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
+    _lock_workspace_creation(db, user_id)
+    workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
+    if workspace is not None:
+        if workspace.name in {"Outreach workspace", "Private workspace"}:
+            workspace.name = _private_workspace_name(email)
+            db.add(workspace)
+            db.flush()
+        _ensure_workspace_owner_member(db, workspace, user_id, email)
+        db.commit()
+        db.refresh(workspace)
+        set_workspace_context(workspace.id)
+        return workspace
+
+    workspace = Workspace(owner_user_id=user_id, name=_private_workspace_name(email))
+    db.add(workspace)
+    db.flush()
+    _ensure_workspace_owner_member(db, workspace, user_id, email)
     db.commit()
     db.refresh(workspace)
     set_workspace_context(workspace.id)

@@ -16,7 +16,9 @@ export default function SSOCallbackPage() {
         <h1 className="text-xl font-bold text-ink">Completing sign in</h1>
         <p className="mt-2 text-sm leading-6 text-slate-600">Securely finishing your sign in.</p>
         <div className="mt-5">
-          {hasClerkPublishableKey ? <AuthenticateWithRedirectCallback /> : <SignInUnavailable />}
+          {hasClerkPublishableKey ? (
+            <AuthenticateWithRedirectCallback signInFallbackRedirectUrl="/dashboard" signUpFallbackRedirectUrl="/dashboard" />
+          ) : <SignInUnavailable />}
         </div>
       </div>
     </main>
