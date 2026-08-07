@@ -33,7 +33,7 @@ const cspDirectives = [
   "object-src 'none'",
   "frame-ancestors 'none'",
   "form-action 'self' https://clerk.outreachaiaiai.com https://*.clerk.accounts.dev",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://clerk.outreachaiaiai.com https://*.clerk.accounts.dev https://js.stripe.com https://vercel.live https://va.vercel-scripts.com https://cdn.logr-in.com",
+  `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${clerkDomains.join(" ")} https://js.stripe.com https://vercel.live https://va.vercel-scripts.com https://cdn.logr-in.com`,
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src 'self' data: https://fonts.gstatic.com",
   "img-src 'self' data: blob: https: https://img.clerk.com",

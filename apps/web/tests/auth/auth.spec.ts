@@ -62,8 +62,15 @@ test.describe("authentication UX", () => {
   test("auth CSP allows Clerk bot protection and Turnstile resources", async ({ page }) => {
     const response = await page.goto("/sign-up", { waitUntil: "domcontentloaded" });
     const csp = response?.headers()["content-security-policy"] || "";
-    expect(csp).toContain("https://challenges.cloudflare.com");
-    expect(csp).toContain("https://*.protect.clerk.com");
+    const scriptSrc = csp.split("; ").find((directive) => directive.startsWith("script-src")) || "";
+    const connectSrc = csp.split("; ").find((directive) => directive.startsWith("connect-src")) || "";
+    const frameSrc = csp.split("; ").find((directive) => directive.startsWith("frame-src")) || "";
+    expect(scriptSrc).toContain("https://challenges.cloudflare.com");
+    expect(scriptSrc).toContain("https://*.protect.clerk.com");
+    expect(connectSrc).toContain("https://challenges.cloudflare.com");
+    expect(connectSrc).toContain("https://*.protect.clerk.com");
+    expect(frameSrc).toContain("https://challenges.cloudflare.com");
+    expect(frameSrc).toContain("https://*.protect.clerk.com");
     expect(csp).toContain("https://img.clerk.com");
   });
 
