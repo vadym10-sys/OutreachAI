@@ -410,6 +410,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
   let currentInbox: any[] = [];
   let currentAnalysis: any = { ...qaSalesAnalysisV2 };
   let smokeProviderCalls = 0;
+  let ordinarySendConfirmed = false;
   const memoryEntry = {
     id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
     memory_type: "verified_fact",
@@ -433,6 +434,31 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
   };
   let analysisHistory: any[] = [{ ...qaSalesAnalysisV2 }, { ...qaSalesAnalysisV1 }];
   let currentProfile = { workspace: "QA Private Workspace", company: "QA Private Workspace", avatar_url: null, timezone: "UTC", language: "en" };
+  let currentWorkspace: any = {
+    id: "99999999-9999-9999-9999-999999999999",
+    name: "QA Private Workspace",
+    company: "QA Private Workspace",
+    industry: "Construction",
+    target_country: "United States",
+    target_customer: "Commercial builders",
+    offer: "Booked-meeting system for commercial renovation teams",
+    cta: "Book a growth audit",
+    tone: "Consultative",
+    timezone: "UTC",
+    language: "en",
+    onboarding_step: 1,
+    onboarding_completed: false,
+    members: [
+      {
+        id: "99999999-9999-9999-9999-999999999998",
+        user_id: "e2e-user",
+        email: "qa@example.com",
+        role: "owner",
+        status: "active",
+        created_at: now
+      }
+    ]
+  };
   let currentFinderJob: any = {
     ...qaCustomerFinderJob,
     status: "completed",
@@ -450,28 +476,11 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       }
       return fulfillJson(route, override.body, override.status || 200);
     }
-    if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, {
-      id: "99999999-9999-9999-9999-999999999999",
-      name: "QA Private Workspace",
-      company: "QA Private Workspace",
-      industry: "Construction",
-      target_country: "United States",
-      target_customer: "Commercial builders",
-      timezone: "UTC",
-      language: "en",
-      onboarding_step: 1,
-      onboarding_completed: false,
-      members: [
-        {
-          id: "99999999-9999-9999-9999-999999999998",
-          user_id: "e2e-user",
-          email: "qa@example.com",
-          role: "owner",
-          status: "active",
-          created_at: now
-        }
-      ]
-    });
+    if (apiPath === "/api/workspace" && route.request().method() === "PUT") {
+      currentWorkspace = { ...currentWorkspace, ...route.request().postDataJSON() };
+      return fulfillJson(route, currentWorkspace);
+    }
+    if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, currentWorkspace);
     if (apiPath === "/api/leads" && route.request().method() === "POST") {
       const body = route.request().postDataJSON() as Partial<typeof qaLead>;
       return fulfillJson(route, {
@@ -925,6 +934,14 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, { status: "success", message: "Email draft created for review. Nothing was sent.", company, email });
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve") {
+      const body = route.request().postData() ? route.request().postDataJSON() as { confirmed_exact_draft?: boolean; sender_email?: string; recipient_email?: string; subject?: string; body?: string } : {};
+      if (body.confirmed_exact_draft) {
+        const currentEmail = currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0];
+        if (body.sender_email !== "qa.sender@example.com" || body.recipient_email !== currentEmail.recipient_email || body.subject !== currentEmail.subject || body.body !== currentEmail.body) {
+          return fulfillJson(route, { detail: "The displayed sender, recipient, subject, or body no longer matches this draft. Refresh and confirm again." }, 409);
+        }
+        ordinarySendConfirmed = true;
+      }
       const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "approved" };
       currentCompany = { ...currentCompany, crm_stage: "Approved", email_approved_at: now, generated_emails: [email] };
       currentFinderJob = {
@@ -940,11 +957,14 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       const currentEmail = currentCompany.generated_emails[0];
       const email = { ...currentEmail, ...body, delivery_status: currentEmail.delivery_status === "approved" ? "draft" : currentEmail.delivery_status };
       currentCompany = { ...currentCompany, generated_emails: [email] };
+      ordinarySendConfirmed = false;
       return fulfillJson(route, { status: "success", message: currentEmail.delivery_status === "approved" ? "Changes saved. This email is back in draft and must be approved again before sending." : "Email draft saved. Review and approve before sending.", company: currentCompany, email });
     }
     if (apiPath === "/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send") {
-      const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "sent", sent_at: now };
+      if (!ordinarySendConfirmed) return fulfillJson(route, { detail: "Confirm the exact sender, recipient, subject, and body before sending." }, 409);
+      const email = { ...(currentCompany.generated_emails?.[0] || qaCompany.generated_emails[0]), delivery_status: "sent", sent_at: now, provider_message_id: "mock-provider-1" };
       currentCompany = { ...currentCompany, crm_stage: "Sent", email_sent_at: now, generated_emails: [email] };
+      ordinarySendConfirmed = false;
       return fulfillJson(route, { status: "success", message: "Approved email was sent. CRM stage updated.", company: currentCompany, email });
     }
     if (apiPath === "/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/approve") {

@@ -489,20 +489,15 @@ function ResultCard({
   result,
   busy,
   onSave,
-  onApprove,
-  onSend,
   hideActions = false
 }: {
   result: FirstCustomerResult;
   busy: string;
   onSave(result: FirstCustomerResult): void;
-  onApprove(result: FirstCustomerResult): void;
-  onSend(result: FirstCustomerResult): void;
   hideActions?: boolean;
 }) {
   const saved = Boolean(result.company_id || result.lead_id);
   const emailId = latestDraftForResult(result);
-  const canSend = Boolean(emailId && result.public_work_contact);
   const overallScore = result.overall_lead_score ?? result.ai_relevance_score;
   const contactConfidence = result.contact_confidence_score ?? result.confidence_score;
   const outreachReadiness = result.outreach_readiness_score;
@@ -526,12 +521,9 @@ function ResultCard({
           <AppButton size="sm" disabled={Boolean(busy) || saved} onClick={() => onSave(result)} aria-label={`${saved ? "Saved" : "Сохранить в CRM"} ${result.company_name}`}>
             {busy === `save:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} {saved ? "Saved" : "Сохранить в CRM"}
           </AppButton>
-          <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !emailId} onClick={() => onApprove(result)} aria-label={`Approve draft for ${result.company_name}`}>
-            {busy === `approve:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />} Approve draft
-          </AppButton>
-          <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !canSend} onClick={() => onSend(result)} aria-label={`Send email for ${result.company_name}`}>
-            {busy === `send:${result.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send approved
-          </AppButton>
+          <Link href="/dashboard/emails" aria-disabled={!emailId} className={`focus-ring inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-[var(--ui-border)] px-3 text-sm font-black shadow-sm ${emailId ? "bg-white text-[var(--ui-text)]" : "pointer-events-none bg-slate-100 text-slate-400"}`}>
+            <Mail size={16} /> Review draft
+          </Link>
         </div> : null}
       </div>
       <div className="mt-5 grid gap-3 lg:grid-cols-4">
@@ -721,40 +713,6 @@ function AssistantSection() {
     }
   }
 
-  async function approveResultDraft(result: FirstCustomerResult) {
-    const emailId = latestDraftForResult(result);
-    if (!emailId) return;
-    setBusy(`approve:${result.id}`);
-    setError("");
-    setNotice("");
-    try {
-      const response = await api.approveEmail(emailId);
-      setNotice(response.message);
-      if (job) setJob(await api.getCustomerFinderJob(job.id));
-    } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not approve this draft."));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function sendResultDraft(result: FirstCustomerResult) {
-    const emailId = latestDraftForResult(result);
-    if (!emailId || !window.confirm("Send this approved email now? OutreachAI will not send automatically.")) return;
-    setBusy(`send:${result.id}`);
-    setError("");
-    setNotice("");
-    try {
-      const response = await api.sendApprovedEmail(emailId);
-      setNotice(response.message);
-      if (job) setJob(await api.getCustomerFinderJob(job.id));
-    } catch (err) {
-      setError(friendlyErrorMessage(err, "Could not send this email."));
-    } finally {
-      setBusy("");
-    }
-  }
-
   function updateAdvanced<K extends keyof AiAssistantCommand>(key: K, value: AiAssistantCommand[K]) {
     setAdvanced((current) => ({ ...current, [key]: value }));
   }
@@ -859,8 +817,8 @@ function AssistantSection() {
         </PremiumPanel>
       </section>
       {job?.results.length ? <div className="grid gap-5">
-        {job.results.filter((result) => !needsReviewTier(result)).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Verified / Relevant</h2>{job.results.filter((result) => !needsReviewTier(result)).map((result) => <ResultCard key={result.id} result={result} busy={busy} onSave={saveResult} onApprove={approveResultDraft} onSend={sendResultDraft} />)}</section> : null}
-        {job.results.filter(needsReviewTier).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-amber-700">Needs review</h2>{job.results.filter(needsReviewTier).map((result) => <ResultCard key={result.id} result={result} busy={busy} onSave={saveResult} onApprove={approveResultDraft} onSend={sendResultDraft} />)}</section> : null}
+        {job.results.filter((result) => !needsReviewTier(result)).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Verified / Relevant</h2>{job.results.filter((result) => !needsReviewTier(result)).map((result) => <ResultCard key={result.id} result={result} busy={busy} onSave={saveResult} />)}</section> : null}
+        {job.results.filter(needsReviewTier).length ? <section className="grid gap-3"><h2 className="text-sm font-black uppercase tracking-[0.08em] text-amber-700">Needs review</h2>{job.results.filter(needsReviewTier).map((result) => <ResultCard key={result.id} result={result} busy={busy} onSave={saveResult} />)}</section> : null}
       </div> : null}
       {jobs.length > 1 ? <details className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white shadow-sm"><summary className={detailSummaryClass}>Previous searches <ChevronDown size={16} /></summary><div className="border-t border-[var(--ui-border)] p-2">{jobs.slice(1).map((item) => <button key={item.id} type="button" onClick={() => setJob(item)} className="focus-ring flex min-h-11 w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition hover:bg-slate-50"><span>{pretty(item.status)}</span><span className="font-bold">{item.results.length} result(s)</span></button>)}</div></details> : null}
     </Frame>
@@ -951,14 +909,16 @@ function EmailsSection() {
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
   const [sendConfirmationEmail, setSendConfirmationEmail] = useState<Email | null>(null);
+  const [sender, setSender] = useState<OutreachSenderStatus | null>(null);
   const emails = useMemo(() => uniqueEmails(companies, inbox), [companies, inbox]);
   const load = useCallback(async () => {
     if (!api.ready) return;
     setLoading(true);
     try {
-      const [nextCompanies, nextInbox] = await Promise.all([api.listCompanies(), api.listEmails("", aiFirstInboxPageSize)]);
+      const [nextCompanies, nextInbox, nextSender] = await Promise.all([api.listCompanies(), api.listEmails("", aiFirstInboxPageSize), api.senderStatus()]);
       setCompanies(nextCompanies);
       setInbox(nextInbox.messages);
+      setSender(nextSender);
       setDraftEdits((current) => mergeDraftEdits(current, uniqueEmails(nextCompanies, nextInbox.messages)));
       setInboxCursor(nextInbox.nextCursor);
       setInboxHasMore(nextInbox.hasMore);
@@ -1041,10 +1001,26 @@ function EmailsSection() {
     const smokeTest = isProductionSmokeTestEmail(email);
     const smokeTestId = String(email.tags?.smoke_test_id || "");
     const smokeRecipient = emailRecipient(email);
+    const relatedCompany = companyForEmail(companies, email);
+    const edit = draftEdits[email.id] || { recipient_email: emailRecipient(email, relatedCompany), subject: email.subject || "", body: email.body || email.preview || "" };
+    const senderEmail = String(sender?.oauth_mailbox || sender?.sender_email || email.tags?.sender_email || "").trim().toLowerCase();
+    const recipientEmail = String(edit.recipient_email || smokeRecipient || "").trim().toLowerCase();
     setBusy(`send:${email.id}`);
     setNotice("");
     setActionError("");
     try {
+      if (!smokeTest) {
+        if (!senderEmail || !recipientEmail || !edit.subject || !edit.body) {
+          throw new Error("Sender, recipient, subject, and body are required before final send confirmation.");
+        }
+        await api.approveEmail(email.id, {
+          confirmed_exact_draft: true,
+          sender_email: senderEmail,
+          recipient_email: recipientEmail,
+          subject: edit.subject,
+          body: edit.body
+        });
+      }
       const response = await api.sendApprovedEmail(email.id, smokeTest ? { confirmed_send: true, smoke_test_id: smokeTestId, recipient_email: smokeRecipient } : undefined);
       setNotice(response.message);
       setSendConfirmationEmail(null);
@@ -1202,9 +1178,22 @@ function EmailsSection() {
                 <EvidenceLine label="Provider" value={providerLabel(String(sendConfirmationEmail.tags?.sender_provider || ""))} />
               </div>
             ) : (
-              <div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm">
-                <EvidenceLine label="Subject" value={sendConfirmationEmail.subject || "No subject"} />
-                <EvidenceLine label="Recipient" value={emailRecipient(sendConfirmationEmail, companyForEmail(companies, sendConfirmationEmail)) || "Recipient not returned by this backend response"} />
+              <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm">
+                {(() => {
+                  const relatedCompany = companyForEmail(companies, sendConfirmationEmail);
+                  const edit = draftEdits[sendConfirmationEmail.id] || { recipient_email: emailRecipient(sendConfirmationEmail, relatedCompany), subject: sendConfirmationEmail.subject || "", body: sendConfirmationEmail.body || sendConfirmationEmail.preview || "" };
+                  return (
+                    <>
+                      <EvidenceLine label="Sender" value={String(sender?.oauth_mailbox || sender?.sender_email || "Sender not connected")} />
+                      <EvidenceLine label="Recipient" value={edit.recipient_email || "Recipient not returned by this backend response"} />
+                      <EvidenceLine label="Subject" value={edit.subject || "No subject"} />
+                      <div>
+                        <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Full body</p>
+                        <pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-xl bg-white p-3 text-sm leading-6 text-slate-800">{edit.body || "No body"}</pre>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             )}
             <div className="mt-5 flex flex-wrap justify-end gap-2">
@@ -1427,6 +1416,9 @@ function SettingsSection() {
         industry: String(data.get("industry") || ""),
         target_country: String(data.get("target_country") || ""),
         target_customer: String(data.get("target_customer") || ""),
+        offer: String(data.get("offer") || ""),
+        cta: String(data.get("cta") || "Book a quick call"),
+        tone: String(data.get("tone") || "Professional"),
         timezone: workspace?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
       });
       setWorkspace(updated);
@@ -1523,7 +1515,7 @@ function SettingsSection() {
       {error ? <Notice tone="bad">{error}</Notice> : null}
       {loading ? <LoadingStateView title="Loading workspace settings." /> : null}
       <section className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-        <form onSubmit={save} className="ui-card rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-[var(--ui-text-soft)]">Name<input name="name" defaultValue={workspace?.name || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Company<input name="company" defaultValue={workspace?.company || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Industry<input name="industry" defaultValue={workspace?.industry || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className={fieldClass} /></label></div><AppButton type="submit" size="md" className="mt-4"><CheckCircle2 size={16} /> Save workspace</AppButton></form>
+        <form onSubmit={save} className="ui-card rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-[var(--ui-text-soft)]">Name<input name="name" defaultValue={workspace?.name || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Company<input name="company" defaultValue={workspace?.company || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Industry<input name="industry" defaultValue={workspace?.industry || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Offer<textarea name="offer" defaultValue={workspace?.offer || ""} className="focus-ring mt-2 min-h-28 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7" /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Tone<input name="tone" defaultValue={workspace?.tone || "Professional"} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">CTA<input name="cta" defaultValue={workspace?.cta || "Book a quick call"} className={fieldClass} /></label></div><AppButton type="submit" size="md" className="mt-4"><CheckCircle2 size={16} /> Save workspace</AppButton></form>
         <div className="grid gap-4"><SurfaceCard className="rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-2xl border border-[var(--ui-border)] p-3 transition hover:border-[var(--ui-border-strong)]"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><AppBadge tone={item.status === "connected" ? "success" : "warning"}>{item.status}</AppBadge></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></SurfaceCard><SurfaceCard className="rounded-[1.75rem] p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><AppBadge tone={gmailReady ? "success" : "warning"}>{gmailReady ? "connected" : "needs OAuth"}</AppBadge></div><div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><AppButton size="sm" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()}><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</AppButton>{gmailReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void disconnectGmail()}>Disconnect</AppButton> : null}<AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void load()} aria-label="Refresh settings"><RefreshCw size={16} /> Refresh</AppButton></div></SurfaceCard></div>
       </section>
       {isSystemOwner ? <SurfaceCard className="rounded-[1.75rem] p-5">

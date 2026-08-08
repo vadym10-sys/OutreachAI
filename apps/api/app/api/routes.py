@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import base64
 import concurrent.futures
+import hashlib
 import io
 import json
 import logging
@@ -29,7 +30,7 @@ from app.core.cache import cache_key, get_json, set_json
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
 from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
-from app.core.security import CurrentUser, CurrentUserContext, OwnerUser, WorkspaceUserContext
+from app.core.security import CurrentUser, CurrentUserContext, OwnerUser, WorkspaceUserContext, authenticated_user_id_from_authorization
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
@@ -219,6 +220,7 @@ from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError,
 router = APIRouter()
 logger = logging.getLogger("outreachai.api.routes")
 LEAD_PROVIDER_TIMEOUT_SECONDS = 10
+GMAIL_OAUTH_STATE_TTL_SECONDS = 600
 
 
 LEGACY_STATUS_MAP = {
@@ -289,11 +291,20 @@ def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
         return workspace
 
     workspace = Workspace(owner_user_id=user_id, name=_private_workspace_name(email))
-    db.add(workspace)
-    db.flush()
-    _ensure_workspace_owner_member(db, workspace, user_id, email)
-    db.commit()
-    db.refresh(workspace)
+    try:
+        db.add(workspace)
+        db.flush()
+        _ensure_workspace_owner_member(db, workspace, user_id, email)
+        db.commit()
+        db.refresh(workspace)
+    except IntegrityError:
+        db.rollback()
+        workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
+        if workspace is None:
+            raise
+        _ensure_workspace_owner_member(db, workspace, user_id, email)
+        db.commit()
+        db.refresh(workspace)
     set_workspace_context(workspace.id)
     return workspace
 
@@ -324,6 +335,9 @@ def _workspace_out(db: Session, workspace: Workspace) -> WorkspaceOut:
         industry=workspace.industry,
         target_country=workspace.target_country,
         target_customer=workspace.target_customer,
+        offer=workspace.offer,
+        cta=workspace.cta,
+        tone=workspace.tone,
         timezone=workspace.timezone,
         language=workspace.language,
         onboarding_step=workspace.onboarding_step,
@@ -494,6 +508,74 @@ def _extract_email(value: str | None) -> str:
 
 def _google_oauth_redirect_uri(settings) -> str:
     return settings.google_oauth_redirect_uri.strip() or f"{settings.public_api_url.rstrip('/')}/api/outreach/oauth/gmail/callback"
+
+
+def _oauth_nonce_hash(nonce: str) -> str:
+    return hashlib.sha256(str(nonce or "").encode("utf-8")).hexdigest()
+
+
+def _parse_oauth_created_at(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def _pruned_oauth_states(states: dict[str, Any], now: datetime) -> dict[str, Any]:
+    pruned: dict[str, Any] = {}
+    for key, value in states.items():
+        if not isinstance(value, dict):
+            continue
+        created_at = _parse_oauth_created_at(value.get("created_at"))
+        used_at = _parse_oauth_created_at(value.get("used_at"))
+        if used_at:
+            continue
+        if created_at and now - created_at <= timedelta(seconds=GMAIL_OAUTH_STATE_TTL_SECONDS):
+            pruned[str(key)] = value
+    return pruned
+
+
+def _store_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: str, workspace_id: UUID, nonce: str, created_at: datetime) -> None:
+    security_settings = settings.security if isinstance(settings.security, dict) else {}
+    states = security_settings.get("gmail_oauth_states") if isinstance(security_settings.get("gmail_oauth_states"), dict) else {}
+    states = _pruned_oauth_states(states, created_at)
+    states[_oauth_nonce_hash(nonce)] = {
+        "user_id": user_id,
+        "workspace_id": str(workspace_id),
+        "created_at": created_at.isoformat(),
+    }
+    settings.security = {**security_settings, "gmail_oauth_states": states}
+    flag_modified(settings, "security")
+    db.add(settings)
+    db.commit()
+
+
+def _consume_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: str, workspace_id: UUID, nonce: str, created_at: datetime) -> str:
+    now = datetime.utcnow()
+    if now - created_at > timedelta(seconds=GMAIL_OAUTH_STATE_TTL_SECONDS):
+        return "state_expired"
+    security_settings = settings.security if isinstance(settings.security, dict) else {}
+    states = security_settings.get("gmail_oauth_states") if isinstance(security_settings.get("gmail_oauth_states"), dict) else {}
+    nonce_key = _oauth_nonce_hash(nonce)
+    state_record = states.get(nonce_key)
+    if not isinstance(state_record, dict):
+        return "state_replayed"
+    if str(state_record.get("user_id") or "") != user_id or str(state_record.get("workspace_id") or "") != str(workspace_id):
+        return "invalid_state"
+    stored_created_at = _parse_oauth_created_at(state_record.get("created_at"))
+    if not stored_created_at or abs((stored_created_at - created_at).total_seconds()) > 1:
+        return "invalid_state"
+
+    states = _pruned_oauth_states(states, now)
+    states.pop(nonce_key, None)
+    security_settings["gmail_oauth_states"] = states
+    settings.security = security_settings
+    flag_modified(settings, "security")
+    db.add(settings)
+    db.commit()
+    return ""
 
 
 def _google_oauth_start_status(settings) -> tuple[bool, str, str]:
@@ -5653,16 +5735,20 @@ def start_gmail_oauth(user_id: CurrentUser, db: Session = Depends(get_db)) -> di
     oauth_start_ready, _oauth_start_status, oauth_start_reason = _google_oauth_start_status(app_settings)
     if not oauth_start_ready:
         raise HTTPException(status_code=409, detail=oauth_start_reason or "Google OAuth client is not configured for this environment.")
+    nonce = secrets.token_urlsafe(16)
+    created_at = datetime.utcnow()
     state_payload = {
         "user_id": user_id,
         "workspace_id": str(workspace.id),
-        "nonce": secrets.token_urlsafe(16),
-        "created_at": datetime.utcnow().isoformat(),
+        "nonce": nonce,
+        "created_at": created_at.isoformat(),
     }
     try:
         state = encrypt_secret(json.dumps(state_payload), app_settings.encryption_key)
     except SecretBoxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    workspace_settings = _settings_for_workspace(db, user_id, workspace)
+    _store_gmail_oauth_state(db, settings=workspace_settings, user_id=user_id, workspace_id=workspace.id, nonce=nonce, created_at=created_at)
     params = {
         "client_id": app_settings.google_oauth_client_id,
         "redirect_uri": _google_oauth_redirect_uri(app_settings),
@@ -5688,8 +5774,13 @@ def gmail_oauth_callback(request: Request, code: str = "", state: str = "", erro
         return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
     user_id = str(state_payload.get("user_id") or "")
     workspace_id = str(state_payload.get("workspace_id") or "")
-    if not user_id or not workspace_id or not code:
+    nonce = str(state_payload.get("nonce") or "")
+    created_at = _parse_oauth_created_at(state_payload.get("created_at"))
+    if not user_id or not workspace_id or not nonce or not created_at or not code:
         return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
+    authenticated_user_id = authenticated_user_id_from_authorization(request.headers.get("authorization"))
+    if authenticated_user_id and authenticated_user_id != user_id:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=user_mismatch")
     try:
         state_workspace_id = UUID(workspace_id)
     except ValueError:
@@ -5697,6 +5788,10 @@ def gmail_oauth_callback(request: Request, code: str = "", state: str = "", erro
     workspace = db.get(Workspace, state_workspace_id)
     if workspace is None or workspace.owner_user_id != user_id:
         return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=workspace_error")
+    settings = _settings_for_workspace(db, user_id, workspace)
+    state_error = _consume_gmail_oauth_state(db, settings=settings, user_id=user_id, workspace_id=workspace.id, nonce=nonce, created_at=created_at)
+    if state_error:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail={state_error}")
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
             token_response = client.post(
@@ -5726,7 +5821,6 @@ def gmail_oauth_callback(request: Request, code: str = "", state: str = "", erro
     allowed_test_users = app_settings.google_oauth_test_users
     if app_settings.app_env != "production" and allowed_test_users and email.lower() not in allowed_test_users:
         return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=test_user_required")
-    settings = _settings_for_workspace(db, user_id, workspace)
     email_settings = settings.email if isinstance(settings.email, dict) else {}
     current_sender = _sender_settings(settings)
     try:
@@ -6069,6 +6163,9 @@ def update_onboarding(payload: OnboardingUpdate, request: Request, user_id: Curr
     workspace.industry = payload.industry or workspace.industry
     workspace.target_country = payload.target_country or workspace.target_country
     workspace.target_customer = payload.target_customer or workspace.target_customer
+    workspace.offer = payload.offer or workspace.offer
+    workspace.cta = payload.cta or workspace.cta
+    workspace.tone = payload.tone or workspace.tone
     workspace.onboarding_step = payload.step
     workspace.onboarding_completed = payload.step >= 6 and payload.launch_first_campaign
     settings = _settings_for_workspace(db, user_id, workspace)

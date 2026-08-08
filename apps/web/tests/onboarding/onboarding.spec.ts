@@ -24,4 +24,22 @@ test.describe("onboarding workspace setup", () => {
     await expect(page.getByRole("link", { name: "Start finding customers" })).toBeVisible();
     await expectNoHorizontalOverflow(page);
   });
+
+  test("shows persisted offer tone and CTA across refreshes", async ({ page }) => {
+    await page.goto("/onboarding", { waitUntil: "domcontentloaded" });
+
+    await expect(page.getByLabel("Offer")).toHaveValue("Booked-meeting system for commercial renovation teams");
+    await expect(page.getByLabel("Tone")).toHaveValue("Consultative");
+    await expect(page.getByLabel("CTA")).toHaveValue("Book a growth audit");
+
+    await page.reload();
+    await expect(page.getByLabel("Offer")).toHaveValue("Booked-meeting system for commercial renovation teams");
+    await expect(page.getByLabel("Tone")).toHaveValue("Consultative");
+    await expect(page.getByLabel("CTA")).toHaveValue("Book a growth audit");
+
+    await page.reload();
+    await expect(page.getByLabel("Offer")).toHaveValue("Booked-meeting system for commercial renovation teams");
+    await expect(page.getByLabel("Tone")).toHaveValue("Consultative");
+    await expect(page.getByLabel("CTA")).toHaveValue("Book a growth audit");
+  });
 });
