@@ -445,6 +445,22 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS backup_runs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  provider VARCHAR(64) NOT NULL DEFAULT '',
+  status VARCHAR(32) NOT NULL DEFAULT 'pending',
+  object_key VARCHAR(700) NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  checksum_sha256 VARCHAR(128) NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  restore_verified BOOLEAN NOT NULL DEFAULT false,
+  restore_verified_at TIMESTAMP,
+  triggered_by VARCHAR(128) NOT NULL DEFAULT '',
+  metadata_json JSONB NOT NULL DEFAULT '{}',
+  started_at TIMESTAMP NOT NULL DEFAULT now(),
+  completed_at TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_leads_user_id ON leads(user_id);
 CREATE INDEX IF NOT EXISTS idx_workspaces_owner_user_id ON workspaces(owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace_id ON workspace_members(workspace_id);
@@ -513,6 +529,10 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_workspace_id ON notifications(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_profiles_user_id ON workspace_profiles(user_id);
 CREATE INDEX IF NOT EXISTS idx_app_settings_user_id ON app_settings(user_id);
+CREATE INDEX IF NOT EXISTS idx_backup_runs_provider ON backup_runs(provider);
+CREATE INDEX IF NOT EXISTS idx_backup_runs_status ON backup_runs(status);
+CREATE INDEX IF NOT EXISTS idx_backup_runs_restore_verified ON backup_runs(restore_verified);
+CREATE INDEX IF NOT EXISTS idx_backup_runs_started_at ON backup_runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_campaign_sequences_campaign_id ON campaign_sequences(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sales_employees_workspace_id ON ai_sales_employees(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sales_employees_user_id ON ai_sales_employees(user_id);
