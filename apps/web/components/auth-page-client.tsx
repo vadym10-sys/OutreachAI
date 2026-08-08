@@ -4,7 +4,7 @@ import { SignIn, SignUp, useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Loader2, Mail } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AppBadge, SurfaceCard } from "@/components/design-system";
 import { safeAuthRedirectUrl } from "@/lib/auth-redirect";
 import { useI18n } from "@/lib/i18n/provider";
@@ -112,12 +112,26 @@ function QaAuthPage({ mode }: { mode: AuthMode }) {
 
 function AuthLoadingState() {
   const { t } = useI18n();
+  const [showRecovery, setShowRecovery] = useState(false);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setShowRecovery(true), 12000);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
 
   return (
     <SurfaceCard className="w-full max-w-md rounded-[1.75rem] p-6 text-center shadow-raised">
       <Loader2 className="mx-auto animate-spin text-brand" size={28} />
       <h1 className="mt-4 text-xl font-black text-[var(--ui-text)]">{t("Preparing secure sign in")}</h1>
       <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{t("This usually takes a few seconds.")}</p>
+      {showRecovery ? (
+        <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900" role="status">
+          <p className="font-bold">{t("Secure sign in is taking longer than expected.")}</p>
+          <Link href="/sign-in" className="focus-ring mt-3 inline-flex min-h-11 items-center justify-center rounded-full bg-white px-4 text-sm font-black text-amber-950 shadow-sm">
+            {t("Restart sign in")}
+          </Link>
+        </div>
+      ) : null}
     </SurfaceCard>
   );
 }
