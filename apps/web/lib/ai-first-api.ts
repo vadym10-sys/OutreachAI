@@ -3,7 +3,7 @@
 import { useAuth } from "@clerk/nextjs";
 import { useCallback, useMemo } from "react";
 import { useAuthRuntime } from "@/components/app-providers";
-import { clientApi, clientApiWithHeaders, type ClientApiInit } from "@/lib/client-api";
+import { authSessionPendingMessage, clientApi, clientApiWithHeaders, type ClientApiInit } from "@/lib/client-api";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import type {
   AiMemoryEntriesResponse,
@@ -93,6 +93,10 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function authSessionPendingError() {
+  return new Error(authSessionPendingMessage);
+}
+
 async function devRequest<T>(path: string, init: ClientApiInit = {}) {
   return clientApi<T>(path, "dev", init);
 }
@@ -159,14 +163,14 @@ export function useAiFirstApi(): AiFirstApi {
     if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
       return devRequest<T>(path, init);
     }
-    if (!clerkEnabled || !isLoaded || !isSignedIn) {
+    if (!clerkEnabled || (isLoaded && !isSignedIn)) {
       redirectToSignIn();
       throw new Error("Please sign in again before continuing.");
     }
+    if (!isLoaded) throw authSessionPendingError();
     const token = await getFreshToken();
     if (!token) {
-      redirectToSignIn();
-      throw new Error("Please sign in again before continuing.");
+      throw authSessionPendingError();
     }
     return clientApi<T>(path, token, init);
   }, [clerkEnabled, getFreshToken, isLoaded, isSignedIn]);
@@ -175,14 +179,14 @@ export function useAiFirstApi(): AiFirstApi {
     if ((!clerkEnabled && !isProductionRuntime) || isClerkE2EBypass) {
       return clientApiWithHeaders<T>(path, "dev", init);
     }
-    if (!clerkEnabled || !isLoaded || !isSignedIn) {
+    if (!clerkEnabled || (isLoaded && !isSignedIn)) {
       redirectToSignIn();
       throw new Error("Please sign in again before continuing.");
     }
+    if (!isLoaded) throw authSessionPendingError();
     const token = await getFreshToken();
     if (!token) {
-      redirectToSignIn();
-      throw new Error("Please sign in again before continuing.");
+      throw authSessionPendingError();
     }
     return clientApiWithHeaders<T>(path, token, init);
   }, [clerkEnabled, getFreshToken, isLoaded, isSignedIn]);

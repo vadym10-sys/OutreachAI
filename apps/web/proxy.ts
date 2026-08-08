@@ -1,6 +1,7 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { hasClerkRuntimeConfig, isClerkE2EBypass } from "@/lib/env";
+import { canonicalPreviewRedirectUrl } from "@/lib/canonical-host";
 
 const isProtectedRoute = createRouteMatcher(["/dashboard(.*)", "/admin(.*)", "/onboarding(.*)"]);
 
@@ -10,11 +11,6 @@ function isBackgroundRouteFetch(req: NextRequest) {
   const prefetch = req.headers.get("next-router-prefetch") || "";
   const accept = req.headers.get("accept") || "";
   return purpose.toLowerCase() === "prefetch" || prefetch === "1" || accept.includes("text/x-component");
-}
-
-function hasClerkSessionCookie(req: NextRequest) {
-  const cookie = req.headers.get("cookie") || "";
-  return cookie.includes("__session=") || cookie.includes("__client_uat=");
 }
 
 function isDocumentNavigation(req: NextRequest) {
@@ -47,6 +43,12 @@ function securityHeaders() {
   return res;
 }
 
+function canonicalHostRedirect(req: NextRequest) {
+  const redirectUrl = canonicalPreviewRedirectUrl(req.url);
+  if (!redirectUrl) return null;
+  return NextResponse.redirect(redirectUrl, 308);
+}
+
 function bypassMiddleware(_req: NextRequest) {
   return securityHeaders();
 }
@@ -60,18 +62,17 @@ function missingClerkMiddleware(req: NextRequest) {
 }
 
 const protectedMiddleware = clerkMiddleware(async (auth, req) => {
+  const canonicalRedirect = canonicalHostRedirect(req);
+  if (canonicalRedirect) return canonicalRedirect;
+
   const res = securityHeaders();
   if (isProtectedRoute(req)) {
-    if (!hasClerkSessionCookie(req)) {
-      if (isBackgroundRouteFetch(req) || !isDocumentNavigation(req)) {
-        return signedOutBackgroundResponse(res.headers);
-      }
-      return signInRedirect(req);
-    }
-
     const authState = await auth();
     if (!authState.userId && (isBackgroundRouteFetch(req) || !isDocumentNavigation(req))) {
       return signedOutBackgroundResponse(res.headers);
+    }
+    if (!authState.userId) {
+      return signInRedirect(req);
     }
 
     await auth.protect();
