@@ -48,7 +48,7 @@ os.environ["RESEND_FROM_EMAIL"] = "OutreachAI <hello@example.com>"
 os.environ["CLERK_SECRET_KEY"] = "clerk_test"
 os.environ["CLERK_JWT_ISSUER"] = "https://example.clerk.accounts.dev"
 
-from app.core.database import POSTGRES_MIGRATION_LOCK_KEY, RuntimeSchemaError, get_engine, get_sessionmaker, initialize_database_schema, validate_runtime_schema  # noqa: E402
+from app.core.database import POSTGRES_MIGRATION_LOCK_KEY, REQUIRED_POSTGRES_MIGRATIONS, RuntimeSchemaError, get_engine, get_sessionmaker, initialize_database_schema, validate_runtime_schema  # noqa: E402
 from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.reliability import database_backup_configured, validate_database_connectivity, validate_required_environment  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
@@ -1890,6 +1890,9 @@ class _FakePostgresConnection:
             self.state.migration_executions += 1
             self.state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
             return _FakeScalarResult()
+        if "CREATE TABLE IF NOT EXISTS backup_runs" in sql:
+            self.state.tables.add("backup_runs")
+            return _FakeScalarResult()
         if "INSERT INTO schema_migrations" in sql:
             assert params
             self.state.applied_versions.add(params["version"])
@@ -1933,7 +1936,7 @@ def test_postgres_migration_runner_applies_011_to_existing_database_idempotently
     migration_paths = []
     for version in database_module.REQUIRED_POSTGRES_MIGRATIONS:
         migration_path = tmp_path / f"{version}.sql"
-        migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
+        migration_path.write_text((database_module.PACKAGED_MIGRATIONS_DIR / f"{version}.sql").read_text(), encoding="utf-8")
         migration_paths.append(migration_path)
     monkeypatch.setattr(database_module, "_migration_paths", lambda: migration_paths)
     state = _FakePostgresState()
@@ -1957,7 +1960,7 @@ def test_postgres_migration_runner_serializes_parallel_instances(tmp_path, monke
     migration_paths = []
     for version in database_module.REQUIRED_POSTGRES_MIGRATIONS:
         migration_path = tmp_path / f"{version}.sql"
-        migration_path.write_text((REPO_ROOT / "db" / "migrations" / f"{version}.sql").read_text(), encoding="utf-8")
+        migration_path.write_text((database_module.PACKAGED_MIGRATIONS_DIR / f"{version}.sql").read_text(), encoding="utf-8")
         migration_paths.append(migration_path)
     monkeypatch.setattr(database_module, "_migration_paths", lambda: migration_paths)
     state = _FakePostgresState()
@@ -1987,10 +1990,10 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(t
     import app.core.database as database_module
 
     migration_path = tmp_path / "013_production_hardening_read_paths.sql"
-    migration_path.write_text((REPO_ROOT / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(), encoding="utf-8")
+    migration_path.write_text((database_module.PACKAGED_MIGRATIONS_DIR / "013_production_hardening_read_paths.sql").read_text(), encoding="utf-8")
     monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
     state = _FakePostgresState()
-    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes", "014_email_message_recipient_email"}
+    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes", "014_email_message_recipient_email", "015_backup_runs"}
     state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
     engine = _FakePostgresEngine(state)
@@ -2387,6 +2390,15 @@ def test_backup_status_is_owner_only_and_reports_not_configured() -> None:
     assert payload["backups_enabled"] is False
     assert payload["provider"] == "not_configured"
     assert payload["restore_verified"] is False
+
+
+def test_postgres_schema_assets_include_backup_runs() -> None:
+    schema = (Path(__file__).resolve().parents[1] / "app" / "db" / "schema.sql").read_text(encoding="utf-8")
+    migration = (Path(__file__).resolve().parents[1] / "app" / "db" / "migrations" / "015_backup_runs.sql").read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS backup_runs" in schema
+    assert "CREATE TABLE IF NOT EXISTS backup_runs" in migration
+    assert "015_backup_runs" in REQUIRED_POSTGRES_MIGRATIONS
 
 
 def test_startup_logs_validation_steps_and_fails_fast_on_database_error(monkeypatch, caplog) -> None:
