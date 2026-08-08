@@ -5669,7 +5669,7 @@ def start_gmail_oauth(user_id: CurrentUser, db: Session = Depends(get_db)) -> di
         "response_type": "code",
         "scope": " ".join(GMAIL_OAUTH_SCOPES),
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "select_account consent",
         "include_granted_scopes": "false",
         "state": state,
     }
@@ -5690,6 +5690,13 @@ def gmail_oauth_callback(request: Request, code: str = "", state: str = "", erro
     workspace_id = str(state_payload.get("workspace_id") or "")
     if not user_id or not workspace_id or not code:
         return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
+    try:
+        state_workspace_id = UUID(workspace_id)
+    except ValueError:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
+    workspace = db.get(Workspace, state_workspace_id)
+    if workspace is None or workspace.owner_user_id != user_id:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=workspace_error")
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
             token_response = client.post(
@@ -5719,9 +5726,6 @@ def gmail_oauth_callback(request: Request, code: str = "", state: str = "", erro
     allowed_test_users = app_settings.google_oauth_test_users
     if app_settings.app_env != "production" and allowed_test_users and email.lower() not in allowed_test_users:
         return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=test_user_required")
-    workspace = db.get(Workspace, UUID(workspace_id))
-    if workspace is None or workspace.owner_user_id != user_id:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=workspace_error")
     settings = _settings_for_workspace(db, user_id, workspace)
     email_settings = settings.email if isinstance(settings.email, dict) else {}
     current_sender = _sender_settings(settings)

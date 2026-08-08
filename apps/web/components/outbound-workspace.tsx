@@ -8,7 +8,7 @@ import * as Sentry from "@sentry/nextjs";
 import { AlertTriangle, ArrowRight, BarChart3, Building2, CalendarDays, CheckCircle2, Clock3, Download, ExternalLink, FileText, Globe2, Inbox, Lightbulb, Loader2, Mail, MapPin, MessageSquare, Pause, Phone, Play, Plus, Rocket, Search, Send, ShieldCheck, Sparkles, Target, UserRound, UserRoundSearch } from "lucide-react";
 import { useAuthRuntime } from "@/components/app-providers";
 import { AiTimeline, AppButton, CompanyCardShell, DecisionMakerCardShell, EmptyStateView, ErrorStateView, LoadingStateView, MetricSurface, OperatingPanel, OpportunityCardShell, PageHero, SectionPanel, TimelineRail } from "@/components/design-system";
-import { clientApi, clientApiWithHeaders, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
+import { authSessionPendingMessage, clientApi, clientApiWithHeaders, friendlyErrorMessage, splitList, type ClientApiInit } from "@/lib/client-api";
 import { companyGrowthSignals, companyHiringSignals, companyNewsSignals, executiveTimelineV2, leadScoreV2, nextBestActionV2, outreachCopilotAssetsV2, researchInputsV2 } from "@/lib/ai-sales-operating-system";
 import { isClerkE2EBypass, isProductionRuntime } from "@/lib/env";
 import { captureLogRocketException } from "@/lib/logrocket";
@@ -540,6 +540,10 @@ function redirectToSignIn() {
   window.location.assign(`/sign-in?redirect_url=${redirectUrl}`);
 }
 
+function authSessionPendingError() {
+  return new Error(authSessionPendingMessage);
+}
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -581,15 +585,17 @@ function useTokenApi(): { api: ApiFn; apiWithHeaders: ApiWithHeadersFn; ready: b
     return token;
   }, [getToken]);
   const api = useCallback(async function api<T>(path: string, init: ClientApiInit = {}) {
-    if (!isLoaded || !isSignedIn) throw new Error("Please sign in again before continuing.");
+    if (!isLoaded) throw authSessionPendingError();
+    if (!isSignedIn) throw new Error("Please sign in again before continuing.");
     const token = await getFreshToken();
-    if (!token) throw new Error("Please sign in again before continuing.");
+    if (!token) throw authSessionPendingError();
     return clientApi<T>(path, token, init);
   }, [getFreshToken, isLoaded, isSignedIn]);
   const apiWithHeaders = useCallback(async function apiWithHeaders<T>(path: string, init: ClientApiInit = {}) {
-    if (!isLoaded || !isSignedIn) throw new Error("Please sign in again before continuing.");
+    if (!isLoaded) throw authSessionPendingError();
+    if (!isSignedIn) throw new Error("Please sign in again before continuing.");
     const token = await getFreshToken();
-    if (!token) throw new Error("Please sign in again before continuing.");
+    if (!token) throw authSessionPendingError();
     return clientApiWithHeaders<T>(path, token, init);
   }, [getFreshToken, isLoaded, isSignedIn]);
 
