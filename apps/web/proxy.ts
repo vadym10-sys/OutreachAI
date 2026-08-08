@@ -13,11 +13,6 @@ function isBackgroundRouteFetch(req: NextRequest) {
   return purpose.toLowerCase() === "prefetch" || prefetch === "1" || accept.includes("text/x-component");
 }
 
-function hasClerkSessionCookie(req: NextRequest) {
-  const cookie = req.headers.get("cookie") || "";
-  return cookie.includes("__session=") || cookie.includes("__client_uat=");
-}
-
 function isDocumentNavigation(req: NextRequest) {
   const secFetchDest = req.headers.get("sec-fetch-dest") || "";
   const secFetchMode = req.headers.get("sec-fetch-mode") || "";
@@ -72,16 +67,12 @@ const protectedMiddleware = clerkMiddleware(async (auth, req) => {
 
   const res = securityHeaders();
   if (isProtectedRoute(req)) {
-    if (!hasClerkSessionCookie(req)) {
-      if (isBackgroundRouteFetch(req) || !isDocumentNavigation(req)) {
-        return signedOutBackgroundResponse(res.headers);
-      }
-      return signInRedirect(req);
-    }
-
     const authState = await auth();
     if (!authState.userId && (isBackgroundRouteFetch(req) || !isDocumentNavigation(req))) {
       return signedOutBackgroundResponse(res.headers);
+    }
+    if (!authState.userId) {
+      return signInRedirect(req);
     }
 
     await auth.protect();
