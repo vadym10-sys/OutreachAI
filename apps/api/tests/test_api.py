@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Any, Optional
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 from uuid import UUID, uuid4
 
 import httpx
@@ -53,6 +54,7 @@ from app.core.config import Settings, get_settings  # noqa: E402
 from app.core.reliability import database_backup_configured, validate_database_connectivity, validate_required_environment  # noqa: E402
 from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
+from app.api import routes as routes_module  # noqa: E402
 from app.api.usage import _approved_email_send_claim_update, _parse_lead_command, _require_workspace_owner  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _enforce_usage, _lead_ai_payload, _limits_for_workspace, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
 from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
@@ -66,7 +68,7 @@ from app.services.deep_contact_search import DeepContactCandidate, DeepContactSe
 from app.services.emailer import EmailProviderRequestError, EmailProviderSendingDisabledError  # noqa: E402
 from app.services.enrichment_queue import enqueue_autopilot_email_job  # noqa: E402
 from app.services.autopilot import process_autopilot_email_job  # noqa: E402
-from app.services.secret_box import encrypt_secret  # noqa: E402
+from app.services.secret_box import decrypt_secret, encrypt_secret  # noqa: E402
 from app.services.ai_memory import MODE_KEYWORD, MODE_OPENAI_EMBEDDING, _openai_embedding, _pgvector_retrieval_sql, record_email_memory, retrieve_memory, upsert_memory_entry  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteTemporaryUnavailableError, WebsiteValidationError, collect_website, normalize_website_url  # noqa: E402
 import app.serve as serve_module  # noqa: E402
@@ -2573,6 +2575,7 @@ def test_owner_helper_matches_only_configured_owner_email() -> None:
     assert security.is_owner("romaniukvadym10@gmail.com")
     assert security.is_owner("  ROMANIUKVADYM10@GMAIL.COM ")
     assert not security.is_owner("not-owner@example.com")
+    assert not security.is_owner("romaniukvadym10+client@gmail.com")
 
 
 def test_owner_console_requires_owner_email() -> None:
@@ -2639,6 +2642,19 @@ def test_non_owner_customer_does_not_get_owner_or_admin_access_after_signup() ->
     assert workspace.status_code == 200
     assert denied_admin.status_code == 403
     assert workspace.json()["members"][0]["role"] == WorkspaceRole.owner.value
+
+
+def test_gmail_alias_customer_does_not_inherit_system_owner_access() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "romaniukvadym10+client@gmail.com"}
+
+    workspace = client.get("/api/workspace/me", headers=headers)
+    denied_owner = client.get("/api/owner/console", headers=headers)
+    denied_admin = client.get("/api/admin/summary", headers=headers)
+
+    assert workspace.status_code == 200
+    assert workspace.json()["members"][0]["role"] == WorkspaceRole.owner.value
+    assert denied_owner.status_code == 403
+    assert denied_admin.status_code == 403
 
 
 def test_admin_queue_health_is_owner_only_and_reports_metrics() -> None:
@@ -2788,6 +2804,73 @@ def test_workspace_data_is_private_between_users(monkeypatch) -> None:
     signed_out = client.get("/api/leads")
     assert signed_out.status_code == 401
     assert lead_id
+
+
+def test_workspace_drafts_and_gmail_settings_are_private_between_users(monkeypatch) -> None:
+    user_a_email = f"draft-tenant-a-{uuid4()}@example.com"
+    user_b_email = f"draft-tenant-b-{uuid4()}@example.com"
+    user_a_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_a_email}
+    user_b_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_b_email}
+    monkeypatch.setattr("app.api.routes._hunter_enriched_leads", lambda db, request, user_id, workspace, leads: leads)
+    monkeypatch.setattr("app.api.routes._analyze_lead_if_possible", lambda db, user_id, workspace, lead: None)
+    monkeypatch.setattr(
+        "app.api.routes.personalize_email",
+        lambda payload: EmailVariantOut(
+            subject="No-send onboarding draft",
+            preview="Draft preview",
+            full_email="Hi, this is a deterministic onboarding draft that is not sent.",
+            cta="Open to a quick call?",
+            follow_ups=[],
+            ab_tests=[],
+        ),
+    )
+
+    workspace_a = client.get("/api/workspace/me", headers=user_a_headers).json()
+    workspace_b = client.get("/api/workspace/me", headers=user_b_headers).json()
+    assert workspace_a["id"] != workspace_b["id"]
+
+    settings_update = client.put(
+        "/api/outreach/sender",
+        headers=user_a_headers,
+        json={
+            "provider": "gmail",
+            "sender_name": "Client A",
+            "sender_email": "client-a-mailbox@example.com",
+            "reply_to": "client-a-mailbox@example.com",
+            "daily_send_limit": 10,
+            "enabled": True,
+        },
+    )
+    assert settings_update.status_code == 200
+    assert settings_update.json()["provider"] == "gmail"
+
+    lead = client.post(
+        "/api/leads",
+        headers=user_a_headers,
+        json={"company": "Draft Isolation Co", "website": "https://draft-isolation.example", "industry": "Construction", "email": "buyer@draft-isolation.example"},
+    )
+    assert lead.status_code == 200
+    draft = client.post(f"/api/leads/{lead.json()['id']}/draft-email", headers=user_a_headers)
+    assert draft.status_code == 200
+    draft_id = draft.json()["id"]
+    assert draft.json()["delivery_status"] == "draft"
+    with get_sessionmaker()() as db:
+        stored_draft = db.get(EmailMessage, UUID(draft_id))
+        assert stored_draft is not None
+        assert str(stored_draft.workspace_id) == workspace_a["id"]
+
+    forbidden_edit = client.patch(f"/api/emails/{draft_id}", headers=user_b_headers, json={"subject": "Hijacked"})
+    assert forbidden_edit.status_code == 404
+
+    user_a_status = client.get("/api/outreach/sender/status", headers=user_a_headers)
+    user_b_status = client.get("/api/outreach/sender/status", headers=user_b_headers)
+    assert user_a_status.status_code == 200
+    assert user_b_status.status_code == 200
+    assert user_a_status.json()["provider"] == "gmail"
+    assert user_a_status.json()["sender_email"] == "client-a-mailbox@example.com"
+    assert user_b_status.json()["sender_email"] != "client-a-mailbox@example.com"
+    with get_sessionmaker()() as db:
+        assert db.scalar(select(EmailMessage).where(EmailMessage.id == UUID(draft_id), EmailMessage.workspace_id == UUID(workspace_b["id"]))) is None
 
 
 def test_ai_memory_tenant_isolation_delete_clear_and_secret_redaction() -> None:
@@ -9252,6 +9335,129 @@ def test_gmail_oauth_start_reports_missing_secret_without_treating_resend_as_oau
     start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
     assert start.status_code == 409
     assert start.json()["detail"] == "OAuth Client Secret missing"
+
+
+def test_gmail_oauth_start_uses_encrypted_workspace_state_and_explicit_account_selection(monkeypatch) -> None:
+    email = f"gmail-oauth-start-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "google-secret")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", email)
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
+
+    assert start.status_code == 200
+    params = parse_qs(urlparse(start.json()["auth_url"]).query)
+    assert params["prompt"] == ["select_account consent"]
+    assert params["include_granted_scopes"] == ["false"]
+    assert params["access_type"] == ["offline"]
+    state_payload = json.loads(decrypt_secret(params["state"][0], settings.encryption_key))
+    assert state_payload["user_id"] == email
+    assert state_payload["workspace_id"] == workspace["id"]
+    assert state_payload["nonce"]
+
+
+def test_gmail_oauth_callback_binds_mailbox_to_state_workspace_only(monkeypatch) -> None:
+    client_email = f"gmail-client-{uuid4()}@example.com"
+    other_email = f"gmail-other-{uuid4()}@example.com"
+    client_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": client_email}
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": other_email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "public_app_url", "https://preview.example.test")
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "google-secret")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", "client.mailbox@example.com")
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+
+    client_workspace = client.get("/api/workspace/me", headers=client_headers).json()
+    other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
+    assert client_workspace["id"] != other_workspace["id"]
+
+    start = client.get("/api/outreach/oauth/gmail/start", headers=client_headers)
+    state = parse_qs(urlparse(start.json()["auth_url"]).query)["state"][0]
+    provider_calls: list[tuple[str, str]] = []
+
+    class FakeGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, data: dict[str, str]):
+            provider_calls.append(("post", url))
+            assert data["code"] == "valid-code"
+            return httpx.Response(
+                200,
+                json={"access_token": "access-token", "refresh_token": "refresh-token", "scope": "openid email https://www.googleapis.com/auth/gmail.send"},
+                request=httpx.Request("POST", url),
+            )
+
+        def get(self, url: str, headers: dict[str, str]):
+            provider_calls.append(("get", url))
+            assert headers["Authorization"] == "Bearer access-token"
+            return httpx.Response(200, json={"email": "client.mailbox@example.com", "name": "Client Mailbox", "sub": "google-client-sub"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(routes_module.httpx, "Client", FakeGoogleClient)
+
+    callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
+    assert callback.status_code == 307
+    assert callback.headers["location"] == "https://preview.example.test/dashboard/settings?mail=connected"
+    assert provider_calls == [("post", routes_module.GOOGLE_OAUTH_TOKEN_URL), ("get", routes_module.GOOGLE_USERINFO_URL)]
+
+    client_status = client.get("/api/outreach/sender/status", headers=client_headers)
+    other_status = client.get("/api/outreach/sender/status", headers=other_headers)
+    assert client_status.status_code == 200
+    assert client_status.json()["oauth_connected"] is True
+    assert client_status.json()["oauth_mailbox"] == "client.mailbox@example.com"
+    assert other_status.status_code == 200
+    assert other_status.json()["oauth_connected"] is False
+
+    with get_sessionmaker()() as db:
+        client_settings = db.scalar(select(AppSettings).where(AppSettings.user_id == client_email))
+        other_settings = db.scalar(select(AppSettings).where(AppSettings.user_id == other_email))
+        assert client_settings is not None
+        assert str(client_settings.workspace_id) == client_workspace["id"]
+        client_sender = client_settings.email["sender"]
+        assert client_sender["sender_email"] == "client.mailbox@example.com"
+        assert decrypt_secret(client_sender["oauth"]["refresh_token_encrypted"], settings.encryption_key) == "refresh-token"
+        assert other_settings is not None
+        assert other_settings.email.get("sender", {}).get("oauth") in ({}, None)
+
+
+def test_gmail_oauth_callback_rejects_state_for_different_workspace_before_provider_exchange(monkeypatch) -> None:
+    client_email = f"gmail-state-client-{uuid4()}@example.com"
+    other_email = f"gmail-state-other-{uuid4()}@example.com"
+    client_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": client_email}
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": other_email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "public_app_url", "https://preview.example.test")
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+
+    client.get("/api/workspace/me", headers=client_headers)
+    other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
+    invalid_state = encrypt_secret(
+        json.dumps({"user_id": client_email, "workspace_id": other_workspace["id"], "nonce": "test", "created_at": datetime.utcnow().isoformat()}),
+        settings.encryption_key,
+    )
+
+    class UnexpectedGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Invalid OAuth state must not be exchanged with Google")
+
+    monkeypatch.setattr(routes_module.httpx, "Client", UnexpectedGoogleClient)
+
+    callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": invalid_state}, follow_redirects=False)
+    assert callback.status_code == 307
+    assert callback.headers["location"] == "https://preview.example.test/dashboard/settings?mail=workspace_error"
 
 
 def test_approved_email_uses_workspace_sender(monkeypatch) -> None:
