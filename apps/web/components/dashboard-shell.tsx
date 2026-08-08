@@ -12,7 +12,7 @@ import { LanguageSwitcher } from "@/components/language-switcher";
 import { NetworkStatusBanner } from "@/components/network-status-banner";
 import { useAuthRuntime } from "@/components/app-providers";
 import { useI18n } from "@/lib/i18n/provider";
-import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
+import { authSessionPendingMessage, clientApi, friendlyErrorMessage } from "@/lib/client-api";
 import type { Workspace } from "@/lib/types";
 import { captureLogRocketException } from "@/lib/logrocket";
 import { capturePostHogException, trackEvent } from "@/lib/posthog";
@@ -446,7 +446,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     try {
       const token = await resolveWorkspaceToken(getAuthToken);
       if (!token) {
-        setWorkspaceError(t("Your session has expired. Please sign in again."));
+        setWorkspaceError(t(authSessionPendingMessage));
         return;
       }
       const updated = await clientApi<Workspace>("/api/workspace", token, {

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import { ArrowRight, CheckCircle2, Loader2, ShieldCheck } from "lucide-react";
 import { AppBadge, SurfaceCard } from "@/components/design-system";
-import { clientApi, friendlyErrorMessage } from "@/lib/client-api";
+import { authSessionPendingMessage, clientApi, friendlyErrorMessage } from "@/lib/client-api";
 import { hasClerkPublishableKey, isClerkE2EBypass } from "@/lib/env";
 import { useI18n } from "@/lib/i18n/provider";
 import { NetworkStatusBanner } from "@/components/network-status-banner";
@@ -101,7 +101,7 @@ export function OnboardingWorkspaceSetup() {
     try {
       const token = await resolveWorkspaceToken(getAuthToken);
       if (!token) {
-        setError(t("Your session has expired. Please sign in again."));
+        setError(t(authSessionPendingMessage));
         return;
       }
       const loaded = await clientApi<Workspace>("/api/workspace/me", token);
@@ -121,7 +121,7 @@ export function OnboardingWorkspaceSetup() {
       if (!token || !active) {
         if (active) {
           setLoading(false);
-          setError(t("Your session has expired. Please sign in again."));
+          setError(t(authSessionPendingMessage));
         }
         return;
       }
@@ -162,7 +162,7 @@ export function OnboardingWorkspaceSetup() {
     try {
       const token = await resolveWorkspaceToken(getAuthToken);
       if (!token) {
-        setError(t("Your session has expired. Please sign in again."));
+        setError(t(authSessionPendingMessage));
         return;
       }
 

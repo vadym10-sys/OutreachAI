@@ -5,6 +5,7 @@ import { sanitizeUserMessage } from '@/lib/safe-errors';
 const isProduction = process.env.NODE_ENV === 'production';
 const debugApiLogging = process.env.NEXT_PUBLIC_DEBUG_API === 'true';
 const localeStorageKey = 'outreachai.locale';
+export const authSessionPendingMessage = 'Secure session is still loading. Please retry in a moment.';
 
 export function friendlyErrorMessage(error: unknown, fallback: string) {
   if (!(error instanceof Error)) return fallback;
@@ -135,15 +136,19 @@ function transientStatus(status: number | undefined) {
   return status === 408 || status === 409 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 }
 
+function createAuthSessionPendingError() {
+  const authError = new Error(`REQUEST_FAILED:${authSessionPendingMessage}`) as Error & { status?: number };
+  authError.status = 425;
+  return authError;
+}
+
 export async function clientApi<T>(path: string, token: string | null, init: ClientApiInit = {}): Promise<T> {
   const method = requestMethod(init);
   const retries = typeof init.retries === 'number' ? init.retries : defaultRetriesForMethod(method);
   const retryDelayMs = typeof init.retryDelayMs === 'number' ? init.retryDelayMs : 750;
   const effectiveToken = token || (isProtectedApiPath(path) ? await resolveBrowserClerkToken() : null);
   if (isProtectedApiPath(path) && !effectiveToken) {
-    const authError = new Error('REQUEST_FAILED:Your session has expired. Please sign in again.') as Error & { status?: number };
-    authError.status = 401;
-    throw authError;
+    throw createAuthSessionPendingError();
   }
   let attempt = 0;
   let lastError: unknown = null;
@@ -185,9 +190,7 @@ export async function clientApiWithHeaders<T>(path: string, token: string | null
   const retryDelayMs = typeof init.retryDelayMs === 'number' ? init.retryDelayMs : 750;
   const effectiveToken = token || (isProtectedApiPath(path) ? await resolveBrowserClerkToken() : null);
   if (isProtectedApiPath(path) && !effectiveToken) {
-    const authError = new Error('REQUEST_FAILED:Your session has expired. Please sign in again.') as Error & { status?: number };
-    authError.status = 401;
-    throw authError;
+    throw createAuthSessionPendingError();
   }
   let attempt = 0;
   let lastError: unknown = null;
@@ -229,9 +232,7 @@ export async function clientApiBlob(path: string, token: string | null, init: Cl
   const retryDelayMs = typeof init.retryDelayMs === 'number' ? init.retryDelayMs : 750;
   const effectiveToken = token || (isProtectedApiPath(path) ? await resolveBrowserClerkToken() : null);
   if (isProtectedApiPath(path) && !effectiveToken) {
-    const authError = new Error('REQUEST_FAILED:Your session has expired. Please sign in again.') as Error & { status?: number };
-    authError.status = 401;
-    throw authError;
+    throw createAuthSessionPendingError();
   }
   let attempt = 0;
   let lastError: unknown = null;

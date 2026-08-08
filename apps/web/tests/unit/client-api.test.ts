@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clientApi, friendlyErrorMessage } from "../../lib/client-api";
+import { authSessionPendingMessage, clientApi, clientApiBlob, clientApiWithHeaders, friendlyErrorMessage } from "../../lib/client-api";
 import { containsSensitiveTechnicalInfo, sanitizeUserMessage } from "../../lib/safe-errors";
 import { scrubSentryEvent } from "../../lib/sentry-common";
 
@@ -60,6 +60,25 @@ describe("client API errors", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("/api/backend/api/workspace-app/leads/search");
+  });
+
+  it("does not classify a missing protected-route token as a signed-out session", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(clientApi("/api/workspace/me", null)).rejects.toMatchObject({
+      message: `REQUEST_FAILED:${authSessionPendingMessage}`,
+      status: 425
+    });
+    await expect(clientApiWithHeaders("/api/workspace/me", null)).rejects.toMatchObject({
+      message: `REQUEST_FAILED:${authSessionPendingMessage}`,
+      status: 425
+    });
+    await expect(clientApiBlob("/api/workspace/me", null)).rejects.toMatchObject({
+      message: `REQUEST_FAILED:${authSessionPendingMessage}`,
+      status: 425
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("retries a transient opportunity completion timeout once", async () => {
