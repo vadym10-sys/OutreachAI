@@ -107,6 +107,13 @@ def _grant_subscription_for_test(workspace_id: str, user_id: str = "dev_user", p
         db.commit()
 
 
+def _assert_url_components(value: str, *, scheme: str, hostname: str, path: str) -> None:
+    parsed = urlparse(value)
+    assert parsed.scheme == scheme
+    assert parsed.hostname == hostname
+    assert parsed.path == path
+
+
 def _enable_ai_memory(headers: dict[str, str]) -> dict[str, Any]:
     response = client.patch("/api/workspace-app/ai-memory/settings", headers=headers, json={"enabled": True})
     assert response.status_code == 200
@@ -4025,10 +4032,20 @@ def test_owner_test_entitlement_grant_revoke_and_checkout_skip(monkeypatch) -> N
 
         normal_checkout = client.post("/api/billing/checkout", headers=target_headers, json={"plan": "Starter"})
         assert normal_checkout.status_code == 200
-        assert normal_checkout.json()["url"].startswith("https://checkout.stripe.test")
+        _assert_url_components(normal_checkout.json()["url"], scheme="https", hostname="checkout.stripe.test", path="/session")
         assert calls["checkout"] == 1
     finally:
         monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
+def test_checkout_url_assertion_rejects_prefix_spoofed_hosts() -> None:
+    with pytest.raises(AssertionError):
+        _assert_url_components(
+            "https://checkout.stripe.test.evil/session",
+            scheme="https",
+            hostname="checkout.stripe.test",
+            path="/session",
+        )
 
 
 def test_owner_test_entitlement_expiry_and_concurrent_replace(monkeypatch) -> None:
@@ -11115,7 +11132,7 @@ def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> N
     monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
     response = client.post("/api/billing/checkout", headers=checkout_headers, json={"plan": "Starter"})
     assert response.status_code == 200
-    assert response.json()["url"].startswith("https://checkout.stripe.test")
+    _assert_url_components(response.json()["url"], scheme="https", hostname="checkout.stripe.test", path="/session")
     assert captured["plan"] == "Starter"
     assert captured["customer_id"] == ""
 
