@@ -9514,6 +9514,44 @@ def test_gmail_oauth_start_uses_encrypted_workspace_state_and_explicit_account_s
     assert state_payload["nonce"]
 
 
+def test_gmail_oauth_state_and_handoff_lookup_keys_use_keyed_digest(monkeypatch) -> None:
+    email = f"gmail-oauth-keyed-digest-{uuid4()}@example.com"
+    mailbox = "keyed-digest-client.mailbox@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "public_app_url", "https://preview.example.test")
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "google-secret")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", mailbox)
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
+    state = parse_qs(urlparse(start.json()["auth_url"]).query)["state"][0]
+    state_payload = json.loads(decrypt_secret(state, settings.encryption_key))
+    nonce = state_payload["nonce"]
+    nonce_lookup_key = routes_module._oauth_nonce_hash(nonce, settings.encryption_key)
+
+    with get_sessionmaker()() as db:
+        settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings_row is not None
+        stored_states = settings_row.security["gmail_oauth_states"]
+        assert nonce_lookup_key in stored_states
+
+    callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
+    assert callback.status_code == 307
+    location = callback.headers["location"]
+    handoff = parse_qs(urlparse(location).query)["handoff"][0]
+    handoff_lookup_key = routes_module._oauth_nonce_hash(handoff, settings.encryption_key)
+
+    with get_sessionmaker()() as db:
+        settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings_row is not None
+        stored_handoffs = settings_row.security["gmail_oauth_pending_handoffs"]
+        assert handoff_lookup_key in stored_handoffs
+
+
 def _prepare_gmail_oauth_handoff(monkeypatch, *, email: str | None = None, mailbox: str = "client.mailbox@example.com", code: str = "valid-code"):
     client_email = email or f"gmail-client-{uuid4()}@example.com"
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": client_email}
@@ -9745,7 +9783,7 @@ def test_gmail_oauth_finalize_rejects_clerk_user_mismatch_without_connecting(mon
 
 def test_gmail_oauth_finalize_rejects_expired_handoff_without_connecting(monkeypatch) -> None:
     headers, workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="expired-handoff@example.com")
-    handoff_key = routes_module._oauth_nonce_hash(handoff)
+    handoff_key = routes_module._oauth_nonce_hash(handoff, get_settings().encryption_key)
     old = datetime.utcnow() - timedelta(seconds=routes_module.GMAIL_OAUTH_HANDOFF_TTL_SECONDS + 5)
     with get_sessionmaker()() as db:
         settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
@@ -9809,7 +9847,7 @@ def test_gmail_oauth_finalize_rejects_cross_workspace_handoff_without_provider_c
     headers, workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="cross-workspace@example.com")
     other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"gmail-cross-{uuid4()}@example.com"}
     other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
-    handoff_key = routes_module._oauth_nonce_hash(handoff)
+    handoff_key = routes_module._oauth_nonce_hash(handoff, get_settings().encryption_key)
     with get_sessionmaker()() as db:
         settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
         assert settings_row is not None

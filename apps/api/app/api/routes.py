@@ -501,6 +501,7 @@ GMAIL_OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.readonly",
 ]
+GMAIL_OAUTH_LOOKUP_KEY_ITERATIONS = 210_000
 
 
 def _extract_email(value: str | None) -> str:
@@ -514,8 +515,13 @@ def _google_oauth_redirect_uri(settings) -> str:
     return settings.google_oauth_redirect_uri.strip() or f"{settings.public_api_url.rstrip('/')}/api/outreach/oauth/gmail/callback"
 
 
-def _oauth_nonce_hash(nonce: str) -> str:
-    return hashlib.sha256(str(nonce or "").encode("utf-8")).hexdigest()
+def _oauth_nonce_hash(nonce: str, secret_key: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        str(nonce or "").encode("utf-8"),
+        f"outreachai:gmail-oauth-lookup:{secret_key or ''}".encode("utf-8"),
+        GMAIL_OAUTH_LOOKUP_KEY_ITERATIONS,
+    ).hex()
 
 
 def _parse_oauth_created_at(value: Any) -> datetime | None:
@@ -542,10 +548,11 @@ def _pruned_oauth_states(states: dict[str, Any], now: datetime) -> dict[str, Any
 
 
 def _store_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: str, workspace_id: UUID, nonce: str, created_at: datetime) -> None:
+    app_settings = get_app_settings()
     security_settings = settings.security if isinstance(settings.security, dict) else {}
     states = security_settings.get("gmail_oauth_states") if isinstance(security_settings.get("gmail_oauth_states"), dict) else {}
     states = _pruned_oauth_states(states, created_at)
-    states[_oauth_nonce_hash(nonce)] = {
+    states[_oauth_nonce_hash(nonce, app_settings.encryption_key)] = {
         "user_id": user_id,
         "workspace_id": str(workspace_id),
         "created_at": created_at.isoformat(),
@@ -557,12 +564,13 @@ def _store_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: str
 
 
 def _consume_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: str, workspace_id: UUID, nonce: str, created_at: datetime) -> str:
+    app_settings = get_app_settings()
     now = datetime.utcnow()
     if now - created_at > timedelta(seconds=GMAIL_OAUTH_STATE_TTL_SECONDS):
         return "state_expired"
     security_settings = settings.security if isinstance(settings.security, dict) else {}
     states = security_settings.get("gmail_oauth_states") if isinstance(security_settings.get("gmail_oauth_states"), dict) else {}
-    nonce_key = _oauth_nonce_hash(nonce)
+    nonce_key = _oauth_nonce_hash(nonce, app_settings.encryption_key)
     state_record = states.get(nonce_key)
     if not isinstance(state_record, dict):
         return "state_replayed"
@@ -603,7 +611,7 @@ def _store_pending_gmail_oauth_handoff(db: Session, *, settings: AppSettings, us
     security_settings = settings.security if isinstance(settings.security, dict) else {}
     handoffs = security_settings.get("gmail_oauth_pending_handoffs") if isinstance(security_settings.get("gmail_oauth_pending_handoffs"), dict) else {}
     handoffs = _pruned_oauth_handoffs(handoffs, created_at)
-    handoffs[_oauth_nonce_hash(handoff_id)] = {
+    handoffs[_oauth_nonce_hash(handoff_id, app_settings.encryption_key)] = {
         "user_id": user_id,
         "workspace_id": str(workspace_id),
         "code_encrypted": encrypted_code,
@@ -618,7 +626,8 @@ def _store_pending_gmail_oauth_handoff(db: Session, *, settings: AppSettings, us
 
 def _claim_pending_gmail_oauth_handoff(db: Session, *, handoff_id: str, user_id: str) -> tuple[AppSettings | None, dict[str, Any] | None, str]:
     now = datetime.utcnow()
-    handoff_key = _oauth_nonce_hash(handoff_id)
+    app_settings = get_app_settings()
+    handoff_key = _oauth_nonce_hash(handoff_id, app_settings.encryption_key)
     app_settings_rows = db.execute(select(AppSettings).with_for_update()).scalars().all()
     for settings in app_settings_rows:
         security_settings = settings.security if isinstance(settings.security, dict) else {}
