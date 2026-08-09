@@ -1100,6 +1100,9 @@ class BillingStatusOut(BaseModel):
     status: str
     beta_override: bool = False
     all_features_enabled: bool = False
+    entitlement_source: str = "none"
+    test_entitlement: bool = False
+    entitlement_expires_at: Optional[datetime] = None
     trial_end: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
     trial_days_remaining: int = 0
@@ -1189,6 +1192,46 @@ class OwnerFeatureFlagsUpdate(BaseModel):
     admin_nav: Optional[bool] = None
     analytics_nav: Optional[bool] = None
     ai_marketplace: Optional[bool] = None
+
+
+class TestEntitlementGrantIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: UUID
+    user_id: str = Field(min_length=1, max_length=128)
+    user_email: Optional[EmailStr] = None
+    plan: str = Field(default="Starter", max_length=32)
+    expires_at: datetime
+    reason: str = Field(min_length=8, max_length=1000)
+    allow_system_owner_workspace: bool = False
+
+
+class TestEntitlementRevokeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=8, max_length=1000)
+
+
+class TestEntitlementOut(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    user_id: str
+    user_email: str = ""
+    plan: str
+    reason: str
+    granted_by_user_id: str
+    granted_by_email: str = ""
+    granted_at: datetime
+    expires_at: datetime
+    revoked_at: Optional[datetime] = None
+    revoked_by_user_id: Optional[str] = None
+    revoked_by_email: Optional[str] = None
+    revoke_reason: Optional[str] = None
+    active: bool = False
+    entitlement_type: str = "owner_granted_test"
+
+    class Config:
+        from_attributes = True
 
 
 class ActivityOut(BaseModel):
@@ -1321,8 +1364,40 @@ class SettingsOut(BaseModel):
         from_attributes = True
 
 
-class SettingsUpdate(SettingsOut):
-    pass
+class CustomerGeneralSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timezone: Optional[str] = Field(default=None, max_length=80)
+    language: Optional[str] = Field(default=None, max_length=80)
+    notifications_enabled: Optional[bool] = None
+
+
+class CustomerAiSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default_tone: Optional[str] = Field(default=None, max_length=80)
+
+
+class CustomerEmailSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    signature: Optional[str] = Field(default=None, max_length=2000)
+    reply_tracking_enabled: Optional[bool] = None
+
+
+class CustomerApiSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    webhook_url: Optional[HttpUrl] = None
+
+
+class SettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    general: Optional[CustomerGeneralSettingsUpdate] = None
+    ai: Optional[CustomerAiSettingsUpdate] = None
+    email: Optional[CustomerEmailSettingsUpdate] = None
+    api: Optional[CustomerApiSettingsUpdate] = None
 
 
 class OutreachSenderUpdate(BaseModel):

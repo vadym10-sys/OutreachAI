@@ -27,7 +27,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.core.cache import cache_key, get_json, set_json
+from app.core.cache import cache_key, delete_key, get_json, set_json
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
 from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
@@ -59,6 +59,7 @@ from app.models.entities import (
     SalesEmployeeMode,
     SalesEmployeeTaskResult,
     Subscription,
+    TestEntitlement,
     UsageCounter,
     User,
     Workspace,
@@ -156,6 +157,9 @@ from app.schemas.dto import (
     SalesEmployeeTaskResultOut,
     SettingsOut,
     SettingsUpdate,
+    TestEntitlementGrantIn,
+    TestEntitlementOut,
+    TestEntitlementRevokeIn,
     TeamEmployeeDashboardOut,
     TeamRouterDashboardOut,
     TeamRouterDecision,
@@ -193,6 +197,7 @@ from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, EmailProviderSendingDisabledError, send_email, verify_smtp_connection
+from app.services.entitlements import BillingEntitlement, active_test_entitlement, latest_subscription, resolve_billing_entitlement, subscription_is_expired, workspace_trial_end, workspace_trial_is_active
 from app.services.enrichment_queue import enqueue_autopilot_email_job
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
@@ -441,11 +446,11 @@ def _ensure_default_trial(settings: AppSettings, workspace: Workspace) -> bool:
 
 
 def _workspace_trial_end(workspace: Workspace) -> datetime:
-    return (workspace.created_at or datetime.utcnow()) + timedelta(days=14)
+    return workspace_trial_end(workspace)
 
 
 def _workspace_trial_is_active(workspace: Workspace) -> bool:
-    return _workspace_trial_end(workspace) > datetime.utcnow()
+    return workspace_trial_is_active(workspace)
 
 
 def _parse_billing_datetime(value: Any) -> datetime | None:
@@ -1017,29 +1022,6 @@ def _outreach_sender_runtime_config(db: Session, user_id: str, workspace: Worksp
     }
 
 
-INTERNAL_BETA_OVERRIDE_EMAIL = "romaniukvadym10@gmail.com"
-
-
-def _internal_beta_limits() -> dict[str, Any]:
-    limits = dict(PLAN_LIMITS["Agency"])
-    for key, value in list(limits.items()):
-        if isinstance(value, bool):
-            limits[key] = True
-        elif isinstance(value, int):
-            limits[key] = 0
-    limits["mrr"] = 0
-    limits["internal_beta_override"] = True
-    return limits
-
-
-def _billing_beta_override_email(settings: AppSettings) -> str:
-    billing = settings.billing if isinstance(settings.billing, dict) else {}
-    if billing.get("betaOverride") is not True:
-        return ""
-    email = str(billing.get("betaOverrideEmail") or "").strip().lower()
-    return email if email == INTERNAL_BETA_OVERRIDE_EMAIL else ""
-
-
 def _workspace_user_emails(db: Session, user_id: str, workspace: Workspace) -> set[str]:
     emails: set[str] = set()
     user = db.scalar(select(User).where(User.clerk_user_id == user_id))
@@ -1059,81 +1041,37 @@ def _workspace_user_emails(db: Session, user_id: str, workspace: Workspace) -> s
     return emails
 
 
-def _has_internal_beta_override(db: Session, user_id: str, workspace: Workspace, settings: AppSettings | None = None) -> bool:
-    settings = settings or _settings_for_workspace(db, user_id, workspace)
-    email = _billing_beta_override_email(settings)
-    if not email:
-        return False
-    return email in _workspace_user_emails(db, user_id, workspace)
+def _active_test_entitlement(db: Session, user_id: str, workspace: Workspace) -> TestEntitlement | None:
+    return active_test_entitlement(db, user_id, workspace)
+
+
+def _resolve_billing_entitlement(db: Session, user_id: str, workspace: Workspace) -> BillingEntitlement:
+    _settings_for_workspace(db, user_id, workspace)
+    return resolve_billing_entitlement(db, user_id, workspace)
 
 
 def _plan_for_workspace(db: Session, user_id: str, workspace: Workspace) -> str:
-    settings = _settings_for_workspace(db, user_id, workspace)
-    if _has_internal_beta_override(db, user_id, workspace, settings):
-        return "Agency"
-    plan = str((settings.billing or {}).get("plan") or "Starter")
-    return plan if plan in PLAN_LIMITS else "Starter"
+    return _resolve_billing_entitlement(db, user_id, workspace).plan
 
 
 def _limits_for_workspace(db: Session, user_id: str, workspace: Workspace) -> dict[str, Any]:
-    settings = _settings_for_workspace(db, user_id, workspace)
-    if _has_internal_beta_override(db, user_id, workspace, settings):
-        return _internal_beta_limits()
-    return PLAN_LIMITS[_plan_for_workspace(db, user_id, workspace)]
+    return _resolve_billing_entitlement(db, user_id, workspace).limits
 
 
 def _subscription_status_for_workspace(db: Session, workspace: Workspace, user_id: str | None = None) -> str:
-    settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
-    billing: dict[str, Any] = {}
-    if settings is None:
-        settings = AppSettings(user_id=workspace.owner_user_id, workspace_id=workspace.id, **_default_settings())
-        _ensure_default_trial(settings, workspace)
-        db.add(settings)
-        db.commit()
-        db.refresh(settings)
-    if settings:
-        if _ensure_default_trial(settings, workspace):
-            db.add(settings)
-            db.commit()
-            db.refresh(settings)
-        billing = settings.billing or {}
-    if user_id and settings and _has_internal_beta_override(db, user_id, workspace, settings):
-        return "active"
-
-    subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
-    if subscription and subscription.status in {"active", "trialing"}:
-        return "expired" if _subscription_is_expired(subscription) else subscription.status
-    if _workspace_trial_is_active(workspace):
-        return "trialing"
-
-    billing_status = str(billing.get("status") or "inactive")
-    billing_trial_end = _parse_billing_datetime(billing.get("trialEnd"))
-    has_stripe_subscription = bool(billing.get("stripeSubscriptionId"))
-    if billing_status == "trialing" and not has_stripe_subscription:
-        if billing_trial_end is None or billing_trial_end > datetime.utcnow():
-            return "trialing"
-    if billing_status == "active" and not has_stripe_subscription:
-        return "active"
-    if subscription:
-        return "expired" if _subscription_is_expired(subscription) else subscription.status
-    return billing_status
+    return _resolve_billing_entitlement(db, user_id or workspace.owner_user_id, workspace).status
 
 
 def _has_active_subscription(db: Session, workspace: Workspace, user_id: str | None = None) -> bool:
-    return _subscription_status_for_workspace(db, workspace, user_id) in {"active", "trialing"}
+    return _resolve_billing_entitlement(db, user_id or workspace.owner_user_id, workspace).active
 
 
 def _latest_subscription(db: Session, workspace: Workspace) -> Subscription | None:
-    return db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id).order_by(Subscription.current_period_end.desc().nullslast()))
+    return latest_subscription(db, workspace)
 
 
 def _subscription_is_expired(subscription: Subscription) -> bool:
-    now = datetime.utcnow()
-    if subscription.current_period_end and subscription.current_period_end <= now:
-        return True
-    if subscription.status == "trialing" and subscription.trial_end and subscription.trial_end <= now:
-        return True
-    return False
+    return subscription_is_expired(subscription)
 
 
 def _user_for_subscription(db: Session, user_id: str) -> User:
@@ -6369,10 +6307,17 @@ def get_settings_route(user_id: CurrentUser, db: Session = Depends(get_db)) -> A
 def update_settings(payload: SettingsUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AppSettings:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
-    for key, value in payload.model_dump().items():
-        setattr(settings, key, value)
+    updates = payload.model_dump(exclude_none=True)
+    if "general" in updates:
+        settings.general = {**(settings.general or {}), **updates["general"]}
+    if "ai" in updates:
+        settings.ai = {**(settings.ai or {}), **updates["ai"]}
+    if "email" in updates:
+        settings.email = {**(settings.email or {}), **updates["email"]}
+    if "api" in updates:
+        settings.api = {**(settings.api or {}), **updates["api"]}
     db.add(settings)
-    log_event(db, request, user_id, "settings.updated", {})
+    log_event(db, request, user_id, "settings.updated", {"fields": sorted(updates.keys())})
     db.commit()
     db.refresh(settings)
     return settings
@@ -6384,7 +6329,12 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
     if payload.plan not in PLAN_LIMITS:
         raise HTTPException(status_code=400, detail="Unknown subscription plan")
     settings = _settings_for_workspace(db, user_id, workspace)
-    customer_id = str((settings.billing or {}).get("stripeCustomerId") or "")
+    entitlement = _resolve_billing_entitlement(db, user_id, workspace)
+    if entitlement.source == "owner_granted_test" and entitlement.active:
+        log_event(db, request, user_id, "billing.checkout_skipped_test_entitlement", {"workspace_id": str(workspace.id), "plan": entitlement.plan})
+        db.commit()
+        return {"url": f"{get_app_settings().public_app_url.rstrip('/')}/dashboard?billing=test-entitlement", "id": "", "customer_id": "", "skipped_checkout": True}
+    customer_id = str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or "")
     try:
         session = create_checkout_session(user_id, str(workspace.id), payload.plan, customer_id)
     except ValueError as exc:
@@ -6404,18 +6354,21 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
 @router.get("/billing/plans", response_model=list[BillingPlanOut])
 def billing_plans(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[BillingPlanOut]:
     workspace = _current_workspace(db, user_id)
-    current = _plan_for_workspace(db, user_id, workspace)
-    active = _has_active_subscription(db, workspace, user_id)
+    entitlement = _resolve_billing_entitlement(db, user_id, workspace)
+    current = entitlement.plan
+    active = entitlement.active
     return [BillingPlanOut(name=name, price=int(limits["mrr"]), limits=limits, current=active and name == current, active_subscription=active) for name, limits in PLAN_LIMITS.items()]
 
 
 @router.post("/billing/portal")
 def billing_portal(payload: BillingPortalRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
     workspace = _current_workspace(db, user_id)
-    settings = _settings_for_workspace(db, user_id, workspace)
-    if not _has_active_subscription(db, workspace, user_id):
+    entitlement = _resolve_billing_entitlement(db, user_id, workspace)
+    if not entitlement.active:
         raise HTTPException(status_code=402, detail="An active subscription is required to open the Billing Portal.")
-    customer_id = str((settings.billing or {}).get("stripeCustomerId") or "")
+    customer_id = str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or "")
+    if not customer_id:
+        raise HTTPException(status_code=402, detail="A Stripe subscription is required to open the Billing Portal.")
     try:
         session = create_billing_portal_session(customer_id, str(payload.return_url))
     except ValueError as exc:
@@ -6452,12 +6405,17 @@ def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
 def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> BillingSyncOut:
     workspace = _current_workspace(db, user_id)
     settings_row = _settings_for_workspace(db, user_id, workspace)
-    customer_id = (payload.stripe_customer_id or str((settings_row.billing or {}).get("stripeCustomerId") or "")).strip()
-    customer_email = str(payload.customer_email or "").strip()
-    if not customer_id and not customer_email:
-        raise HTTPException(status_code=400, detail="Provide customer_email or stripe_customer_id")
+    server_customer_id = str((settings_row.billing or {}).get("stripeCustomerId") or "").strip()
+    requested_customer_id = str(payload.stripe_customer_id or "").strip()
+    if payload.customer_email:
+        raise HTTPException(status_code=403, detail="Billing sync uses the server-created checkout customer.")
+    if requested_customer_id and requested_customer_id != server_customer_id:
+        raise HTTPException(status_code=403, detail="Billing sync cannot use a customer-supplied Stripe customer.")
+    customer_id = server_customer_id
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="No server-created Stripe checkout customer is available for this workspace.")
     try:
-        customer, subscription = latest_subscription_for_customer(customer_id=customer_id, customer_email=customer_email)
+        customer, subscription = latest_subscription_for_customer(customer_id=customer_id, customer_email="")
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -6482,6 +6440,7 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
         current_period_end=sub["current_period_end"],
     )
     log_event(db, request, user_id, "billing.subscription_synced", {"workspace_id": str(workspace.id), "plan": plan, "status": synced.status})
+    delete_key(cache_key("billing-status", workspace.id, user_id))
     db.commit()
     return BillingSyncOut(
         synced=True,
@@ -6507,16 +6466,17 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
     cached = get_json(key)
     if cached:
         return BillingStatusOut.model_validate(cached)
-    plan = _plan_for_workspace(db, user_id, workspace)
-    limits = _limits_for_workspace(db, user_id, workspace)
+    entitlement = _resolve_billing_entitlement(db, user_id, workspace)
+    plan = entitlement.plan
+    limits = entitlement.limits
     usage = _usage_for_workspace(db, workspace)
-    subscription = _latest_subscription(db, workspace)
+    subscription = entitlement.subscription
     settings = _settings_for_workspace(db, user_id, workspace)
     billing = settings.billing or {}
-    beta_override = _has_internal_beta_override(db, user_id, workspace, settings)
-    status = "active" if beta_override else (subscription.status if subscription else str(billing.get("status") or "inactive"))
-    trial_end = None if beta_override else (subscription.trial_end if subscription else _parse_billing_datetime(billing.get("trialEnd")))
-    current_period_end = None if beta_override else (subscription.current_period_end if subscription else _parse_billing_datetime(billing.get("currentPeriodEnd")))
+    beta_override = entitlement.source == "owner_granted_test"
+    status = entitlement.status
+    trial_end = entitlement.trial_end
+    current_period_end = entitlement.current_period_end
     trial_days_remaining = 0
     if trial_end:
         trial_days_remaining = max(0, (trial_end.date() - datetime.utcnow().date()).days)
@@ -6528,11 +6488,14 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
         status=status,
         beta_override=beta_override,
         all_features_enabled=bool(beta_override and all(isinstance(value, bool) and value for value in limits.values() if isinstance(value, bool))),
+        entitlement_source=entitlement.source,
+        test_entitlement=beta_override,
+        entitlement_expires_at=entitlement.test_entitlement.expires_at if entitlement.test_entitlement else None,
         trial_end=trial_end,
         current_period_end=current_period_end,
         trial_days_remaining=trial_days_remaining,
-        stripe_customer_id="" if beta_override else str(billing.get("stripeCustomerId") or (subscription.stripe_customer_id if subscription else "") or ""),
-        stripe_subscription_id="" if beta_override else str(billing.get("stripeSubscriptionId") or (subscription.stripe_subscription_id if subscription else "") or ""),
+        stripe_customer_id="" if beta_override else str((subscription.stripe_customer_id if subscription else "") or ""),
+        stripe_subscription_id="" if beta_override else str((subscription.stripe_subscription_id if subscription else "") or ""),
         last_payment_error=str((subscription.last_payment_error if subscription else None) or billing.get("lastPaymentError") or ""),
         last_decline_code=str((subscription.last_decline_code if subscription else None) or billing.get("lastDeclineCode") or ""),
         last_failure_message=str((subscription.last_failure_message if subscription else None) or billing.get("lastFailureMessage") or ""),
@@ -6549,8 +6512,8 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
 @router.get("/billing/invoices")
 def billing_invoices(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[dict]:
     workspace = _current_workspace(db, user_id)
-    settings = _settings_for_workspace(db, user_id, workspace)
-    customer_id = str((settings.billing or {}).get("stripeCustomerId") or "")
+    entitlement = _resolve_billing_entitlement(db, user_id, workspace)
+    customer_id = str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or "")
     return list_invoices(customer_id)
 
 
@@ -6568,14 +6531,156 @@ def billing_usage(user_id: CurrentUser, db: Session = Depends(get_db)) -> UsageO
 
 
 @router.post("/billing/catalog")
-def billing_catalog(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+def billing_catalog(request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> dict:
     try:
         catalog = ensure_subscription_catalog()
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    log_event(db, request, user_id, "billing.catalog_synced", {"plans": [item["plan"] for item in catalog]})
+    log_event(db, request, owner.user_id, "billing.catalog_synced", {"plans": [item["plan"] for item in catalog]})
     db.commit()
     return {"items": catalog}
+
+
+def _lock_test_entitlement_mutation(db: Session, workspace_id: UUID, user_id: str) -> None:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"test-entitlement:{workspace_id}:{user_id}"})
+
+
+def _test_entitlement_out(entitlement: TestEntitlement) -> TestEntitlementOut:
+    return TestEntitlementOut(
+        id=entitlement.id,
+        workspace_id=entitlement.workspace_id,
+        user_id=entitlement.user_id,
+        user_email=entitlement.user_email,
+        plan=entitlement.plan,
+        reason=entitlement.reason,
+        granted_by_user_id=entitlement.granted_by_user_id,
+        granted_by_email=entitlement.granted_by_email,
+        granted_at=entitlement.granted_at,
+        expires_at=entitlement.expires_at,
+        revoked_at=entitlement.revoked_at,
+        revoked_by_user_id=entitlement.revoked_by_user_id,
+        revoked_by_email=entitlement.revoked_by_email,
+        revoke_reason=entitlement.revoke_reason,
+        active=entitlement.revoked_at is None and entitlement.expires_at > datetime.utcnow(),
+    )
+
+
+@router.post("/owner/test-entitlements", response_model=TestEntitlementOut)
+def owner_grant_test_entitlement(payload: TestEntitlementGrantIn, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> TestEntitlementOut:
+    if payload.plan not in PLAN_LIMITS:
+        raise HTTPException(status_code=400, detail="Unknown subscription plan")
+    if payload.expires_at <= datetime.utcnow():
+        raise HTTPException(status_code=422, detail="expires_at must be in the future")
+    if payload.expires_at > datetime.utcnow() + timedelta(days=30):
+        raise HTTPException(status_code=422, detail="Test entitlements cannot exceed 30 days")
+
+    workspace = db.get(Workspace, payload.workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if workspace.owner_user_id != payload.user_id:
+        raise HTTPException(status_code=403, detail="Test entitlement can only be granted to the target workspace owner")
+    if workspace.owner_user_id == owner.user_id and not payload.allow_system_owner_workspace:
+        raise HTTPException(status_code=403, detail="System owner workspace test entitlement requires explicit confirmation")
+
+    member = db.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace.id,
+            WorkspaceMember.user_id == payload.user_id,
+            WorkspaceMember.role == WorkspaceRole.owner,
+            WorkspaceMember.status == "active",
+        )
+    )
+    if member is None:
+        raise HTTPException(status_code=404, detail="Target workspace owner membership not found")
+
+    _lock_test_entitlement_mutation(db, workspace.id, payload.user_id)
+    now = datetime.utcnow()
+    existing = list(
+        db.scalars(
+            select(TestEntitlement)
+            .where(TestEntitlement.workspace_id == workspace.id, TestEntitlement.user_id == payload.user_id, TestEntitlement.revoked_at.is_(None))
+            .order_by(TestEntitlement.granted_at.desc())
+        ).all()
+    )
+    for entitlement in existing:
+        entitlement.revoked_at = now
+        entitlement.revoked_by_user_id = owner.user_id
+        entitlement.revoked_by_email = owner.email
+        entitlement.revoke_reason = "Replaced by a newer owner-granted test entitlement"
+
+    entitlement = TestEntitlement(
+        workspace_id=workspace.id,
+        user_id=payload.user_id,
+        user_email=str(payload.user_email or member.email or "").strip().lower(),
+        plan=payload.plan,
+        reason=payload.reason.strip(),
+        granted_by_user_id=owner.user_id,
+        granted_by_email=owner.email,
+        granted_at=now,
+        expires_at=payload.expires_at,
+    )
+    db.add(entitlement)
+    db.add(
+        AuditLog(
+            user_id=owner.user_id,
+            workspace_id=workspace.id,
+            action="owner.test_entitlement.granted",
+            metadata_json={
+                "entitlement_id": str(entitlement.id),
+                "target_user_id": payload.user_id,
+                "plan": payload.plan,
+                "expires_at": payload.expires_at.isoformat(),
+                "reason": payload.reason.strip(),
+                "replaced_count": len(existing),
+                "entitlement_type": "owner_granted_test",
+            },
+        )
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        active = _active_test_entitlement(db, payload.user_id, workspace)
+        if active:
+            return _test_entitlement_out(active)
+        raise HTTPException(status_code=409, detail="Test entitlement grant conflicted with another request") from exc
+    db.refresh(entitlement)
+    delete_key(cache_key("billing-status", workspace.id, payload.user_id))
+    return _test_entitlement_out(entitlement)
+
+
+@router.post("/owner/test-entitlements/{entitlement_id}/revoke", response_model=TestEntitlementOut)
+def owner_revoke_test_entitlement(entitlement_id: UUID, payload: TestEntitlementRevokeIn, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> TestEntitlementOut:
+    entitlement = db.get(TestEntitlement, entitlement_id)
+    if entitlement is None:
+        raise HTTPException(status_code=404, detail="Test entitlement not found")
+    workspace = db.get(Workspace, entitlement.workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    _lock_test_entitlement_mutation(db, entitlement.workspace_id, entitlement.user_id)
+    if entitlement.revoked_at is None:
+        entitlement.revoked_at = datetime.utcnow()
+        entitlement.revoked_by_user_id = owner.user_id
+        entitlement.revoked_by_email = owner.email
+        entitlement.revoke_reason = payload.reason.strip()
+    db.add(
+        AuditLog(
+            user_id=owner.user_id,
+            workspace_id=entitlement.workspace_id,
+            action="owner.test_entitlement.revoked",
+            metadata_json={
+                "entitlement_id": str(entitlement.id),
+                "target_user_id": entitlement.user_id,
+                "reason": payload.reason.strip(),
+                "entitlement_type": "owner_granted_test",
+            },
+        )
+    )
+    db.commit()
+    db.refresh(entitlement)
+    delete_key(cache_key("billing-status", entitlement.workspace_id, entitlement.user_id))
+    return _test_entitlement_out(entitlement)
 
 
 OWNER_FEATURE_FLAG_DEFAULTS = {

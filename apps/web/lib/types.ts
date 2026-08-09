@@ -1539,6 +1539,9 @@ export type BillingStatus = {
   status: string;
   beta_override?: boolean;
   all_features_enabled?: boolean;
+  entitlement_source?: string;
+  test_entitlement?: boolean;
+  entitlement_expires_at?: string | null;
   trial_end?: string | null;
   current_period_end?: string | null;
   trial_days_remaining: number;

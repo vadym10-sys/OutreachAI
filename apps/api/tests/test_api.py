@@ -57,13 +57,14 @@ from app.core import cache as cache_module  # noqa: E402
 from app.core import security  # noqa: E402
 from app.api import routes as routes_module  # noqa: E402
 from app.api.usage import _approved_email_send_claim_update, _parse_lead_command, _require_workspace_owner  # noqa: E402
-from app.api.routes import _audit_log_lead_id_clause, _enforce_usage, _lead_ai_payload, _limits_for_workspace, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
+from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, TestEntitlement as BillingTestEntitlement, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
 from app.services.ai import ProviderRequestError, ProviderResponseValidationError, _parse_llm_number, sales_copilot  # noqa: E402
+from app.services import autopilot as autopilot_module  # noqa: E402
 from app.services.backups import _is_past_retention, _verify_restore, backup_archive_is_readable  # noqa: E402
 from app.services.deep_contact_search import DeepContactCandidate, DeepContactSearchResult, deep_contact_cache_is_fresh, normalize_domain, select_best_decision_maker  # noqa: E402
 from app.services.emailer import EmailProviderRequestError, EmailProviderSendingDisabledError  # noqa: E402
@@ -84,6 +85,33 @@ USER_B_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "tenant-b@exa
 OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "romaniukvadym10@gmail.com"}
 NON_OWNER_AUTH = {"Authorization": "Bearer dev", "X-Test-User-Email": "not-owner@example.com"}
 security.limiter.limit = 10000
+
+
+def _grant_subscription_for_test(workspace_id: str, user_id: str = "dev_user", plan: str = "Pro", status: str = "active") -> None:
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+        if user is None:
+            user = User(clerk_user_id=user_id, email=f"{user_id}@example.com")
+            db.add(user)
+            db.flush()
+        subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == UUID(workspace_id), Subscription.stripe_subscription_id == f"sub_test_{workspace_id}_{plan}"))
+        if subscription is None:
+            subscription = Subscription(user_id=user.id, workspace_id=UUID(workspace_id), stripe_customer_id=f"cus_test_{workspace_id}", stripe_subscription_id=f"sub_test_{workspace_id}_{plan}")
+            db.add(subscription)
+        subscription.user_id = user.id
+        subscription.plan = plan
+        subscription.status = status
+        subscription.trial_end = datetime.utcnow() + timedelta(days=14) if status == "trialing" else None
+        subscription.current_period_end = datetime.utcnow() + timedelta(days=30)
+        subscription.plan_limits = PLAN_LIMITS[plan]
+        db.commit()
+
+
+def _assert_url_components(value: str, *, scheme: str, hostname: str, path: str) -> None:
+    parsed = urlparse(value)
+    assert parsed.scheme == scheme
+    assert parsed.hostname == hostname
+    assert parsed.path == path
 
 
 def _enable_ai_memory(headers: dict[str, str]) -> dict[str, Any]:
@@ -1996,7 +2024,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(t
     migration_path.write_text((database_module.PACKAGED_MIGRATIONS_DIR / "013_production_hardening_read_paths.sql").read_text(), encoding="utf-8")
     monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
     state = _FakePostgresState()
-    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes", "014_email_message_recipient_email", "015_backup_runs", "016_workspace_profile_send_confirmation"}
+    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes", "014_email_message_recipient_email", "015_backup_runs", "016_workspace_profile_send_confirmation", "017_secure_billing_test_entitlements"}
     state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
     engine = _FakePostgresEngine(state)
@@ -3669,7 +3697,7 @@ def test_new_private_workspace_gets_fourteen_day_trial_status() -> None:
     assert status["trial_days_remaining"] >= 13
 
 
-def test_existing_workspace_without_billing_status_gets_trial_before_production_ai_gate(monkeypatch) -> None:
+def test_existing_workspace_without_authoritative_subscription_is_inactive_in_production_ai_gate(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "legacy-trial-owner@example.com"}
     workspace_response = client.get("/api/workspace/me", headers=headers)
     assert workspace_response.status_code == 200
@@ -3693,13 +3721,15 @@ def test_existing_workspace_without_billing_status_gets_trial_before_production_
         with SessionLocal() as db:
             workspace = db.get(Workspace, UUID(workspace_id))
             assert workspace is not None
-            assert _subscription_status_for_workspace(db, workspace) == "trialing"
-            _require_active_subscription(db, workspace)
+            assert _subscription_status_for_workspace(db, workspace) == "inactive"
+            with pytest.raises(HTTPException) as exc:
+                _require_active_subscription(db, workspace)
+            assert exc.value.status_code == 402
     finally:
         monkeypatch.setattr(app_settings, "app_env", original_env)
 
 
-def test_workspace_trial_status_survives_legacy_inactive_subscription(monkeypatch) -> None:
+def test_legacy_inactive_subscription_is_inactive_in_production_ai_gate(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "legacy-inactive-subscription@example.com"}
     workspace_response = client.get("/api/workspace/me", headers=headers)
     assert workspace_response.status_code == 200
@@ -3735,13 +3765,15 @@ def test_workspace_trial_status_survives_legacy_inactive_subscription(monkeypatc
         with SessionLocal() as db:
             workspace = db.get(Workspace, workspace_id)
             assert workspace is not None
-            assert _subscription_status_for_workspace(db, workspace) == "trialing"
-            _require_active_subscription(db, workspace)
+            assert _subscription_status_for_workspace(db, workspace) == "inactive"
+            with pytest.raises(HTTPException) as exc:
+                _require_active_subscription(db, workspace)
+            assert exc.value.status_code == 402
     finally:
         monkeypatch.setattr(app_settings, "app_env", original_env)
 
 
-def test_workspace_trial_status_survives_inactive_stripe_metadata(monkeypatch) -> None:
+def test_inactive_stripe_metadata_is_inactive_in_production_ai_gate(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "legacy-inactive-stripe@example.com"}
     workspace_response = client.get("/api/workspace/me", headers=headers)
     assert workspace_response.status_code == 200
@@ -3783,8 +3815,10 @@ def test_workspace_trial_status_survives_inactive_stripe_metadata(monkeypatch) -
         with SessionLocal() as db:
             workspace = db.get(Workspace, workspace_id)
             assert workspace is not None
-            assert _subscription_status_for_workspace(db, workspace) == "trialing"
-            _require_active_subscription(db, workspace)
+            assert _subscription_status_for_workspace(db, workspace) == "inactive"
+            with pytest.raises(HTTPException) as exc:
+                _require_active_subscription(db, workspace)
+            assert exc.value.status_code == 402
     finally:
         monkeypatch.setattr(app_settings, "app_env", original_env)
 
@@ -3811,67 +3845,312 @@ def test_billing_plan_matrix_keeps_expected_feature_progression() -> None:
     assert PLAN_LIMITS["Agency"]["webhooks"] is True
 
 
-def test_internal_beta_override_is_free_full_access_for_only_target_user(monkeypatch) -> None:
-    target_user_id = "user_beta_romaniuk"
-    other_user_id = "user_beta_other"
-    target_email = "romaniukvadym10@gmail.com"
-    other_email = "other-beta-member@example.com"
-    SessionLocal = get_sessionmaker()
-    with SessionLocal() as db:
-        workspace = Workspace(owner_user_id=target_user_id, name="Internal Beta Workspace", created_at=datetime.utcnow() - timedelta(days=60))
-        db.add(workspace)
+def test_customer_settings_update_rejects_billing_security_credentials_and_mass_assignment(monkeypatch) -> None:
+    target_email = f"settings-forge-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_email}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+
+    protected_payloads = [
+        {"billing": {"plan": "Agency", "status": "active", "stripeCustomerId": "cus_forged", "limits": {"leads": 0}}},
+        {"security": {"gmail_oauth_states": {"nonce": "forged"}, "api_key": "forged"}},
+        {"email": {"sender": {"oauth": {"refresh_token_encrypted": "forged"}, "provider": "gmail"}}},
+        {"general": {"owner_feature_flags": {"admin_nav": True}}},
+        {"api": {"secret_key": "forged"}},
+        {"unknown": {"billing": {"status": "active"}}},
+    ]
+    for payload in protected_payloads:
+        response = client.put("/api/settings", headers=headers, json=payload)
+        assert response.status_code == 422
+
+    allowed = client.put("/api/settings", headers=headers, json={"general": {"timezone": "Europe/Warsaw", "language": "English", "notifications_enabled": True}, "email": {"signature": "Regards", "reply_tracking_enabled": True}})
+    assert allowed.status_code == 200
+    assert allowed.json()["general"]["timezone"] == "Europe/Warsaw"
+    assert "sender" not in allowed.json()["email"]
+
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings is not None
+        settings.billing = {"plan": "Agency", "status": "active", "stripeCustomerId": "cus_forged", "stripeSubscriptionId": "sub_forged"}
+        db.commit()
+
+    status = client.get("/api/billing/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["stripe_customer_id"] == ""
+    assert status.json()["stripe_subscription_id"] == ""
+
+    invoice_calls = []
+
+    def fake_list_invoices(customer_id: str) -> list[dict]:
+        invoice_calls.append(customer_id)
+        return []
+
+    monkeypatch.setattr("app.api.routes.list_invoices", fake_list_invoices)
+    invoices = client.get("/api/billing/invoices", headers=headers)
+    assert invoices.status_code == 200
+    assert invoice_calls[-1] == ""
+
+    catalog = client.post("/api/billing/catalog", headers=headers)
+    assert catalog.status_code == 403
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "production")
+    try:
+        with get_sessionmaker()() as db:
+            workspace_row = db.get(Workspace, UUID(workspace["id"]))
+            assert workspace_row is not None
+            assert _subscription_status_for_workspace(db, workspace_row, target_email) == "inactive"
+            assert _plan_for_workspace(db, target_email, workspace_row) == "Starter"
+            with pytest.raises(HTTPException) as exc:
+                _require_active_subscription(db, workspace_row, target_email)
+            assert exc.value.status_code == 402
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
+def test_autopilot_worker_ignores_forged_settings_billing_entitlements(monkeypatch) -> None:
+    target_email = f"worker-forge-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_email}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, workspace_id)
+        assert workspace_row is not None
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=target_email, workspace_id=workspace_id)
+            db.add(settings)
+        settings.billing = {"plan": "Agency", "status": "active", "betaOverride": True, "betaOverrideEmail": target_email}
+        lead = Lead(user_id=target_email, workspace_id=workspace_id, company="Worker Forge", email="lead@example.com")
+        db.add(lead)
         db.flush()
-        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=target_user_id, email=target_email, role=WorkspaceRole.owner, status="active"))
-        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=other_user_id, email=other_email, role=WorkspaceRole.member, status="active"))
-        db.add(User(clerk_user_id=target_user_id, email=target_email))
-        db.add(User(clerk_user_id=other_user_id, email=other_email))
-        settings = AppSettings(
-            user_id=target_user_id,
-            workspace_id=workspace.id,
-            billing={
-                "plan": "Starter",
-                "status": "canceled",
-                "stripeCustomerId": "cus_old_cancelled",
-                "stripeSubscriptionId": "sub_old_cancelled",
-                "betaOverride": True,
-                "betaOverrideEmail": target_email,
-                "betaOverrideReason": "closed_beta_internal_testing",
-            },
+        job = EnrichmentJob(workspace_id=workspace_id, user_id=target_email, lead_id=lead.id, job_type="autopilot_email", request_id=f"worker-forge-{uuid4()}")
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "production")
+    try:
+        with get_sessionmaker()() as db:
+            job = db.get(EnrichmentJob, job_id)
+            assert job is not None
+            entitlement = autopilot_module._billing_entitlement_for_job(db, job)
+            assert entitlement is not None
+            assert entitlement.active is False
+            assert entitlement.plan == "Starter"
+            assert autopilot_module._plan_limit(entitlement) == PLAN_LIMITS["Starter"]["email_sends"]
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
+def test_owner_test_entitlement_grant_revoke_and_checkout_skip(monkeypatch) -> None:
+    target_user_id = f"entitled-customer-{uuid4()}@example.com"
+    target_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_user_id}
+    workspace = client.get("/api/workspace/me", headers=target_headers).json()
+    expires_at = (datetime.utcnow() + timedelta(hours=2)).isoformat()
+
+    non_owner_grant = client.post(
+        "/api/owner/test-entitlements",
+        headers=NON_OWNER_AUTH,
+        json={"workspace_id": workspace["id"], "user_id": target_user_id, "plan": "Starter", "expires_at": expires_at, "reason": "controlled smoke test"},
+    )
+    assert non_owner_grant.status_code == 403
+
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"other-entitled-{uuid4()}@example.com"}
+    other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
+    cross_workspace = client.post(
+        "/api/owner/test-entitlements",
+        headers=OWNER_AUTH,
+        json={"workspace_id": workspace["id"], "user_id": other_workspace["owner_user_id"] if "owner_user_id" in other_workspace else other_headers["X-Test-User-Email"], "plan": "Starter", "expires_at": expires_at, "reason": "cross workspace attempt"},
+    )
+    assert cross_workspace.status_code == 403
+
+    owner_console_before = client.get("/api/owner/console", headers=OWNER_AUTH)
+    assert owner_console_before.status_code == 200
+    subscriptions_before = owner_console_before.json()["subscriptions"].get("total", 0)
+
+    grant = client.post(
+        "/api/owner/test-entitlements",
+        headers=OWNER_AUTH,
+        json={"workspace_id": workspace["id"], "user_id": target_user_id, "user_email": target_user_id, "plan": "Pro", "expires_at": expires_at, "reason": "controlled production onboarding smoke"},
+    )
+    assert grant.status_code == 200
+    entitlement = grant.json()
+    assert entitlement["active"] is True
+    assert entitlement["entitlement_type"] == "owner_granted_test"
+    assert entitlement["plan"] == "Pro"
+
+    customer_extend = client.post(
+        "/api/owner/test-entitlements",
+        headers=target_headers,
+        json={"workspace_id": workspace["id"], "user_id": target_user_id, "plan": "Agency", "expires_at": expires_at, "reason": "customer self grant"},
+    )
+    assert customer_extend.status_code == 403
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    calls = {"checkout": 0}
+
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "") -> dict:
+        calls["checkout"] += 1
+        return {"url": "https://checkout.stripe.test/session", "id": "cs_should_not_create", "customer_id": customer_id or "cus_should_not_create"}
+
+    monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
+    try:
+        status = client.get("/api/billing/status", headers=target_headers)
+        assert status.status_code == 200
+        assert status.json()["status"] == "test_entitlement"
+        assert status.json()["test_entitlement"] is True
+        assert status.json()["entitlement_source"] == "owner_granted_test"
+        assert status.json()["price"] == 0
+
+        checkout = client.post("/api/billing/checkout", headers=target_headers, json={"plan": "Starter"})
+        assert checkout.status_code == 200
+        assert checkout.json()["skipped_checkout"] is True
+        assert calls["checkout"] == 0
+
+        owner_console = client.get("/api/owner/console", headers=OWNER_AUTH)
+        assert owner_console.status_code == 200
+        assert owner_console.json()["subscriptions"].get("total", 0) == subscriptions_before
+
+        revoke_forbidden = client.post(f"/api/owner/test-entitlements/{entitlement['id']}/revoke", headers=target_headers, json={"reason": "customer revoke"})
+        assert revoke_forbidden.status_code == 403
+        revoke = client.post(f"/api/owner/test-entitlements/{entitlement['id']}/revoke", headers=OWNER_AUTH, json={"reason": "controlled smoke finished"})
+        assert revoke.status_code == 200
+        assert revoke.json()["active"] is False
+
+        monkeypatch.setattr(app_settings, "app_env", "production")
+        with get_sessionmaker()() as db:
+            workspace_row = db.get(Workspace, UUID(workspace["id"]))
+            assert workspace_row is not None
+            assert _subscription_status_for_workspace(db, workspace_row, target_user_id) == "inactive"
+            with pytest.raises(HTTPException):
+                _require_active_subscription(db, workspace_row, target_user_id)
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+        normal_checkout = client.post("/api/billing/checkout", headers=target_headers, json={"plan": "Starter"})
+        assert normal_checkout.status_code == 200
+        _assert_url_components(normal_checkout.json()["url"], scheme="https", hostname="checkout.stripe.test", path="/session")
+        assert calls["checkout"] == 1
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
+def test_checkout_url_assertion_rejects_prefix_spoofed_hosts() -> None:
+    with pytest.raises(AssertionError):
+        _assert_url_components(
+            "https://checkout.stripe.test.evil/session",
+            scheme="https",
+            hostname="checkout.stripe.test",
+            path="/session",
         )
-        db.add(settings)
-        db.add(UsageCounter(workspace_id=workspace.id, period=datetime.utcnow().strftime("%Y-%m"), leads=50000, ai_generations=100000, email_sends=100000))
+
+
+def test_owner_test_entitlement_expiry_and_concurrent_replace(monkeypatch) -> None:
+    target_user_id = f"concurrent-entitlement-{uuid4()}@example.com"
+    target_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_user_id}
+    workspace = client.get("/api/workspace/me", headers=target_headers).json()
+    workspace_id = UUID(workspace["id"])
+    now = datetime.utcnow()
+    with get_sessionmaker()() as db:
+        db.add(
+            BillingTestEntitlement(
+                workspace_id=workspace_id,
+                user_id=target_user_id,
+                user_email=target_user_id,
+                plan="Agency",
+                reason="expired controlled test",
+                granted_by_user_id="romaniukvadym10@gmail.com",
+                granted_by_email="romaniukvadym10@gmail.com",
+                granted_at=now - timedelta(days=2),
+                expires_at=now - timedelta(hours=1),
+            )
+        )
         db.commit()
 
     app_settings = get_settings()
     original_env = app_settings.app_env
     monkeypatch.setattr(app_settings, "app_env", "production")
     try:
-        with SessionLocal() as db:
-            workspace = db.scalar(select(Workspace).where(Workspace.name == "Internal Beta Workspace"))
-            assert workspace is not None
-
-            assert _plan_for_workspace(db, target_user_id, workspace) == "Agency"
-            assert _subscription_status_for_workspace(db, workspace, target_user_id) == "active"
-            _require_active_subscription(db, workspace, target_user_id)
-
-            limits = _limits_for_workspace(db, target_user_id, workspace)
-            for metric in ["leads", "ai_generations", "email_sends", "sales_employees", "workspaces", "team_members", "campaigns"]:
-                assert limits[metric] == 0
-            for flag in ["review_mode", "semi_auto_mode", "autonomous_mode", "basic_analytics", "advanced_analytics", "reply_ai", "api_access", "webhooks", "white_label"]:
-                assert limits[flag] is True
-            assert limits["mrr"] == 0
-
-            _enforce_usage(db, target_user_id, workspace, "leads")
-            _enforce_usage(db, target_user_id, workspace, "ai_generations")
-            _enforce_usage(db, target_user_id, workspace, "email_sends")
-
-            assert _plan_for_workspace(db, other_user_id, workspace) == "Starter"
-            assert _subscription_status_for_workspace(db, workspace, other_user_id) == "canceled"
-            with pytest.raises(HTTPException) as exc:
-                _require_active_subscription(db, workspace, other_user_id)
-            assert exc.value.status_code == 402
+        with get_sessionmaker()() as db:
+            workspace_row = db.get(Workspace, workspace_id)
+            assert workspace_row is not None
+            assert _subscription_status_for_workspace(db, workspace_row, target_user_id) == "inactive"
     finally:
         monkeypatch.setattr(app_settings, "app_env", original_env)
+
+    def grant(reason: str):
+        return client.post(
+            "/api/owner/test-entitlements",
+            headers=OWNER_AUTH,
+            json={
+                "workspace_id": str(workspace_id),
+                "user_id": target_user_id,
+                "user_email": target_user_id,
+                "plan": "Starter",
+                "expires_at": (datetime.utcnow() + timedelta(hours=1)).isoformat(),
+                "reason": reason,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(grant, ["concurrent grant one", "concurrent grant two"]))
+    assert all(response.status_code in {200, 409} for response in responses)
+    with get_sessionmaker()() as db:
+        active_count = db.scalar(
+            select(func.count())
+            .select_from(BillingTestEntitlement)
+            .where(BillingTestEntitlement.workspace_id == workspace_id, BillingTestEntitlement.user_id == target_user_id, BillingTestEntitlement.revoked_at.is_(None), BillingTestEntitlement.expires_at > datetime.utcnow())
+        )
+        assert active_count == 1
+
+
+def test_stripe_subscription_state_remains_authoritative_over_test_entitlement(monkeypatch) -> None:
+    target_user_id = f"stripe-authoritative-{uuid4()}@example.com"
+    target_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_user_id}
+    workspace = client.get("/api/workspace/me", headers=target_headers).json()
+    SessionLocal = get_sessionmaker()
+    with SessionLocal() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        user = User(clerk_user_id=target_user_id, email=target_user_id)
+        db.add(user)
+        db.flush()
+        db.add(
+            Subscription(
+                user_id=user.id,
+                workspace_id=workspace_row.id,
+                stripe_customer_id="cus_authoritative",
+                stripe_subscription_id="sub_authoritative",
+                plan="Pro",
+                status="trialing",
+                trial_end=datetime.utcnow() + timedelta(days=14),
+                current_period_end=datetime.utcnow() + timedelta(days=14),
+                plan_limits=PLAN_LIMITS["Pro"],
+            )
+        )
+        db.add(
+            BillingTestEntitlement(
+                workspace_id=workspace_row.id,
+                user_id=target_user_id,
+                user_email=target_user_id,
+                plan="Agency",
+                reason="lower precedence than Stripe",
+                granted_by_user_id="romaniukvadym10@gmail.com",
+                granted_by_email="romaniukvadym10@gmail.com",
+                expires_at=datetime.utcnow() + timedelta(days=1),
+            )
+        )
+        db.commit()
+
+    status = client.get("/api/billing/status", headers=target_headers)
+    assert status.status_code == 200
+    assert status.json()["entitlement_source"] == "stripe"
+    assert status.json()["plan"] == "Pro"
+    assert status.json()["status"] == "trialing"
+    assert status.json()["test_entitlement"] is False
 
 
 def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> None:
@@ -10459,11 +10738,11 @@ def test_ai_sales_copilot_endpoints(monkeypatch) -> None:
     workspace = client.get("/api/workspace", headers=AUTH).json()
     db = get_sessionmaker()()
     try:
-        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
-        settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+        db.query(Subscription).filter(Subscription.workspace_id == UUID(workspace["id"])).delete()
         db.commit()
     finally:
         db.close()
+    _grant_subscription_for_test(workspace["id"], plan="Pro")
     analytics = client.post(f"/api/campaigns/{campaign['id']}/ai-analytics", headers=AUTH)
     assert analytics.status_code == 200
     assert analytics.json()["campaign_success"] == 68
@@ -10778,16 +11057,22 @@ def test_workspace_onboarding_usage_and_campaign_duplicate() -> None:
 
 def test_stripe_webhook_activates_subscription() -> None:
     future = int(time.time()) + 14 * 24 * 60 * 60
-    workspace = client.get("/api/workspace", headers=AUTH).json()
+    user_id = f"stripe-webhook-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace", headers=headers).json()
+    suffix = uuid4().hex
+    checkout_session_id = f"cs_live_test_{suffix}"
+    stripe_customer_id = f"cus_live_test_{suffix}"
+    stripe_subscription_id = f"sub_live_test_{suffix}"
     payload = {
-        "id": "evt_test_checkout",
+        "id": f"evt_test_checkout_{suffix}",
         "type": "checkout.session.completed",
         "data": {
             "object": {
-                "id": "cs_live_test",
-                "customer": "cus_live_test",
-                "subscription": "sub_live_test",
-                "metadata": {"user_id": "dev_user", "workspace_id": workspace["id"], "plan": "Pro"},
+                "id": checkout_session_id,
+                "customer": stripe_customer_id,
+                "subscription": stripe_subscription_id,
+                "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Pro"},
             }
         },
     }
@@ -10798,13 +11083,13 @@ def test_stripe_webhook_activates_subscription() -> None:
 
     db = get_sessionmaker()()
     try:
-        subscription = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_live_test").one()
+        subscription = db.query(Subscription).filter(Subscription.stripe_subscription_id == stripe_subscription_id).one()
         assert subscription.plan == "Pro"
         assert subscription.status == "active"
         assert subscription.plan_limits["leads"] == 5000
         settings = db.query(AppSettings).filter(AppSettings.workspace_id == subscription.workspace_id).one()
         assert settings.billing["plan"] == "Pro"
-        assert settings.billing["stripeCustomerId"] == "cus_live_test"
+        assert settings.billing["stripeCustomerId"] == stripe_customer_id
     finally:
         db.close()
 
@@ -10812,16 +11097,16 @@ def test_stripe_webhook_activates_subscription() -> None:
     assert unsigned.status_code == 400
 
     update_payload = {
-        "id": "evt_test_subscription",
+        "id": f"evt_test_subscription_{suffix}",
         "type": "customer.subscription.updated",
         "data": {
             "object": {
-                "id": "sub_live_test",
-                "customer": "cus_live_test",
+                "id": stripe_subscription_id,
+                "customer": stripe_customer_id,
                 "status": "trialing",
                 "trial_end": future,
                 "current_period_end": future,
-                "metadata": {"user_id": "dev_user", "workspace_id": workspace["id"], "plan": "Agency"},
+                "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Agency"},
                 "items": {"data": [{"price": {"id": "price_agency_test"}}]},
             }
         },
@@ -10829,13 +11114,15 @@ def test_stripe_webhook_activates_subscription() -> None:
     raw, signature = stripe_signature(update_payload)
     updated = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
     assert updated.status_code == 200
-    status = client.get("/api/billing/status", headers=AUTH)
+    status = client.get("/api/billing/status", headers=headers)
     assert status.status_code == 200
     assert status.json()["plan"] == "Agency"
     assert status.json()["trial_days_remaining"] >= 13
 
 
 def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> None:
+    checkout_user_id = f"checkout-{uuid4()}@example.com"
+    checkout_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": checkout_user_id}
     captured = {}
 
     def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "") -> dict:
@@ -10843,19 +11130,20 @@ def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> N
         return {"url": "https://checkout.stripe.test/session", "id": "cs_test_pending", "customer_id": customer_id or "cus_pending"}
 
     monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
-    response = client.post("/api/billing/checkout", headers=AUTH, json={"plan": "Starter"})
+    response = client.post("/api/billing/checkout", headers=checkout_headers, json={"plan": "Starter"})
     assert response.status_code == 200
-    assert response.json()["url"].startswith("https://checkout.stripe.test")
+    _assert_url_components(response.json()["url"], scheme="https", hostname="checkout.stripe.test", path="/session")
     assert captured["plan"] == "Starter"
+    assert captured["customer_id"] == ""
 
-    workspace = client.get("/api/workspace", headers=AUTH).json()
+    workspace = client.get("/api/workspace", headers=checkout_headers).json()
     db = get_sessionmaker()()
     try:
         settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
         assert settings.billing["pendingPlan"] == "Starter"
         assert settings.billing["status"] in {"inactive", "active", "trialing"}
         assert settings.billing["checkoutSessionId"] == "cs_test_pending"
-        assert settings.billing["stripeCustomerId"] in {"cus_pending", "cus_live_test"}
+        assert settings.billing["stripeCustomerId"] == "cus_pending"
     finally:
         db.close()
 
@@ -10935,11 +11223,11 @@ def test_starter_plan_blocks_sales_employee_limits_and_semi_auto_mode() -> None:
     db = get_sessionmaker()()
     try:
         db.query(AISalesEmployee).filter(AISalesEmployee.workspace_id == UUID(workspace["id"])).delete()
-        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
-        settings.billing = {**(settings.billing or {}), "plan": "Starter", "status": "active"}
+        db.query(Subscription).filter(Subscription.workspace_id == UUID(workspace["id"])).delete()
         db.commit()
     finally:
         db.close()
+    _grant_subscription_for_test(workspace["id"], plan="Starter")
 
     payload = {
         "name": "Starter Ava",
@@ -10969,14 +11257,16 @@ def test_starter_plan_blocks_sales_employee_limits_and_semi_auto_mode() -> None:
 
 def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) -> None:
     future = int(time.time()) + 14 * 24 * 60 * 60
-    workspace = client.get("/api/workspace", headers=AUTH).json()
+    sync_user_id = f"billing-sync-{uuid4()}@example.com"
+    sync_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": sync_user_id}
+    workspace = client.get("/api/workspace", headers=sync_headers).json()
     stripe_subscription = {
         "id": "sub_sync_live",
         "customer": "cus_sync_live",
         "status": "trialing",
         "trial_end": future,
         "current_period_end": future,
-        "metadata": {"user_id": "dev_user", "workspace_id": workspace["id"], "plan": "Pro"},
+        "metadata": {"user_id": sync_user_id, "workspace_id": workspace["id"], "plan": "Pro"},
         "items": {"data": [{"price": {"id": "price_pro_test"}}]},
         "created": future - 60,
     }
@@ -10989,7 +11279,20 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
 
     monkeypatch.setattr("app.api.routes.latest_subscription_for_customer", fake_latest_subscription)
 
-    response = client.post("/api/billing/sync-latest-subscription", headers=AUTH, json={"customer_email": "buyer@example.com"})
+    forged_email = client.post("/api/billing/sync-latest-subscription", headers=sync_headers, json={"customer_email": "buyer@example.com"})
+    assert forged_email.status_code == 403
+    forged_customer = client.post("/api/billing/sync-latest-subscription", headers=sync_headers, json={"stripe_customer_id": "cus_attacker"})
+    assert forged_customer.status_code == 403
+
+    db = get_sessionmaker()()
+    try:
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
+        settings.billing = {**(settings.billing or {}), "stripeCustomerId": "cus_sync_live", "checkoutSessionId": "cs_server_created"}
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.post("/api/billing/sync-latest-subscription", headers=sync_headers, json={})
     assert response.status_code == 200
     data = response.json()
     assert data["synced"] is True
@@ -10998,7 +11301,8 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
     assert data["stripe_customer_id"] == "cus_sync_live"
     assert data["stripe_subscription_id"] == "sub_sync_live"
     assert data["price_id_loaded"] is True
-    assert calls[-1]["customer_email"] == "buyer@example.com"
+    assert calls[-1]["customer_id"] == "cus_sync_live"
+    assert calls[-1]["customer_email"] == ""
 
     db = get_sessionmaker()()
     try:
@@ -11017,7 +11321,7 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
     finally:
         db.close()
 
-    second = client.post("/api/billing/sync-latest-subscription", headers=AUTH, json={"stripe_customer_id": "cus_sync_live"})
+    second = client.post("/api/billing/sync-latest-subscription", headers=sync_headers, json={"stripe_customer_id": "cus_sync_live"})
     assert second.status_code == 200
     assert calls[-1]["customer_id"] == "cus_sync_live"
 
@@ -11028,7 +11332,7 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
     finally:
         db.close()
 
-    status = client.get("/api/billing/status", headers=AUTH)
+    status = client.get("/api/billing/status", headers=sync_headers)
     assert status.status_code == 200
     assert status.json()["plan"] == "Pro"
     assert status.json()["limits"]["leads"] == 5000
@@ -11210,11 +11514,11 @@ def test_ai_employee_task_results_persist_csv_and_block_external_send(monkeypatc
     db = get_sessionmaker()()
     try:
         db.query(AISalesEmployee).filter(AISalesEmployee.workspace_id == UUID(workspace["id"])).delete()
-        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
-        settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+        db.query(Subscription).filter(Subscription.workspace_id == UUID(workspace["id"])).delete()
         db.commit()
     finally:
         db.close()
+    _grant_subscription_for_test(workspace["id"], plan="Pro")
 
     employee = client.post(
         "/api/sales-employees",
@@ -11345,11 +11649,11 @@ def test_ai_sales_employee_review_mode_imports_qualifies_drafts_and_approves(mon
     db = get_sessionmaker()()
     try:
         db.query(AISalesEmployee).filter(AISalesEmployee.workspace_id == UUID(workspace["id"])).delete()
-        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
-        settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+        db.query(Subscription).filter(Subscription.workspace_id == UUID(workspace["id"])).delete()
         db.commit()
     finally:
         db.close()
+    _grant_subscription_for_test(workspace["id"], plan="Pro")
 
     employee_response = client.post(
         "/api/sales-employees",
@@ -11438,11 +11742,11 @@ def test_ai_sales_employee_voice_task_plans_requires_approval_and_executes(monke
     db = get_sessionmaker()()
     try:
         db.query(AISalesEmployee).filter(AISalesEmployee.workspace_id == UUID(workspace["id"])).delete()
-        settings = db.query(AppSettings).filter(AppSettings.workspace_id == UUID(workspace["id"])).one()
-        settings.billing = {**(settings.billing or {}), "plan": "Pro", "status": "active"}
+        db.query(Subscription).filter(Subscription.workspace_id == UUID(workspace["id"])).delete()
         db.commit()
     finally:
         db.close()
+    _grant_subscription_for_test(workspace["id"], plan="Pro")
 
     employee_response = client.post(
         "/api/sales-employees",
