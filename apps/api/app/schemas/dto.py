@@ -1045,6 +1045,9 @@ class WorkspaceOut(BaseModel):
     industry: str
     target_country: str
     target_customer: str
+    offer: str = ""
+    cta: str = "Book a quick call"
+    tone: str = "Professional"
     timezone: str
     language: str
     onboarding_step: int
@@ -1058,6 +1061,9 @@ class WorkspaceUpdate(BaseModel):
     industry: str = ""
     target_country: str = ""
     target_customer: str = ""
+    offer: str = Field(default="", max_length=2500)
+    cta: str = Field(default="Book a quick call", max_length=220)
+    tone: str = Field(default="Professional", max_length=80)
     timezone: str = "UTC"
     language: str = "English"
 
@@ -1067,6 +1073,9 @@ class OnboardingUpdate(BaseModel):
     industry: str = ""
     target_country: str = ""
     target_customer: str = ""
+    offer: str = Field(default="", max_length=2500)
+    cta: str = Field(default="Book a quick call", max_length=220)
+    tone: str = Field(default="Professional", max_length=80)
     connect_openai: bool = False
     launch_first_campaign: bool = False
     step: int = Field(default=1, ge=1, le=6)
@@ -1360,6 +1369,10 @@ class OutreachSenderStatusOut(BaseModel):
     smtp_username: str = ""
     smtp_configured: bool = False
     smtp_verified_at: str = ""
+
+
+class GmailOAuthFinalizeRequest(BaseModel):
+    handoff_id: str = Field(min_length=16, max_length=180)
 
 
 class CheckoutRequest(BaseModel):

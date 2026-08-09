@@ -99,7 +99,7 @@ test.describe("production authenticated read-only smoke", () => {
 
   test("customer workspace routes are readable without mutating data", async ({ page }, testInfo) => {
     const guards = installProductionGuards(page, testInfo);
-    for (const route of ["/dashboard", "/dashboard/settings", "/dashboard/companies", "/dashboard/emails"]) {
+    for (const route of ["/onboarding", "/dashboard", "/dashboard/settings", "/dashboard/companies", "/dashboard/emails"]) {
       const response = await page.goto(route, { waitUntil: "domcontentloaded" });
       expect(response?.status()).toBeLessThan(500);
       await expect(page.locator("main")).toBeVisible();
@@ -107,10 +107,15 @@ test.describe("production authenticated read-only smoke", () => {
     }
 
     await page.goto("/dashboard/settings", { waitUntil: "domcontentloaded" });
+    await expect(page.getByLabel("Offer")).toBeVisible();
+    await expect(page.getByLabel("Tone")).toBeVisible();
+    await expect(page.getByLabel("CTA")).toBeVisible();
     await expect(page.getByText(/Gmail|OAuth status|Email sender|Provider/i)).toBeVisible();
     if (requireGmailConnected) {
       await expect(page.getByText(/OAuth status:\s*connected|Connected/i).first()).toBeVisible();
     }
+    await page.goto("/dashboard/emails", { waitUntil: "domcontentloaded" });
+    await expect(page.getByText(/Manual approval required|Final Send confirmation|No outbound drafts yet|Письма/i)).toBeVisible();
     await guards.assertClean();
   });
 });

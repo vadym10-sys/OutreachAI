@@ -1521,6 +1521,9 @@ export type Workspace = {
   industry: string;
   target_country: string;
   target_customer: string;
+  offer: string;
+  cta: string;
+  tone: string;
   timezone: string;
   language: string;
   onboarding_step: number;

@@ -57,7 +57,7 @@ export type AiFirstApi = {
   getCustomerFinderJob(jobId: string): Promise<FirstCustomerJob>;
   saveFinderResult(resultId: string): Promise<FirstCustomerSaveResponse>;
   updateEmail(emailId: string, payload: { recipient_email?: string; subject?: string; body?: string; preview?: string }): Promise<WorkspaceAppActionResponse>;
-  approveEmail(emailId: string): Promise<WorkspaceAppActionResponse>;
+  approveEmail(emailId: string, payload?: { confirmed_exact_draft?: boolean; sender_email?: string; recipient_email?: string; subject?: string; body?: string }): Promise<WorkspaceAppActionResponse>;
   sendApprovedEmail(emailId: string, payload?: { confirmed_send?: boolean; smoke_test_id?: string; recipient_email?: string }): Promise<WorkspaceAppActionResponse>;
   recoverEmailForRetry(emailId: string, confirmedNotDelivered: boolean): Promise<WorkspaceAppActionResponse>;
   createProductionEmailSmokeTest(payload: { recipient_email: string; confirmed_recipient_control: boolean }): Promise<ProductionEmailSmokeTestResponse>;
@@ -69,6 +69,7 @@ export type AiFirstApi = {
   integrations(): Promise<WorkspaceIntegrationStatusResponse>;
   senderStatus(): Promise<OutreachSenderStatus>;
   startGmailOAuth(): Promise<{ auth_url: string }>;
+  finalizeGmailOAuth(handoffId: string): Promise<OutreachSenderStatus>;
   disconnectGmail(): Promise<OutreachSenderStatus>;
   syncGmailReplies(): Promise<{ synced: number; classified: Record<string, number> }>;
   createCampaign(payload: Partial<Campaign>): Promise<Campaign>;
@@ -209,7 +210,10 @@ export function useAiFirstApi(): AiFirstApi {
       method: "PATCH",
       body: JSON.stringify(payload)
     }),
-    approveEmail: async (emailId) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, { method: "POST" })),
+    approveEmail: async (emailId, payload) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/approve`, {
+      method: "POST",
+      ...(payload ? { body: JSON.stringify(payload) } : {})
+    })),
     sendApprovedEmail: async (emailId, payload) => requireSuccessfulAction(await request<WorkspaceAppActionResponse>(`/api/workspace-app/emails/${emailId}/send`, {
       method: "POST",
       ...(payload ? { body: JSON.stringify(payload) } : {})
@@ -244,6 +248,10 @@ export function useAiFirstApi(): AiFirstApi {
     integrations: () => request<WorkspaceIntegrationStatusResponse>("/api/workspace-app/integrations/status"),
     senderStatus: () => request<OutreachSenderStatus>("/api/outreach/sender/status"),
     startGmailOAuth: () => request<{ auth_url: string }>("/api/outreach/oauth/gmail/start"),
+    finalizeGmailOAuth: (handoffId) => request<OutreachSenderStatus>("/api/outreach/oauth/gmail/finalize", {
+      method: "POST",
+      body: JSON.stringify({ handoff_id: handoffId })
+    }),
     disconnectGmail: () => request<OutreachSenderStatus>("/api/outreach/oauth/gmail", { method: "DELETE" }),
     syncGmailReplies: () => request<{ synced: number; classified: Record<string, number> }>("/api/outreach/oauth/gmail/sync", { method: "POST" }),
     createCampaign: (payload) => request<Campaign>("/api/campaigns", {

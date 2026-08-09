@@ -239,6 +239,14 @@ class RecoverEmailSendIn(BaseModel):
     confirmed_not_delivered: bool
 
 
+class EmailApproveIn(BaseModel):
+    confirmed_exact_draft: bool = False
+    sender_email: Optional[EmailStr] = None
+    recipient_email: Optional[EmailStr] = None
+    subject: str = ""
+    body: str = ""
+
+
 class ProductionEmailSmokeTestCreateIn(BaseModel):
     recipient_email: EmailStr
     confirmed_recipient_control: bool = False
@@ -5454,14 +5462,17 @@ def _ensure_b2b_opportunity_metadata(lead: Lead, workspace, source: str = "fallb
         location=_localized_fallback_text(language, "location", location=location) if location else "",
         signals=signal_sentence,
     )
-    offer_focus = workspace.company or getattr(workspace, "offer", "") or _localized_fallback_text(language, "offer_focus")
+    workspace_offer = str(getattr(workspace, "offer", "") or "").strip()
+    workspace_cta = str(getattr(workspace, "cta", "") or "").strip()
+    workspace_tone = str(getattr(workspace, "tone", "") or "").strip()
+    offer_focus = workspace_offer or workspace.company or _localized_fallback_text(language, "offer_focus")
     updates = {
         "ai_summary": _sales_metadata_value(metadata, "ai_summary", summary),
         "sales_angle": _sales_metadata_value(metadata, "sales_angle", _localized_fallback_text(language, "sales_angle", industry=industry)),
         "suggested_offer": _sales_metadata_value(metadata, "suggested_offer", _localized_fallback_text(language, "offer", offer_focus=offer_focus, company=company)),
         "outreach_strategy": _sales_metadata_value(metadata, "outreach_strategy", _localized_fallback_text(language, "strategy")),
-        "recommended_tone": metadata.get("recommended_tone") or "Professional",
-        "recommended_cta": _sales_metadata_value(metadata, "recommended_cta", _localized_fallback_text(language, "cta")),
+        "recommended_tone": metadata.get("recommended_tone") or workspace_tone or "Professional",
+        "recommended_cta": _sales_metadata_value(metadata, "recommended_cta", workspace_cta or _localized_fallback_text(language, "cta")),
         "follow_up_strategy": _sales_metadata_value(metadata, "follow_up_strategy", _localized_fallback_text(language, "follow_up")),
         "expected_reply_rate": _sales_metadata_value(metadata, "expected_reply_rate", "8-12%" if has_website and has_email else _localized_fallback_text(language, "reply_unverified")),
         "confidence_score": metadata.get("confidence_score") or (72 if has_website and has_email else 58 if has_website else 42),
@@ -5676,6 +5687,11 @@ def _existing_review_draft(db: Session, workspace_id: UUID, lead_id: UUID) -> Em
     )
 
 
+def _custom_workspace_cta(workspace: Workspace) -> str:
+    cta = str(getattr(workspace, "cta", "") or "").strip()
+    return "" if cta == "Book a quick call" else cta
+
+
 def _create_review_email_draft(db: Session, request: Request, user_id: str, workspace, lead: Lead) -> EmailMessage | None:
     language = _workspace_language(request, workspace)
     existing = _existing_review_draft(db, workspace.id, lead.id)
@@ -5694,9 +5710,9 @@ def _create_review_email_draft(db: Session, request: Request, user_id: str, work
             company=lead.company,
             niche=lead.industry or lead.niche or "",
             website_summary=str(metadata.get("ai_summary") or ""),
-            offer=str(metadata.get("suggested_offer") or workspace.company or _localized_fallback_text(language, "offer_focus")),
-            cta=str(metadata.get("recommended_cta") or _localized_fallback_text(language, "cta")),
-            tone=str(metadata.get("recommended_tone") or "Professional"),
+            offer=str(getattr(workspace, "offer", "") or metadata.get("suggested_offer") or workspace.company or _localized_fallback_text(language, "offer_focus")),
+            cta=str(_custom_workspace_cta(workspace) or metadata.get("recommended_cta") or getattr(workspace, "cta", "") or _localized_fallback_text(language, "cta")),
+            tone=str(getattr(workspace, "tone", "") or metadata.get("recommended_tone") or "Professional"),
             language=language,
             signature="",
         )
@@ -8821,9 +8837,9 @@ def generate_email_draft(company_id: UUID, request: Request, user: WorkspaceUser
                 company=lead.company,
                 niche=lead.industry or lead.niche or "",
                 website_summary=(str(analysis_context.get("company_summary") or "") + "\n" + str(company.ai_summary or _lead_metadata(lead).get("ai_summary") or "")).strip(),
-                offer=str(analysis_context.get("value_proposition") or company.suggested_offer or workspace.company or "AI-powered lead generation and outbound growth"),
-                cta=str(analysis_context.get("suggested_cta") or "Book a quick call"),
-                tone="Professional",
+                offer=str(getattr(workspace, "offer", "") or analysis_context.get("value_proposition") or company.suggested_offer or workspace.company or "AI-powered lead generation and outbound growth"),
+                cta=str(_custom_workspace_cta(workspace) or analysis_context.get("suggested_cta") or getattr(workspace, "cta", "") or "Book a quick call"),
+                tone=str(getattr(workspace, "tone", "") or "Professional"),
                 language=_workspace_language(request, workspace),
                 signature="",
                 analysis_context=analysis_context,
@@ -9274,8 +9290,43 @@ def _sync_ai_customer_finder_result_email_state(db: Session, email: EmailMessage
     }
 
 
+def _normalized_email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _email_send_confirmation_snapshot(*, sender_email: str, recipient_email: str, subject: str, body: str, approval_version: int) -> dict[str, Any]:
+    canonical = {
+        "sender_email": _normalized_email(sender_email),
+        "recipient_email": _normalized_email(recipient_email),
+        "subject": str(subject or ""),
+        "body": str(body or ""),
+        "approval_version": int(approval_version),
+    }
+    fingerprint_source = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return {
+        "sender_email": canonical["sender_email"],
+        "recipient_email": canonical["recipient_email"],
+        "subject": canonical["subject"],
+        "body_sha256": hashlib.sha256(canonical["body"].encode("utf-8")).hexdigest(),
+        "approval_version": canonical["approval_version"],
+        "fingerprint": hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest(),
+    }
+
+
+def _current_email_send_confirmation_snapshot(db: Session, *, user_id: str, workspace: Workspace, email: EmailMessage, lead: Lead | None, approval_version: int) -> dict[str, Any]:
+    sender_status, _smtp_config = _outreach_sender_runtime_config(db, user_id, workspace)
+    recipient_email = _normalized_email(email.recipient_email or (lead.email if lead else ""))
+    return _email_send_confirmation_snapshot(
+        sender_email=sender_status.sender_email,
+        recipient_email=recipient_email,
+        subject=email.subject,
+        body=email.body,
+        approval_version=approval_version,
+    )
+
+
 @router.post("/emails/{email_id}/approve", response_model=UsageActionOut)
-def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
+def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, payload: Optional[EmailApproveIn] = None, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     email = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id))
     if not email:
@@ -9290,6 +9341,22 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
     approval_version = int(tags.get("approval_version") or 0)
     if email.delivery_status != "approved":
         approval_version += 1
+    lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
+    confirmation_snapshot: dict[str, Any] | None = None
+    if payload and payload.confirmed_exact_draft:
+        if not payload.sender_email or not payload.recipient_email or not payload.subject or not payload.body:
+            raise HTTPException(status_code=422, detail="Sender, recipient, subject, and body are required for final send confirmation.")
+        current_snapshot = _current_email_send_confirmation_snapshot(db, user_id=user.user_id, workspace=workspace, email=email, lead=lead, approval_version=approval_version)
+        submitted_snapshot = _email_send_confirmation_snapshot(
+            sender_email=str(payload.sender_email),
+            recipient_email=str(payload.recipient_email),
+            subject=payload.subject,
+            body=payload.body,
+            approval_version=approval_version,
+        )
+        if submitted_snapshot["fingerprint"] != current_snapshot["fingerprint"]:
+            raise HTTPException(status_code=409, detail="The displayed sender, recipient, subject, or body no longer matches this draft. Refresh and confirm again.")
+        confirmation_snapshot = current_snapshot
     email.delivery_status = "approved"
     email.tags = {
         **tags,
@@ -9298,8 +9365,16 @@ def approve_email(email_id: UUID, request: Request, user: WorkspaceUserContext, 
         "approved_at": datetime.utcnow().isoformat(),
         "approval_source": "manual",
         "approval_user_id": user.user_id,
+        **(
+            {
+                "send_confirmation_snapshot": confirmation_snapshot,
+                "send_confirmation_confirmed_at": datetime.utcnow().isoformat(),
+                "send_confirmation_user_id": user.user_id,
+            }
+            if confirmation_snapshot
+            else {}
+        ),
     }
-    lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     company = None
     if lead:
         lead.notes = _merge_lead_metadata(lead, {"email_status": "Approved", "email_approved_at": datetime.utcnow().isoformat()})
@@ -9360,6 +9435,9 @@ def update_email_draft(email_id: UUID, payload: EmailUpdate, request: Request, u
                 "send_idempotency_key",
                 "last_send_error",
                 "last_send_failed_at",
+                "send_confirmation_snapshot",
+                "send_confirmation_confirmed_at",
+                "send_confirmation_user_id",
             }
         }
     next_values = {**updates, "delivery_status": next_status, "tags": next_tags}
@@ -9650,7 +9728,8 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     if not initial_email:
         raise HTTPException(status_code=404, detail="Email draft not found.")
     initial_lead = db.scalar(select(Lead).where(Lead.id == initial_email.lead_id, Lead.workspace_id == workspace.id)) if initial_email.lead_id else None
-    if _is_production_smoke_test_email(initial_email) or _is_production_smoke_test_lead(initial_lead):
+    is_production_smoke_test = _is_production_smoke_test_email(initial_email) or _is_production_smoke_test_lead(initial_lead)
+    if is_production_smoke_test:
         _require_production_smoke_owner(db, user=user)
         tags = initial_email.tags if isinstance(initial_email.tags, dict) else {}
         smoke_test_id = str(tags.get("smoke_test_id") or "").strip()
@@ -9682,6 +9761,13 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     if _is_placeholder_recipient(recipient_email):
         _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason="placeholder_recipient")
         raise HTTPException(status_code=400, detail="Use a real recipient email before sending.")
+    if not is_production_smoke_test:
+        tags = _email_tags(email)
+        confirmed_snapshot = tags.get("send_confirmation_snapshot") if isinstance(tags.get("send_confirmation_snapshot"), dict) else None
+        current_snapshot = _current_email_send_confirmation_snapshot(db, user_id=user.user_id, workspace=workspace, email=email, lead=lead, approval_version=_email_approval_version(email))
+        if not confirmed_snapshot or confirmed_snapshot.get("fingerprint") != current_snapshot["fingerprint"]:
+            _restore_email_send_retry_state(db, request=request, user_id=user.user_id, workspace=workspace, lead=lead, email_id=email.id, reason="send_confirmation_required")
+            raise HTTPException(status_code=409, detail="Confirm the exact sender, recipient, subject, and body before sending.")
 
     try:
         sender_status, smtp_config = _outreach_sender_runtime_config(db, user.user_id, workspace)

@@ -17,6 +17,9 @@ type WorkspaceSetupForm = {
   industry: string;
   target_country: string;
   target_customer: string;
+  offer: string;
+  cta: string;
+  tone: string;
   timezone: string;
 };
 
@@ -36,7 +39,7 @@ async function resolveWorkspaceToken(getAuthToken: () => Promise<string | null>,
 }
 
 function setupCompleteness(form: WorkspaceSetupForm) {
-  return [form.name, form.company, form.industry, form.target_country, form.target_customer].filter((item) => String(item || "").trim()).length;
+  return [form.name, form.company, form.industry, form.target_country, form.target_customer, form.offer, form.cta, form.tone].filter((item) => String(item || "").trim()).length;
 }
 
 function useWorkspaceApi() {
@@ -72,6 +75,9 @@ function buildInitialForm(workspace: Workspace): WorkspaceSetupForm {
     industry: workspace.industry || "",
     target_country: workspace.target_country || "",
     target_customer: workspace.target_customer || "",
+    offer: workspace.offer || "",
+    cta: workspace.cta || "Book a quick call",
+    tone: workspace.tone || "Professional",
     timezone: workspace.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
   };
 }
@@ -86,6 +92,9 @@ export function OnboardingWorkspaceSetup() {
     industry: "",
     target_country: "",
     target_customer: "",
+    offer: "",
+    cta: "Book a quick call",
+    tone: "Professional",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
   });
   const [loading, setLoading] = useState(true);
@@ -94,7 +103,7 @@ export function OnboardingWorkspaceSetup() {
   const [notice, setNotice] = useState("");
 
   const completion = useMemo(() => setupCompleteness(form), [form]);
-  const setupReady = completion >= 4;
+  const setupReady = completion >= 8;
 
   const loadWorkspace = useCallback(async () => {
     if (!ready) return;
@@ -153,7 +162,7 @@ export function OnboardingWorkspaceSetup() {
     setError("");
     setNotice("");
 
-    if (!form.name.trim() || !form.company.trim()) {
+    if (!form.name.trim() || !form.company.trim() || !form.offer.trim() || !form.target_customer.trim() || !form.industry.trim() || !form.target_country.trim()) {
       setError(t("workspace.setupRequired"));
       return;
     }
@@ -172,6 +181,9 @@ export function OnboardingWorkspaceSetup() {
         industry: form.industry.trim(),
         target_country: form.target_country.trim(),
         target_customer: form.target_customer.trim(),
+        offer: form.offer.trim(),
+        cta: form.cta.trim() || "Book a quick call",
+        tone: form.tone.trim() || "Professional",
         timezone: form.timezone.trim() || "UTC"
       };
 
@@ -235,8 +247,8 @@ export function OnboardingWorkspaceSetup() {
                   <p className="text-sm font-black text-[var(--ui-text)]">{t("workspace.finishSetup")}</p>
                   <p className="mt-1 text-sm leading-6 text-[var(--ui-text-soft)]">{t("workspace.setupCopy")}</p>
                 </div>
-                <span className="inline-flex w-fit items-center gap-2 rounded-full bg-[var(--ui-surface-subtle)] px-3 py-1 text-xs font-black text-[var(--ui-text)]">
-                  <CheckCircle2 size={14} /> {completion}/5
+                  <span className="inline-flex w-fit items-center gap-2 rounded-full bg-[var(--ui-surface-subtle)] px-3 py-1 text-xs font-black text-[var(--ui-text)]">
+                  <CheckCircle2 size={14} /> {completion}/8
                 </span>
               </div>
 
@@ -294,16 +306,48 @@ export function OnboardingWorkspaceSetup() {
                     </label>
                   </div>
 
-                  <label className="block text-sm font-bold text-[var(--ui-text)]">
-                    {t("workspace.targetCustomer")}
+	                  <label className="block text-sm font-bold text-[var(--ui-text)]">
+	                    {t("workspace.targetCustomer")}
                     <input
                       value={form.target_customer}
                       onChange={(event) => setForm((current) => ({ ...current, target_customer: event.target.value }))}
                       placeholder={t("workspace.customerPlaceholder")}
                       className="focus-ring mt-2 min-h-12 w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 text-base"
                     />
-                    <span className="mt-1 block text-xs font-medium text-[var(--ui-text-soft)]">{t("workspace.customerHelp")}</span>
-                  </label>
+	                    <span className="mt-1 block text-xs font-medium text-[var(--ui-text-soft)]">{t("workspace.customerHelp")}</span>
+	                  </label>
+
+	                  <label className="block text-sm font-bold text-[var(--ui-text)]">
+	                    {t("Offer")}
+	                    <textarea
+	                      value={form.offer}
+	                      onChange={(event) => setForm((current) => ({ ...current, offer: event.target.value }))}
+	                      placeholder={t("What should OutreachAI offer prospects?")}
+	                      rows={3}
+	                      className="focus-ring mt-2 min-h-28 w-full resize-y rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 py-3 text-base leading-7"
+	                    />
+	                  </label>
+
+	                  <div className="grid gap-4 sm:grid-cols-2">
+	                    <label className="block text-sm font-bold text-[var(--ui-text)]">
+	                      {t("Tone")}
+	                      <input
+	                        value={form.tone}
+	                        onChange={(event) => setForm((current) => ({ ...current, tone: event.target.value }))}
+	                        placeholder={t("Professional")}
+	                        className="focus-ring mt-2 min-h-12 w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 text-base"
+	                      />
+	                    </label>
+	                    <label className="block text-sm font-bold text-[var(--ui-text)]">
+	                      {t("CTA")}
+	                      <input
+	                        value={form.cta}
+	                        onChange={(event) => setForm((current) => ({ ...current, cta: event.target.value }))}
+	                        placeholder={t("Book a quick call")}
+	                        className="focus-ring mt-2 min-h-12 w-full rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-4 text-base"
+	                      />
+	                    </label>
+	                  </div>
 
                   <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface)] p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

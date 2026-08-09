@@ -22,8 +22,8 @@ test("AI assistant runs First Customer Finder and shows source-backed companies"
   await expect(page.getByText("Strong match")).toBeVisible();
   await expect(page.getByText("Confirmed buying signals")).toBeVisible();
   await expect(page.getByRole("button", { name: "Сохранить в CRM EuroScale CRM Co" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Approve draft for EuroScale CRM Co" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Send email for EuroScale CRM Co" })).toBeDisabled();
+  await expect(page.getByRole("link", { name: "Review draft" })).toHaveAttribute("href", "/dashboard/emails");
+  await expect(page.getByRole("button", { name: /Send email for EuroScale CRM Co|Approve draft for EuroScale CRM Co/ })).toHaveCount(0);
 });
 
 test("AI-first flow saves a company to CRM and leaves draft approval manual", async ({ page }, testInfo) => {
@@ -181,11 +181,21 @@ test("non-owner can edit draft recipient before approve and send confirmation us
   await expect(page.getByLabel("Recipient email")).toBeDisabled();
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("qa.sender@example.com")).toBeVisible();
   await expect(page.getByRole("dialog").getByText("reviewed.recipient@recipient-safety-mail.com")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Quick idea for Hill Country Build Co")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Hi Jane, I noticed a website conversion opportunity.")).toBeVisible();
   await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toHaveCount(0);
 });
 
 test("email approval send and reply tracking stay connected end to end", async ({ page }) => {
+  let approvePayload: Record<string, unknown> | null = null;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve")) {
+      approvePayload = request.postDataJSON() as Record<string, unknown>;
+    }
+  });
   await page.goto("/dashboard/emails");
   await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
 
@@ -199,11 +209,26 @@ test("email approval send and reply tracking stay connected end to end", async (
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
   await expect(page.getByRole("dialog").getByText("OutreachAI will send this approved email only after this confirmation.")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Sender", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("qa.sender@example.com")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Recipient", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("jane@example.com")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Subject", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Quick idea for Hill Country Build Co")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Full body", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Hi Jane, I noticed a website conversion opportunity.")).toBeVisible();
   const sendResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send")
   );
   await page.getByRole("button", { name: "Confirm Send" }).click();
   await expect((await sendResponse).ok()).toBe(true);
+  expect(approvePayload).toMatchObject({
+    confirmed_exact_draft: true,
+    sender_email: "qa.sender@example.com",
+    recipient_email: "jane@example.com",
+    subject: "Quick idea for Hill Country Build Co",
+    body: "Hi Jane, I noticed a website conversion opportunity."
+  });
   await expect(page.getByText("Approved email was sent. CRM stage updated.")).toBeVisible();
 
   const syncResponse = page.waitForResponse((response) =>

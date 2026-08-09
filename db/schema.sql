@@ -33,12 +33,16 @@ CREATE TABLE IF NOT EXISTS workspaces (
   industry VARCHAR(160) NOT NULL DEFAULT '',
   target_country VARCHAR(120) NOT NULL DEFAULT '',
   target_customer VARCHAR(240) NOT NULL DEFAULT '',
+  offer TEXT NOT NULL DEFAULT '',
+  cta VARCHAR(220) NOT NULL DEFAULT 'Book a quick call',
+  tone VARCHAR(80) NOT NULL DEFAULT 'Professional',
   timezone VARCHAR(80) NOT NULL DEFAULT 'UTC',
   language VARCHAR(80) NOT NULL DEFAULT 'English',
   onboarding_step INTEGER NOT NULL DEFAULT 1,
   onboarding_completed BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   updated_at TIMESTAMP NOT NULL DEFAULT now()
+  CONSTRAINT uq_workspaces_owner_user_id UNIQUE (owner_user_id)
 );
 
 CREATE TABLE IF NOT EXISTS workspace_members (

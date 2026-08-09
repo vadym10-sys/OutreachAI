@@ -366,6 +366,9 @@ def seed_workspace_profile_memory(db: Session, *, workspace: Workspace, user_id:
         ("Target industry", workspace.industry, "workspace.industry"),
         ("Target country", workspace.target_country, "workspace.target_country"),
         ("ICP", workspace.target_customer, "workspace.target_customer"),
+        ("Offer", workspace.offer, "workspace.offer"),
+        ("CTA", workspace.cta, "workspace.cta"),
+        ("Tone", workspace.tone, "workspace.tone"),
         ("Language", workspace.language, "workspace.language"),
     ]
     for label, value, source_id in fields:

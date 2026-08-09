@@ -26,6 +26,7 @@ import jwt
 from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm.attributes import flag_modified
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
 if db_path.exists():
@@ -1995,7 +1996,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(t
     migration_path.write_text((database_module.PACKAGED_MIGRATIONS_DIR / "013_production_hardening_read_paths.sql").read_text(), encoding="utf-8")
     monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
     state = _FakePostgresState()
-    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes", "014_email_message_recipient_email", "015_backup_runs"}
+    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes", "014_email_message_recipient_email", "015_backup_runs", "016_workspace_profile_send_confirmation"}
     state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
     engine = _FakePostgresEngine(state)
@@ -2154,13 +2155,18 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     packaged_hardening = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "013_production_hardening_read_paths.sql").read_text(encoding="utf-8")
     root_recipient = (REPO_ROOT / "db" / "migrations" / "014_email_message_recipient_email.sql").read_text(encoding="utf-8")
     packaged_recipient = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "014_email_message_recipient_email.sql").read_text(encoding="utf-8")
+    root_workspace_profile = (REPO_ROOT / "db" / "migrations" / "016_workspace_profile_send_confirmation.sql").read_text(encoding="utf-8")
+    packaged_workspace_profile = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "016_workspace_profile_send_confirmation.sql").read_text(encoding="utf-8")
 
     assert packaged_migration == root_migration
     assert packaged_read_indexes == root_read_indexes
     assert packaged_hardening == root_hardening
     assert packaged_recipient == root_recipient
+    assert packaged_workspace_profile == root_workspace_profile
     assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_logs_workspace_lead_created_id" in root_hardening
     assert "ADD COLUMN IF NOT EXISTS recipient_email" in root_recipient
+    assert "duplicate workspaces exist for owner_user_id" in root_workspace_profile
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_owner_user_id" in root_workspace_profile
     assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
 
 
@@ -3147,7 +3153,30 @@ def test_ai_memory_feedback_outcome_and_approve_before_send(monkeypatch) -> None
     blocked = client.post(f"/api/workspace-app/emails/{email_id}/send", headers=headers)
     assert blocked.status_code == 409
 
-    approved = client.post(f"/api/workspace-app/emails/{email_id}/approve", headers=headers)
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Memory Sender",
+            "sender_email": "memory@outcome.example",
+            "reply_to": "reply@outcome.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+    approved = client.post(
+        f"/api/workspace-app/emails/{email_id}/approve",
+        headers=headers,
+        json={
+            "confirmed_exact_draft": True,
+            "sender_email": "memory@outcome.example",
+            "recipient_email": "buyer@outcome.example",
+            "subject": "Outcome subject",
+            "body": "Hello",
+        },
+    )
     assert approved.status_code == 200
 
     monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: {"id": "memory-provider-message"})
@@ -3577,6 +3606,53 @@ def test_workspace_me_creates_private_workspace_with_owner_email() -> None:
     second = client.get("/api/workspace/me", headers={"Authorization": "Bearer dev", "X-Test-User-Email": "new-owner@example.com"})
     assert second.status_code == 200
     assert second.json()["id"] == data["id"]
+
+
+def test_workspace_business_profile_offer_tone_cta_persist_after_refresh() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"profile-owner-{uuid4()}@example.com"}
+    payload = {
+        "name": "Client profile workspace",
+        "company": "Client Profile Co",
+        "industry": "Manufacturing",
+        "target_country": "Poland",
+        "target_customer": "Factory operators",
+        "offer": "AI-assisted outbound for factory equipment suppliers",
+        "tone": "Concise consultative",
+        "cta": "Book a 15-minute pipeline review",
+        "timezone": "Europe/Warsaw",
+        "language": "English",
+    }
+
+    saved = client.put("/api/workspace", headers=headers, json=payload)
+    assert saved.status_code == 200, saved.text
+    for key, value in payload.items():
+        assert saved.json()[key] == value
+
+    first_refresh = client.get("/api/workspace/me", headers=headers)
+    second_refresh = client.get("/api/workspace/me", headers=headers)
+    assert first_refresh.status_code == 200
+    assert second_refresh.status_code == 200
+    for key in ("offer", "tone", "cta"):
+        assert first_refresh.json()[key] == payload[key]
+        assert second_refresh.json()[key] == payload[key]
+
+
+def test_workspace_me_concurrent_initialization_creates_one_workspace() -> None:
+    email = f"concurrent-workspace-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": email}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(client.get, "/api/workspace/me", headers=headers)
+        second = executor.submit(client.get, "/api/workspace/me", headers=headers)
+        responses = [first.result(), second.result()]
+
+    assert {response.status_code for response in responses} == {200}
+    assert responses[0].json()["id"] == responses[1].json()["id"]
+    with get_sessionmaker()() as db:
+        workspaces = list(db.scalars(select(Workspace).where(Workspace.owner_user_id == email)).all())
+        members = list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == email)).all())
+    assert len(workspaces) == 1
+    assert len(members) == 1
 
 
 def test_new_private_workspace_gets_fourteen_day_trial_status() -> None:
@@ -4752,11 +4828,6 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
     assert edited.json()["email"]["subject"] == "Edited idea for Usage Email Build"
     assert edited.json()["email"]["body"] == "Hi Dana, this is the reviewed draft."
 
-    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert approved.status_code == 200
-    assert approved.json()["email"]["delivery_status"] == "approved"
-    assert approved.json()["company"]["crm_stage"] == "Approved"
-
     sender_setup = client.put(
         "/api/outreach/sender",
         headers=headers,
@@ -4770,6 +4841,21 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
         },
     )
     assert sender_setup.status_code == 200
+
+    approved = client.post(
+        f"/api/workspace-app/emails/{email['id']}/approve",
+        headers=headers,
+        json={
+            "confirmed_exact_draft": True,
+            "sender_email": "sales@usage-email.example",
+            "recipient_email": "safe.recipient+draft@recipient-safety-mail.com",
+            "subject": "Edited idea for Usage Email Build",
+            "body": "Hi Dana, this is the reviewed draft.",
+        },
+    )
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
+    assert approved.json()["company"]["crm_stage"] == "Approved"
 
     provider_calls: list[dict[str, object]] = []
     sent_payload: dict[str, object] = {}
@@ -4801,6 +4887,9 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
         assert saved_lead.email == "dana@usage-email.example"
         assert sent_payload["idempotency_key"] == f"workspace-app-email-send:{saved_email.workspace_id}:{email['id']}:v1"
         assert saved_email.tags["provider_thread_id"] == "workspace-app-thread-1"
+        assert saved_email.provider_message_id == "workspace-app-send-1"
+        assert saved_email.sent_at is not None
+        assert db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.id == UUID(email["id"]), EmailMessage.provider_message_id.is_not(None), EmailMessage.sent_at.is_not(None))) == 1
         edit_log = db.scalar(select(AuditLog).where(AuditLog.action == "email.edited", AuditLog.workspace_id == saved_email.workspace_id).order_by(AuditLog.created_at.desc()))
         assert edit_log is not None
         assert edit_log.metadata_json["fields"] == ["body", "recipient_email", "subject"]
@@ -4849,6 +4938,70 @@ def _workspace_app_test_draft(headers: dict[str, str], monkeypatch, *, company_n
     return draft.json()["email"]
 
 
+def _exact_email_approval_payload(email: dict[str, Any], sender_email: str) -> dict[str, Any]:
+    return {
+        "confirmed_exact_draft": True,
+        "sender_email": sender_email,
+        "recipient_email": email["recipient_email"],
+        "subject": email["subject"],
+        "body": email["body"],
+    }
+
+
+def test_workspace_app_exact_send_confirmation_invalidates_after_draft_change(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"exact-confirmation-{uuid4()}@example.com"}
+    email = _workspace_app_test_draft(headers, monkeypatch, company_name="Exact Confirmation Co")
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Exact Sender",
+            "sender_email": "sender@exact-confirmation.example",
+            "reply_to": "reply@exact-confirmation.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@exact-confirmation.example"))
+    assert approved.status_code == 200
+
+    edited = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"subject": "Changed after exact confirmation"})
+    assert edited.status_code == 200
+    assert edited.json()["email"]["delivery_status"] == "draft"
+
+    stale_send = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert stale_send.status_code == 409
+    assert "Approve the email before sending" in stale_send.json()["detail"]
+
+    changed_email = edited.json()["email"]
+    reapproved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(changed_email, "sender@exact-confirmation.example"))
+    assert reapproved.status_code == 200
+
+    sender_changed = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Changed Sender",
+            "sender_email": "changed@exact-confirmation.example",
+            "reply_to": "reply@exact-confirmation.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_changed.status_code == 200
+    provider_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"})
+
+    changed_sender_send = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert changed_sender_send.status_code == 409
+    assert "Confirm the exact sender" in changed_sender_send.json()["detail"]
+    assert provider_calls == []
+
+
 def test_outbound_provider_kill_switch_blocks_provider_boundaries(monkeypatch) -> None:
     from app.services import emailer
 
@@ -4874,9 +5027,6 @@ def test_workspace_app_outbound_kill_switch_blocks_send_but_allows_draft_and_app
     email = _workspace_app_test_draft(headers, monkeypatch, company_name="Kill Switch Send Co")
     edited = client.patch(f"/api/workspace-app/emails/{email['id']}", headers=headers, json={"subject": "Reviewed kill switch draft", "body": "Reviewed body"})
     assert edited.status_code == 200
-    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert approved.status_code == 200
-    assert approved.json()["email"]["delivery_status"] == "approved"
 
     sender_setup = client.put(
         "/api/outreach/sender",
@@ -4891,6 +5041,10 @@ def test_workspace_app_outbound_kill_switch_blocks_send_but_allows_draft_and_app
         },
     )
     assert sender_setup.status_code == 200
+    email = edited.json()["email"]
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@kill-switch.example"))
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
 
     provider_calls: list[dict[str, Any]] = []
     monkeypatch.setattr("app.services.emailer._send_resend_email", lambda **kwargs: provider_calls.append(kwargs) or {"id": "guard-provider-id"})
@@ -4983,10 +5137,6 @@ def test_workspace_app_email_patch_state_machine_and_audit_regressions(monkeypat
     assert send_without_reapproval.status_code == 409
     assert "Approve the email before sending" in send_without_reapproval.json()["detail"]
 
-    reapproved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert reapproved.status_code == 200
-    assert reapproved.json()["email"]["delivery_status"] == "approved"
-
     sender_setup = client.put(
         "/api/outreach/sender",
         headers=headers,
@@ -5000,6 +5150,9 @@ def test_workspace_app_email_patch_state_machine_and_audit_regressions(monkeypat
         },
     )
     assert sender_setup.status_code == 200
+    reapproved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(approved_edit.json()["email"], "sender@patch-safety.example"))
+    assert reapproved.status_code == 200
+    assert reapproved.json()["email"]["delivery_status"] == "approved"
     monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: {"id": "patch-provider-id", "thread_id": "patch-thread-id"})
     sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
     assert sent.status_code == 200
@@ -5071,8 +5224,6 @@ def test_workspace_app_email_provider_failure_uses_non_200_http_status(monkeypat
     draft = client.post(f"/api/workspace-app/companies/{company_id}/email-draft", headers=headers)
     assert draft.status_code == 200
     email = draft.json()["email"]
-    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert approved.status_code == 200
 
     sender_setup = client.put(
         "/api/outreach/sender",
@@ -5087,6 +5238,8 @@ def test_workspace_app_email_provider_failure_uses_non_200_http_status(monkeypat
         },
     )
     assert sender_setup.status_code == 200
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sales@provider-error.example"))
+    assert approved.status_code == 200
 
     monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: (_ for _ in ()).throw(EmailProviderRequestError("provider unavailable")))
     sent = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
@@ -5106,8 +5259,6 @@ def test_workspace_app_email_provider_failure_uses_non_200_http_status(monkeypat
 def test_workspace_app_email_unexpected_exception_restores_approved_with_audit(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-unexpected-send-{uuid4()}@example.com"}
     email = _workspace_app_test_draft(headers, monkeypatch, company_name="Unexpected Send Co")
-    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert approved.status_code == 200
     sender_setup = client.put(
         "/api/outreach/sender",
         headers=headers,
@@ -5121,6 +5272,8 @@ def test_workspace_app_email_unexpected_exception_restores_approved_with_audit(m
         },
     )
     assert sender_setup.status_code == 200
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@unexpected-send.example"))
+    assert approved.status_code == 200
 
     monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("unexpected provider client bug")))
     response = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
@@ -5147,8 +5300,6 @@ def test_workspace_app_non_idempotent_provider_error_requires_delivery_confirmat
     test_user_id = f"usage-smtp-confirmation-{uuid4()}@example.com"
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": test_user_id}
     email = _workspace_app_test_draft(headers, monkeypatch, company_name="SMTP Confirmation Co")
-    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert approved.status_code == 200
 
     monkeypatch.setattr(
         "app.api.usage._outreach_sender_runtime_config",
@@ -5157,6 +5308,8 @@ def test_workspace_app_non_idempotent_provider_error_requires_delivery_confirmat
             {"host": "smtp.confirmation.example", "port": 587, "username": "sender", "password": "secret", "use_tls": True},
         ),
     )
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@smtp-confirmation.example"))
+    assert approved.status_code == 200
     calls: list[dict[str, Any]] = []
 
     def fail_send(**kwargs):
@@ -5802,8 +5955,6 @@ def test_workspace_app_postgresql_send_claim_uses_single_conditional_update() ->
 def test_workspace_app_parallel_send_claims_approved_email_once(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-concurrent-send-{uuid4()}@example.com"}
     email = _workspace_app_test_draft(headers, monkeypatch, company_name="Concurrent Send Co")
-    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert approved.status_code == 200
 
     sender_setup = client.put(
         "/api/outreach/sender",
@@ -5818,6 +5969,8 @@ def test_workspace_app_parallel_send_claims_approved_email_once(monkeypatch) -> 
         },
     )
     assert sender_setup.status_code == 200
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@concurrent-send.example"))
+    assert approved.status_code == 200
 
     calls: list[dict[str, Any]] = []
     call_lock = threading.Lock()
@@ -5863,8 +6016,6 @@ def test_workspace_app_parallel_send_claims_approved_email_once(monkeypatch) -> 
 def test_workspace_app_email_send_recovers_stale_sending_claim_after_interruption(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-stale-send-{uuid4()}@example.com"}
     email = _workspace_app_test_draft(headers, monkeypatch, company_name="Stale Send Co")
-    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert approved.status_code == 200
 
     sender_setup = client.put(
         "/api/outreach/sender",
@@ -5879,6 +6030,8 @@ def test_workspace_app_email_send_recovers_stale_sending_claim_after_interruptio
         },
     )
     assert sender_setup.status_code == 200
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@stale-send.example"))
+    assert approved.status_code == 200
 
     with get_sessionmaker()() as db:
         saved_email = db.get(EmailMessage, UUID(email["id"]))
@@ -5915,8 +6068,6 @@ def test_workspace_app_email_patch_cannot_change_payload_after_send_claim(monkey
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"usage-patch-send-race-{uuid4()}@example.com"}
     email = _workspace_app_test_draft(headers, monkeypatch, company_name="Patch Send Race Co")
     original_body = email["body"]
-    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers)
-    assert approved.status_code == 200
 
     sender_setup = client.put(
         "/api/outreach/sender",
@@ -5931,6 +6082,8 @@ def test_workspace_app_email_patch_cannot_change_payload_after_send_claim(monkey
         },
     )
     assert sender_setup.status_code == 200
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@patch-send-race.example"))
+    assert approved.status_code == 200
 
     sent_payload: dict[str, Any] = {}
     provider_started = threading.Event()
@@ -9361,6 +9514,93 @@ def test_gmail_oauth_start_uses_encrypted_workspace_state_and_explicit_account_s
     assert state_payload["nonce"]
 
 
+def test_gmail_oauth_state_and_handoff_lookup_keys_use_keyed_digest(monkeypatch) -> None:
+    email = f"gmail-oauth-keyed-digest-{uuid4()}@example.com"
+    mailbox = "keyed-digest-client.mailbox@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "public_app_url", "https://preview.example.test")
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "google-secret")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", mailbox)
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
+    state = parse_qs(urlparse(start.json()["auth_url"]).query)["state"][0]
+    state_payload = json.loads(decrypt_secret(state, settings.encryption_key))
+    nonce = state_payload["nonce"]
+    nonce_lookup_key = routes_module._oauth_nonce_hash(nonce, settings.encryption_key)
+
+    with get_sessionmaker()() as db:
+        settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings_row is not None
+        stored_states = settings_row.security["gmail_oauth_states"]
+        assert nonce_lookup_key in stored_states
+
+    callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
+    assert callback.status_code == 307
+    location = callback.headers["location"]
+    handoff = parse_qs(urlparse(location).query)["handoff"][0]
+    handoff_lookup_key = routes_module._oauth_nonce_hash(handoff, settings.encryption_key)
+
+    with get_sessionmaker()() as db:
+        settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings_row is not None
+        stored_handoffs = settings_row.security["gmail_oauth_pending_handoffs"]
+        assert handoff_lookup_key in stored_handoffs
+
+
+def _prepare_gmail_oauth_handoff(monkeypatch, *, email: str | None = None, mailbox: str = "client.mailbox@example.com", code: str = "valid-code"):
+    client_email = email or f"gmail-client-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": client_email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "public_app_url", "https://preview.example.test")
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "google-secret")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", mailbox)
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
+    state = parse_qs(urlparse(start.json()["auth_url"]).query)["state"][0]
+    callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": code, "state": state}, follow_redirects=False)
+    assert callback.status_code == 307
+    location = callback.headers["location"]
+    assert location.startswith("https://preview.example.test/dashboard/settings/gmail-oauth/complete?handoff=")
+    handoff = parse_qs(urlparse(location).query)["handoff"][0]
+    return headers, workspace, handoff, location
+
+
+def _fake_google_client(provider_calls: list[tuple[str, str]], *, mailbox: str = "client.mailbox@example.com", refresh_token: str = "refresh-token"):
+    class FakeGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, data: dict[str, str]):
+            provider_calls.append(("post", url))
+            assert data["code"]
+            return httpx.Response(
+                200,
+                json={"access_token": "access-token", "refresh_token": refresh_token, "scope": "openid email https://www.googleapis.com/auth/gmail.send"},
+                request=httpx.Request("POST", url),
+            )
+
+        def get(self, url: str, headers: dict[str, str]):
+            provider_calls.append(("get", url))
+            assert headers["Authorization"] == "Bearer access-token"
+            return httpx.Response(200, json={"email": mailbox, "name": "Client Mailbox", "sub": "google-client-sub"}, request=httpx.Request("GET", url))
+
+    return FakeGoogleClient
+
+
 def test_gmail_oauth_callback_binds_mailbox_to_state_workspace_only(monkeypatch) -> None:
     client_email = f"gmail-client-{uuid4()}@example.com"
     other_email = f"gmail-other-{uuid4()}@example.com"
@@ -9406,11 +9646,28 @@ def test_gmail_oauth_callback_binds_mailbox_to_state_workspace_only(monkeypatch)
             assert headers["Authorization"] == "Bearer access-token"
             return httpx.Response(200, json={"email": "client.mailbox@example.com", "name": "Client Mailbox", "sub": "google-client-sub"}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(routes_module.httpx, "Client", FakeGoogleClient)
-
     callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
     assert callback.status_code == 307
-    assert callback.headers["location"] == "https://preview.example.test/dashboard/settings?mail=connected"
+    location = callback.headers["location"]
+    assert location.startswith("https://preview.example.test/dashboard/settings/gmail-oauth/complete?handoff=")
+    assert "valid-code" not in location
+    assert "refresh-token" not in location
+    assert "access-token" not in location
+    assert client_workspace["id"] not in location
+    assert state not in location
+    assert provider_calls == []
+
+    client_status_before_finalize = client.get("/api/outreach/sender/status", headers=client_headers)
+    assert client_status_before_finalize.json()["oauth_connected"] is False
+
+    monkeypatch.setattr(routes_module.httpx, "Client", FakeGoogleClient)
+    handoff = parse_qs(urlparse(location).query)["handoff"][0]
+    finalize = client.post("/api/outreach/oauth/gmail/finalize", headers=client_headers, json={"handoff_id": handoff})
+    assert finalize.status_code == 200
+    assert finalize.json()["oauth_connected"] is True
+    assert finalize.json()["oauth_mailbox"] == "client.mailbox@example.com"
+    assert "refresh-token" not in finalize.text
+    assert "access-token" not in finalize.text
     assert provider_calls == [("post", routes_module.GOOGLE_OAUTH_TOKEN_URL), ("get", routes_module.GOOGLE_USERINFO_URL)]
 
     client_status = client.get("/api/outreach/sender/status", headers=client_headers)
@@ -9431,6 +9688,55 @@ def test_gmail_oauth_callback_binds_mailbox_to_state_workspace_only(monkeypatch)
         assert decrypt_secret(client_sender["oauth"]["refresh_token_encrypted"], settings.encryption_key) == "refresh-token"
         assert other_settings is not None
         assert other_settings.email.get("sender", {}).get("oauth") in ({}, None)
+
+
+def test_gmail_oauth_callback_rejects_expired_state_before_provider_exchange(monkeypatch) -> None:
+    client_email = f"gmail-expired-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": client_email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "public_app_url", "https://preview.example.test")
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    nonce = "expired-nonce"
+    created_at = datetime.utcnow() - timedelta(seconds=routes_module.GMAIL_OAUTH_STATE_TTL_SECONDS + 5)
+    state = encrypt_secret(
+        json.dumps({"user_id": client_email, "workspace_id": workspace["id"], "nonce": nonce, "created_at": created_at.isoformat()}),
+        settings.encryption_key,
+    )
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        app_settings = routes_module._settings_for_workspace(db, client_email, workspace_row)
+        routes_module._store_gmail_oauth_state(db, settings=app_settings, user_id=client_email, workspace_id=UUID(workspace["id"]), nonce=nonce, created_at=created_at)
+
+    class UnexpectedGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Expired OAuth state must not be exchanged with Google")
+
+    monkeypatch.setattr(routes_module.httpx, "Client", UnexpectedGoogleClient)
+    callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
+    assert callback.status_code == 307
+    assert callback.headers["location"] == "https://preview.example.test/dashboard/settings?mail=state_expired"
+
+
+def test_gmail_oauth_callback_rejects_replayed_state_before_provider_exchange(monkeypatch) -> None:
+    email = f"gmail-replay-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "public_app_url", "https://preview.example.test")
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "google-secret")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", "client.mailbox@example.com")
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+
+    client.get("/api/workspace/me", headers=headers)
+    start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
+    state = parse_qs(urlparse(start.json()["auth_url"]).query)["state"][0]
+    first = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
+    second = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
+
+    assert first.headers["location"].startswith("https://preview.example.test/dashboard/settings/gmail-oauth/complete?handoff=")
+    assert second.headers["location"] == "https://preview.example.test/dashboard/settings?mail=state_replayed"
 
 
 def test_gmail_oauth_callback_rejects_state_for_different_workspace_before_provider_exchange(monkeypatch) -> None:
@@ -9458,6 +9764,148 @@ def test_gmail_oauth_callback_rejects_state_for_different_workspace_before_provi
     callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": invalid_state}, follow_redirects=False)
     assert callback.status_code == 307
     assert callback.headers["location"] == "https://preview.example.test/dashboard/settings?mail=workspace_error"
+
+
+def test_gmail_oauth_finalize_rejects_clerk_user_mismatch_without_connecting(monkeypatch) -> None:
+    owner_headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="mismatch.mailbox@example.com")
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"gmail-mismatch-{uuid4()}@example.com"}
+
+    class UnexpectedGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Mismatched Clerk user must not exchange OAuth code")
+
+    monkeypatch.setattr(routes_module.httpx, "Client", UnexpectedGoogleClient)
+    mismatch = client.post("/api/outreach/oauth/gmail/finalize", headers=other_headers, json={"handoff_id": handoff})
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"] == "user_mismatch"
+    assert client.get("/api/outreach/sender/status", headers=owner_headers).json()["oauth_connected"] is False
+
+
+def test_gmail_oauth_finalize_rejects_expired_handoff_without_connecting(monkeypatch) -> None:
+    headers, workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="expired-handoff@example.com")
+    handoff_key = routes_module._oauth_nonce_hash(handoff, get_settings().encryption_key)
+    old = datetime.utcnow() - timedelta(seconds=routes_module.GMAIL_OAUTH_HANDOFF_TTL_SECONDS + 5)
+    with get_sessionmaker()() as db:
+        settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings_row is not None
+        handoffs = settings_row.security["gmail_oauth_pending_handoffs"]
+        handoffs[handoff_key]["created_at"] = old.isoformat()
+        settings_row.security = {**settings_row.security, "gmail_oauth_pending_handoffs": handoffs}
+        flag_modified(settings_row, "security")
+        db.add(settings_row)
+        db.commit()
+
+    class UnexpectedGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Expired handoff must not exchange OAuth code")
+
+    monkeypatch.setattr(routes_module.httpx, "Client", UnexpectedGoogleClient)
+    expired = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    assert expired.status_code == 409
+    assert expired.json()["detail"] == "handoff_expired"
+    assert client.get("/api/outreach/sender/status", headers=headers).json()["oauth_connected"] is False
+
+
+def test_gmail_oauth_finalize_replay_does_not_call_provider_twice(monkeypatch) -> None:
+    headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="replay.mailbox@example.com")
+    provider_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(routes_module.httpx, "Client", _fake_google_client(provider_calls, mailbox="replay.mailbox@example.com"))
+
+    first = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    second = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"] == "handoff_replayed"
+    assert provider_calls == [("post", routes_module.GOOGLE_OAUTH_TOKEN_URL), ("get", routes_module.GOOGLE_USERINFO_URL)]
+
+
+def test_gmail_oauth_finalize_concurrent_requests_claim_handoff_once(monkeypatch) -> None:
+    headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="concurrent.mailbox@example.com")
+    provider_calls: list[tuple[str, str]] = []
+    provider_lock = threading.Lock()
+
+    class SlowGoogleClient(_fake_google_client(provider_calls, mailbox="concurrent.mailbox@example.com")):
+        def post(self, url: str, data: dict[str, str]):
+            with provider_lock:
+                time.sleep(0.05)
+                return super().post(url, data)
+
+    monkeypatch.setattr(routes_module.httpx, "Client", SlowGoogleClient)
+
+    def finalize_once():
+        return client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff}).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        statuses = sorted(executor.map(lambda _: finalize_once(), range(2)))
+
+    assert statuses == [200, 409]
+    assert provider_calls == [("post", routes_module.GOOGLE_OAUTH_TOKEN_URL), ("get", routes_module.GOOGLE_USERINFO_URL)]
+
+
+def test_gmail_oauth_finalize_rejects_cross_workspace_handoff_without_provider_call(monkeypatch) -> None:
+    headers, workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="cross-workspace@example.com")
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"gmail-cross-{uuid4()}@example.com"}
+    other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
+    handoff_key = routes_module._oauth_nonce_hash(handoff, get_settings().encryption_key)
+    with get_sessionmaker()() as db:
+        settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings_row is not None
+        handoffs = settings_row.security["gmail_oauth_pending_handoffs"]
+        handoffs[handoff_key]["workspace_id"] = other_workspace["id"]
+        settings_row.security = {**settings_row.security, "gmail_oauth_pending_handoffs": handoffs}
+        flag_modified(settings_row, "security")
+        db.add(settings_row)
+        db.commit()
+
+    class UnexpectedGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Cross-workspace handoff must not exchange OAuth code")
+
+    monkeypatch.setattr(routes_module.httpx, "Client", UnexpectedGoogleClient)
+    finalize = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    assert finalize.status_code == 409
+    assert finalize.json()["detail"] == "workspace_mismatch"
+    assert client.get("/api/outreach/sender/status", headers=headers).json()["oauth_connected"] is False
+
+
+def test_gmail_oauth_finalize_token_exchange_failure_does_not_connect(monkeypatch) -> None:
+    headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="token-failure@example.com")
+
+    class FailingGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, data: dict[str, str]):
+            return httpx.Response(400, json={"error": "invalid_grant"}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(routes_module.httpx, "Client", FailingGoogleClient)
+    finalize = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    assert finalize.status_code == 409
+    assert finalize.json()["detail"] == "oauth_failed"
+    assert client.get("/api/outreach/sender/status", headers=headers).json()["oauth_connected"] is False
+
+
+def test_gmail_oauth_finalize_persistence_failure_does_not_return_secrets_or_connect(monkeypatch) -> None:
+    headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="persist-failure@example.com")
+    provider_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(routes_module.httpx, "Client", _fake_google_client(provider_calls, mailbox="persist-failure@example.com", refresh_token="secret-refresh-token"))
+
+    def fail_persist(*args, **kwargs):
+        raise HTTPException(status_code=409, detail="persistence_failed")
+
+    monkeypatch.setattr(routes_module, "_persist_gmail_oauth_sender", fail_persist)
+    finalize = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    assert finalize.status_code == 409
+    assert "secret-refresh-token" not in finalize.text
+    assert "access-token" not in finalize.text
+    assert client.get("/api/outreach/sender/status", headers=headers).json()["oauth_connected"] is False
 
 
 def test_approved_email_uses_workspace_sender(monkeypatch) -> None:

@@ -66,12 +66,15 @@ class Workspace(Base):
     __tablename__ = "workspaces"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    owner_user_id: Mapped[str] = mapped_column(String(128), index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(180), default="Outreach workspace")
     company: Mapped[str] = mapped_column(String(180), default="")
     industry: Mapped[str] = mapped_column(String(160), default="")
     target_country: Mapped[str] = mapped_column(String(120), default="")
     target_customer: Mapped[str] = mapped_column(String(240), default="")
+    offer: Mapped[str] = mapped_column(Text, default="")
+    cta: Mapped[str] = mapped_column(String(220), default="Book a quick call")
+    tone: Mapped[str] = mapped_column(String(80), default="Professional")
     timezone: Mapped[str] = mapped_column(String(80), default="UTC")
     language: Mapped[str] = mapped_column(String(80), default="English")
     onboarding_step: Mapped[int] = mapped_column(Integer, default=1)
