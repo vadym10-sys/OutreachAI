@@ -1371,6 +1371,10 @@ class OutreachSenderStatusOut(BaseModel):
     smtp_verified_at: str = ""
 
 
+class GmailOAuthFinalizeRequest(BaseModel):
+    handoff_id: str = Field(min_length=16, max_length=180)
+
+
 class CheckoutRequest(BaseModel):
     plan: str
     success_url: Optional[HttpUrl] = None

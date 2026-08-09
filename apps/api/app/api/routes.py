@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import secrets
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -124,6 +125,7 @@ from app.schemas.dto import (
     MemberInvite,
     NotificationOut,
     OnboardingUpdate,
+    GmailOAuthFinalizeRequest,
     OutreachSenderStatusOut,
     OutreachSenderUpdate,
     OwnerConsoleOut,
@@ -221,6 +223,8 @@ router = APIRouter()
 logger = logging.getLogger("outreachai.api.routes")
 LEAD_PROVIDER_TIMEOUT_SECONDS = 10
 GMAIL_OAUTH_STATE_TTL_SECONDS = 600
+GMAIL_OAUTH_HANDOFF_TTL_SECONDS = 300
+GMAIL_OAUTH_HANDOFF_CLAIM_LOCK = threading.Lock()
 
 
 LEGACY_STATUS_MAP = {
@@ -576,6 +580,150 @@ def _consume_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: s
     db.add(settings)
     db.commit()
     return ""
+
+
+def _pruned_oauth_handoffs(handoffs: dict[str, Any], now: datetime) -> dict[str, Any]:
+    pruned: dict[str, Any] = {}
+    for key, value in handoffs.items():
+        if not isinstance(value, dict):
+            continue
+        created_at = _parse_oauth_created_at(value.get("created_at"))
+        if created_at and now - created_at <= timedelta(seconds=GMAIL_OAUTH_HANDOFF_TTL_SECONDS):
+            pruned[str(key)] = value
+    return pruned
+
+
+def _store_pending_gmail_oauth_handoff(db: Session, *, settings: AppSettings, user_id: str, workspace_id: UUID, code: str, created_at: datetime) -> str:
+    app_settings = get_app_settings()
+    handoff_id = secrets.token_urlsafe(32)
+    try:
+        encrypted_code = encrypt_secret(code, app_settings.encryption_key)
+    except SecretBoxError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    security_settings = settings.security if isinstance(settings.security, dict) else {}
+    handoffs = security_settings.get("gmail_oauth_pending_handoffs") if isinstance(security_settings.get("gmail_oauth_pending_handoffs"), dict) else {}
+    handoffs = _pruned_oauth_handoffs(handoffs, created_at)
+    handoffs[_oauth_nonce_hash(handoff_id)] = {
+        "user_id": user_id,
+        "workspace_id": str(workspace_id),
+        "code_encrypted": encrypted_code,
+        "created_at": created_at.isoformat(),
+    }
+    settings.security = {**security_settings, "gmail_oauth_pending_handoffs": handoffs}
+    flag_modified(settings, "security")
+    db.add(settings)
+    db.commit()
+    return handoff_id
+
+
+def _claim_pending_gmail_oauth_handoff(db: Session, *, handoff_id: str, user_id: str) -> tuple[AppSettings | None, dict[str, Any] | None, str]:
+    now = datetime.utcnow()
+    handoff_key = _oauth_nonce_hash(handoff_id)
+    app_settings_rows = db.execute(select(AppSettings).with_for_update()).scalars().all()
+    for settings in app_settings_rows:
+        security_settings = settings.security if isinstance(settings.security, dict) else {}
+        handoffs = security_settings.get("gmail_oauth_pending_handoffs") if isinstance(security_settings.get("gmail_oauth_pending_handoffs"), dict) else {}
+        handoff = handoffs.get(handoff_key)
+        if not isinstance(handoff, dict):
+            continue
+        created_at = _parse_oauth_created_at(handoff.get("created_at"))
+        if not created_at or now - created_at > timedelta(seconds=GMAIL_OAUTH_HANDOFF_TTL_SECONDS):
+            handoffs = _pruned_oauth_handoffs(handoffs, now)
+            handoffs.pop(handoff_key, None)
+            security_settings["gmail_oauth_pending_handoffs"] = handoffs
+            settings.security = security_settings
+            flag_modified(settings, "security")
+            db.add(settings)
+            db.commit()
+            return None, None, "handoff_expired"
+        if str(handoff.get("user_id") or "") != user_id:
+            return None, None, "user_mismatch"
+        handoffs = _pruned_oauth_handoffs(handoffs, now)
+        handoffs.pop(handoff_key, None)
+        security_settings["gmail_oauth_pending_handoffs"] = handoffs
+        settings.security = security_settings
+        flag_modified(settings, "security")
+        db.add(settings)
+        db.commit()
+        return settings, handoff, ""
+    return None, None, "handoff_replayed"
+
+
+def _exchange_gmail_oauth_code(code: str, app_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
+        token_response = client.post(
+            GOOGLE_OAUTH_TOKEN_URL,
+            data={
+                "client_id": app_settings.google_oauth_client_id,
+                "client_secret": app_settings.google_oauth_client_secret,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": _google_oauth_redirect_uri(app_settings),
+            },
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        access_token = str(token_data.get("access_token") or "")
+        userinfo_response = client.get(GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
+        userinfo_response.raise_for_status()
+        return token_data, userinfo_response.json()
+
+
+def _persist_gmail_oauth_sender(
+    db: Session,
+    *,
+    request: Request,
+    settings: AppSettings,
+    workspace: Workspace,
+    user_id: str,
+    token_data: dict[str, Any],
+    userinfo: dict[str, Any],
+) -> OutreachSenderStatusOut:
+    app_settings = get_app_settings()
+    email = _extract_email(str(userinfo.get("email") or ""))
+    refresh_token = str(token_data.get("refresh_token") or "")
+    scope = str(token_data.get("scope") or "")
+    if not email or not refresh_token:
+        raise HTTPException(status_code=409, detail="missing_refresh")
+    allowed_test_users = app_settings.google_oauth_test_users
+    if app_settings.app_env != "production" and allowed_test_users and email.lower() not in allowed_test_users:
+        raise HTTPException(status_code=409, detail="test_user_required")
+    try:
+        encrypted_refresh = encrypt_secret(refresh_token, app_settings.encryption_key)
+    except SecretBoxError as exc:
+        raise HTTPException(status_code=409, detail="encryption_required") from exc
+
+    email_settings = settings.email if isinstance(settings.email, dict) else {}
+    current_sender = _sender_settings(settings)
+    email_settings["sender"] = {
+        **(email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}),
+        "provider": "gmail",
+        "sender_name": current_sender["sender_name"] or str(userinfo.get("name") or "").strip(),
+        "sender_email": email,
+        "reply_to": email,
+        "daily_send_limit": max(1, min(int(current_sender["daily_send_limit"] or 25), 200)),
+        "enabled": True,
+        "smtp": current_sender["smtp"],
+        "oauth": {
+            "provider": "gmail",
+            "refresh_token_encrypted": encrypted_refresh,
+            "scopes": [item for item in scope.split(" ") if item],
+            "verified_at": datetime.utcnow().isoformat(),
+            "google_subject": str(userinfo.get("sub") or ""),
+        },
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    settings.email = email_settings
+    flag_modified(settings, "email")
+    db.add(settings)
+    log_event(db, request, user_id, "outreach.gmail.connected", {"workspace_id": str(workspace.id), "sender_email": email, "scopes": email_settings["sender"]["oauth"]["scopes"]})
+    db.commit()
+    return _outreach_sender_status(db, user_id, workspace)
+
+
+def _gmail_oauth_complete_redirect(app_settings: Any, handoff_id: str) -> RedirectResponse:
+    params = urlencode({"handoff": handoff_id})
+    return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings/gmail-oauth/complete?{params}")
 
 
 def _google_oauth_start_status(settings) -> tuple[bool, str, str]:
@@ -5765,7 +5913,6 @@ def start_gmail_oauth(user_id: CurrentUser, db: Session = Depends(get_db)) -> di
 @router.get("/outreach/oauth/gmail/callback")
 def gmail_oauth_callback(request: Request, code: str = "", state: str = "", error: str = "", db: Session = Depends(get_db)) -> RedirectResponse:
     app_settings = get_app_settings()
-    redirect_target = f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=connected"
     if error:
         return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=error")
     try:
@@ -5793,64 +5940,39 @@ def gmail_oauth_callback(request: Request, code: str = "", state: str = "", erro
     if state_error:
         return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail={state_error}")
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
-            token_response = client.post(
-                GOOGLE_OAUTH_TOKEN_URL,
-                data={
-                    "client_id": app_settings.google_oauth_client_id,
-                    "client_secret": app_settings.google_oauth_client_secret,
-                    "code": code,
-                    "grant_type": "authorization_code",
-                    "redirect_uri": _google_oauth_redirect_uri(app_settings),
-                },
-            )
-            token_response.raise_for_status()
-            token_data = token_response.json()
-            access_token = str(token_data.get("access_token") or "")
-            refresh_token = str(token_data.get("refresh_token") or "")
-            scope = str(token_data.get("scope") or "")
-            userinfo_response = client.get(GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
-            userinfo_response.raise_for_status()
-            userinfo = userinfo_response.json()
-    except Exception as exc:
-        capture_provider_exception(exc, provider="google_oauth", endpoint="outreach.oauth.gmail.callback", extra={"workspace_id": workspace_id})
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=oauth_failed")
-    email = _extract_email(str(userinfo.get("email") or ""))
-    if not email or not refresh_token:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=missing_refresh")
-    allowed_test_users = app_settings.google_oauth_test_users
-    if app_settings.app_env != "production" and allowed_test_users and email.lower() not in allowed_test_users:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=test_user_required")
-    email_settings = settings.email if isinstance(settings.email, dict) else {}
-    current_sender = _sender_settings(settings)
+        handoff_id = _store_pending_gmail_oauth_handoff(db, settings=settings, user_id=user_id, workspace_id=workspace.id, code=code, created_at=datetime.utcnow())
+    except HTTPException as exc:
+        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail={exc.detail}")
+    return _gmail_oauth_complete_redirect(app_settings, handoff_id)
+
+
+@router.post("/outreach/oauth/gmail/finalize", response_model=OutreachSenderStatusOut)
+def finalize_gmail_oauth(payload: GmailOAuthFinalizeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
+    app_settings = get_app_settings()
+    with GMAIL_OAUTH_HANDOFF_CLAIM_LOCK:
+        settings, handoff, handoff_error = _claim_pending_gmail_oauth_handoff(db, handoff_id=payload.handoff_id, user_id=user_id)
+    if handoff_error:
+        raise HTTPException(status_code=409, detail=handoff_error)
+    if settings is None or not handoff:
+        raise HTTPException(status_code=409, detail="handoff_replayed")
     try:
-        encrypted_refresh = encrypt_secret(refresh_token, app_settings.encryption_key)
-    except SecretBoxError:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=encryption_required")
-    email_settings["sender"] = {
-        **(email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}),
-        "provider": "gmail",
-        "sender_name": current_sender["sender_name"] or str(userinfo.get("name") or "").strip(),
-        "sender_email": email,
-        "reply_to": email,
-        "daily_send_limit": max(1, min(int(current_sender["daily_send_limit"] or 25), 200)),
-        "enabled": True,
-        "smtp": current_sender["smtp"],
-        "oauth": {
-            "provider": "gmail",
-            "refresh_token_encrypted": encrypted_refresh,
-            "scopes": [item for item in scope.split(" ") if item],
-            "verified_at": datetime.utcnow().isoformat(),
-            "google_subject": str(userinfo.get("sub") or ""),
-        },
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    settings.email = email_settings
-    flag_modified(settings, "email")
-    db.add(settings)
-    log_event(db, request, user_id, "outreach.gmail.connected", {"workspace_id": str(workspace.id), "sender_email": email, "scopes": email_settings["sender"]["oauth"]["scopes"]})
-    db.commit()
-    return RedirectResponse(redirect_target)
+        workspace_id = UUID(str(handoff.get("workspace_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="invalid_handoff") from exc
+    workspace = db.get(Workspace, workspace_id)
+    if workspace is None or workspace.owner_user_id != user_id or settings.workspace_id != workspace.id:
+        raise HTTPException(status_code=409, detail="workspace_mismatch")
+    encrypted_code = str(handoff.get("code_encrypted") or "")
+    try:
+        code = decrypt_secret(encrypted_code, app_settings.encryption_key)
+    except SecretBoxError as exc:
+        raise HTTPException(status_code=409, detail="invalid_handoff") from exc
+    try:
+        token_data, userinfo = _exchange_gmail_oauth_code(code, app_settings)
+    except Exception as exc:
+        capture_provider_exception(exc, provider="google_oauth", endpoint="outreach.oauth.gmail.finalize")
+        raise HTTPException(status_code=409, detail="oauth_failed") from exc
+    return _persist_gmail_oauth_sender(db, request=request, settings=settings, workspace=workspace, user_id=user_id, token_data=token_data, userinfo=userinfo)
 
 
 @router.delete("/outreach/oauth/gmail", response_model=OutreachSenderStatusOut)

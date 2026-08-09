@@ -26,6 +26,7 @@ import jwt
 from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm.attributes import flag_modified
 
 db_path = Path(tempfile.gettempdir()) / "outreachai-api-tests.db"
 if db_path.exists():
@@ -9513,6 +9514,55 @@ def test_gmail_oauth_start_uses_encrypted_workspace_state_and_explicit_account_s
     assert state_payload["nonce"]
 
 
+def _prepare_gmail_oauth_handoff(monkeypatch, *, email: str | None = None, mailbox: str = "client.mailbox@example.com", code: str = "valid-code"):
+    client_email = email or f"gmail-client-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": client_email}
+    settings = get_settings()
+    monkeypatch.setattr(settings, "public_app_url", "https://preview.example.test")
+    monkeypatch.setattr(settings, "google_oauth_client_id", "google-client")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "google-secret")
+    monkeypatch.setattr(settings, "google_oauth_redirect_uri", "https://api.example.test/api/outreach/oauth/gmail/callback")
+    monkeypatch.setattr(settings, "google_oauth_allowed_test_users", mailbox)
+    monkeypatch.setattr(settings, "encryption_key", "test-encryption-key")
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
+    state = parse_qs(urlparse(start.json()["auth_url"]).query)["state"][0]
+    callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": code, "state": state}, follow_redirects=False)
+    assert callback.status_code == 307
+    location = callback.headers["location"]
+    assert location.startswith("https://preview.example.test/dashboard/settings/gmail-oauth/complete?handoff=")
+    handoff = parse_qs(urlparse(location).query)["handoff"][0]
+    return headers, workspace, handoff, location
+
+
+def _fake_google_client(provider_calls: list[tuple[str, str]], *, mailbox: str = "client.mailbox@example.com", refresh_token: str = "refresh-token"):
+    class FakeGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, data: dict[str, str]):
+            provider_calls.append(("post", url))
+            assert data["code"]
+            return httpx.Response(
+                200,
+                json={"access_token": "access-token", "refresh_token": refresh_token, "scope": "openid email https://www.googleapis.com/auth/gmail.send"},
+                request=httpx.Request("POST", url),
+            )
+
+        def get(self, url: str, headers: dict[str, str]):
+            provider_calls.append(("get", url))
+            assert headers["Authorization"] == "Bearer access-token"
+            return httpx.Response(200, json={"email": mailbox, "name": "Client Mailbox", "sub": "google-client-sub"}, request=httpx.Request("GET", url))
+
+    return FakeGoogleClient
+
+
 def test_gmail_oauth_callback_binds_mailbox_to_state_workspace_only(monkeypatch) -> None:
     client_email = f"gmail-client-{uuid4()}@example.com"
     other_email = f"gmail-other-{uuid4()}@example.com"
@@ -9558,11 +9608,28 @@ def test_gmail_oauth_callback_binds_mailbox_to_state_workspace_only(monkeypatch)
             assert headers["Authorization"] == "Bearer access-token"
             return httpx.Response(200, json={"email": "client.mailbox@example.com", "name": "Client Mailbox", "sub": "google-client-sub"}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(routes_module.httpx, "Client", FakeGoogleClient)
-
     callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
     assert callback.status_code == 307
-    assert callback.headers["location"] == "https://preview.example.test/dashboard/settings?mail=connected"
+    location = callback.headers["location"]
+    assert location.startswith("https://preview.example.test/dashboard/settings/gmail-oauth/complete?handoff=")
+    assert "valid-code" not in location
+    assert "refresh-token" not in location
+    assert "access-token" not in location
+    assert client_workspace["id"] not in location
+    assert state not in location
+    assert provider_calls == []
+
+    client_status_before_finalize = client.get("/api/outreach/sender/status", headers=client_headers)
+    assert client_status_before_finalize.json()["oauth_connected"] is False
+
+    monkeypatch.setattr(routes_module.httpx, "Client", FakeGoogleClient)
+    handoff = parse_qs(urlparse(location).query)["handoff"][0]
+    finalize = client.post("/api/outreach/oauth/gmail/finalize", headers=client_headers, json={"handoff_id": handoff})
+    assert finalize.status_code == 200
+    assert finalize.json()["oauth_connected"] is True
+    assert finalize.json()["oauth_mailbox"] == "client.mailbox@example.com"
+    assert "refresh-token" not in finalize.text
+    assert "access-token" not in finalize.text
     assert provider_calls == [("post", routes_module.GOOGLE_OAUTH_TOKEN_URL), ("get", routes_module.GOOGLE_USERINFO_URL)]
 
     client_status = client.get("/api/outreach/sender/status", headers=client_headers)
@@ -9627,33 +9694,11 @@ def test_gmail_oauth_callback_rejects_replayed_state_before_provider_exchange(mo
     client.get("/api/workspace/me", headers=headers)
     start = client.get("/api/outreach/oauth/gmail/start", headers=headers)
     state = parse_qs(urlparse(start.json()["auth_url"]).query)["state"][0]
-    provider_calls = 0
-
-    class FakeGoogleClient:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            return None
-
-        def post(self, url: str, data: dict[str, str]):
-            nonlocal provider_calls
-            provider_calls += 1
-            return httpx.Response(200, json={"access_token": "access-token", "refresh_token": "refresh-token", "scope": "openid email"}, request=httpx.Request("POST", url))
-
-        def get(self, url: str, headers: dict[str, str]):
-            return httpx.Response(200, json={"email": "client.mailbox@example.com", "name": "Client Mailbox", "sub": "google-client-sub"}, request=httpx.Request("GET", url))
-
-    monkeypatch.setattr(routes_module.httpx, "Client", FakeGoogleClient)
     first = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
     second = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": state}, follow_redirects=False)
 
-    assert first.headers["location"] == "https://preview.example.test/dashboard/settings?mail=connected"
+    assert first.headers["location"].startswith("https://preview.example.test/dashboard/settings/gmail-oauth/complete?handoff=")
     assert second.headers["location"] == "https://preview.example.test/dashboard/settings?mail=state_replayed"
-    assert provider_calls == 1
 
 
 def test_gmail_oauth_callback_rejects_state_for_different_workspace_before_provider_exchange(monkeypatch) -> None:
@@ -9681,6 +9726,148 @@ def test_gmail_oauth_callback_rejects_state_for_different_workspace_before_provi
     callback = client.get("/api/outreach/oauth/gmail/callback", params={"code": "valid-code", "state": invalid_state}, follow_redirects=False)
     assert callback.status_code == 307
     assert callback.headers["location"] == "https://preview.example.test/dashboard/settings?mail=workspace_error"
+
+
+def test_gmail_oauth_finalize_rejects_clerk_user_mismatch_without_connecting(monkeypatch) -> None:
+    owner_headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="mismatch.mailbox@example.com")
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"gmail-mismatch-{uuid4()}@example.com"}
+
+    class UnexpectedGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Mismatched Clerk user must not exchange OAuth code")
+
+    monkeypatch.setattr(routes_module.httpx, "Client", UnexpectedGoogleClient)
+    mismatch = client.post("/api/outreach/oauth/gmail/finalize", headers=other_headers, json={"handoff_id": handoff})
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"] == "user_mismatch"
+    assert client.get("/api/outreach/sender/status", headers=owner_headers).json()["oauth_connected"] is False
+
+
+def test_gmail_oauth_finalize_rejects_expired_handoff_without_connecting(monkeypatch) -> None:
+    headers, workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="expired-handoff@example.com")
+    handoff_key = routes_module._oauth_nonce_hash(handoff)
+    old = datetime.utcnow() - timedelta(seconds=routes_module.GMAIL_OAUTH_HANDOFF_TTL_SECONDS + 5)
+    with get_sessionmaker()() as db:
+        settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings_row is not None
+        handoffs = settings_row.security["gmail_oauth_pending_handoffs"]
+        handoffs[handoff_key]["created_at"] = old.isoformat()
+        settings_row.security = {**settings_row.security, "gmail_oauth_pending_handoffs": handoffs}
+        flag_modified(settings_row, "security")
+        db.add(settings_row)
+        db.commit()
+
+    class UnexpectedGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Expired handoff must not exchange OAuth code")
+
+    monkeypatch.setattr(routes_module.httpx, "Client", UnexpectedGoogleClient)
+    expired = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    assert expired.status_code == 409
+    assert expired.json()["detail"] == "handoff_expired"
+    assert client.get("/api/outreach/sender/status", headers=headers).json()["oauth_connected"] is False
+
+
+def test_gmail_oauth_finalize_replay_does_not_call_provider_twice(monkeypatch) -> None:
+    headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="replay.mailbox@example.com")
+    provider_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(routes_module.httpx, "Client", _fake_google_client(provider_calls, mailbox="replay.mailbox@example.com"))
+
+    first = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    second = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"] == "handoff_replayed"
+    assert provider_calls == [("post", routes_module.GOOGLE_OAUTH_TOKEN_URL), ("get", routes_module.GOOGLE_USERINFO_URL)]
+
+
+def test_gmail_oauth_finalize_concurrent_requests_claim_handoff_once(monkeypatch) -> None:
+    headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="concurrent.mailbox@example.com")
+    provider_calls: list[tuple[str, str]] = []
+    provider_lock = threading.Lock()
+
+    class SlowGoogleClient(_fake_google_client(provider_calls, mailbox="concurrent.mailbox@example.com")):
+        def post(self, url: str, data: dict[str, str]):
+            with provider_lock:
+                time.sleep(0.05)
+                return super().post(url, data)
+
+    monkeypatch.setattr(routes_module.httpx, "Client", SlowGoogleClient)
+
+    def finalize_once():
+        return client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff}).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        statuses = sorted(executor.map(lambda _: finalize_once(), range(2)))
+
+    assert statuses == [200, 409]
+    assert provider_calls == [("post", routes_module.GOOGLE_OAUTH_TOKEN_URL), ("get", routes_module.GOOGLE_USERINFO_URL)]
+
+
+def test_gmail_oauth_finalize_rejects_cross_workspace_handoff_without_provider_call(monkeypatch) -> None:
+    headers, workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="cross-workspace@example.com")
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"gmail-cross-{uuid4()}@example.com"}
+    other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
+    handoff_key = routes_module._oauth_nonce_hash(handoff)
+    with get_sessionmaker()() as db:
+        settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace["id"])))
+        assert settings_row is not None
+        handoffs = settings_row.security["gmail_oauth_pending_handoffs"]
+        handoffs[handoff_key]["workspace_id"] = other_workspace["id"]
+        settings_row.security = {**settings_row.security, "gmail_oauth_pending_handoffs": handoffs}
+        flag_modified(settings_row, "security")
+        db.add(settings_row)
+        db.commit()
+
+    class UnexpectedGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("Cross-workspace handoff must not exchange OAuth code")
+
+    monkeypatch.setattr(routes_module.httpx, "Client", UnexpectedGoogleClient)
+    finalize = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    assert finalize.status_code == 409
+    assert finalize.json()["detail"] == "workspace_mismatch"
+    assert client.get("/api/outreach/sender/status", headers=headers).json()["oauth_connected"] is False
+
+
+def test_gmail_oauth_finalize_token_exchange_failure_does_not_connect(monkeypatch) -> None:
+    headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="token-failure@example.com")
+
+    class FailingGoogleClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def post(self, url: str, data: dict[str, str]):
+            return httpx.Response(400, json={"error": "invalid_grant"}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(routes_module.httpx, "Client", FailingGoogleClient)
+    finalize = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    assert finalize.status_code == 409
+    assert finalize.json()["detail"] == "oauth_failed"
+    assert client.get("/api/outreach/sender/status", headers=headers).json()["oauth_connected"] is False
+
+
+def test_gmail_oauth_finalize_persistence_failure_does_not_return_secrets_or_connect(monkeypatch) -> None:
+    headers, _workspace, handoff, _location = _prepare_gmail_oauth_handoff(monkeypatch, mailbox="persist-failure@example.com")
+    provider_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(routes_module.httpx, "Client", _fake_google_client(provider_calls, mailbox="persist-failure@example.com", refresh_token="secret-refresh-token"))
+
+    def fail_persist(*args, **kwargs):
+        raise HTTPException(status_code=409, detail="persistence_failed")
+
+    monkeypatch.setattr(routes_module, "_persist_gmail_oauth_sender", fail_persist)
+    finalize = client.post("/api/outreach/oauth/gmail/finalize", headers=headers, json={"handoff_id": handoff})
+    assert finalize.status_code == 409
+    assert "secret-refresh-token" not in finalize.text
+    assert "access-token" not in finalize.text
+    assert client.get("/api/outreach/sender/status", headers=headers).json()["oauth_connected"] is False
 
 
 def test_approved_email_uses_workspace_sender(monkeypatch) -> None:
