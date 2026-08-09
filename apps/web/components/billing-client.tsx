@@ -93,6 +93,12 @@ export function PricingCheckoutButton({ plan, children = 'Subscribe' }: { plan: 
     setLoading(true);
     try {
       const token = await getToken();
+      const status = await apiWithToken<BillingStatus>('/api/billing/status', token);
+      if (status.test_entitlement && status.status === 'test_entitlement') {
+        safePendingPlan("remove");
+        safeRedirect('/dashboard?billing=test-entitlement');
+        return;
+      }
       const session = await apiWithToken<BillingCheckoutSession>('/api/billing/checkout', token, {
         method: 'POST',
         body: JSON.stringify({ plan })
@@ -123,7 +129,13 @@ export function CheckoutContinuation() {
     schedule(() => {
       setRunning(true);
       void getToken()
-        .then((token) => apiWithToken<BillingCheckoutSession>('/api/billing/checkout', token, { method: 'POST', body: JSON.stringify({ plan }) }))
+        .then(async (token) => {
+          const status = await apiWithToken<BillingStatus>('/api/billing/status', token);
+          if (status.test_entitlement && status.status === 'test_entitlement') {
+            return { url: '/dashboard?billing=test-entitlement' } satisfies BillingCheckoutSession;
+          }
+          return apiWithToken<BillingCheckoutSession>('/api/billing/checkout', token, { method: 'POST', body: JSON.stringify({ plan }) });
+        })
         .then((session) => {
           safePendingPlan("remove");
           safeRedirect(session.url);

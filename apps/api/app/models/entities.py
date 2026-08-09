@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -141,6 +141,33 @@ class Subscription(Base):
     last_failure_message: Mapped[Optional[str]] = mapped_column(Text)
     last_payment_failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     user: Mapped[User] = relationship()
+
+
+class TestEntitlement(Base):
+    __tablename__ = "test_entitlements"
+    __table_args__ = (
+        Index("idx_test_entitlements_workspace_user", "workspace_id", "user_id"),
+        Index("idx_test_entitlements_active_lookup", "workspace_id", "user_id", "expires_at", "revoked_at"),
+        Index("uq_test_entitlements_one_unrevoked", "workspace_id", "user_id", unique=True, postgresql_where=text("revoked_at IS NULL"), sqlite_where=text("revoked_at IS NULL")),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    user_email: Mapped[str] = mapped_column(String(320), default="")
+    plan: Mapped[str] = mapped_column(String(32), default="Starter")
+    reason: Mapped[str] = mapped_column(Text)
+    granted_by_user_id: Mapped[str] = mapped_column(String(128))
+    granted_by_email: Mapped[str] = mapped_column(String(320), default="")
+    granted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    revoked_by_user_id: Mapped[Optional[str]] = mapped_column(String(128))
+    revoked_by_email: Mapped[Optional[str]] = mapped_column(String(320))
+    revoke_reason: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
 
 
 class Campaign(Base):

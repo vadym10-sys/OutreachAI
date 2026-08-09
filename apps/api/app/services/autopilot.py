@@ -10,14 +10,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.entities import AppSettings, AuditLog, Campaign, CampaignStatus, Company, EmailMessage, EnrichmentJob, Lead, LeadStatus, UsageCounter
+from app.models.entities import AppSettings, AuditLog, Campaign, CampaignStatus, Company, EmailMessage, EnrichmentJob, Lead, LeadStatus, UsageCounter, Workspace
 from app.schemas.dto import PLAN_LIMITS
 from app.services.emailer import EmailProviderSendingDisabledError, send_email
+from app.services.entitlements import BillingEntitlement, resolve_billing_entitlement
 from app.services.enrichment_queue import complete_job, mark_cancelled, update_job_progress
 from app.services.secret_box import decrypt_secret
 
 logger = logging.getLogger("outreachai.autopilot")
-INTERNAL_BETA_OVERRIDE_EMAIL = "romaniukvadym10@gmail.com"
 PRODUCTION_SMOKE_TEST_SOURCE = "production_smoke_test"
 
 
@@ -103,11 +103,13 @@ def _increment_usage(db: Session, workspace_id) -> None:  # type: ignore[no-unty
     usage.updated_at = datetime.utcnow()
 
 
-def _plan_limit(settings: AppSettings | None) -> int:
-    billing = settings.billing if settings and isinstance(settings.billing, dict) else {}
-    if billing.get("betaOverride") is True and str(billing.get("betaOverrideEmail") or "").strip().lower() == INTERNAL_BETA_OVERRIDE_EMAIL:
-        return 10**9
-    plan = str(billing.get("plan") or "Starter")
+def _billing_entitlement_for_job(db: Session, job: EnrichmentJob) -> BillingEntitlement | None:
+    workspace = db.get(Workspace, job.workspace_id)
+    return resolve_billing_entitlement(db, job.user_id, workspace) if workspace else None
+
+
+def _plan_limit(entitlement: BillingEntitlement | None) -> int:
+    plan = entitlement.plan if entitlement else "Starter"
     limit = int(PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])["email_sends"])
     return limit if limit > 0 else 10**9
 
@@ -198,7 +200,10 @@ def process_autopilot_email_job(db: Session, job: EnrichmentJob, *, claim_token:
     sender, oauth_config = _sender_runtime_config(settings)
     if _sent_today(db, job.workspace_id, campaign.id) >= int(sender["daily_send_limit"] or 25):
         raise AutopilotDeferred("Daily campaign send limit reached.", delay_seconds=3600)
-    if _usage_this_month(db, job.workspace_id) >= _plan_limit(settings):
+    entitlement = _billing_entitlement_for_job(db, job)
+    if get_settings().app_env == "production" and (entitlement is None or not entitlement.active):
+        raise AutopilotDeferred("Active subscription required.", delay_seconds=3600)
+    if _usage_this_month(db, job.workspace_id) >= _plan_limit(entitlement):
         raise AutopilotDeferred("Plan email sending limit reached.", delay_seconds=3600)
     if email.delivery_status == "sent":
         return complete_job(db, job, partial=False, claim_token=claim_token)
