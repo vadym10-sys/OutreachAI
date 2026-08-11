@@ -234,6 +234,7 @@ def subscription_payload(subscription: object) -> dict:
         "status": str(_stripe_get(subscription, "status", "") or "active"),
         "trial_end": timestamp_to_datetime(_stripe_get(subscription, "trial_end")),
         "current_period_end": timestamp_to_datetime(_stripe_get(subscription, "current_period_end")),
+        "created": timestamp_to_datetime(_stripe_get(subscription, "created")),
         "workspace_id": str(metadata.get("workspace_id") or ""),
         "user_id": str(metadata.get("user_id") or ""),
     }

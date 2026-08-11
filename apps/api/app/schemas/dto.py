@@ -1169,6 +1169,25 @@ class BillingSyncOut(BaseModel):
     message: str = ""
 
 
+class BillingReconcileRequest(BaseModel):
+    workspace_id: UUID
+    user_id: str = Field(min_length=1, max_length=128)
+    dry_run: bool = True
+
+
+class BillingReconcileOut(BaseModel):
+    workspace_id: UUID
+    user_id: str
+    dry_run: bool
+    changed: bool
+    status: str
+    entitlement_source: str
+    active: bool
+    subscription_suffix: str = ""
+    duplicate_subscription_count: int = 0
+    billing: dict[str, Any]
+
+
 class AdminSummaryOut(BaseModel):
     users: int
     workspaces: int

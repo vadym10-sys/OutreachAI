@@ -22,6 +22,7 @@ from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 from app.services.ai_memory import record_email_memory
 from app.services.billing import plan_from_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
+from app.services.entitlements import reconcile_app_settings_billing_cache
 from app.services.continuous_learning import apply_continuous_learning_event
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -202,12 +203,27 @@ def _sync_subscription(
     trial_end: datetime | None,
     current_period_end: datetime | None,
     price_id: str = "",
-) -> None:
+    stripe_event_created_at: datetime | None = None,
+) -> Subscription | None:
     parsed_workspace_id = _workspace_uuid(workspace_id)
     if parsed_workspace_id is None or db.get(Workspace, parsed_workspace_id) is None:
-        return
+        return None
     user = _user_for_clerk(db, user_id or f"stripe_customer_{customer_id}")
     subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id))
+    if subscription is not None:
+        if subscription.workspace_id and subscription.workspace_id != parsed_workspace_id:
+            logger.warning("Stripe subscription webhook workspace binding mismatch", extra={"workspace_id": workspace_id, "subscription_id_suffix": _stripe_id_suffix(subscription_id)})
+            return subscription
+        if subscription.stripe_customer_id and customer_id and subscription.stripe_customer_id != customer_id:
+            logger.warning("Stripe subscription webhook customer binding mismatch", extra={"workspace_id": workspace_id, "subscription_id_suffix": _stripe_id_suffix(subscription_id), "customer_id_suffix": _stripe_id_suffix(customer_id)})
+            return subscription
+        if stripe_event_created_at and subscription.stripe_event_created_at and stripe_event_created_at < subscription.stripe_event_created_at:
+            settings = _settings_for_workspace(db, workspace_id, user_id=user_id)
+            workspace = db.get(Workspace, parsed_workspace_id)
+            if settings and workspace:
+                reconcile_app_settings_billing_cache(db, user_id=user_id or user.clerk_user_id, workspace=workspace, settings=settings, actor_user_id=None, reason="stripe_subscription_webhook_stale_event")
+            logger.info("Ignored stale Stripe subscription webhook", extra={"workspace_id": workspace_id, "subscription_id_suffix": _stripe_id_suffix(subscription_id)})
+            return subscription
     if subscription is None:
         subscription = Subscription(user_id=user.id, workspace_id=parsed_workspace_id)
         db.add(subscription)
@@ -219,6 +235,8 @@ def _sync_subscription(
     subscription.status = status
     subscription.trial_end = trial_end
     subscription.current_period_end = current_period_end
+    subscription.stripe_event_created_at = stripe_event_created_at or subscription.stripe_event_created_at
+    subscription.updated_at = datetime.utcnow()
     subscription.plan_limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])
     if status in PAID_SUBSCRIPTION_STATUSES:
         subscription.last_payment_error = None
@@ -227,21 +245,10 @@ def _sync_subscription(
         subscription.last_payment_failed_at = None
 
     settings = _settings_for_workspace(db, workspace_id, user_id=user_id)
-    if settings:
-        billing = dict(settings.billing or {})
-        if status in PAID_SUBSCRIPTION_STATUSES:
-            billing = _billing_clear_failure(billing)
-        settings.billing = {
-            **billing,
-            "plan": plan,
-            "status": status,
-            "stripeCustomerId": customer_id,
-            "stripeSubscriptionId": subscription_id,
-            "trialEnd": trial_end.isoformat() if trial_end else None,
-            "currentPeriodEnd": current_period_end.isoformat() if current_period_end else None,
-            "stripePriceId": price_id,
-            "planLimits": PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"]),
-        }
+    workspace = db.get(Workspace, parsed_workspace_id)
+    if settings and workspace:
+        reconcile_app_settings_billing_cache(db, user_id=user_id or user.clerk_user_id, workspace=workspace, settings=settings, actor_user_id=None, reason="stripe_subscription_webhook")
+    return subscription
 
 
 def _mark_checkout_session_status(db: Session, session_id: str, status: str) -> None:
@@ -336,8 +343,7 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         current_period_end = payload.get("current_period_end") if subscription else None
         price_id = str(payload.get("price_id") or "")
         resolved_plan = str(payload.get("plan") or plan)
-        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=resolved_plan, status=status, trial_end=trial_end, current_period_end=current_period_end, price_id=price_id)
-        _sync_duplicate_subscription_state(db, workspace_id)
+        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=resolved_plan, status=status, trial_end=trial_end, current_period_end=current_period_end, price_id=price_id, stripe_event_created_at=timestamp_to_datetime(event.get("created")))
     elif event_type == "checkout.session.expired":
         _mark_checkout_session_status(db, str(data.get("id") or ""), "expired")
     elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
@@ -348,8 +354,7 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         price_id = subscription_price_id(data)
         plan = _metadata_value(data.get("metadata"), "plan") or plan_from_price_id(price_id) or "Starter"
         status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
-        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=timestamp_to_datetime(data.get("trial_end")), current_period_end=timestamp_to_datetime(data.get("current_period_end")), price_id=price_id)
-        _sync_duplicate_subscription_state(db, workspace_id)
+        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=timestamp_to_datetime(data.get("trial_end")), current_period_end=timestamp_to_datetime(data.get("current_period_end")), price_id=price_id, stripe_event_created_at=timestamp_to_datetime(event.get("created")))
     elif event_type in {"invoice.paid", "invoice.payment_succeeded"}:
         subscription_id = str(data.get("subscription") or "")
         subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
@@ -361,7 +366,10 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
             subscription.last_payment_failed_at = None
             settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == subscription.workspace_id))
             if settings_row:
-                settings_row.billing = {**_billing_clear_failure(settings_row.billing or {}), "status": "active", "plan": subscription.plan}
+                settings_row.billing = _billing_clear_failure(settings_row.billing or {})
+                workspace = db.get(Workspace, subscription.workspace_id)
+                if workspace:
+                    reconcile_app_settings_billing_cache(db, user_id=workspace.owner_user_id, workspace=workspace, settings=settings_row, actor_user_id=None, reason="stripe_invoice_paid_webhook")
     elif event_type == "invoice.payment_failed":
         subscription_id = str(data.get("subscription") or "")
         subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
@@ -382,13 +390,16 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
             subscription.last_payment_failed_at = datetime.utcnow()
             settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == subscription.workspace_id))
             if settings_row:
-                settings_row.billing = {**_billing_with_failure(settings_row.billing or {}, failure), "status": "past_due", "plan": subscription.plan}
+                settings_row.billing = _billing_with_failure(settings_row.billing or {}, failure)
+                workspace = db.get(Workspace, subscription.workspace_id)
+                if workspace:
+                    reconcile_app_settings_billing_cache(db, user_id=workspace.owner_user_id, workspace=workspace, settings=settings_row, actor_user_id=None, reason="stripe_invoice_failed_webhook")
             logger.warning("Stripe payment failed", extra={**_stripe_event_metadata(event, data, workspace_id=str(subscription.workspace_id)), "decline_code": failure["decline_code"]})
     elif event_type.startswith("payment_intent."):
         invoice_id = _stripe_id(_stripe_get(data, "invoice"))
         customer_id = _stripe_id(_stripe_get(data, "customer"))
         if event_type == "payment_intent.payment_failed":
-            subscription = db.scalar(select(Subscription).where(Subscription.stripe_customer_id == customer_id).order_by(Subscription.current_period_end.desc().nullslast())) if customer_id else None
+            subscription = db.scalar(select(Subscription).where(Subscription.stripe_customer_id == customer_id).order_by(Subscription.stripe_event_created_at.desc().nullslast(), Subscription.updated_at.desc().nullslast(), Subscription.id.desc())) if customer_id else None
             if subscription:
                 failure = _payment_failure_details({"id": invoice_id, "payment_intent": data, "status": _stripe_get(data, "status")}, data)
                 subscription.last_payment_error = failure["last_payment_error"]
@@ -397,7 +408,10 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
                 subscription.last_payment_failed_at = datetime.utcnow()
                 settings_row = db.scalar(select(AppSettings).where(AppSettings.workspace_id == subscription.workspace_id))
                 if settings_row:
-                    settings_row.billing = {**_billing_with_failure(settings_row.billing or {}, failure), "status": subscription.status, "plan": subscription.plan}
+                    settings_row.billing = _billing_with_failure(settings_row.billing or {}, failure)
+                    workspace = db.get(Workspace, subscription.workspace_id)
+                    if workspace:
+                        reconcile_app_settings_billing_cache(db, user_id=workspace.owner_user_id, workspace=workspace, settings=settings_row, actor_user_id=None, reason="stripe_payment_intent_failed_webhook")
         logger.info("Stripe payment intent event processed", extra=_stripe_event_metadata(event, data, workspace_id=str(subscription.workspace_id) if "subscription" in locals() and subscription else event_workspace_id))
     audit_metadata = _stripe_event_metadata(event, data, workspace_id=event_workspace_id)
     db.add(AuditLog(user_id=None, action=f"stripe.{event_type}", metadata_json=audit_metadata))

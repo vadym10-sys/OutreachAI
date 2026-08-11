@@ -88,6 +88,8 @@ from app.schemas.dto import (
     BillingPlanOut,
     BillingDiagnosticsOut,
     BillingPortalRequest,
+    BillingReconcileOut,
+    BillingReconcileRequest,
     BillingStatusOut,
     BillingSyncOut,
     BillingSyncRequest,
@@ -198,7 +200,18 @@ from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
 from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, EmailProviderSendingDisabledError, send_email, verify_smtp_connection
-from app.services.entitlements import BillingEntitlement, active_test_entitlement, latest_subscription, resolve_billing_entitlement, subscription_is_expired, workspace_trial_end, workspace_trial_is_active
+from app.services.entitlements import (
+    DEGRADED_DUPLICATE_STATUS,
+    BillingEntitlement,
+    active_test_entitlement,
+    canonical_billing_entitlement,
+    latest_subscription,
+    reconcile_app_settings_billing_cache,
+    resolve_billing_entitlement,
+    subscription_is_expired,
+    workspace_trial_end,
+    workspace_trial_is_active,
+)
 from app.services.enrichment_queue import enqueue_autopilot_email_job
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
@@ -1052,21 +1065,12 @@ def _resolve_billing_entitlement(db: Session, user_id: str, workspace: Workspace
 
 
 def _active_stripe_subscriptions(db: Session, workspace: Workspace) -> list[Subscription]:
-    now = datetime.utcnow()
-    return list(
-        db.scalars(
-            select(Subscription)
-            .where(
-                Subscription.workspace_id == workspace.id,
-                Subscription.status.in_(("active", "trialing")),
-                or_(
-                    func.coalesce(Subscription.current_period_end, Subscription.trial_end).is_(None),
-                    func.coalesce(Subscription.current_period_end, Subscription.trial_end) > now,
-                ),
-            )
-            .order_by(Subscription.trial_end.asc().nullslast(), Subscription.current_period_end.asc().nullslast())
-        ).all()
-    )
+    entitlement = canonical_billing_entitlement(db, workspace.owner_user_id, workspace)
+    if entitlement.source == DEGRADED_DUPLICATE_STATUS:
+        return list(entitlement.duplicate_subscriptions)
+    if entitlement.source == "stripe" and entitlement.subscription:
+        return [entitlement.subscription]
+    return []
 
 
 def _stripe_id_suffix(value: str | None) -> str:
@@ -1227,11 +1231,15 @@ def _sync_workspace_subscription(
     status: str,
     trial_end: datetime | None,
     current_period_end: datetime | None,
+    stripe_event_created_at: datetime | None = None,
 ) -> Subscription:
     user = _user_for_subscription(db, user_id)
     subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == stripe_subscription_id))
-    if subscription is None:
-        subscription = db.scalar(select(Subscription).where(Subscription.workspace_id == workspace.id, Subscription.stripe_customer_id == stripe_customer_id))
+    if subscription is not None:
+        if subscription.workspace_id and subscription.workspace_id != workspace.id:
+            raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different workspace.")
+        if subscription.stripe_customer_id and stripe_customer_id and subscription.stripe_customer_id != stripe_customer_id:
+            raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different customer.")
     if subscription is None:
         subscription = Subscription(user_id=user.id, workspace_id=workspace.id)
         db.add(subscription)
@@ -1243,6 +1251,8 @@ def _sync_workspace_subscription(
     subscription.status = status
     subscription.trial_end = trial_end
     subscription.current_period_end = current_period_end
+    subscription.stripe_event_created_at = stripe_event_created_at or subscription.stripe_event_created_at
+    subscription.updated_at = datetime.utcnow()
     subscription.plan_limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])
     if status in {"active", "trialing"}:
         subscription.last_payment_error = None
@@ -6620,6 +6630,7 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
         status=str(sub["status"]),
         trial_end=sub["trial_end"],
         current_period_end=sub["current_period_end"],
+        stripe_event_created_at=sub.get("created"),
     )
     log_event(db, request, user_id, "billing.subscription_synced", {"workspace_id": str(workspace.id), "plan": plan, "status": synced.status})
     delete_key(cache_key("billing-status", workspace.id, user_id))
@@ -6667,9 +6678,6 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
             sales_employees_used=0,
             workspaces_used=1,
         )
-    cached = get_json(key)
-    if cached:
-        return BillingStatusOut.model_validate(cached)
     entitlement = _resolve_billing_entitlement(db, user_id, workspace)
     plan = entitlement.plan
     limits = entitlement.limits
@@ -6742,6 +6750,44 @@ def billing_catalog(request: Request, owner: OwnerUser, db: Session = Depends(ge
     log_event(db, request, owner.user_id, "billing.catalog_synced", {"plans": [item["plan"] for item in catalog]})
     db.commit()
     return {"items": catalog}
+
+
+@router.post("/owner/billing/reconcile-cache", response_model=BillingReconcileOut)
+def owner_reconcile_billing_cache(payload: BillingReconcileRequest, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> BillingReconcileOut:
+    workspace = db.get(Workspace, payload.workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if workspace.owner_user_id != payload.user_id:
+        raise HTTPException(status_code=403, detail="Billing reconciliation can only target the workspace owner")
+    settings = _settings_for_workspace(db, payload.user_id, workspace)
+    result = reconcile_app_settings_billing_cache(
+        db,
+        user_id=payload.user_id,
+        workspace=workspace,
+        settings=settings,
+        dry_run=payload.dry_run,
+        actor_user_id=owner.user_id,
+        reason="owner_manual_billing_cache_reconciliation",
+    )
+    if payload.dry_run:
+        log_event(db, request, owner.user_id, "owner.billing_cache_reconcile_dry_run", result["audit"])
+    else:
+        log_event(db, request, owner.user_id, "owner.billing_cache_reconciled", result["audit"])
+        delete_key(cache_key("billing-status", workspace.id, payload.user_id))
+    db.commit()
+    audit = result["audit"]
+    return BillingReconcileOut(
+        workspace_id=workspace.id,
+        user_id=payload.user_id,
+        dry_run=payload.dry_run,
+        changed=bool(audit["changed"]),
+        status=str(audit["status"]),
+        entitlement_source=str(audit["entitlement_source"]),
+        active=bool(audit["active"]),
+        subscription_suffix=str(audit["subscription_suffix"]),
+        duplicate_subscription_count=int(audit["duplicate_subscription_count"]),
+        billing=result["billing"],
+    )
 
 
 def _lock_test_entitlement_mutation(db: Session, workspace_id: UUID, user_id: str) -> None:

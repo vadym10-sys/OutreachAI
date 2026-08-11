@@ -107,6 +107,40 @@ def _grant_subscription_for_test(workspace_id: str, user_id: str = "dev_user", p
         db.commit()
 
 
+def _create_billing_subscription(
+    db,
+    *,
+    workspace_id: UUID,
+    user_id: str,
+    stripe_customer_id: str,
+    stripe_subscription_id: str,
+    plan: str = "Starter",
+    status: str = "active",
+    trial_end: datetime | None = None,
+    current_period_end: datetime | None = None,
+    stripe_event_created_at: datetime | None = None,
+) -> Subscription:
+    user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+    if user is None:
+        user = User(clerk_user_id=user_id, email=user_id if "@" in user_id else f"{user_id}@example.com")
+        db.add(user)
+        db.flush()
+    subscription = Subscription(
+        user_id=user.id,
+        workspace_id=workspace_id,
+        stripe_customer_id=stripe_customer_id,
+        stripe_subscription_id=stripe_subscription_id,
+        plan=plan,
+        status=status,
+        trial_end=trial_end,
+        current_period_end=current_period_end,
+        stripe_event_created_at=stripe_event_created_at,
+        plan_limits=PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"]),
+    )
+    db.add(subscription)
+    return subscription
+
+
 def _assert_url_components(value: str, *, scheme: str, hostname: str, path: str) -> None:
     parsed = urlparse(value)
     assert parsed.scheme == scheme
@@ -2032,6 +2066,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(t
         "016_workspace_profile_send_confirmation",
         "017_secure_billing_test_entitlements",
         "018_billing_checkout_idempotency",
+        "019_canonical_subscription_resolver",
     }
     state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
@@ -2193,16 +2228,21 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     packaged_recipient = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "014_email_message_recipient_email.sql").read_text(encoding="utf-8")
     root_workspace_profile = (REPO_ROOT / "db" / "migrations" / "016_workspace_profile_send_confirmation.sql").read_text(encoding="utf-8")
     packaged_workspace_profile = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "016_workspace_profile_send_confirmation.sql").read_text(encoding="utf-8")
+    root_canonical_billing = (REPO_ROOT / "db" / "migrations" / "019_canonical_subscription_resolver.sql").read_text(encoding="utf-8")
+    packaged_canonical_billing = (REPO_ROOT / "apps" / "api" / "app" / "db" / "migrations" / "019_canonical_subscription_resolver.sql").read_text(encoding="utf-8")
 
     assert packaged_migration == root_migration
     assert packaged_read_indexes == root_read_indexes
     assert packaged_hardening == root_hardening
     assert packaged_recipient == root_recipient
     assert packaged_workspace_profile == root_workspace_profile
+    assert packaged_canonical_billing == root_canonical_billing
     assert "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_logs_workspace_lead_created_id" in root_hardening
     assert "ADD COLUMN IF NOT EXISTS recipient_email" in root_recipient
     assert "duplicate workspaces exist for owner_user_id" in root_workspace_profile
     assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_owner_user_id" in root_workspace_profile
+    assert "stripe_event_created_at" in root_canonical_billing
+    assert "uq_subscriptions_stripe_subscription_id" in root_canonical_billing
     assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
 
 
@@ -4172,6 +4212,291 @@ def test_stripe_subscription_state_remains_authoritative_over_test_entitlement(m
     assert status.json()["plan"] == "Pro"
     assert status.json()["status"] == "trialing"
     assert status.json()["test_entitlement"] is False
+
+
+def test_canonical_billing_prefers_active_with_null_period_over_newer_canceled_and_stale_settings(monkeypatch) -> None:
+    target_user_id = f"canonical-active-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    now = datetime.utcnow()
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=target_user_id, workspace_id=workspace_id, general={}, ai={}, email={}, billing={}, security={}, api={})
+            db.add(settings)
+        settings.billing = {"plan": "Starter", "status": "canceled", "stripeSubscriptionId": "sub_canceled_newer", "stripeCustomerId": "cus_canonical"}
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=target_user_id,
+            stripe_customer_id="cus_canonical",
+            stripe_subscription_id="sub_active_null_period",
+            plan="Starter",
+            status="active",
+            current_period_end=None,
+            stripe_event_created_at=now - timedelta(days=2),
+        )
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=target_user_id,
+            stripe_customer_id="cus_canonical",
+            stripe_subscription_id="sub_canceled_newer",
+            plan="Agency",
+            status="canceled",
+            current_period_end=None,
+            stripe_event_created_at=now,
+        )
+        db.commit()
+
+    status = client.get("/api/billing/status", headers=headers)
+    assert status.status_code == 200
+    data = status.json()
+    assert data["status"] == "active"
+    assert data["entitlement_source"] == "stripe"
+    assert data["stripe_subscription_id"] == "sub_active_null_period"
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "production")
+    try:
+        with get_sessionmaker()() as db:
+            workspace_row = db.get(Workspace, workspace_id)
+            assert workspace_row is not None
+            _require_active_subscription(db, workspace_row, target_user_id)
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
+def test_canonical_billing_trialing_wins_over_later_canceled_duplicate_and_inactive_never_grants(monkeypatch) -> None:
+    target_user_id = f"canonical-trialing-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    now = datetime.utcnow()
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=target_user_id, workspace_id=workspace_id, general={}, ai={}, email={}, billing={}, security={}, api={})
+            db.add(settings)
+        settings.billing = {"plan": "Agency", "status": "active", "stripeSubscriptionId": "sub_forged_active"}
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=target_user_id,
+            stripe_customer_id="cus_trialing",
+            stripe_subscription_id="sub_trialing_canonical",
+            plan="Starter",
+            status="trialing",
+            trial_end=now + timedelta(days=7),
+            current_period_end=None,
+            stripe_event_created_at=now - timedelta(days=1),
+        )
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=target_user_id,
+            stripe_customer_id="cus_trialing",
+            stripe_subscription_id="sub_canceled_later",
+            plan="Agency",
+            status="canceled",
+            current_period_end=now + timedelta(days=365),
+            stripe_event_created_at=now,
+        )
+        db.commit()
+
+    status = client.get("/api/billing/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["status"] == "trialing"
+    assert status.json()["plan"] == "Starter"
+    assert status.json()["stripe_subscription_id"] == "sub_trialing_canonical"
+
+    with get_sessionmaker()() as db:
+        db.query(Subscription).filter(Subscription.workspace_id == workspace_id, Subscription.status == "trialing").delete()
+        db.commit()
+    inactive_status = client.get("/api/billing/status", headers=headers)
+    assert inactive_status.status_code == 200
+    assert inactive_status.json()["status"] == "canceled"
+    assert inactive_status.json()["entitlement_source"] == "stripe_inactive"
+
+    app_settings = get_settings()
+    original_env = app_settings.app_env
+    monkeypatch.setattr(app_settings, "app_env", "production")
+    try:
+        with get_sessionmaker()() as db:
+            workspace_row = db.get(Workspace, workspace_id)
+            assert workspace_row is not None
+            with pytest.raises(HTTPException):
+                _require_active_subscription(db, workspace_row, target_user_id)
+    finally:
+        monkeypatch.setattr(app_settings, "app_env", original_env)
+
+
+def test_canonical_billing_duplicate_active_degrades_and_is_workspace_customer_isolated() -> None:
+    target_user_id = f"canonical-duplicate-{uuid4()}@example.com"
+    other_user_id = f"canonical-other-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_user_id}
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": other_user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
+    workspace_id = UUID(workspace["id"])
+    other_workspace_id = UUID(other_workspace["id"])
+    now = datetime.utcnow()
+    with get_sessionmaker()() as db:
+        for suffix in ("one", "two"):
+            _create_billing_subscription(
+                db,
+                workspace_id=workspace_id,
+                user_id=target_user_id,
+                stripe_customer_id="cus_duplicate_canonical",
+                stripe_subscription_id=f"sub_duplicate_canonical_{suffix}",
+                status="active",
+                current_period_end=now + timedelta(days=30),
+            )
+        _create_billing_subscription(
+            db,
+            workspace_id=other_workspace_id,
+            user_id=other_user_id,
+            stripe_customer_id="cus_duplicate_canonical",
+            stripe_subscription_id="sub_isolated_other_workspace",
+            status="active",
+            current_period_end=now + timedelta(days=30),
+        )
+        db.commit()
+
+    degraded = client.get("/api/billing/status", headers=headers)
+    isolated = client.get("/api/billing/status", headers=other_headers)
+    assert degraded.status_code == 200
+    assert degraded.json()["status"] == "degraded_duplicate_subscription"
+    assert degraded.json()["entitlement_source"] == "degraded_duplicate_subscription"
+    assert isolated.status_code == 200
+    assert isolated.json()["status"] == "active"
+    assert isolated.json()["stripe_subscription_id"] == "sub_isolated_other_workspace"
+
+
+def test_billing_cache_reconciliation_is_owner_only_dry_run_and_idempotent() -> None:
+    target_user_id = f"reconcile-cache-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": target_user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=target_user_id, workspace_id=workspace_id, general={}, ai={}, email={}, billing={}, security={}, api={})
+            db.add(settings)
+        settings.billing = {"plan": "Starter", "status": "canceled", "stripeSubscriptionId": "sub_old"}
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=target_user_id,
+            stripe_customer_id="cus_reconcile",
+            stripe_subscription_id="sub_reconcile_active",
+            plan="Pro",
+            status="active",
+            current_period_end=datetime.utcnow() + timedelta(days=30),
+        )
+        db.commit()
+
+    payload = {"workspace_id": str(workspace_id), "user_id": target_user_id, "dry_run": True}
+    forbidden = client.post("/api/owner/billing/reconcile-cache", headers=headers, json=payload)
+    assert forbidden.status_code == 403
+    dry_run = client.post("/api/owner/billing/reconcile-cache", headers=OWNER_AUTH, json=payload)
+    assert dry_run.status_code == 200
+    assert dry_run.json()["dry_run"] is True
+    assert dry_run.json()["changed"] is True
+    assert dry_run.json()["status"] == "active"
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        assert settings is not None
+        assert settings.billing["status"] == "canceled"
+
+    apply = client.post("/api/owner/billing/reconcile-cache", headers=OWNER_AUTH, json={**payload, "dry_run": False})
+    assert apply.status_code == 200
+    assert apply.json()["changed"] is True
+    again = client.post("/api/owner/billing/reconcile-cache", headers=OWNER_AUTH, json={**payload, "dry_run": False})
+    assert again.status_code == 200
+    assert again.json()["changed"] is False
+    assert again.json()["billing"]["stripeSubscriptionId"] == "sub_reconcile_active"
+
+
+def test_stripe_canceled_webhook_replay_and_out_of_order_do_not_override_canonical_active() -> None:
+    user_id = f"webhook-canonical-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = workspace["id"]
+    future = int(time.time()) + 30 * 24 * 60 * 60
+    suffix = uuid4().hex
+    customer_id = f"cus_webhook_canonical_{suffix}"
+    active_id = f"sub_webhook_active_{suffix}"
+    canceled_id = f"sub_webhook_canceled_{suffix}"
+
+    canceled_payload = {
+        "id": f"evt_cancel_first_{suffix}",
+        "created": int(time.time()) + 20,
+        "type": "customer.subscription.deleted",
+        "data": {
+            "object": {
+                "id": canceled_id,
+                "customer": customer_id,
+                "status": "canceled",
+                "current_period_end": None,
+                "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": "Agency"},
+                "items": {"data": [{"price": {"id": "price_agency_test"}}]},
+            }
+        },
+    }
+    raw, signature = stripe_signature(canceled_payload)
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+
+    active_payload = {
+        "id": f"evt_active_second_{suffix}",
+        "created": int(time.time()),
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": active_id,
+                "customer": customer_id,
+                "status": "active",
+                "current_period_end": future,
+                "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": "Starter"},
+                "items": {"data": [{"price": {"id": "price_starter_test"}}]},
+            }
+        },
+    }
+    raw, signature = stripe_signature(active_payload)
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+
+    raw, signature = stripe_signature(canceled_payload)
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+
+    stale_active_cancel = {
+        "id": f"evt_stale_cancel_active_{suffix}",
+        "created": int(time.time()) - 60,
+        "type": "customer.subscription.deleted",
+        "data": {
+            "object": {
+                "id": active_id,
+                "customer": customer_id,
+                "status": "canceled",
+                "current_period_end": None,
+                "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": "Starter"},
+                "items": {"data": [{"price": {"id": "price_starter_test"}}]},
+            }
+        },
+    }
+    raw, signature = stripe_signature(stale_active_cancel)
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+
+    status = client.get("/api/billing/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["status"] == "active"
+    assert status.json()["stripe_subscription_id"] == active_id
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == UUID(workspace_id)))
+        assert settings is not None
+        assert settings.billing["status"] == "active"
+        assert settings.billing["stripeSubscriptionId"] == active_id
 
 
 def test_workspace_me_prefers_owned_private_workspace_over_old_membership() -> None:
