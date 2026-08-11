@@ -16,6 +16,11 @@ export type PublicPlan = {
     teamMembers: number;
     campaigns: number;
   };
+  roadmapLimits?: {
+    workspaces?: number;
+    teamMembers?: number;
+    campaigns?: number;
+  };
   features: {
     reviewMode: boolean;
     semiAutoMode: boolean;
@@ -67,8 +72,8 @@ export const publicPlans: PublicPlan[] = [
       aiGenerations: 10000,
       emailSends: 10000,
       salesEmployees: 3,
-      workspaces: 3,
-      teamMembers: 10,
+      workspaces: 1,
+      teamMembers: 1,
       campaigns: 25,
     },
     features: {
@@ -81,6 +86,10 @@ export const publicPlans: PublicPlan[] = [
       webhooks: false,
       whiteLabel: false,
     },
+    roadmapLimits: {
+      workspaces: 3,
+      teamMembers: 10,
+    },
   },
   {
     name: "Agency",
@@ -92,8 +101,8 @@ export const publicPlans: PublicPlan[] = [
       aiGenerations: 100000,
       emailSends: 100000,
       salesEmployees: 10,
-      workspaces: 0,
-      teamMembers: 0,
+      workspaces: 1,
+      teamMembers: 1,
       campaigns: 0,
     },
     features: {
@@ -102,9 +111,14 @@ export const publicPlans: PublicPlan[] = [
       autonomousMode: true,
       advancedAnalytics: true,
       replyAi: true,
-      apiAccess: true,
-      webhooks: true,
-      whiteLabel: true,
+      apiAccess: false,
+      webhooks: false,
+      whiteLabel: false,
+    },
+    roadmapLimits: {
+      workspaces: 0,
+      teamMembers: 0,
+      campaigns: 0,
     },
   },
 ];

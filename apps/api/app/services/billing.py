@@ -22,6 +22,15 @@ def _object_status(value: object) -> str:
     return str(getattr(value, "status", "") or "").lower()
 
 
+def _object_get(value: object, key: str, default: object = None) -> object:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    getter = getattr(value, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    return getattr(value, key, default)
+
+
 @dataclass(frozen=True)
 class CustomerSubscriptionDiagnostics:
     customer: object | None
@@ -42,9 +51,14 @@ def _capture_stripe_error(exc: BaseException, endpoint: str, *, workspace_id: st
 
 def _validate_monthly_price(plan: str, price: object) -> None:
     spec = PLAN_CATALOG[plan].stripe_monthly
-    if not getattr(price, "recurring", None) or price.recurring.get("interval") != "month":
+    recurring = _object_get(price, "recurring", None)
+    if not isinstance(recurring, dict) or recurring.get("interval") != spec.interval:
         raise ValueError(f"{plan} Stripe price must be a recurring monthly price")
-    if int(getattr(price, "unit_amount", 0) or 0) != int(spec.amount) or str(getattr(price, "currency", "")).lower() != spec.currency:
+    if int(recurring.get("interval_count") or 1) != 1:
+        raise ValueError(f"{plan} Stripe price must bill every month")
+    if _object_get(price, "active", True) is not True:
+        raise ValueError(f"{plan} Stripe price must be active")
+    if int(_object_get(price, "unit_amount", 0) or 0) != int(spec.amount) or str(_object_get(price, "currency", "")).lower() != spec.currency:
         raise ValueError(f"{plan} Stripe price must be €{spec.amount // 100}/month")
 
 
@@ -184,18 +198,26 @@ def ensure_subscription_catalog() -> list[dict]:
 def plan_from_price_id(price_id: str) -> tuple[str, str] | None:
     settings = get_settings()
     configured = plan_from_configured_price_id(price_id)
-    if configured:
-        return configured
     if not settings.stripe_secret_key:
-        return None
+        return configured
     stripe.api_key = settings.stripe_secret_key
     try:
         price = stripe.Price.retrieve(price_id)
     except stripe.StripeError:
         return None
-    lookup_key = getattr(price, "lookup_key", None)
+    if configured:
+        try:
+            _validate_monthly_price(configured[0], price)
+        except ValueError:
+            return None
+        return configured
+    lookup_key = _object_get(price, "lookup_key", None)
     for plan, spec in PLAN_CATALOG.items():
         if lookup_key == spec.stripe_monthly.lookup_key:
+            try:
+                _validate_monthly_price(plan, price)
+            except ValueError:
+                return None
             return plan, "monthly"
     return None
 
@@ -236,8 +258,6 @@ def subscription_payload(subscription: object) -> dict:
     billing_period = "monthly"
     if price_id:
         resolved_plan, billing_period = require_plan_for_price_id(price_id)
-    elif metadata.get("plan") in PLAN_CATALOG:
-        resolved_plan = str(metadata.get("plan"))
     if not resolved_plan:
         raise UnknownStripePriceError("Stripe subscription is missing an allowlisted monthly price")
     return {

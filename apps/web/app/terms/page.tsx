@@ -36,7 +36,7 @@ const sections = [
     title: "Billing",
     body: [
       "Paid access, trials, plan limits, renewals, cancellations, and payment handling are managed through the billing flow shown in the product. Users should review the displayed plan details before starting or changing paid access.",
-      "The billing implementation uses monthly Stripe subscription checkout with a 14-day trial. Users can manage or cancel active subscriptions through the billing portal when a subscription is active.",
+      "The billing implementation uses monthly Stripe subscription checkout with a 14-day trial. Subscription changes are managed securely in the Stripe Billing Portal according to the active portal configuration.",
     ],
   },
   {

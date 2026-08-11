@@ -33,6 +33,7 @@ class PlanSpec:
     limits: dict[str, int | bool]
     features: dict[str, bool]
     reserved_features: dict[str, str]
+    roadmap_limits: dict[str, int]
     upgrade_to: tuple[str, ...]
     downgrade_to: tuple[str, ...]
     stripe_monthly: StripePriceMapping
@@ -107,7 +108,8 @@ PLAN_CATALOG: dict[str, PlanSpec] = {
             white_label=False,
         ),
         features={"manual_approval": True, "basic_analytics": True},
-        reserved_features={"api_access": "reserved", "webhooks": "reserved", "white_label": "reserved"},
+        reserved_features={"team_members": "unavailable", "api_access": "reserved", "webhooks": "reserved", "white_label": "reserved"},
+        roadmap_limits={"workspaces": 1, "team_members": 1},
         upgrade_to=("Pro", "Agency"),
         downgrade_to=(),
         stripe_monthly=StripePriceMapping(env_name="STRIPE_STARTER_PRICE_ID", legacy_env_name="STRIPE_PRICE_STARTER", lookup_key="outreachai_starter_monthly", amount=4900),
@@ -125,8 +127,8 @@ PLAN_CATALOG: dict[str, PlanSpec] = {
             ai_generations=10000,
             email_sends=10000,
             sales_employees=3,
-            workspaces=3,
-            team_members=10,
+            workspaces=1,
+            team_members=1,
             campaigns=25,
             review_mode=True,
             semi_auto_mode=True,
@@ -139,7 +141,8 @@ PLAN_CATALOG: dict[str, PlanSpec] = {
             white_label=False,
         ),
         features={"manual_approval": True, "semi_auto_mode": True, "advanced_analytics": True, "reply_ai": True},
-        reserved_features={"api_access": "reserved", "webhooks": "reserved", "white_label": "reserved"},
+        reserved_features={"workspaces": "reserved", "team_members": "reserved", "api_access": "reserved", "webhooks": "reserved", "white_label": "reserved"},
+        roadmap_limits={"workspaces": 3, "team_members": 10},
         upgrade_to=("Agency",),
         downgrade_to=("Starter",),
         stripe_monthly=StripePriceMapping(env_name="STRIPE_PRO_PRICE_ID", legacy_env_name="STRIPE_PRICE_PRO", lookup_key="outreachai_pro_monthly", amount=14900),
@@ -157,8 +160,8 @@ PLAN_CATALOG: dict[str, PlanSpec] = {
             ai_generations=100000,
             email_sends=100000,
             sales_employees=10,
-            workspaces=0,
-            team_members=0,
+            workspaces=1,
+            team_members=1,
             campaigns=0,
             review_mode=True,
             semi_auto_mode=True,
@@ -166,12 +169,13 @@ PLAN_CATALOG: dict[str, PlanSpec] = {
             basic_analytics=True,
             advanced_analytics=True,
             reply_ai=True,
-            api_access=True,
-            webhooks=True,
-            white_label=True,
+            api_access=False,
+            webhooks=False,
+            white_label=False,
         ),
         features={"manual_approval": True, "semi_auto_mode": True, "autonomous_mode": True, "advanced_analytics": True, "reply_ai": True},
-        reserved_features={"api_access": "reserved", "webhooks": "reserved", "white_label": "reserved"},
+        reserved_features={"workspaces": "reserved", "team_members": "reserved", "campaigns": "reserved", "api_access": "reserved", "webhooks": "reserved", "white_label": "reserved"},
+        roadmap_limits={"workspaces": 0, "team_members": 0, "campaigns": 0},
         upgrade_to=(),
         downgrade_to=("Starter", "Pro"),
         stripe_monthly=StripePriceMapping(env_name="STRIPE_AGENCY_PRICE_ID", legacy_env_name="STRIPE_PRICE_AGENCY", lookup_key="outreachai_agency_monthly", amount=49900),
@@ -230,6 +234,7 @@ def public_plan_catalog() -> list[dict[str, Any]]:
             "limits": deepcopy(spec.limits),
             "features": deepcopy(spec.features),
             "reserved_features": deepcopy(spec.reserved_features),
+            "roadmap_limits": deepcopy(spec.roadmap_limits),
             "upgrade_to": list(spec.upgrade_to),
             "downgrade_to": list(spec.downgrade_to),
         }

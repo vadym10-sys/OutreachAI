@@ -27,7 +27,21 @@ describe("pricing plans", () => {
       expect(backendPlan).toContain(`workspaces=${plan.limits.workspaces}`);
       expect(backendPlan).toContain(`team_members=${plan.limits.teamMembers}`);
       expect(backendPlan).toContain(`campaigns=${plan.limits.campaigns}`);
+      expect(backendPlan).toContain(`api_access=${plan.features.apiAccess ? "True" : "False"}`);
+      expect(backendPlan).toContain(`webhooks=${plan.features.webhooks ? "True" : "False"}`);
+      expect(backendPlan).toContain(`white_label=${plan.features.whiteLabel ? "True" : "False"}`);
     }
+  });
+
+  it("keeps reserved expansion features out of active public entitlement booleans", () => {
+    const agency = publicPlans.find((plan) => plan.name === "Agency");
+
+    expect(agency?.features.apiAccess).toBe(false);
+    expect(agency?.features.webhooks).toBe(false);
+    expect(agency?.features.whiteLabel).toBe(false);
+    expect(agency?.limits.workspaces).toBe(1);
+    expect(agency?.limits.teamMembers).toBe(1);
+    expect(agency?.roadmapLimits?.workspaces).toBe(0);
   });
 });
 
@@ -86,7 +100,7 @@ describe("i18n", () => {
       "Manual confirmation",
       "Demo evidence uses safe fixture data, not customer production records.",
       "Insufficient data stays visible and is routed to manual review.",
-      "Prices and limits come from the billing catalogue used by the application. All plans renew monthly after the 14-day trial unless canceled.",
+      "Prices and limits come from the billing catalogue used by the application. Subscription changes are managed securely in the Stripe Billing Portal according to the active portal configuration.",
       "Secure authentication",
       "Workspace billing",
       "Questions before signing up?",
@@ -109,7 +123,7 @@ describe("i18n", () => {
       "Unknown plan selected",
       "Information we collect",
       "Privacy and security requests should be sent to the confirmed support email listed in the public footer and contact section.",
-      "The billing implementation uses monthly Stripe subscription checkout with a 14-day trial. Users can manage or cancel active subscriptions through the billing portal when a subscription is active.",
+      "The billing implementation uses monthly Stripe subscription checkout with a 14-day trial. Subscription changes are managed securely in the Stripe Billing Portal according to the active portal configuration.",
       "Generated emails are drafts first. Sending requires an approved email and a verified recipient path in the application.",
     ];
 

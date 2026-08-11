@@ -1542,6 +1542,7 @@ export type BillingPlan = {
   limits: PlanLimits;
   features?: Record<string, boolean>;
   reserved_features?: Record<string, string>;
+  roadmap_limits?: Record<string, number>;
   upgrade_to?: string[];
   downgrade_to?: string[];
   current: boolean;

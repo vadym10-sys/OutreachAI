@@ -277,7 +277,7 @@ export function LandingPage() {
         <div className="max-w-3xl">
           <p className="ui-eyebrow">{t("Pricing")}</p>
           <h2 className="ui-title mt-3 text-4xl">{t("Simple monthly pricing")}</h2>
-          <p className="ui-copy mt-3">{t("Prices and limits come from the billing catalogue used by the application. All plans renew monthly after the 14-day trial unless canceled.")}</p>
+          <p className="ui-copy mt-3">{t("Prices and limits come from the billing catalogue used by the application. Subscription changes are managed securely in the Stripe Billing Portal according to the active portal configuration.")}</p>
         </div>
         <div className="mt-8 grid gap-5 lg:grid-cols-3">
           {publicPlans.map((plan, index) => (
@@ -294,7 +294,8 @@ export function LandingPage() {
                 <li><strong className="text-[var(--ui-text)]">{plan.limits.aiGenerations.toLocaleString()}</strong> {t("AI generations per month")}</li>
                 <li><strong className="text-[var(--ui-text)]">{plan.limits.emailSends.toLocaleString()}</strong> {t("reviewed email sends per month")}</li>
                 <li><strong className="text-[var(--ui-text)]">{plan.limits.salesEmployees}</strong> {t("AI Sales Employees")}</li>
-                <li>{plan.limits.workspaces === 0 ? t("Unlimited workspaces") : `${plan.limits.workspaces} ${t("workspace limit")}`}</li>
+                <li>{plan.limits.workspaces} {t("owner workspace")}</li>
+                <li>{t("Team invitations planned")}</li>
                 <li>{plan.features.semiAutoMode ? t("Semi-auto mode included") : t("Review mode only")}</li>
                 <li>{plan.features.autonomousMode ? t("Autonomous mode included") : t("Autonomous mode not included")}</li>
                 <li>{plan.features.advancedAnalytics ? t("Advanced analytics included") : t("Basic analytics included")}</li>

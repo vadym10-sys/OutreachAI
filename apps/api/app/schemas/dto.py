@@ -1039,6 +1039,7 @@ class BillingPlanOut(BaseModel):
     limits: dict[str, Any]
     features: dict[str, bool] = Field(default_factory=dict)
     reserved_features: dict[str, str] = Field(default_factory=dict)
+    roadmap_limits: dict[str, int] = Field(default_factory=dict)
     upgrade_to: list[str] = Field(default_factory=list)
     downgrade_to: list[str] = Field(default_factory=list)
     current: bool = False

@@ -255,7 +255,7 @@ export function BillingWorkspace({ showDiagnostics = false }: { showDiagnostics?
     ['Workspace usage', status.workspaces_used, status.limits.workspaces]
   ] as const : [];
 
-	  const hasActiveSubscription = Boolean(plans.find((item) => item.current && item.active_subscription));
+  const hasActiveSubscription = Boolean(plans.find((item) => item.current && item.active_subscription));
   const paymentNeedsAttention = Boolean(status?.last_failure_message || status?.last_decline_code || ['past_due', 'incomplete', 'unpaid'].includes(String(status?.status || '')));
   const paymentFailureCopy = status?.last_failure_message || t('billing.paymentFailedFallback');
 

@@ -246,6 +246,7 @@ LEAD_PROVIDER_TIMEOUT_SECONDS = 10
 GMAIL_OAUTH_STATE_TTL_SECONDS = 600
 GMAIL_OAUTH_HANDOFF_TTL_SECONDS = 300
 GMAIL_OAUTH_HANDOFF_CLAIM_LOCK = threading.Lock()
+CAMPAIGN_MUTATION_LOCKS: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 
 
 LEGACY_STATUS_MAP = {
@@ -1110,6 +1111,15 @@ def _billing_duplicate_diagnostics(subscription_rows: list[Subscription]) -> tup
 def _lock_billing_checkout(db: Session, workspace_id: UUID, user_id: str) -> None:
     if db.bind and db.bind.dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"billing-checkout:{workspace_id}:{user_id}"})
+
+
+def _lock_campaign_mutation(db: Session, workspace_id: UUID, user_id: str) -> threading.Lock | None:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"campaign:{workspace_id}:{user_id}"})
+        return None
+    lock = CAMPAIGN_MUTATION_LOCKS[f"{workspace_id}:{user_id}"]
+    lock.acquire()
+    return lock
 
 
 def _checkout_period(value: str | None = None) -> str:
@@ -4733,41 +4743,51 @@ def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentU
 @router.post("/campaigns/{campaign_id}/{action}", response_model=CampaignOut)
 def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
+    if action == "duplicate":
+        mutation_lock = _lock_campaign_mutation(db, workspace.id, user_id)
+        try:
+            current_count = db.scalar(select(func.count()).select_from(Campaign).where(_workspace_stmt(Campaign, workspace, user_id))) or 0
+            _enforce_count_limit(db, user_id, workspace, "campaigns", int(current_count))
+            campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+            if campaign is None:
+                raise HTTPException(status_code=404, detail="Campaign not found")
+            clone = Campaign(
+                user_id=user_id,
+                workspace_id=workspace.id,
+                name=f"{campaign.name} copy",
+                industry=campaign.industry,
+                countries=campaign.countries,
+                cities=campaign.cities,
+                company_size=campaign.company_size,
+                keywords=campaign.keywords,
+                website_filters=campaign.website_filters,
+                language=campaign.language,
+                offer=campaign.offer,
+                cta=campaign.cta,
+                email_tone=campaign.email_tone,
+                signature=campaign.signature,
+                follow_up_days=campaign.follow_up_days,
+                timezone=campaign.timezone,
+                status=CampaignStatus.draft,
+            )
+            db.add(clone)
+            db.flush()
+            sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
+            _replace_sequence(
+                db,
+                clone,
+                [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
+            )
+            log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
+            db.commit()
+            db.refresh(clone)
+            return _campaign_out(db, clone)
+        finally:
+            if mutation_lock:
+                mutation_lock.release()
     campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if action == "duplicate":
-        clone = Campaign(
-            user_id=user_id,
-            workspace_id=workspace.id,
-            name=f"{campaign.name} copy",
-            industry=campaign.industry,
-            countries=campaign.countries,
-            cities=campaign.cities,
-            company_size=campaign.company_size,
-            keywords=campaign.keywords,
-            website_filters=campaign.website_filters,
-            language=campaign.language,
-            offer=campaign.offer,
-            cta=campaign.cta,
-            email_tone=campaign.email_tone,
-            signature=campaign.signature,
-            follow_up_days=campaign.follow_up_days,
-            timezone=campaign.timezone,
-            status=CampaignStatus.draft,
-        )
-        db.add(clone)
-        db.flush()
-        sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
-        _replace_sequence(
-            db,
-            clone,
-            [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
-        )
-        log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
-        db.commit()
-        db.refresh(clone)
-        return _campaign_out(db, clone)
     mapping = {"launch": CampaignStatus.running, "resume": CampaignStatus.running, "pause": CampaignStatus.paused, "stop": CampaignStatus.stopped}
     if action not in mapping:
         raise HTTPException(status_code=400, detail="Unsupported campaign action")
@@ -4903,40 +4923,47 @@ def approve_autopilot_campaign(
 @router.post("/campaigns/{campaign_id}/duplicate", response_model=CampaignOut)
 def duplicate_campaign(campaign_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
-    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
-    if campaign is None:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    clone = Campaign(
-        user_id=user_id,
-        workspace_id=workspace.id,
-        name=f"{campaign.name} copy",
-        industry=campaign.industry,
-        countries=campaign.countries,
-        cities=campaign.cities,
-        company_size=campaign.company_size,
-        keywords=campaign.keywords,
-        website_filters=campaign.website_filters,
-        language=campaign.language,
-        offer=campaign.offer,
-        cta=campaign.cta,
-        email_tone=campaign.email_tone,
-        signature=campaign.signature,
-        follow_up_days=campaign.follow_up_days,
-        timezone=campaign.timezone,
-        status=CampaignStatus.draft,
-    )
-    db.add(clone)
-    db.flush()
-    sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
-    _replace_sequence(
-        db,
-        clone,
-        [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
-    )
-    log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
-    db.commit()
-    db.refresh(clone)
-    return _campaign_out(db, clone)
+    mutation_lock = _lock_campaign_mutation(db, workspace.id, user_id)
+    try:
+        current_count = db.scalar(select(func.count()).select_from(Campaign).where(_workspace_stmt(Campaign, workspace, user_id))) or 0
+        _enforce_count_limit(db, user_id, workspace, "campaigns", int(current_count))
+        campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        clone = Campaign(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            name=f"{campaign.name} copy",
+            industry=campaign.industry,
+            countries=campaign.countries,
+            cities=campaign.cities,
+            company_size=campaign.company_size,
+            keywords=campaign.keywords,
+            website_filters=campaign.website_filters,
+            language=campaign.language,
+            offer=campaign.offer,
+            cta=campaign.cta,
+            email_tone=campaign.email_tone,
+            signature=campaign.signature,
+            follow_up_days=campaign.follow_up_days,
+            timezone=campaign.timezone,
+            status=CampaignStatus.draft,
+        )
+        db.add(clone)
+        db.flush()
+        sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
+        _replace_sequence(
+            db,
+            clone,
+            [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
+        )
+        log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
+        db.commit()
+        db.refresh(clone)
+        return _campaign_out(db, clone)
+    finally:
+        if mutation_lock:
+            mutation_lock.release()
 
 
 @router.post("/leads", response_model=LeadOut)
