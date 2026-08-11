@@ -59,7 +59,7 @@ from app.core import security  # noqa: E402
 from app.api import routes as routes_module  # noqa: E402
 from app.api.usage import _approved_email_send_claim_update, _parse_lead_command, _require_workspace_owner  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, BillingCheckoutSession, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, TestEntitlement as BillingTestEntitlement, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, BillingCheckoutSession, BillingSubscriptionTransition, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, TestEntitlement as BillingTestEntitlement, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -1883,8 +1883,9 @@ def _stripe_subscription_object(
         "status": status,
         "trial_end": future,
         "current_period_end": future,
+        "current_period_start": int(time.time()),
         "metadata": {"user_id": user_id, "workspace_id": workspace_id},
-        "items": {"data": [{"price": {"id": price_id}}]},
+        "items": {"data": [{"id": f"si_{subscription_id}", "price": {"id": price_id}}]},
         "created": created or int(time.time()),
     }
 
@@ -2138,6 +2139,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(t
         "017_secure_billing_test_entitlements",
         "018_billing_checkout_idempotency",
         "019_canonical_subscription_resolver",
+        "020_billing_subscription_transitions",
     }
     state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
@@ -2606,6 +2608,18 @@ def test_postgres_schema_assets_include_billing_checkout_sessions() -> None:
     assert "uq_billing_checkout_stripe_session_id" in packaged_migration
     assert "uq_billing_checkout_idempotency_key" in packaged_migration
     assert "018_billing_checkout_idempotency" in REQUIRED_POSTGRES_MIGRATIONS
+
+
+def test_postgres_schema_assets_include_billing_subscription_transitions() -> None:
+    schema = (Path(__file__).resolve().parents[1] / "app" / "db" / "schema.sql").read_text(encoding="utf-8")
+    packaged_migration = (Path(__file__).resolve().parents[1] / "app" / "db" / "migrations" / "020_billing_subscription_transitions.sql").read_text(encoding="utf-8")
+    root_migration = (Path(__file__).resolve().parents[3] / "db" / "migrations" / "020_billing_subscription_transitions.sql").read_text(encoding="utf-8")
+
+    assert packaged_migration == root_migration
+    assert "CREATE TABLE IF NOT EXISTS billing_subscription_transitions" in schema
+    assert "uq_billing_subscription_transition_open" in packaged_migration
+    assert "uq_billing_subscription_transition_idempotency_key" in packaged_migration
+    assert "020_billing_subscription_transitions" in REQUIRED_POSTGRES_MIGRATIONS
 
 
 def test_startup_logs_validation_steps_and_fails_fast_on_database_error(monkeypatch, caplog) -> None:
@@ -12147,6 +12161,284 @@ def test_billing_checkout_blocks_duplicate_active_stripe_subscriptions(monkeypat
     diagnostics = console.json()["billing_diagnostics"]
     assert diagnostics["duplicate_active_subscription_groups"] >= 1
     assert any(item["workspace_id"] == str(workspace_id) and item["active_or_trialing_count"] == 2 for item in diagnostics["duplicate_active_subscriptions"])
+
+
+def test_subscription_change_upgrade_records_pending_without_local_entitlement_change(monkeypatch) -> None:
+    user_id = f"change-upgrade-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    now = datetime.utcnow()
+    with get_sessionmaker()() as db:
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            stripe_customer_id="cus_change_upgrade",
+            stripe_subscription_id="sub_change_upgrade",
+            plan="Starter",
+            status="trialing",
+            trial_end=now + timedelta(days=14),
+            current_period_end=now + timedelta(days=14),
+        )
+        db.commit()
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr("app.api.routes.retrieve_bound_stripe_subscription", lambda local_subscription, workspace_id, user_id: {"id": local_subscription.stripe_subscription_id, "customer": local_subscription.stripe_customer_id})
+
+    def fake_upgrade(*, transition: BillingSubscriptionTransition, stripe_subscription: object, to_plan: str) -> object:
+        captured.update({"to_plan": to_plan, "idempotency_key": transition.idempotency_key, "from_plan": transition.from_plan})
+        return {"id": transition.stripe_subscription_id}
+
+    monkeypatch.setattr("app.api.routes.apply_upgrade_now", fake_upgrade)
+    response = client.post("/api/billing/subscription/change", headers=headers, json={"plan": "Pro", "billing_period": "monthly"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["pending"] is True
+    assert data["direction"] == "upgrade"
+    assert data["status"] == "pending"
+    assert captured["to_plan"] == "Pro"
+    assert captured["idempotency_key"].startswith("sub_change_")
+
+    status = client.get("/api/billing/status", headers=headers).json()
+    assert status["plan"] == "Starter"
+    assert status["transition"]["to_plan"] == "Pro"
+    with get_sessionmaker()() as db:
+        row = db.query(BillingSubscriptionTransition).filter(BillingSubscriptionTransition.stripe_subscription_id == "sub_change_upgrade").one()
+        assert row.billing_period == "monthly"
+        assert row.idempotency_key == captured["idempotency_key"]
+
+
+def test_subscription_change_downgrade_schedules_for_period_end_and_reuses_open_transition(monkeypatch) -> None:
+    user_id = f"change-downgrade-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    period_end = datetime.utcnow() + timedelta(days=21)
+    with get_sessionmaker()() as db:
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            stripe_customer_id="cus_change_downgrade",
+            stripe_subscription_id="sub_change_downgrade",
+            plan="Agency",
+            status="active",
+            current_period_end=period_end,
+        )
+        db.commit()
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("app.api.routes.retrieve_bound_stripe_subscription", lambda local_subscription, workspace_id, user_id: {"id": local_subscription.stripe_subscription_id, "customer": local_subscription.stripe_customer_id})
+
+    def fake_schedule(*, transition: BillingSubscriptionTransition, stripe_subscription: object, to_plan: str) -> dict:
+        calls.append({"to_plan": to_plan, "idempotency_key": transition.idempotency_key})
+        return {"id": "sched_change_downgrade"}
+
+    monkeypatch.setattr("app.api.routes.schedule_downgrade", fake_schedule)
+    first = client.post("/api/billing/subscription/change", headers=headers, json={"plan": "Pro"})
+    second = client.post("/api/billing/subscription/change", headers=headers, json={"plan": "Starter"})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["direction"] == "downgrade"
+    assert first.json()["status"] == "scheduled"
+    assert first.json()["effective_at"] is not None
+    assert second.json()["to_plan"] == "Pro"
+    assert len(calls) == 1
+    with get_sessionmaker()() as db:
+        row = db.query(BillingSubscriptionTransition).filter(BillingSubscriptionTransition.stripe_subscription_id == "sub_change_downgrade").one()
+        assert row.stripe_schedule_id == "sched_change_downgrade"
+        assert row.effective_at is not None
+
+
+def test_subscription_change_blocks_annual_duplicate_and_same_plan(monkeypatch) -> None:
+    user_id = f"change-blocks-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    with get_sessionmaker()() as db:
+        for suffix in ("one", "two"):
+            _create_billing_subscription(
+                db,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                stripe_customer_id="cus_change_blocks",
+                stripe_subscription_id=f"sub_change_blocks_{suffix}",
+                plan="Starter",
+                status="active",
+                current_period_end=datetime.utcnow() + timedelta(days=30),
+            )
+        db.commit()
+
+    calls = {"retrieve": 0}
+    monkeypatch.setattr("app.api.routes.retrieve_bound_stripe_subscription", lambda *args, **kwargs: calls.update({"retrieve": calls["retrieve"] + 1}))
+    annual = client.post("/api/billing/subscription/change", headers=headers, json={"plan": "Pro", "billing_period": "annual"})
+    duplicate = client.post("/api/billing/subscription/change", headers=headers, json={"plan": "Pro"})
+    assert annual.status_code == 400
+    assert duplicate.status_code == 409
+    assert calls["retrieve"] == 0
+
+    with get_sessionmaker()() as db:
+        db.query(Subscription).filter(Subscription.workspace_id == workspace_id).delete()
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            stripe_customer_id="cus_change_blocks",
+            stripe_subscription_id="sub_change_blocks_single",
+            plan="Starter",
+            status="active",
+            current_period_end=datetime.utcnow() + timedelta(days=30),
+        )
+        db.commit()
+    same = client.post("/api/billing/subscription/change", headers=headers, json={"plan": "Starter"})
+    assert same.status_code == 409
+
+
+def test_subscription_cancel_only_uses_cancel_at_period_end_and_can_undo(monkeypatch) -> None:
+    user_id = f"cancel-period-end-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    with get_sessionmaker()() as db:
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            stripe_customer_id="cus_cancel_period",
+            stripe_subscription_id="sub_cancel_period",
+            plan="Pro",
+            status="active",
+            current_period_end=datetime.utcnow() + timedelta(days=30),
+        )
+        db.commit()
+    calls: list[str] = []
+    monkeypatch.setattr("app.api.routes.request_cancel_at_period_end", lambda subscription, workspace_id, user_id: calls.append("request"))
+    monkeypatch.setattr("app.api.routes.undo_cancel_at_period_end", lambda subscription, workspace_id, user_id: calls.append("undo"))
+    cancel = client.post("/api/billing/subscription/cancel", headers=headers)
+    undo = client.post("/api/billing/subscription/cancel/undo", headers=headers)
+    assert cancel.status_code == 200
+    assert cancel.json()["cancel_at_period_end"] is True
+    assert undo.status_code == 200
+    assert undo.json()["cancel_at_period_end"] is False
+    assert calls == ["request", "undo"]
+
+
+def test_subscription_change_webhook_confirmation_applies_entitlement_and_stale_event_does_not_revert() -> None:
+    user_id = f"change-webhook-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    now = datetime.utcnow()
+    with get_sessionmaker()() as db:
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            stripe_customer_id="cus_change_webhook",
+            stripe_subscription_id="sub_change_webhook",
+            plan="Starter",
+            status="active",
+            current_period_end=now + timedelta(days=30),
+            stripe_event_created_at=now,
+        )
+        db.add(
+            BillingSubscriptionTransition(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                stripe_customer_id="cus_change_webhook",
+                stripe_subscription_id="sub_change_webhook",
+                from_plan="Starter",
+                to_plan="Pro",
+                billing_period="monthly",
+                direction="upgrade",
+                status="pending",
+                idempotency_key=f"sub_change_{uuid4().hex}",
+            )
+        )
+        db.commit()
+
+    future = int(time.time()) + 30 * 24 * 60 * 60
+    confirmed_payload = {
+        "id": f"evt_change_confirmed_{uuid4().hex}",
+        "created": int(time.time()) + 10,
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": "sub_change_webhook",
+                "customer": "cus_change_webhook",
+                "status": "active",
+                "trial_end": None,
+                "current_period_end": future,
+                "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Pro"},
+                "items": {"data": [{"price": {"id": "price_pro_test"}}]},
+            }
+        },
+    }
+    raw, signature = stripe_signature(confirmed_payload)
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+    status = client.get("/api/billing/status", headers=headers).json()
+    assert status["plan"] == "Pro"
+    assert status["transition"]["pending"] is False
+    with get_sessionmaker()() as db:
+        transition = db.query(BillingSubscriptionTransition).filter(BillingSubscriptionTransition.stripe_subscription_id == "sub_change_webhook").one()
+        assert transition.status == "applied"
+
+    stale_payload = {
+        **confirmed_payload,
+        "id": f"evt_change_stale_{uuid4().hex}",
+        "created": int(time.time()) - 100,
+        "data": {
+            "object": {
+                **confirmed_payload["data"]["object"],
+                "status": "canceled",
+                "items": {"data": [{"price": {"id": "price_starter_test"}}]},
+            }
+        },
+    }
+    raw, signature = stripe_signature(stale_payload)
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+    assert client.get("/api/billing/status", headers=headers).json()["plan"] == "Pro"
+
+
+def test_stale_invoice_paid_webhook_does_not_reactivate_newer_canceled_subscription() -> None:
+    user_id = f"stale-invoice-paid-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    now = datetime.utcnow()
+    with get_sessionmaker()() as db:
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            stripe_customer_id="cus_stale_invoice",
+            stripe_subscription_id="sub_stale_invoice",
+            plan="Pro",
+            status="canceled",
+            current_period_end=now - timedelta(days=1),
+            stripe_event_created_at=now,
+        )
+        db.commit()
+
+    payload = {
+        "id": f"evt_stale_invoice_paid_{uuid4().hex}",
+        "created": int(time.time()) - 3600,
+        "type": "invoice.paid",
+        "data": {
+            "object": {
+                "id": "in_stale_invoice_paid",
+                "customer": "cus_stale_invoice",
+                "subscription": "sub_stale_invoice",
+                "status": "paid",
+            }
+        },
+    }
+    raw, signature = stripe_signature(payload)
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+    status = client.get("/api/billing/status", headers=headers).json()
+    assert status["status"] in {"canceled", "expired"}
+    assert status["entitlement_source"] == "stripe_inactive"
 
 
 def test_stripe_invoice_payment_failed_records_reason_and_keeps_access_inactive() -> None:

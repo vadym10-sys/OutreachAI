@@ -138,7 +138,17 @@ def create_billing_portal_session(customer_id: str, return_url: str) -> dict:
     if not customer_id:
         raise ValueError("Stripe customer is not connected yet")
     try:
-        session = stripe.billing_portal.Session.create(customer=customer_id, return_url=return_url)
+        configuration = stripe.billing_portal.Configuration.create(
+            business_profile={"headline": "Manage OutreachAI billing"},
+            features={
+                "customer_update": {"enabled": True, "allowed_updates": ["email", "tax_id"]},
+                "invoice_history": {"enabled": True},
+                "payment_method_update": {"enabled": True},
+                "subscription_cancel": {"enabled": True, "mode": "at_period_end"},
+                "subscription_update": {"enabled": False},
+            },
+        )
+        session = stripe.billing_portal.Session.create(customer=customer_id, return_url=return_url, configuration=configuration.id)
     except stripe.StripeError as exc:
         _capture_stripe_error(exc, "stripe.billing_portal.session.create")
         raise

@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { BillingWorkspace } from "@/components/billing-client";
 
 export default function BillingPage() {
-  redirect("/dashboard/settings");
+  return <BillingWorkspace />;
 }

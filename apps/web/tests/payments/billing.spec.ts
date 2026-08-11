@@ -6,12 +6,12 @@ test.beforeEach(async ({ page }) => {
   await mockWorkspaceApi(page);
 });
 
-test("billing route redirects to settings without exposing payment internals", async ({ page }, testInfo) => {
+test("billing route shows billing controls without exposing payment internals", async ({ page }, testInfo) => {
   const guards = installQaGuards(page, testInfo);
   await page.goto("/dashboard/billing");
-  await expect(page.getByRole("heading", { name: "Настройки" })).toBeVisible();
-  await expect(page.getByText("Billing", { exact: true })).toBeVisible();
-  await expect(page.getByRole("main")).not.toContainText(/Stripe|webhook|secret|price id/i);
+  await expect(page.getByRole("heading", { name: "Keep OutreachAI working for your sales team" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Manage Billing" })).toBeVisible();
+  await expect(page.getByRole("main")).not.toContainText(/webhook|secret|price id/i);
   await guards.assertClean();
 });
 
@@ -30,5 +30,14 @@ test("pricing page exposes plan CTAs", async ({ page }, testInfo) => {
   await expect(page.getByRole("link", { name: "Choose Starter" })).toHaveAttribute("href", "/sign-up?plan=Starter");
   await expect(page.getByRole("link", { name: "Choose Pro" })).toHaveAttribute("href", "/sign-up?plan=Pro");
   await expect(page.getByRole("link", { name: "Choose Agency" })).toHaveAttribute("href", "/sign-up?plan=Agency");
+  await guards.assertClean();
+});
+
+test("billing page uses app-controlled plan changes for active subscriptions", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.goto("/dashboard/billing");
+  await page.getByRole("button", { name: "Change to Pro" }).click();
+  await expect(page.getByRole("heading", { name: "Plan change pending" })).toBeVisible();
+  await expect(page.getByText("Starter stays active until Stripe confirms Pro.")).toBeVisible();
   await guards.assertClean();
 });
