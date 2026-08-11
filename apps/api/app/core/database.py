@@ -27,6 +27,7 @@ REQUIRED_POSTGRES_MIGRATIONS = (
     "015_backup_runs",
     "016_workspace_profile_send_confirmation",
     "017_secure_billing_test_entitlements",
+    "018_billing_checkout_idempotency",
 )
 REQUIRED_AI_MEMORY_TABLES = ("ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs")
 

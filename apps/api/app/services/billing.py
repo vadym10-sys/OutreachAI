@@ -76,7 +76,7 @@ def price_for_plan(plan: str) -> str:
     raise ValueError(f"STRIPE_{plan.upper()}_PRICE_ID is required for {plan} checkout")
 
 
-def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer_id: str = "") -> dict:
+def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
     if not settings.stripe_secret_key:
@@ -90,6 +90,7 @@ def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer
             _capture_stripe_error(exc, "stripe.customer.create", workspace_id=workspace_id)
             raise
         customer_id = customer.id
+    request_options = {"idempotency_key": idempotency_key} if idempotency_key else {}
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -105,11 +106,12 @@ def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer
                 "submit": {"message": "Start your OutreachAI subscription. Your plan renews monthly after the 14-day free trial unless canceled."},
                 "after_submit": {"message": "Your OutreachAI workspace will activate after Stripe confirms your subscription."},
             },
+            **request_options,
         )
     except stripe.StripeError as exc:
         _capture_stripe_error(exc, "stripe.checkout.session.create", workspace_id=workspace_id)
         raise
-    return {"url": session.url, "id": session.id, "customer_id": customer_id}
+    return {"url": session.url, "id": session.id, "customer_id": customer_id, "expires_at": getattr(session, "expires_at", None), "status": getattr(session, "status", "open")}
 
 
 def create_billing_portal_session(customer_id: str, return_url: str) -> dict:

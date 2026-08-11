@@ -39,6 +39,16 @@ function safePendingPlan(action: "get" | "set" | "remove", value?: PlanName) {
   }
 }
 
+export function billingAlreadyActive(status: BillingStatus | null | undefined) {
+  if (!status) return false;
+  const current = String(status.status || "").toLowerCase();
+  return Boolean(
+    status.test_entitlement
+    || (status.entitlement_source === "stripe" && ["active", "trialing"].includes(current))
+    || ["active", "trialing", "test_entitlement"].includes(current)
+  );
+}
+
 function safeRedirect(url: string) {
   try {
     window.location.assign(url);
@@ -94,9 +104,9 @@ export function PricingCheckoutButton({ plan, children = 'Subscribe' }: { plan: 
     try {
       const token = await getToken();
       const status = await apiWithToken<BillingStatus>('/api/billing/status', token);
-      if (status.test_entitlement && status.status === 'test_entitlement') {
+      if (billingAlreadyActive(status)) {
         safePendingPlan("remove");
-        safeRedirect('/dashboard?billing=test-entitlement');
+        safeRedirect(status.test_entitlement ? '/dashboard?billing=test-entitlement' : '/dashboard/billing?billing=active');
         return;
       }
       const session = await apiWithToken<BillingCheckoutSession>('/api/billing/checkout', token, {
@@ -131,8 +141,9 @@ export function CheckoutContinuation() {
       void getToken()
         .then(async (token) => {
           const status = await apiWithToken<BillingStatus>('/api/billing/status', token);
-          if (status.test_entitlement && status.status === 'test_entitlement') {
-            return { url: '/dashboard?billing=test-entitlement' } satisfies BillingCheckoutSession;
+          if (billingAlreadyActive(status)) {
+            safePendingPlan("remove");
+            return { url: status.test_entitlement ? '/dashboard?billing=test-entitlement' : '/dashboard/billing?billing=active' } satisfies BillingCheckoutSession;
           }
           return apiWithToken<BillingCheckoutSession>('/api/billing/checkout', token, { method: 'POST', body: JSON.stringify({ plan }) });
         })

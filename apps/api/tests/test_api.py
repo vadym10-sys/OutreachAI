@@ -58,7 +58,7 @@ from app.core import security  # noqa: E402
 from app.api import routes as routes_module  # noqa: E402
 from app.api.usage import _approved_email_send_claim_update, _parse_lead_command, _require_workspace_owner  # noqa: E402
 from app.api.routes import _audit_log_lead_id_clause, _lead_ai_payload, _plan_for_workspace, _require_active_subscription, _subscription_status_for_workspace  # noqa: E402
-from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, TestEntitlement as BillingTestEntitlement, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
+from app.models.entities import AICustomerFinderSource, AIMemoryEntry, AISalesEmployee, AISalesWorkspaceAnalysis, AppSettings, AuditLog, BackupRun, BillingCheckoutSession, Campaign, CampaignStatus, Company, Contact, Deal, EmailMessage, EnrichmentJob, Lead, LeadStatus, Note, Subscription, TestEntitlement as BillingTestEntitlement, UsageCounter, User, WebsiteAnalysis, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.schemas.dto import AnalysisOut, CampaignAnalyticsOut, EmailVariantOut, FollowUpSequenceOut, LeadFinderRequest, LeadOut, MeetingPrepOut, PLAN_LIMITS, SalesCopilotOut, WebsiteAuditOut  # noqa: E402
 from app.services.apollo import ApolloRequestError, ApolloSearchResult  # noqa: E402
 from app.services.google_maps import GoogleMapsRequestError, GooglePlacesSearchResult, _text_query  # noqa: E402
@@ -2024,7 +2024,15 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(t
     migration_path.write_text((database_module.PACKAGED_MIGRATIONS_DIR / "013_production_hardening_read_paths.sql").read_text(), encoding="utf-8")
     monkeypatch.setattr(database_module, "_migration_paths", lambda: [migration_path])
     state = _FakePostgresState()
-    state.applied_versions = {"011_ai_memory", "012_crm_inbox_read_indexes", "014_email_message_recipient_email", "015_backup_runs", "016_workspace_profile_send_confirmation", "017_secure_billing_test_entitlements"}
+    state.applied_versions = {
+        "011_ai_memory",
+        "012_crm_inbox_read_indexes",
+        "014_email_message_recipient_email",
+        "015_backup_runs",
+        "016_workspace_profile_send_confirmation",
+        "017_secure_billing_test_entitlements",
+        "018_billing_checkout_idempotency",
+    }
     state.tables.update({"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"})
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
     engine = _FakePostgresEngine(state)
@@ -2435,6 +2443,19 @@ def test_postgres_schema_assets_include_backup_runs() -> None:
     assert "CREATE TABLE IF NOT EXISTS backup_runs" in schema
     assert "CREATE TABLE IF NOT EXISTS backup_runs" in migration
     assert "015_backup_runs" in REQUIRED_POSTGRES_MIGRATIONS
+
+
+def test_postgres_schema_assets_include_billing_checkout_sessions() -> None:
+    schema = (Path(__file__).resolve().parents[1] / "app" / "db" / "schema.sql").read_text(encoding="utf-8")
+    packaged_migration = (Path(__file__).resolve().parents[1] / "app" / "db" / "migrations" / "018_billing_checkout_idempotency.sql").read_text(encoding="utf-8")
+    root_migration = (Path(__file__).resolve().parents[3] / "db" / "migrations" / "018_billing_checkout_idempotency.sql").read_text(encoding="utf-8")
+
+    assert packaged_migration == root_migration
+    assert "CREATE TABLE IF NOT EXISTS billing_checkout_sessions" in schema
+    assert "uq_billing_checkout_open_lifecycle" in packaged_migration
+    assert "uq_billing_checkout_stripe_session_id" in packaged_migration
+    assert "uq_billing_checkout_idempotency_key" in packaged_migration
+    assert "018_billing_checkout_idempotency" in REQUIRED_POSTGRES_MIGRATIONS
 
 
 def test_startup_logs_validation_steps_and_fails_fast_on_database_error(monkeypatch, caplog) -> None:
@@ -3993,7 +4014,7 @@ def test_owner_test_entitlement_grant_revoke_and_checkout_skip(monkeypatch) -> N
     original_env = app_settings.app_env
     calls = {"checkout": 0}
 
-    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "") -> dict:
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
         calls["checkout"] += 1
         return {"url": "https://checkout.stripe.test/session", "id": "cs_should_not_create", "customer_id": customer_id or "cus_should_not_create"}
 
@@ -11120,14 +11141,88 @@ def test_stripe_webhook_activates_subscription() -> None:
     assert status.json()["trial_days_remaining"] >= 13
 
 
+def test_stripe_webhook_marks_pending_checkout_completed_and_expired() -> None:
+    user_id = f"stripe-checkout-pending-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    completed_session_id = f"cs_pending_completed_{uuid4().hex}"
+    expired_session_id = f"cs_pending_expired_{uuid4().hex}"
+    with get_sessionmaker()() as db:
+        db.add(
+            BillingCheckoutSession(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                stripe_customer_id="cus_pending_webhook",
+                stripe_session_id=completed_session_id,
+                stripe_session_url="https://checkout.stripe.test/completed",
+                plan="Starter",
+                billing_period="monthly",
+                status="open",
+                idempotency_key=f"checkout_{uuid4().hex}",
+                expires_at=datetime.utcnow() + timedelta(hours=24),
+            )
+        )
+        db.add(
+            BillingCheckoutSession(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                stripe_customer_id="cus_pending_webhook",
+                stripe_session_id=expired_session_id,
+                stripe_session_url="https://checkout.stripe.test/expired",
+                plan="Pro",
+                billing_period="monthly",
+                status="open",
+                idempotency_key=f"checkout_{uuid4().hex}",
+                expires_at=datetime.utcnow() + timedelta(hours=24),
+            )
+        )
+        db.commit()
+
+    completed_payload = {
+        "id": f"evt_test_checkout_complete_{uuid4().hex}",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": completed_session_id,
+                "customer": "cus_pending_webhook",
+                "subscription": f"sub_pending_webhook_{uuid4().hex}",
+                "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Starter"},
+            }
+        },
+    }
+    raw, signature = stripe_signature(completed_payload)
+    completed = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert completed.status_code == 200
+
+    expired_payload = {
+        "id": f"evt_test_checkout_expired_{uuid4().hex}",
+        "type": "checkout.session.expired",
+        "data": {"object": {"id": expired_session_id, "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Starter"}}},
+    }
+    raw, signature = stripe_signature(expired_payload)
+    expired = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert expired.status_code == 200
+
+    with get_sessionmaker()() as db:
+        completed_row = db.scalar(select(BillingCheckoutSession).where(BillingCheckoutSession.stripe_session_id == completed_session_id))
+        expired_row = db.scalar(select(BillingCheckoutSession).where(BillingCheckoutSession.stripe_session_id == expired_session_id))
+        assert completed_row is not None
+        assert completed_row.status == "completed"
+        assert completed_row.completed_at is not None
+        assert expired_row is not None
+        assert expired_row.status == "expired"
+        assert expired_row.completed_at is None
+
+
 def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> None:
     checkout_user_id = f"checkout-{uuid4()}@example.com"
     checkout_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": checkout_user_id}
     captured = {}
 
-    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "") -> dict:
-        captured.update({"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "customer_id": customer_id})
-        return {"url": "https://checkout.stripe.test/session", "id": "cs_test_pending", "customer_id": customer_id or "cus_pending"}
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+        captured.update({"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "customer_id": customer_id, "idempotency_key": idempotency_key})
+        return {"url": "https://checkout.stripe.test/session", "id": "cs_test_pending", "customer_id": customer_id or "cus_pending", "expires_at": int((datetime.utcnow() + timedelta(hours=24)).timestamp()), "status": "open"}
 
     monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
     response = client.post("/api/billing/checkout", headers=checkout_headers, json={"plan": "Starter"})
@@ -11144,6 +11239,12 @@ def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> N
         assert settings.billing["status"] in {"inactive", "active", "trialing"}
         assert settings.billing["checkoutSessionId"] == "cs_test_pending"
         assert settings.billing["stripeCustomerId"] == "cus_pending"
+        pending = db.query(BillingCheckoutSession).filter(BillingCheckoutSession.workspace_id == UUID(workspace["id"])).one()
+        assert pending.status == "open"
+        assert pending.plan == "Starter"
+        assert pending.stripe_session_id == "cs_test_pending"
+        assert pending.idempotency_key.startswith("checkout_")
+        assert captured["idempotency_key"] == pending.idempotency_key
     finally:
         db.close()
 
@@ -11152,6 +11253,130 @@ def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> N
     assert diagnostics.json()["starter_price_id_loaded"] is True
     assert "checkout_session_creation_works" in diagnostics.json()
     assert "subscription_sync_healthy" in diagnostics.json()
+
+
+def test_billing_checkout_reuses_open_pending_session(monkeypatch) -> None:
+    checkout_user_id = f"checkout-reuse-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": checkout_user_id}
+    calls = {"count": 0}
+
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+        calls["count"] += 1
+        return {"url": "https://checkout.stripe.test/reuse", "id": "cs_reuse", "customer_id": "cus_reuse", "expires_at": int((datetime.utcnow() + timedelta(hours=24)).timestamp()), "status": "open"}
+
+    monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
+    first = client.post("/api/billing/checkout", headers=headers, json={"plan": "Starter"})
+    second = client.post("/api/billing/checkout", headers=headers, json={"plan": "Starter"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["reused_checkout"] is True
+    assert second.json()["id"] == "cs_reuse"
+    assert calls["count"] == 1
+
+
+def test_billing_checkout_replaces_expired_pending_session(monkeypatch) -> None:
+    checkout_user_id = f"checkout-expired-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": checkout_user_id}
+    calls = {"count": 0}
+    idempotency_keys: list[str] = []
+
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+        calls["count"] += 1
+        idempotency_keys.append(idempotency_key)
+        return {"url": f"https://checkout.stripe.test/session-{calls['count']}", "id": f"cs_expired_{calls['count']}", "customer_id": "cus_expired", "expires_at": int((datetime.utcnow() + timedelta(hours=24)).timestamp()), "status": "open"}
+
+    monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
+    first = client.post("/api/billing/checkout", headers=headers, json={"plan": "Starter"})
+    assert first.status_code == 200
+    workspace = client.get("/api/workspace", headers=headers).json()
+    with get_sessionmaker()() as db:
+        pending = db.query(BillingCheckoutSession).filter(BillingCheckoutSession.workspace_id == UUID(workspace["id"])).one()
+        pending.expires_at = datetime.utcnow() - timedelta(minutes=1)
+        db.add(pending)
+        db.commit()
+
+    second = client.post("/api/billing/checkout", headers=headers, json={"plan": "Starter"})
+    assert second.status_code == 200
+    assert second.json()["id"] == "cs_expired_2"
+    assert calls["count"] == 2
+    assert len(set(idempotency_keys)) == 2
+    with get_sessionmaker()() as db:
+        sessions = db.query(BillingCheckoutSession).filter(BillingCheckoutSession.workspace_id == UUID(workspace["id"])).all()
+        assert sorted(session.status for session in sessions) == ["expired", "open"]
+
+
+def test_billing_checkout_skips_when_stripe_subscription_active(monkeypatch) -> None:
+    checkout_user_id = f"checkout-active-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": checkout_user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(workspace["id"], user_id=checkout_user_id, plan="Starter", status="trialing")
+    calls = {"count": 0}
+
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+        calls["count"] += 1
+        return {"url": "https://checkout.stripe.test/should-not-create", "id": "cs_should_not_create", "customer_id": "cus_should_not_create"}
+
+    monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
+    response = client.post("/api/billing/checkout", headers=headers, json={"plan": "Starter"})
+
+    assert response.status_code == 200
+    assert response.json()["skipped_checkout"] is True
+    assert response.json()["active_subscription"] is True
+    assert "/dashboard/billing?billing=active" in response.json()["url"]
+    assert calls["count"] == 0
+
+
+def test_billing_checkout_blocks_duplicate_active_stripe_subscriptions(monkeypatch) -> None:
+    checkout_user_id = f"checkout-duplicate-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": checkout_user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    workspace_id = UUID(workspace["id"])
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == checkout_user_id))
+        if user is None:
+            user = User(clerk_user_id=checkout_user_id, email=checkout_user_id)
+            db.add(user)
+            db.flush()
+        for suffix in ("one", "two"):
+            db.add(
+                Subscription(
+                    user_id=user.id,
+                    workspace_id=workspace_id,
+                    stripe_customer_id="cus_duplicate",
+                    stripe_subscription_id=f"sub_duplicate_{suffix}",
+                    plan="Starter",
+                    status="trialing",
+                    trial_end=datetime.utcnow() + timedelta(days=14),
+                    current_period_end=datetime.utcnow() + timedelta(days=14),
+                    plan_limits=PLAN_LIMITS["Starter"],
+                )
+            )
+        db.commit()
+    calls = {"count": 0}
+
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+        calls["count"] += 1
+        return {"url": "https://checkout.stripe.test/should-not-create", "id": "cs_should_not_create", "customer_id": "cus_should_not_create"}
+
+    monkeypatch.setattr("app.api.routes.create_checkout_session", fake_checkout)
+    checkout = client.post("/api/billing/checkout", headers=headers, json={"plan": "Starter"})
+    status = client.get("/api/billing/status", headers=headers)
+
+    assert checkout.status_code == 409
+    assert calls["count"] == 0
+    assert status.status_code == 200
+    assert status.json()["status"] == "degraded_duplicate_subscription"
+    assert status.json()["entitlement_source"] == "degraded_duplicate_subscription"
+    with get_sessionmaker()() as db:
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == workspace_id).one()
+        assert settings.billing["requiresOwnerBillingReview"] is True
+        assert settings.billing["duplicateSubscriptionCount"] == 2
+    console = client.get("/api/owner/console", headers=OWNER_AUTH)
+    assert console.status_code == 200
+    diagnostics = console.json()["billing_diagnostics"]
+    assert diagnostics["duplicate_active_subscription_groups"] >= 1
+    assert any(item["workspace_id"] == str(workspace_id) and item["active_or_trialing_count"] == 2 for item in diagnostics["duplicate_active_subscriptions"])
 
 
 def test_stripe_invoice_payment_failed_records_reason_and_keeps_access_inactive() -> None:

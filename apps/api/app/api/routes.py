@@ -39,6 +39,7 @@ from app.models.entities import (
     AppSettings,
     AuditLog,
     BackupRun,
+    BillingCheckoutSession,
     Campaign,
     CampaignSequence,
     CampaignStatus,
@@ -1048,6 +1049,136 @@ def _active_test_entitlement(db: Session, user_id: str, workspace: Workspace) ->
 def _resolve_billing_entitlement(db: Session, user_id: str, workspace: Workspace) -> BillingEntitlement:
     _settings_for_workspace(db, user_id, workspace)
     return resolve_billing_entitlement(db, user_id, workspace)
+
+
+def _active_stripe_subscriptions(db: Session, workspace: Workspace) -> list[Subscription]:
+    now = datetime.utcnow()
+    return list(
+        db.scalars(
+            select(Subscription)
+            .where(
+                Subscription.workspace_id == workspace.id,
+                Subscription.status.in_(("active", "trialing")),
+                or_(
+                    func.coalesce(Subscription.current_period_end, Subscription.trial_end).is_(None),
+                    func.coalesce(Subscription.current_period_end, Subscription.trial_end) > now,
+                ),
+            )
+            .order_by(Subscription.trial_end.asc().nullslast(), Subscription.current_period_end.asc().nullslast())
+        ).all()
+    )
+
+
+def _stripe_id_suffix(value: str | None) -> str:
+    text_value = str(value or "")
+    return text_value[-8:] if text_value else ""
+
+
+def _mark_billing_duplicate_degraded(db: Session, settings: AppSettings, subscriptions: list[Subscription]) -> None:
+    billing = dict(settings.billing or {})
+    billing.update(
+        {
+            "status": "degraded_duplicate_subscription",
+            "duplicateSubscriptionCount": len(subscriptions),
+            "duplicateSubscriptionSuffixes": [_stripe_id_suffix(item.stripe_subscription_id) for item in subscriptions],
+            "duplicateSubscriptionDetectedAt": datetime.utcnow().isoformat(),
+            "requiresOwnerBillingReview": True,
+        }
+    )
+    settings.billing = billing
+    db.add(settings)
+    flag_modified(settings, "billing")
+
+
+def _billing_duplicate_diagnostics(subscription_rows: list[Subscription]) -> tuple[list[Subscription], list[dict[str, Any]]]:
+    active_rows = [row for row in subscription_rows if row.status in {"active", "trialing"}]
+    buckets: dict[tuple[str, str], list[Subscription]] = {}
+    canonical_rows: list[Subscription] = []
+    diagnostics: list[dict[str, Any]] = []
+    for row in active_rows:
+        key = (str(row.workspace_id or ""), str(row.stripe_customer_id or ""))
+        if not key[0] or not key[1]:
+            canonical_rows.append(row)
+            continue
+        buckets.setdefault(key, []).append(row)
+    for (workspace_id, customer_id), rows in buckets.items():
+        sorted_rows = sorted(rows, key=lambda item: (item.trial_end or item.current_period_end or datetime.max, item.stripe_subscription_id or ""))
+        canonical_rows.append(sorted_rows[0])
+        if len(sorted_rows) > 1:
+            diagnostics.append(
+                {
+                    "workspace_id": workspace_id,
+                    "stripe_customer_suffix": _stripe_id_suffix(customer_id),
+                    "active_or_trialing_count": len(sorted_rows),
+                    "subscription_suffixes": [_stripe_id_suffix(item.stripe_subscription_id) for item in sorted_rows],
+                    "statuses": sorted({item.status for item in sorted_rows}),
+                }
+            )
+    return canonical_rows, diagnostics
+
+
+def _lock_billing_checkout(db: Session, workspace_id: UUID, user_id: str) -> None:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"billing-checkout:{workspace_id}:{user_id}"})
+
+
+def _checkout_period() -> str:
+    return "monthly"
+
+
+def _checkout_idempotency_key(workspace_id: UUID, user_id: str, plan: str, billing_period: str, lifecycle_sequence: int) -> str:
+    raw = f"{workspace_id}:{user_id}:{plan}:{billing_period}:{lifecycle_sequence}"
+    return "checkout_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
+
+
+def _next_checkout_lifecycle_sequence(db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str) -> int:
+    existing_count = db.scalar(
+        select(func.count())
+        .select_from(BillingCheckoutSession)
+        .where(
+            BillingCheckoutSession.workspace_id == workspace_id,
+            BillingCheckoutSession.user_id == user_id,
+            BillingCheckoutSession.plan == plan,
+            BillingCheckoutSession.billing_period == billing_period,
+        )
+    )
+    return int(existing_count or 0) + 1
+
+
+def _expire_stale_checkout_sessions(db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str) -> None:
+    now = datetime.utcnow()
+    stale = list(
+        db.scalars(
+            select(BillingCheckoutSession).where(
+                BillingCheckoutSession.workspace_id == workspace_id,
+                BillingCheckoutSession.user_id == user_id,
+                BillingCheckoutSession.plan == plan,
+                BillingCheckoutSession.billing_period == billing_period,
+                BillingCheckoutSession.status == "open",
+                BillingCheckoutSession.expires_at <= now,
+            )
+        ).all()
+    )
+    for session in stale:
+        session.status = "expired"
+        session.updated_at = now
+        db.add(session)
+
+
+def _open_checkout_session(db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str) -> BillingCheckoutSession | None:
+    now = datetime.utcnow()
+    return db.scalar(
+        select(BillingCheckoutSession)
+        .where(
+            BillingCheckoutSession.workspace_id == workspace_id,
+            BillingCheckoutSession.user_id == user_id,
+            BillingCheckoutSession.plan == plan,
+            BillingCheckoutSession.billing_period == billing_period,
+            BillingCheckoutSession.status == "open",
+            BillingCheckoutSession.expires_at > now,
+        )
+        .order_by(BillingCheckoutSession.created_at.desc())
+    )
 
 
 def _plan_for_workspace(db: Session, user_id: str, workspace: Workspace) -> str:
@@ -6328,17 +6459,61 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
     workspace = _current_workspace(db, user_id)
     if payload.plan not in PLAN_LIMITS:
         raise HTTPException(status_code=400, detail="Unknown subscription plan")
+    _lock_billing_checkout(db, workspace.id, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
+    active_stripe_subscriptions = _active_stripe_subscriptions(db, workspace)
+    if len(active_stripe_subscriptions) > 1:
+        _mark_billing_duplicate_degraded(db, settings, active_stripe_subscriptions)
+        log_event(db, request, user_id, "billing.checkout_blocked_duplicate_subscription", {"workspace_id": str(workspace.id), "count": len(active_stripe_subscriptions)})
+        db.commit()
+        delete_key(cache_key("billing-status", workspace.id, user_id))
+        raise HTTPException(status_code=409, detail="Multiple active billing subscriptions require owner review before checkout can continue.")
     entitlement = _resolve_billing_entitlement(db, user_id, workspace)
+    if entitlement.source == "stripe" and entitlement.active:
+        billing = dict(settings.billing or {})
+        if billing.get("pendingPlan") or billing.get("checkoutSessionId"):
+            billing.pop("pendingPlan", None)
+            billing.pop("checkoutSessionId", None)
+            settings.billing = billing
+            db.add(settings)
+            flag_modified(settings, "billing")
+        log_event(db, request, user_id, "billing.checkout_skipped_active_subscription", {"workspace_id": str(workspace.id), "plan": entitlement.plan})
+        db.commit()
+        return {"url": f"{get_app_settings().public_app_url.rstrip('/')}/dashboard/billing?billing=active", "id": "", "customer_id": str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or ""), "skipped_checkout": True, "active_subscription": True}
     if entitlement.source == "owner_granted_test" and entitlement.active:
         log_event(db, request, user_id, "billing.checkout_skipped_test_entitlement", {"workspace_id": str(workspace.id), "plan": entitlement.plan})
         db.commit()
         return {"url": f"{get_app_settings().public_app_url.rstrip('/')}/dashboard?billing=test-entitlement", "id": "", "customer_id": "", "skipped_checkout": True}
-    customer_id = str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or "")
+    billing_period = _checkout_period()
+    _expire_stale_checkout_sessions(db, workspace.id, user_id, payload.plan, billing_period)
+    db.flush()
+    open_session = _open_checkout_session(db, workspace.id, user_id, payload.plan, billing_period)
+    if open_session and open_session.stripe_session_url:
+        log_event(db, request, user_id, "billing.checkout_reused_open_session", {"workspace_id": str(workspace.id), "plan": payload.plan})
+        db.commit()
+        return {"url": open_session.stripe_session_url, "id": open_session.stripe_session_id, "customer_id": open_session.stripe_customer_id, "reused_checkout": True}
+    customer_id = str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or (settings.billing or {}).get("stripeCustomerId") or "")
+    lifecycle_started_at = datetime.utcnow()
+    idempotency_key = _checkout_idempotency_key(workspace.id, user_id, payload.plan, billing_period, _next_checkout_lifecycle_sequence(db, workspace.id, user_id, payload.plan, billing_period))
     try:
-        session = create_checkout_session(user_id, str(workspace.id), payload.plan, customer_id)
+        session = create_checkout_session(user_id, str(workspace.id), payload.plan, customer_id, idempotency_key=idempotency_key)
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    expires_at = datetime.utcfromtimestamp(int(session.get("expires_at"))) if session.get("expires_at") else lifecycle_started_at + timedelta(hours=24)
+    pending = BillingCheckoutSession(
+        workspace_id=workspace.id,
+        user_id=user_id,
+        stripe_customer_id=str(session.get("customer_id") or customer_id or ""),
+        stripe_session_id=str(session.get("id") or ""),
+        stripe_session_url=str(session.get("url") or ""),
+        plan=payload.plan,
+        billing_period=billing_period,
+        status=str(session.get("status") or "open"),
+        idempotency_key=idempotency_key,
+        created_at=lifecycle_started_at,
+        expires_at=expires_at,
+    )
+    db.add(pending)
     settings.billing = {
         **(settings.billing or {}),
         "pendingPlan": payload.plan,
@@ -6346,8 +6521,15 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
         "checkoutSessionId": session.get("id"),
         "stripeCustomerId": session.get("customer_id") or customer_id,
     }
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        open_session = _open_checkout_session(db, workspace.id, user_id, payload.plan, billing_period)
+        if open_session and open_session.stripe_session_url:
+            return {"url": open_session.stripe_session_url, "id": open_session.stripe_session_id, "customer_id": open_session.stripe_customer_id, "reused_checkout": True}
+        raise HTTPException(status_code=409, detail="Checkout session creation conflicted with another request. Please retry.") from exc
     log_event(db, request, user_id, "billing.checkout", {"plan": payload.plan})
-    db.commit()
     return session
 
 
@@ -6463,6 +6645,28 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
     app_settings = get_app_settings()
     workspace = _current_workspace(db, user_id)
     key = cache_key("billing-status", workspace.id, user_id)
+    settings = _settings_for_workspace(db, user_id, workspace)
+    active_stripe_subscriptions = _active_stripe_subscriptions(db, workspace)
+    if len(active_stripe_subscriptions) > 1:
+        _mark_billing_duplicate_degraded(db, settings, active_stripe_subscriptions)
+        db.commit()
+        delete_key(key)
+        usage = _usage_for_workspace(db, workspace)
+        limits = PLAN_LIMITS["Starter"]
+        return BillingStatusOut(
+            plan="Starter",
+            price=int(limits["mrr"]),
+            status="degraded_duplicate_subscription",
+            entitlement_source="degraded_duplicate_subscription",
+            trial_days_remaining=0,
+            stripe_customer_id="",
+            stripe_subscription_id="",
+            last_failure_message="Multiple active billing subscriptions require owner review.",
+            limits=limits,
+            usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
+            sales_employees_used=0,
+            workspaces_used=1,
+        )
     cached = get_json(key)
     if cached:
         return BillingStatusOut.model_validate(cached)
@@ -6471,7 +6675,6 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
     limits = entitlement.limits
     usage = _usage_for_workspace(db, workspace)
     subscription = entitlement.subscription
-    settings = _settings_for_workspace(db, user_id, workspace)
     billing = settings.billing or {}
     beta_override = entitlement.source == "owner_granted_test"
     status = entitlement.status
@@ -6711,9 +6914,10 @@ def owner_console(owner: OwnerUser, db: Session = Depends(get_db)) -> OwnerConso
     subscriptions_by_status: dict[str, int] = {}
     for subscription in subscription_rows:
         subscriptions_by_status[subscription.status] = subscriptions_by_status.get(subscription.status, 0) + 1
+    revenue_subscription_rows, billing_duplicate_diagnostics = _billing_duplicate_diagnostics(subscription_rows)
     revenue_won = float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(Lead.status == LeadStatus.won)) or 0)
-    active_subscriptions = sum(count for status_name, count in subscriptions_by_status.items() if status_name in {"active", "trialing"})
-    mrr = float(sum(PLAN_LIMITS.get(subscription.plan, {}).get("mrr", 0) for subscription in subscription_rows if subscription.status in {"active", "trialing"}))
+    active_subscriptions = len(revenue_subscription_rows)
+    mrr = float(sum(PLAN_LIMITS.get(subscription.plan, {}).get("mrr", 0) for subscription in revenue_subscription_rows))
     logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(25)).all())
     return OwnerConsoleOut(
         executive_overview={
@@ -6729,6 +6933,10 @@ def owner_console(owner: OwnerUser, db: Session = Depends(get_db)) -> OwnerConso
             "leads": db.scalar(select(func.count()).select_from(Lead)) or 0,
         },
         subscriptions={**subscriptions_by_status, "total": len(subscription_rows)},
+        billing_diagnostics={
+            "duplicate_active_subscription_groups": len(billing_duplicate_diagnostics),
+            "duplicate_active_subscriptions": billing_duplicate_diagnostics,
+        },
         ai_usage=usage,
         product_analytics={
             "campaigns": db.scalar(select(func.count()).select_from(Campaign)) or 0,

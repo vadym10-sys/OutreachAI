@@ -1249,6 +1249,7 @@ class OwnerConsoleOut(BaseModel):
     revenue: dict[str, float]
     customers: dict[str, int]
     subscriptions: dict[str, int]
+    billing_diagnostics: dict[str, Any] = Field(default_factory=dict)
     ai_usage: dict[str, int]
     product_analytics: dict[str, Any]
     error_monitoring: dict[str, Any]

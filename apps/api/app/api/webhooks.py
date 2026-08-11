@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.observability import capture_provider_exception
-from app.models.entities import AppSettings, AuditLog, Company, Deal, EmailMessage, Lead, LeadStatus, Note, Subscription, User, Workspace
+from app.models.entities import AppSettings, AuditLog, BillingCheckoutSession, Company, Deal, EmailMessage, Lead, LeadStatus, Note, Subscription, User, Workspace
 from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 from app.services.ai_memory import record_email_memory
@@ -244,6 +244,62 @@ def _sync_subscription(
         }
 
 
+def _mark_checkout_session_status(db: Session, session_id: str, status: str) -> None:
+    if not session_id:
+        return
+    checkout_session = db.scalar(select(BillingCheckoutSession).where(BillingCheckoutSession.stripe_session_id == session_id))
+    if checkout_session is None:
+        return
+    checkout_session.status = status
+    checkout_session.updated_at = datetime.utcnow()
+    if status == "completed":
+        checkout_session.completed_at = datetime.utcnow()
+    db.add(checkout_session)
+
+
+def _stripe_id_suffix(value: str | None) -> str:
+    text_value = str(value or "")
+    return text_value[-8:] if text_value else ""
+
+
+def _sync_duplicate_subscription_state(db: Session, workspace_id: str | None) -> None:
+    if not workspace_id:
+        return
+    try:
+        workspace_uuid = UUID(str(workspace_id))
+    except (TypeError, ValueError):
+        return
+    settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_uuid))
+    if settings is None:
+        return
+    rows = list(db.scalars(select(Subscription).where(Subscription.workspace_id == workspace_uuid, Subscription.status.in_(PAID_SUBSCRIPTION_STATUSES))).all())
+    groups: dict[str, list[Subscription]] = {}
+    for row in rows:
+        if row.stripe_customer_id:
+            groups.setdefault(row.stripe_customer_id, []).append(row)
+    duplicate_groups = [group for group in groups.values() if len(group) > 1]
+    billing = dict(settings.billing or {})
+    if duplicate_groups:
+        duplicates = [item for group in duplicate_groups for item in group]
+        billing.update(
+            {
+                "status": "degraded_duplicate_subscription",
+                "duplicateSubscriptionCount": len(duplicates),
+                "duplicateSubscriptionSuffixes": [_stripe_id_suffix(item.stripe_subscription_id) for item in duplicates],
+                "duplicateSubscriptionDetectedAt": datetime.utcnow().isoformat(),
+                "requiresOwnerBillingReview": True,
+            }
+        )
+        logger.warning("Stripe duplicate active subscriptions detected", extra={"workspace_id": str(workspace_uuid), "duplicate_group_count": len(duplicate_groups), "duplicate_subscription_count": len(duplicates)})
+    elif billing.get("status") == "degraded_duplicate_subscription":
+        for key in ("duplicateSubscriptionCount", "duplicateSubscriptionSuffixes", "duplicateSubscriptionDetectedAt", "requiresOwnerBillingReview"):
+            billing.pop(key, None)
+        remaining = rows[0] if rows else None
+        billing["status"] = remaining.status if remaining else "inactive"
+    settings.billing = billing
+    db.add(settings)
+
+
 @router.post("/stripe")
 async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Header(default=None), db: Session = Depends(get_db)) -> dict:
     settings = get_settings()
@@ -263,6 +319,7 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
     event_workspace_id = _metadata_value(_stripe_get(data, "metadata", {}), "workspace_id")
     logger.info("Stripe webhook received", extra=_stripe_event_metadata(event, data, workspace_id=event_workspace_id))
     if event_type == "checkout.session.completed":
+        _mark_checkout_session_status(db, str(data.get("id") or ""), "completed")
         subscription_id = str(data.get("subscription") or "")
         customer_id = str(data.get("customer") or "")
         plan = _metadata_value(data.get("metadata"), "plan") or "Starter"
@@ -280,6 +337,9 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         price_id = str(payload.get("price_id") or "")
         resolved_plan = str(payload.get("plan") or plan)
         _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=resolved_plan, status=status, trial_end=trial_end, current_period_end=current_period_end, price_id=price_id)
+        _sync_duplicate_subscription_state(db, workspace_id)
+    elif event_type == "checkout.session.expired":
+        _mark_checkout_session_status(db, str(data.get("id") or ""), "expired")
     elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
         subscription_id = str(data.get("id") or "")
         customer_id = str(data.get("customer") or "")
@@ -289,6 +349,7 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         plan = _metadata_value(data.get("metadata"), "plan") or plan_from_price_id(price_id) or "Starter"
         status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
         _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=timestamp_to_datetime(data.get("trial_end")), current_period_end=timestamp_to_datetime(data.get("current_period_end")), price_id=price_id)
+        _sync_duplicate_subscription_state(db, workspace_id)
     elif event_type in {"invoice.paid", "invoice.payment_succeeded"}:
         subscription_id = str(data.get("subscription") or "")
         subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
