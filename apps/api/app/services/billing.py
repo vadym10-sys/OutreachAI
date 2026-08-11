@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 import stripe
@@ -30,6 +31,28 @@ PLAN_CATALOG = {
         "description": "OutreachAI Agency monthly subscription with a 14-day free trial.",
     },
 }
+
+ACTIVE_STRIPE_STATUSES = {"active", "trialing"}
+
+
+def _object_status(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("status") or "").lower()
+    return str(getattr(value, "status", "") or "").lower()
+
+
+@dataclass(frozen=True)
+class CustomerSubscriptionDiagnostics:
+    customer: object | None
+    subscriptions: tuple[object, ...] = ()
+
+    @property
+    def active_or_trialing(self) -> tuple[object, ...]:
+        return tuple(subscription for subscription in self.subscriptions if _object_status(subscription) in ACTIVE_STRIPE_STATUSES)
+
+    @property
+    def duplicate_active_or_trialing(self) -> bool:
+        return len(self.active_or_trialing) > 1
 
 
 def _capture_stripe_error(exc: BaseException, endpoint: str, *, workspace_id: str = "") -> None:
@@ -234,12 +257,13 @@ def subscription_payload(subscription: object) -> dict:
         "status": str(_stripe_get(subscription, "status", "") or "active"),
         "trial_end": timestamp_to_datetime(_stripe_get(subscription, "trial_end")),
         "current_period_end": timestamp_to_datetime(_stripe_get(subscription, "current_period_end")),
+        "created": timestamp_to_datetime(_stripe_get(subscription, "created")),
         "workspace_id": str(metadata.get("workspace_id") or ""),
         "user_id": str(metadata.get("user_id") or ""),
     }
 
 
-def latest_subscription_for_customer(*, customer_id: str = "", customer_email: str = "") -> tuple[object | None, object | None]:
+def subscription_diagnostics_for_customer(*, customer_id: str = "", customer_email: str = "") -> CustomerSubscriptionDiagnostics:
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
     if not settings.stripe_secret_key:
@@ -251,10 +275,6 @@ def latest_subscription_for_customer(*, customer_id: str = "", customer_email: s
         customers = stripe.Customer.list(email=customer_email, limit=1)
         customer = customers.data[0] if customers.data else None
     if not customer:
-        return None, None
+        return CustomerSubscriptionDiagnostics(customer=None)
     subscriptions = stripe.Subscription.list(customer=customer.id, status="all", limit=10)
-    ranked = sorted(
-        subscriptions.data,
-        key=lambda item: (0 if item.status in {"active", "trialing"} else 1, -(int(getattr(item, "created", 0) or 0))),
-    )
-    return customer, ranked[0] if ranked else None
+    return CustomerSubscriptionDiagnostics(customer=customer, subscriptions=tuple(subscriptions.data))

@@ -78,7 +78,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   status VARCHAR(64) NOT NULL DEFAULT 'trialing',
   trial_end TIMESTAMP,
   current_period_end TIMESTAMP,
-  plan_limits JSONB NOT NULL DEFAULT '{}'
+  plan_limits JSONB NOT NULL DEFAULT '{}',
+  stripe_event_created_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS billing_checkout_sessions (
@@ -485,6 +488,8 @@ CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace_id ON workspace_membe
 CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON workspace_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_usage_counters_workspace_id ON usage_counters(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace_id ON subscriptions(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace_status_customer ON subscriptions(workspace_id, status, stripe_customer_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_stripe_subscription_id ON subscriptions(stripe_subscription_id) WHERE stripe_subscription_id IS NOT NULL AND stripe_subscription_id <> '';
 CREATE INDEX IF NOT EXISTS idx_campaigns_user_id ON campaigns(user_id);
 CREATE INDEX IF NOT EXISTS idx_campaigns_workspace_id ON campaigns(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON email_messages(user_id);
