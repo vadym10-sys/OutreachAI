@@ -277,7 +277,7 @@ export function LandingPage() {
         <div className="max-w-3xl">
           <p className="ui-eyebrow">{t("Pricing")}</p>
           <h2 className="ui-title mt-3 text-4xl">{t("Simple monthly pricing")}</h2>
-          <p className="ui-copy mt-3">{t("Prices and limits come from the billing catalogue used by the application. Subscription changes are managed securely in the Stripe Billing Portal according to the active portal configuration.")}</p>
+          <p className="ui-copy mt-3">{t("Prices and limits come from the billing catalogue used by the application. Subscription changes are managed securely in the billing portal according to the active portal configuration.")}</p>
         </div>
         <div className="mt-8 grid gap-5 lg:grid-cols-3">
           {publicPlans.map((plan, index) => (

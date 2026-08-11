@@ -100,7 +100,7 @@ describe("i18n", () => {
       "Manual confirmation",
       "Demo evidence uses safe fixture data, not customer production records.",
       "Insufficient data stays visible and is routed to manual review.",
-      "Prices and limits come from the billing catalogue used by the application. Subscription changes are managed securely in the Stripe Billing Portal according to the active portal configuration.",
+      "Prices and limits come from the billing catalogue used by the application. Subscription changes are managed securely in the billing portal according to the active portal configuration.",
       "Secure authentication",
       "Workspace billing",
       "Questions before signing up?",
@@ -123,7 +123,7 @@ describe("i18n", () => {
       "Unknown plan selected",
       "Information we collect",
       "Privacy and security requests should be sent to the confirmed support email listed in the public footer and contact section.",
-      "The billing implementation uses monthly Stripe subscription checkout with a 14-day trial. Subscription changes are managed securely in the Stripe Billing Portal according to the active portal configuration.",
+      "The billing implementation uses monthly subscription checkout with a 14-day trial. Subscription changes are managed securely in the billing portal according to the active portal configuration.",
       "Generated emails are drafts first. Sending requires an approved email and a verified recipient path in the application.",
     ];
 
