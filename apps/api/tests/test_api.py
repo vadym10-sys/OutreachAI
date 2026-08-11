@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import sqlite3
 import tempfile
 import os
 import threading
@@ -73,6 +74,7 @@ from app.services.autopilot import process_autopilot_email_job  # noqa: E402
 from app.services.secret_box import decrypt_secret, encrypt_secret  # noqa: E402
 from app.services.ai_memory import MODE_KEYWORD, MODE_OPENAI_EMBEDDING, _openai_embedding, _pgvector_retrieval_sql, record_email_memory, retrieve_memory, upsert_memory_entry  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteTemporaryUnavailableError, WebsiteValidationError, collect_website, normalize_website_url  # noqa: E402
+from app.services.billing import subscription_diagnostics_for_customer  # noqa: E402
 import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -2242,8 +2244,47 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     assert "duplicate workspaces exist for owner_user_id" in root_workspace_profile
     assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_owner_user_id" in root_workspace_profile
     assert "stripe_event_created_at" in root_canonical_billing
+    assert "duplicate nonempty stripe_subscription_id values exist" in root_canonical_billing
+    assert "HAVING COUNT(*) > 1" in root_canonical_billing
     assert "uq_subscriptions_stripe_subscription_id" in root_canonical_billing
     assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
+
+
+def test_canonical_billing_migration_preflights_duplicate_stripe_subscription_ids() -> None:
+    sql = (REPO_ROOT / "db" / "migrations" / "019_canonical_subscription_resolver.sql").read_text(encoding="utf-8")
+    preflight_index = sql.index("duplicate nonempty stripe_subscription_id values exist")
+    unique_index = sql.index("CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_stripe_subscription_id")
+    assert preflight_index < unique_index
+    assert "RAISE EXCEPTION" in sql
+    assert "DELETE FROM" not in sql.upper()
+    assert "UPDATE subscriptions" not in sql
+    assert "IF NOT EXISTS" in sql
+
+
+def test_canonical_billing_migration_duplicate_preflight_query_counts_zero_and_duplicates() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("CREATE TABLE subscriptions (stripe_subscription_id TEXT)")
+        duplicate_count_sql = """
+            SELECT COUNT(*)
+            FROM (
+                SELECT stripe_subscription_id
+                FROM subscriptions
+                WHERE stripe_subscription_id IS NOT NULL
+                  AND stripe_subscription_id <> ''
+                GROUP BY stripe_subscription_id
+                HAVING COUNT(*) > 1
+            ) duplicate_stripe_subscription_ids
+        """
+        connection.executemany(
+            "INSERT INTO subscriptions (stripe_subscription_id) VALUES (?)",
+            [("sub_one",), ("sub_two",), (None,), ("",)],
+        )
+        assert connection.execute(duplicate_count_sql).fetchone()[0] == 0
+        connection.execute("INSERT INTO subscriptions (stripe_subscription_id) VALUES ('sub_two')")
+        assert connection.execute(duplicate_count_sql).fetchone()[0] == 1
+    finally:
+        connection.close()
 
 
 def test_api_railway_watch_patterns_include_database_migrations() -> None:
@@ -11823,11 +11864,11 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
     customer = type("StripeCustomer", (), {"id": "cus_sync_live"})()
     calls = []
 
-    def fake_latest_subscription(customer_id: str = "", customer_email: str = "") -> tuple[object, dict]:
+    def fake_subscription_diagnostics(customer_id: str = "", customer_email: str = "") -> SimpleNamespace:
         calls.append({"customer_id": customer_id, "customer_email": customer_email})
-        return customer, stripe_subscription
+        return SimpleNamespace(customer=customer, subscriptions=(stripe_subscription,))
 
-    monkeypatch.setattr("app.api.routes.latest_subscription_for_customer", fake_latest_subscription)
+    monkeypatch.setattr("app.api.routes.subscription_diagnostics_for_customer", fake_subscription_diagnostics)
 
     forged_email = client.post("/api/billing/sync-latest-subscription", headers=sync_headers, json={"customer_email": "buyer@example.com"})
     assert forged_email.status_code == 403
@@ -11866,7 +11907,7 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
         assert settings.billing["status"] == "trialing"
         assert settings.billing["stripeCustomerId"] == "cus_sync_live"
         assert settings.billing["stripeSubscriptionId"] == "sub_sync_live"
-        assert settings.billing["stripePriceId"] == "price_pro_test"
+        assert "stripePriceId" not in settings.billing
         before_count = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_sync_live").count()
     finally:
         db.close()
@@ -11888,6 +11929,119 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
     assert status.json()["limits"]["leads"] == 5000
     assert status.json()["stripe_customer_id"] == "cus_sync_live"
     assert status.json()["stripe_subscription_id"] == "sub_sync_live"
+
+
+def test_billing_sync_canceled_duplicate_cannot_override_canonical_active(monkeypatch) -> None:
+    sync_user_id = f"billing-sync-canceled-{uuid4()}@example.com"
+    sync_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": sync_user_id}
+    workspace = client.get("/api/workspace", headers=sync_headers).json()
+    workspace_id = UUID(workspace["id"])
+    now = datetime.utcnow()
+    customer_id = f"cus_sync_canceled_{uuid4().hex}"
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=sync_user_id, workspace_id=workspace_id, general={}, ai={}, email={}, billing={}, security={}, api={})
+            db.add(settings)
+        settings.billing = {"stripeCustomerId": customer_id, "status": "active", "stripeSubscriptionId": "sub_forged_active", "plan": "Agency"}
+        _create_billing_subscription(
+            db,
+            workspace_id=workspace_id,
+            user_id=sync_user_id,
+            stripe_customer_id=customer_id,
+            stripe_subscription_id="sub_sync_canonical_active",
+            plan="Starter",
+            status="active",
+            current_period_end=None,
+            stripe_event_created_at=now - timedelta(days=2),
+        )
+        db.commit()
+
+    customer = SimpleNamespace(id=customer_id)
+    canceled_duplicate = {
+        "id": "sub_sync_canceled_duplicate",
+        "customer": customer_id,
+        "status": "canceled",
+        "trial_end": None,
+        "current_period_end": None,
+        "metadata": {"user_id": sync_user_id, "workspace_id": workspace["id"], "plan": "Agency"},
+        "items": {"data": [{"price": {"id": "price_agency_test"}}]},
+        "created": int(time.time()),
+    }
+
+    monkeypatch.setattr("app.api.routes.subscription_diagnostics_for_customer", lambda customer_id="", customer_email="": SimpleNamespace(customer=customer, subscriptions=(canceled_duplicate,)))
+    response = client.post("/api/billing/sync-latest-subscription", headers=sync_headers, json={})
+    assert response.status_code == 200
+    assert response.json()["status"] == "active"
+    assert response.json()["stripe_subscription_id"] == "sub_sync_canonical_active"
+    with get_sessionmaker()() as db:
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == workspace_id).one()
+        assert settings.billing["status"] == "active"
+        assert settings.billing["stripeSubscriptionId"] == "sub_sync_canonical_active"
+
+
+def test_billing_sync_multiple_active_subscriptions_returns_degraded_409(monkeypatch) -> None:
+    sync_user_id = f"billing-sync-duplicates-{uuid4()}@example.com"
+    sync_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": sync_user_id}
+    workspace = client.get("/api/workspace", headers=sync_headers).json()
+    workspace_id = UUID(workspace["id"])
+    customer_id = f"cus_sync_duplicates_{uuid4().hex}"
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=sync_user_id, workspace_id=workspace_id, general={}, ai={}, email={}, billing={}, security={}, api={})
+            db.add(settings)
+        settings.billing = {"stripeCustomerId": customer_id, "status": "canceled", "stripeSubscriptionId": "sub_old"}
+        db.commit()
+
+    customer = SimpleNamespace(id=customer_id)
+
+    def stripe_subscription(subscription_id: str) -> dict:
+        return {
+            "id": subscription_id,
+            "customer": customer_id,
+            "status": "active",
+            "trial_end": None,
+            "current_period_end": int(time.time()) + 14 * 24 * 60 * 60,
+            "metadata": {"user_id": sync_user_id, "workspace_id": workspace["id"], "plan": "Starter"},
+            "items": {"data": [{"price": {"id": "price_starter_test"}}]},
+            "created": int(time.time()),
+        }
+
+    monkeypatch.setattr(
+        "app.api.routes.subscription_diagnostics_for_customer",
+        lambda customer_id="", customer_email="": SimpleNamespace(customer=customer, subscriptions=(stripe_subscription("sub_sync_duplicate_one"), stripe_subscription("sub_sync_duplicate_two"))),
+    )
+    response = client.post("/api/billing/sync-latest-subscription", headers=sync_headers, json={})
+    assert response.status_code == 409
+    with get_sessionmaker()() as db:
+        settings = db.query(AppSettings).filter(AppSettings.workspace_id == workspace_id).one()
+        assert settings.billing["status"] == "degraded_duplicate_subscription"
+        assert settings.billing["requiresOwnerBillingReview"] is True
+
+
+def test_subscription_diagnostics_for_customer_does_not_silently_choose_duplicates(monkeypatch) -> None:
+    app_settings = get_settings()
+    original_key = app_settings.stripe_secret_key
+    monkeypatch.setattr(app_settings, "stripe_secret_key", "sk_test_diagnostic")
+    customer = SimpleNamespace(id="cus_diagnostic")
+    subscriptions = SimpleNamespace(
+        data=[
+            SimpleNamespace(id="sub_active_one", status="active", created=1),
+            SimpleNamespace(id="sub_trialing_two", status="trialing", created=2),
+            SimpleNamespace(id="sub_canceled", status="canceled", created=3),
+        ]
+    )
+    monkeypatch.setattr("app.services.billing.stripe.Customer.retrieve", lambda customer_id: customer)
+    monkeypatch.setattr("app.services.billing.stripe.Subscription.list", lambda customer, status, limit: subscriptions)
+    try:
+        diagnostics = subscription_diagnostics_for_customer(customer_id="cus_diagnostic")
+    finally:
+        monkeypatch.setattr(app_settings, "stripe_secret_key", original_key)
+    assert diagnostics.customer is customer
+    assert [item.id for item in diagnostics.subscriptions] == ["sub_active_one", "sub_trialing_two", "sub_canceled"]
+    assert diagnostics.duplicate_active_or_trialing is True
+    assert [item.id for item in diagnostics.active_or_trialing] == ["sub_active_one", "sub_trialing_two"]
 
 
 def test_growth_engine_returns_briefing_and_persists_goal() -> None:

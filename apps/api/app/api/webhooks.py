@@ -269,44 +269,6 @@ def _stripe_id_suffix(value: str | None) -> str:
     return text_value[-8:] if text_value else ""
 
 
-def _sync_duplicate_subscription_state(db: Session, workspace_id: str | None) -> None:
-    if not workspace_id:
-        return
-    try:
-        workspace_uuid = UUID(str(workspace_id))
-    except (TypeError, ValueError):
-        return
-    settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_uuid))
-    if settings is None:
-        return
-    rows = list(db.scalars(select(Subscription).where(Subscription.workspace_id == workspace_uuid, Subscription.status.in_(PAID_SUBSCRIPTION_STATUSES))).all())
-    groups: dict[str, list[Subscription]] = {}
-    for row in rows:
-        if row.stripe_customer_id:
-            groups.setdefault(row.stripe_customer_id, []).append(row)
-    duplicate_groups = [group for group in groups.values() if len(group) > 1]
-    billing = dict(settings.billing or {})
-    if duplicate_groups:
-        duplicates = [item for group in duplicate_groups for item in group]
-        billing.update(
-            {
-                "status": "degraded_duplicate_subscription",
-                "duplicateSubscriptionCount": len(duplicates),
-                "duplicateSubscriptionSuffixes": [_stripe_id_suffix(item.stripe_subscription_id) for item in duplicates],
-                "duplicateSubscriptionDetectedAt": datetime.utcnow().isoformat(),
-                "requiresOwnerBillingReview": True,
-            }
-        )
-        logger.warning("Stripe duplicate active subscriptions detected", extra={"workspace_id": str(workspace_uuid), "duplicate_group_count": len(duplicate_groups), "duplicate_subscription_count": len(duplicates)})
-    elif billing.get("status") == "degraded_duplicate_subscription":
-        for key in ("duplicateSubscriptionCount", "duplicateSubscriptionSuffixes", "duplicateSubscriptionDetectedAt", "requiresOwnerBillingReview"):
-            billing.pop(key, None)
-        remaining = rows[0] if rows else None
-        billing["status"] = remaining.status if remaining else "inactive"
-    settings.billing = billing
-    db.add(settings)
-
-
 @router.post("/stripe")
 async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Header(default=None), db: Session = Depends(get_db)) -> dict:
     settings = get_settings()

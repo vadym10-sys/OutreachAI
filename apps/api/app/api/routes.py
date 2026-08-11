@@ -198,7 +198,7 @@ from app.services.continuous_learning import apply_continuous_learning_event
 from app.services.workflow_engine import build_company_workflow_engine
 from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
-from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, latest_subscription_for_customer, list_invoices, price_for_plan, subscription_payload
+from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices, price_for_plan, subscription_diagnostics_for_customer, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, EmailProviderSendingDisabledError, send_email, verify_smtp_connection
 from app.services.entitlements import (
     DEGRADED_DUPLICATE_STATUS,
@@ -1078,22 +1078,6 @@ def _stripe_id_suffix(value: str | None) -> str:
     return text_value[-8:] if text_value else ""
 
 
-def _mark_billing_duplicate_degraded(db: Session, settings: AppSettings, subscriptions: list[Subscription]) -> None:
-    billing = dict(settings.billing or {})
-    billing.update(
-        {
-            "status": "degraded_duplicate_subscription",
-            "duplicateSubscriptionCount": len(subscriptions),
-            "duplicateSubscriptionSuffixes": [_stripe_id_suffix(item.stripe_subscription_id) for item in subscriptions],
-            "duplicateSubscriptionDetectedAt": datetime.utcnow().isoformat(),
-            "requiresOwnerBillingReview": True,
-        }
-    )
-    settings.billing = billing
-    db.add(settings)
-    flag_modified(settings, "billing")
-
-
 def _billing_duplicate_diagnostics(subscription_rows: list[Subscription]) -> tuple[list[Subscription], list[dict[str, Any]]]:
     active_rows = [row for row in subscription_rows if row.status in {"active", "trialing"}]
     buckets: dict[tuple[str, str], list[Subscription]] = {}
@@ -1259,21 +1243,15 @@ def _sync_workspace_subscription(
         subscription.last_decline_code = None
         subscription.last_failure_message = None
         subscription.last_payment_failed_at = None
-    billing = dict(settings.billing or {})
-    if status in {"active", "trialing"}:
-        for key in ("lastPaymentError", "lastDeclineCode", "lastFailureMessage", "lastPaymentFailedAt", "lastFailedInvoiceId", "lastFailedPaymentIntentId"):
-            billing.pop(key, None)
-    settings.billing = {
-        **billing,
-        "plan": plan,
-        "status": status,
-        "stripeCustomerId": stripe_customer_id,
-        "stripeSubscriptionId": stripe_subscription_id,
-        "stripePriceId": stripe_price_id,
-        "trialEnd": trial_end.isoformat() if trial_end else None,
-        "currentPeriodEnd": current_period_end.isoformat() if current_period_end else None,
-        "planLimits": PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"]),
-    }
+    db.flush()
+    reconcile_app_settings_billing_cache(
+        db,
+        user_id=user_id,
+        workspace=workspace,
+        settings=settings,
+        actor_user_id=None,
+        reason="billing_manual_subscription_sync",
+    )
     return subscription
 
 
@@ -6473,7 +6451,7 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
     settings = _settings_for_workspace(db, user_id, workspace)
     active_stripe_subscriptions = _active_stripe_subscriptions(db, workspace)
     if len(active_stripe_subscriptions) > 1:
-        _mark_billing_duplicate_degraded(db, settings, active_stripe_subscriptions)
+        reconcile_app_settings_billing_cache(db, user_id=user_id, workspace=workspace, settings=settings, actor_user_id=None, reason="billing_checkout_duplicate_subscription")
         log_event(db, request, user_id, "billing.checkout_blocked_duplicate_subscription", {"workspace_id": str(workspace.id), "count": len(active_stripe_subscriptions)})
         db.commit()
         delete_key(cache_key("billing-status", workspace.id, user_id))
@@ -6607,47 +6585,77 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
     if not customer_id:
         raise HTTPException(status_code=400, detail="No server-created Stripe checkout customer is available for this workspace.")
     try:
-        customer, subscription = latest_subscription_for_customer(customer_id=customer_id, customer_email="")
+        diagnostics = subscription_diagnostics_for_customer(customer_id=customer_id, customer_email="")
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Billing subscription lookup failed") from exc
+    customer = diagnostics.customer
     if not customer:
         return BillingSyncOut(synced=False, customer_found=False, subscription_found=False, message="Billing customer not found")
-    if not subscription:
+    if not diagnostics.subscriptions:
         return BillingSyncOut(synced=False, customer_found=True, subscription_found=False, stripe_customer_id=str(customer.id), message="No billing subscription found for customer")
-    sub = subscription_payload(subscription)
-    plan = str(sub["plan"]) if str(sub["plan"]) in PLAN_LIMITS else "Starter"
-    synced = _sync_workspace_subscription(
+    synced_count = 0
+    price_id_loaded = False
+    for stripe_subscription in diagnostics.subscriptions:
+        sub = subscription_payload(stripe_subscription)
+        sub_workspace_id = str(sub.get("workspace_id") or "").strip()
+        sub_user_id = str(sub.get("user_id") or "").strip()
+        sub_customer_id = str(sub.get("customer_id") or customer.id)
+        if sub_customer_id != customer_id:
+            raise HTTPException(status_code=403, detail="Stripe subscription customer does not match the server-created billing customer.")
+        if sub_workspace_id and sub_workspace_id != str(workspace.id):
+            raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different workspace.")
+        if sub_user_id and sub_user_id != user_id:
+            raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different user.")
+        plan = str(sub["plan"]) if str(sub["plan"]) in PLAN_LIMITS else "Starter"
+        _sync_workspace_subscription(
+            db,
+            user_id=user_id,
+            workspace=workspace,
+            settings=settings_row,
+            stripe_customer_id=sub_customer_id,
+            stripe_subscription_id=str(sub["subscription_id"]),
+            stripe_price_id=str(sub["price_id"]),
+            plan=plan,
+            status=str(sub["status"]),
+            trial_end=sub["trial_end"],
+            current_period_end=sub["current_period_end"],
+            stripe_event_created_at=sub.get("created"),
+        )
+        synced_count += 1
+        price_id_loaded = price_id_loaded or bool(sub["price_id"])
+    reconciliation = reconcile_app_settings_billing_cache(
         db,
         user_id=user_id,
         workspace=workspace,
         settings=settings_row,
-        stripe_customer_id=str(sub["customer_id"] or customer.id),
-        stripe_subscription_id=str(sub["subscription_id"]),
-        stripe_price_id=str(sub["price_id"]),
-        plan=plan,
-        status=str(sub["status"]),
-        trial_end=sub["trial_end"],
-        current_period_end=sub["current_period_end"],
-        stripe_event_created_at=sub.get("created"),
+        actor_user_id=None,
+        reason="billing_manual_sync_final_reconciliation",
     )
-    log_event(db, request, user_id, "billing.subscription_synced", {"workspace_id": str(workspace.id), "plan": plan, "status": synced.status})
+    entitlement = reconciliation["entitlement"]
+    if entitlement.source == DEGRADED_DUPLICATE_STATUS:
+        log_event(db, request, user_id, "billing.subscription_sync_blocked_duplicate_subscription", {"workspace_id": str(workspace.id), "count": len(entitlement.duplicate_subscriptions)})
+        delete_key(cache_key("billing-status", workspace.id, user_id))
+        db.commit()
+        raise HTTPException(status_code=409, detail="Multiple active billing subscriptions require owner review before billing sync can continue.")
+    subscription = entitlement.subscription
+    log_event(db, request, user_id, "billing.subscription_synced", {"workspace_id": str(workspace.id), "synced_count": synced_count, "entitlement_source": entitlement.source, "status": entitlement.status})
     delete_key(cache_key("billing-status", workspace.id, user_id))
     db.commit()
     return BillingSyncOut(
         synced=True,
-        plan=plan,
-        status=synced.status,
-        stripe_customer_id=synced.stripe_customer_id or "",
-        stripe_subscription_id=synced.stripe_subscription_id or "",
-        trial_end=synced.trial_end,
-        current_period_end=synced.current_period_end,
+        plan=entitlement.plan,
+        status=entitlement.status,
+        stripe_customer_id=(subscription.stripe_customer_id if subscription else "") or "",
+        stripe_subscription_id=(subscription.stripe_subscription_id if subscription else "") or "",
+        trial_end=entitlement.trial_end,
+        current_period_end=entitlement.current_period_end,
         workspace_id=workspace.id,
-        price_id_loaded=bool(sub["price_id"]),
+        price_id_loaded=price_id_loaded,
         subscription_found=True,
         customer_found=True,
-        message="Latest billing subscription synced to this workspace",
+        message="Billing subscriptions synced to this workspace",
     )
 
 
@@ -6659,7 +6667,7 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
     settings = _settings_for_workspace(db, user_id, workspace)
     active_stripe_subscriptions = _active_stripe_subscriptions(db, workspace)
     if len(active_stripe_subscriptions) > 1:
-        _mark_billing_duplicate_degraded(db, settings, active_stripe_subscriptions)
+        reconcile_app_settings_billing_cache(db, user_id=user_id, workspace=workspace, settings=settings, actor_user_id=None, reason="billing_status_duplicate_subscription")
         db.commit()
         delete_key(key)
         usage = _usage_for_workspace(db, workspace)
