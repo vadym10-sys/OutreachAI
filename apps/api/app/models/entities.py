@@ -143,6 +143,33 @@ class Subscription(Base):
     user: Mapped[User] = relationship()
 
 
+class BillingCheckoutSession(Base):
+    __tablename__ = "billing_checkout_sessions"
+    __table_args__ = (
+        Index("idx_billing_checkout_sessions_workspace_user", "workspace_id", "user_id"),
+        Index("idx_billing_checkout_sessions_session", "stripe_session_id"),
+        Index("uq_billing_checkout_open_lifecycle", "workspace_id", "user_id", "plan", "billing_period", unique=True, postgresql_where=text("status = 'open'"), sqlite_where=text("status = 'open'")),
+        Index("uq_billing_checkout_stripe_session_id", "stripe_session_id", unique=True, postgresql_where=text("stripe_session_id <> ''"), sqlite_where=text("stripe_session_id <> ''")),
+        Index("uq_billing_checkout_idempotency_key", "idempotency_key", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    stripe_customer_id: Mapped[str] = mapped_column(String(128), default="")
+    stripe_session_id: Mapped[str] = mapped_column(String(128), default="")
+    stripe_session_url: Mapped[str] = mapped_column(Text, default="")
+    plan: Mapped[str] = mapped_column(String(32), default="Starter")
+    billing_period: Mapped[str] = mapped_column(String(32), default="monthly")
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+
+
 class TestEntitlement(Base):
     __tablename__ = "test_entitlements"
     __table_args__ = (
