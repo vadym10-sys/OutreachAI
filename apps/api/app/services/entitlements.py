@@ -10,10 +10,11 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import get_settings
 from app.models.entities import AppSettings, AuditLog, Subscription, TestEntitlement, Workspace
-from app.schemas.dto import PLAN_LIMITS
+from app.services.plan_catalog import PLAN_LIMITS, is_plan_name, plan_limits
 
 ACTIVE_STRIPE_STATUSES = {"active", "trialing"}
 DEGRADED_DUPLICATE_STATUS = "degraded_duplicate_subscription"
+UNKNOWN_PRICE_STATUS = "degraded_unknown_price"
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,7 @@ def _valid_active_stripe_subscription(subscription: Subscription, workspace: Wor
         subscription.workspace_id == workspace.id
         and subscription.status in ACTIVE_STRIPE_STATUSES
         and bool(subscription.stripe_subscription_id)
+        and is_plan_name(subscription.plan)
         and not subscription_is_expired(subscription)
     )
 
@@ -125,11 +127,11 @@ def canonical_billing_entitlement(db: Session, user_id: str, workspace: Workspac
         )
     if len(active) == 1:
         subscription = active[0]
-        plan = subscription.plan if subscription.plan in PLAN_LIMITS else "Starter"
+        plan = subscription.plan
         return BillingEntitlement(
             plan=plan,
             status=subscription.status,
-            limits=PLAN_LIMITS[plan],
+            limits=plan_limits(plan),
             active=True,
             source="stripe",
             subscription=subscription,
@@ -155,12 +157,12 @@ def canonical_billing_entitlement(db: Session, user_id: str, workspace: Workspac
         )
 
     if inactive_display:
-        plan = inactive_display.plan if inactive_display.plan in PLAN_LIMITS else "Starter"
-        status = "expired" if subscription_is_expired(inactive_display) else inactive_display.status
+        known_plan = inactive_display.plan if inactive_display.plan in PLAN_LIMITS else "Starter"
+        status = UNKNOWN_PRICE_STATUS if inactive_display.plan not in PLAN_LIMITS else ("expired" if subscription_is_expired(inactive_display) else inactive_display.status)
         return BillingEntitlement(
-            plan=plan,
+            plan=known_plan,
             status=status,
-            limits=PLAN_LIMITS[plan],
+            limits=plan_limits(known_plan),
             active=False,
             source="stripe_inactive",
             subscription=inactive_display,

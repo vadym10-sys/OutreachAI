@@ -74,7 +74,8 @@ from app.services.autopilot import process_autopilot_email_job  # noqa: E402
 from app.services.secret_box import decrypt_secret, encrypt_secret  # noqa: E402
 from app.services.ai_memory import MODE_KEYWORD, MODE_OPENAI_EMBEDDING, _openai_embedding, _pgvector_retrieval_sql, record_email_memory, retrieve_memory, upsert_memory_entry  # noqa: E402
 from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, WebsiteSnapshot, WebsiteTemporaryUnavailableError, WebsiteValidationError, collect_website, normalize_website_url  # noqa: E402
-from app.services.billing import subscription_diagnostics_for_customer  # noqa: E402
+from app.services.billing import UnknownStripePriceError, plan_from_price_id, require_plan_for_price_id, subscription_diagnostics_for_customer  # noqa: E402
+from app.services.plan_catalog import PLAN_CATALOG, public_plan_catalog  # noqa: E402
 import app.serve as serve_module  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -107,6 +108,28 @@ def _grant_subscription_for_test(workspace_id: str, user_id: str = "dev_user", p
         subscription.current_period_end = datetime.utcnow() + timedelta(days=30)
         subscription.plan_limits = PLAN_LIMITS[plan]
         db.commit()
+
+
+def _create_campaigns_for_test(workspace_id: str, user_id: str, count: int) -> list[UUID]:
+    with get_sessionmaker()() as db:
+        campaigns = [
+            Campaign(
+                user_id=user_id,
+                workspace_id=UUID(workspace_id),
+                name=f"Campaign {index + 1}",
+                industry="Construction",
+                countries=["Germany"],
+                cities=["Berlin"],
+                offer="Offer",
+                cta="Book a call",
+                signature="OutreachAI",
+                status=CampaignStatus.draft,
+            )
+            for index in range(count)
+        ]
+        db.add_all(campaigns)
+        db.commit()
+        return [campaign.id for campaign in campaigns]
 
 
 def _create_billing_subscription(
@@ -1837,6 +1860,52 @@ def stripe_signature(payload: dict) -> tuple[str, str]:
     signed = f"{timestamp}.{raw}".encode()
     digest = hmac.new(os.environ["STRIPE_WEBHOOK_SECRET"].encode(), signed, hashlib.sha256).hexdigest()
     return raw, f"t={timestamp},v1={digest}"
+
+
+def _stripe_price_object(price_id: str, *, amount: int = 14900, currency: str = "eur", interval: str = "month", interval_count: int = 1, active: bool = True, lookup_key: str = "outreachai_pro_monthly") -> SimpleNamespace:
+    return SimpleNamespace(id=price_id, unit_amount=amount, currency=currency, active=active, lookup_key=lookup_key, recurring={"interval": interval, "interval_count": interval_count})
+
+
+def _stripe_subscription_object(
+    subscription_id: str,
+    *,
+    customer_id: str,
+    workspace_id: str,
+    user_id: str,
+    price_id: str,
+    status: str = "active",
+    created: int | None = None,
+) -> dict:
+    future = int(time.time()) + 14 * 24 * 60 * 60
+    return {
+        "id": subscription_id,
+        "customer": customer_id,
+        "status": status,
+        "trial_end": future,
+        "current_period_end": future,
+        "metadata": {"user_id": user_id, "workspace_id": workspace_id},
+        "items": {"data": [{"price": {"id": price_id}}]},
+        "created": created or int(time.time()),
+    }
+
+
+def _pending_checkout_session_for_test(workspace_id: str, user_id: str, *, plan: str = "Pro", customer_id: str = "cus_checkout_test", session_id: str = "cs_checkout_test") -> None:
+    with get_sessionmaker()() as db:
+        db.add(
+            BillingCheckoutSession(
+                workspace_id=UUID(workspace_id),
+                user_id=user_id,
+                stripe_customer_id=customer_id,
+                stripe_session_id=session_id,
+                stripe_session_url=f"https://checkout.stripe.test/{session_id}",
+                plan=plan,
+                billing_period="monthly",
+                status="open",
+                idempotency_key=f"checkout_{session_id}_{uuid4().hex}",
+                expires_at=datetime.utcnow() + timedelta(hours=24),
+            )
+        )
+        db.commit()
 
 
 def _b64url_int(value: int) -> str:
@@ -3943,8 +4012,165 @@ def test_billing_plan_matrix_keeps_expected_feature_progression() -> None:
 
     assert PLAN_LIMITS["Starter"]["reply_ai"] is False
     assert PLAN_LIMITS["Pro"]["reply_ai"] is True
-    assert PLAN_LIMITS["Agency"]["api_access"] is True
-    assert PLAN_LIMITS["Agency"]["webhooks"] is True
+    assert PLAN_LIMITS["Agency"]["api_access"] is False
+    assert PLAN_LIMITS["Agency"]["webhooks"] is False
+
+
+def test_canonical_plan_catalog_exposes_exact_monthly_policy() -> None:
+    catalog = public_plan_catalog()
+    assert [plan["name"] for plan in catalog] == ["Starter", "Pro", "Agency"]
+    expected = {
+        "Starter": {"price": 49, "leads": 500, "ai_generations": 1000, "email_sends": 1000, "sales_employees": 1, "workspaces": 1, "team_members": 1, "campaigns": 3},
+        "Pro": {"price": 149, "leads": 5000, "ai_generations": 10000, "email_sends": 10000, "sales_employees": 3, "workspaces": 1, "team_members": 1, "campaigns": 25},
+        "Agency": {"price": 499, "leads": 50000, "ai_generations": 100000, "email_sends": 100000, "sales_employees": 10, "workspaces": 1, "team_members": 1, "campaigns": 0},
+    }
+    for plan in catalog:
+        name = plan["name"]
+        assert plan["billing_period"] == "monthly"
+        assert plan["currency"] == "EUR"
+        assert plan["trial_days"] == 14
+        assert plan["price"] == expected[name]["price"]
+        assert plan["monthly_price"] == expected[name]["price"]
+        assert "annual" not in plan
+        for metric, value in expected[name].items():
+            if metric != "price":
+                assert plan["limits"][metric] == value
+    assert catalog[0]["upgrade_to"] == ["Pro", "Agency"]
+    assert catalog[1]["upgrade_to"] == ["Agency"]
+    assert catalog[1]["downgrade_to"] == ["Starter"]
+    assert catalog[2]["downgrade_to"] == ["Starter", "Pro"]
+    assert catalog[2]["reserved_features"]["api_access"] == "reserved"
+    assert catalog[2]["reserved_features"]["webhooks"] == "reserved"
+    assert catalog[2]["reserved_features"]["white_label"] == "reserved"
+    assert catalog[1]["roadmap_limits"]["workspaces"] == 3
+    assert catalog[1]["roadmap_limits"]["team_members"] == 10
+    assert catalog[2]["roadmap_limits"]["workspaces"] == 0
+
+
+def test_billing_plan_catalog_api_matches_authoritative_catalog() -> None:
+    response = client.get("/api/billing/plan-catalog")
+    assert response.status_code == 200
+    returned = response.json()
+    expected = public_plan_catalog()
+    assert [plan["name"] for plan in returned] == [plan["name"] for plan in expected]
+    for returned_plan, expected_plan in zip(returned, expected):
+        for key in ("name", "price", "monthly_price", "currency", "billing_period", "trial_days", "limits", "features", "reserved_features", "roadmap_limits", "upgrade_to", "downgrade_to"):
+            assert returned_plan[key] == expected_plan[key]
+
+
+def test_checkout_rejects_annual_and_unknown_billing_periods() -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"period-{uuid4()}@example.com"}
+    annual = client.post("/api/billing/checkout", headers=headers, json={"plan": "Starter", "billing_period": "annual"})
+    unknown = client.post("/api/billing/checkout", headers=headers, json={"plan": "Starter", "billing_period": "weekly"})
+    assert annual.status_code == 400
+    assert unknown.status_code == 400
+
+
+def test_stripe_price_mapping_is_monthly_allowlist_only() -> None:
+    assert require_plan_for_price_id("price_starter_test") == ("Starter", "monthly")
+    assert require_plan_for_price_id("price_pro_test") == ("Pro", "monthly")
+    assert require_plan_for_price_id("price_agency_test") == ("Agency", "monthly")
+    with pytest.raises(UnknownStripePriceError):
+        require_plan_for_price_id("price_retired_unknown")
+    assert all(spec.stripe_monthly.interval == "month" for spec in PLAN_CATALOG.values())
+
+
+@pytest.mark.parametrize(
+    ("price", "expected"),
+    [
+        (_stripe_price_object("price_pro_test", amount=14800, lookup_key="outreachai_pro_monthly"), None),
+        (_stripe_price_object("price_pro_test", currency="usd", lookup_key="outreachai_pro_monthly"), None),
+        (_stripe_price_object("price_pro_test", interval="year", lookup_key="outreachai_pro_monthly"), None),
+        (_stripe_price_object("price_pro_test", interval_count=2, lookup_key="outreachai_pro_monthly"), None),
+        (_stripe_price_object("price_pro_test", active=False, lookup_key="outreachai_pro_monthly"), None),
+        (_stripe_price_object("price_unconfigured_reused_lookup", amount=14900, lookup_key="outreachai_pro_monthly"), ("Pro", "monthly")),
+        (_stripe_price_object("price_unconfigured_reused_lookup_invalid", amount=4900, lookup_key="outreachai_pro_monthly"), None),
+    ],
+)
+def test_stripe_price_lookup_key_fallback_validates_exact_monthly_price(monkeypatch, price: SimpleNamespace, expected: tuple[str, str] | None) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_lookup_validation")
+    monkeypatch.setattr("app.services.billing.stripe.Price.retrieve", lambda price_id: price)
+    assert plan_from_price_id(price.id) == expected
+
+
+def test_usage_limit_boundaries_fail_closed_for_every_plan() -> None:
+    for plan, limits in PLAN_LIMITS.items():
+        for metric in ("leads", "ai_generations", "email_sends"):
+            user_id = f"usage-{plan.lower()}-{metric}-{uuid4()}@example.com"
+            headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+            workspace = client.get("/api/workspace/me", headers=headers).json()
+            _grant_subscription_for_test(workspace["id"], user_id=user_id, plan=plan, status="active")
+            limit = int(limits[metric])
+            with get_sessionmaker()() as db:
+                workspace_row = db.get(Workspace, UUID(workspace["id"]))
+                assert workspace_row is not None
+                usage = routes_module._usage_for_workspace(db, workspace_row)
+                setattr(usage, metric, max(0, limit - 1))
+                db.commit()
+                routes_module._enforce_usage(db, user_id, workspace_row, metric)
+                assert getattr(usage, metric) == limit
+                with pytest.raises(HTTPException) as exc:
+                    routes_module._enforce_usage(db, user_id, workspace_row, metric)
+                assert exc.value.status_code == 402
+
+
+@pytest.mark.parametrize("plan", ["Starter", "Pro"])
+def test_campaign_duplicate_enforces_finite_plan_limit_boundaries(plan: str) -> None:
+    user_id = f"campaign-duplicate-{plan.lower()}-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(workspace["id"], user_id=user_id, plan=plan, status="active")
+    limit = int(PLAN_LIMITS[plan]["campaigns"])
+    campaign_ids = _create_campaigns_for_test(workspace["id"], user_id, limit - 1)
+
+    other_user_id = f"campaign-duplicate-other-{plan.lower()}-{uuid4()}@example.com"
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": other_user_id}
+    other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
+    _grant_subscription_for_test(other_workspace["id"], user_id=other_user_id, plan=plan, status="active")
+    _create_campaigns_for_test(other_workspace["id"], other_user_id, limit)
+
+    allowed = client.post(f"/api/campaigns/{campaign_ids[0]}/duplicate", headers=headers)
+    assert allowed.status_code == 200
+
+    blocked = client.post(f"/api/campaigns/{campaign_ids[0]}/duplicate", headers=headers)
+    assert blocked.status_code == 402
+    assert blocked.json()["detail"] == f"Campaigns limit reached for the {plan} plan. Upgrade in Billing to continue."
+
+    with get_sessionmaker()() as db:
+        count = db.scalar(select(func.count()).select_from(Campaign).where(Campaign.workspace_id == UUID(workspace["id"]), Campaign.user_id == user_id))
+        assert count == limit
+
+
+def test_campaign_duplicate_concurrent_requests_do_not_exceed_limit() -> None:
+    plan = "Starter"
+    user_id = f"campaign-duplicate-concurrent-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(workspace["id"], user_id=user_id, plan=plan, status="active")
+    campaign_ids = _create_campaigns_for_test(workspace["id"], user_id, int(PLAN_LIMITS[plan]["campaigns"]) - 1)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        responses = list(executor.map(lambda _: client.post(f"/api/campaigns/{campaign_ids[0]}/duplicate", headers=headers), range(3)))
+
+    assert sum(1 for response in responses if response.status_code == 200) == 1
+    assert all(response.status_code in {200, 402} for response in responses)
+    with get_sessionmaker()() as db:
+        count = db.scalar(select(func.count()).select_from(Campaign).where(Campaign.workspace_id == UUID(workspace["id"]), Campaign.user_id == user_id))
+        assert count == int(PLAN_LIMITS[plan]["campaigns"])
+
+
+def test_campaign_duplicate_agency_unlimited_remains_valid() -> None:
+    plan = "Agency"
+    user_id = f"campaign-duplicate-agency-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(workspace["id"], user_id=user_id, plan=plan, status="active")
+    campaign_ids = _create_campaigns_for_test(workspace["id"], user_id, 3)
+
+    for _ in range(5):
+        response = client.post(f"/api/campaigns/{campaign_ids[0]}/duplicate", headers=headers)
+        assert response.status_code == 200
 
 
 def test_customer_settings_update_rejects_billing_security_credentials_and_mass_assignment(monkeypatch) -> None:
@@ -4095,7 +4321,7 @@ def test_owner_test_entitlement_grant_revoke_and_checkout_skip(monkeypatch) -> N
     original_env = app_settings.app_env
     calls = {"checkout": 0}
 
-    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "", billing_period: str = "monthly") -> dict:
         calls["checkout"] += 1
         return {"url": "https://checkout.stripe.test/session", "id": "cs_should_not_create", "customer_id": customer_id or "cus_should_not_create"}
 
@@ -11442,7 +11668,7 @@ def test_workspace_onboarding_usage_and_campaign_duplicate() -> None:
     assert "system_health" in admin.json()
 
 
-def test_stripe_webhook_activates_subscription() -> None:
+def test_stripe_webhook_activates_subscription_with_verified_allowlisted_price(monkeypatch) -> None:
     future = int(time.time()) + 14 * 24 * 60 * 60
     user_id = f"stripe-webhook-{uuid4()}@example.com"
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
@@ -11451,6 +11677,19 @@ def test_stripe_webhook_activates_subscription() -> None:
     checkout_session_id = f"cs_live_test_{suffix}"
     stripe_customer_id = f"cus_live_test_{suffix}"
     stripe_subscription_id = f"sub_live_test_{suffix}"
+    _pending_checkout_session_for_test(workspace["id"], user_id, plan="Pro", customer_id=stripe_customer_id, session_id=checkout_session_id)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "stripe_secret_key", "sk_test_verified_checkout")
+    monkeypatch.setattr("app.api.webhooks.stripe.Subscription.retrieve", lambda subscription_id: _stripe_subscription_object(subscription_id, customer_id=stripe_customer_id, workspace_id=workspace["id"], user_id=user_id, price_id="price_pro_test", created=future - 60))
+
+    def fake_price_retrieve(price_id: str) -> SimpleNamespace:
+        prices = {
+            "price_pro_test": _stripe_price_object(price_id, amount=14900, lookup_key="outreachai_pro_monthly"),
+            "price_agency_test": _stripe_price_object(price_id, amount=49900, lookup_key="outreachai_agency_monthly"),
+        }
+        return prices[price_id]
+
+    monkeypatch.setattr("app.services.billing.stripe.Price.retrieve", fake_price_retrieve)
     payload = {
         "id": f"evt_test_checkout_{suffix}",
         "type": "checkout.session.completed",
@@ -11459,7 +11698,7 @@ def test_stripe_webhook_activates_subscription() -> None:
                 "id": checkout_session_id,
                 "customer": stripe_customer_id,
                 "subscription": stripe_subscription_id,
-                "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Pro"},
+                "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Agency"},
             }
         },
     }
@@ -11505,6 +11744,138 @@ def test_stripe_webhook_activates_subscription() -> None:
     assert status.status_code == 200
     assert status.json()["plan"] == "Agency"
     assert status.json()["trial_days_remaining"] >= 13
+
+
+def _checkout_completed_payload(*, event_id: str, session_id: str, customer_id: str, subscription_id: str, workspace_id: str, user_id: str, metadata_plan: str = "Pro") -> dict:
+    return {
+        "id": event_id,
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": session_id,
+                "customer": customer_id,
+                "subscription": subscription_id,
+                "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": metadata_plan},
+            }
+        },
+    }
+
+
+def test_checkout_completed_metadata_plan_without_subscription_price_does_not_grant_access(monkeypatch) -> None:
+    user_id = f"checkout-no-price-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace", headers=headers).json()
+    session_id = f"cs_no_price_{uuid4().hex}"
+    customer_id = f"cus_no_price_{uuid4().hex}"
+    subscription_id = f"sub_no_price_{uuid4().hex}"
+    _pending_checkout_session_for_test(workspace["id"], user_id, plan="Pro", customer_id=customer_id, session_id=session_id)
+    monkeypatch.setattr(get_settings(), "stripe_secret_key", "sk_test_no_price")
+    monkeypatch.setattr("app.api.webhooks.stripe.Subscription.retrieve", lambda subscription_id: {"id": subscription_id, "customer": customer_id, "status": "active", "metadata": {"user_id": user_id, "workspace_id": workspace["id"]}, "items": {"data": []}})
+
+    raw, signature = stripe_signature(_checkout_completed_payload(event_id=f"evt_no_price_{uuid4().hex}", session_id=session_id, customer_id=customer_id, subscription_id=subscription_id, workspace_id=workspace["id"], user_id=user_id, metadata_plan="Pro"))
+    response = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert response.status_code == 200
+
+    status = client.get("/api/billing/status", headers=headers).json()
+    assert status["entitlement_source"] != "stripe"
+    assert status["status"] == "degraded_unknown_price"
+    assert status["plan"] == "Starter"
+
+
+def test_checkout_completed_uses_verified_price_over_metadata_plan(monkeypatch) -> None:
+    user_id = f"checkout-metadata-mismatch-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace", headers=headers).json()
+    session_id = f"cs_mismatch_{uuid4().hex}"
+    customer_id = f"cus_mismatch_{uuid4().hex}"
+    subscription_id = f"sub_mismatch_{uuid4().hex}"
+    _pending_checkout_session_for_test(workspace["id"], user_id, plan="Agency", customer_id=customer_id, session_id=session_id)
+    monkeypatch.setattr(get_settings(), "stripe_secret_key", "sk_test_mismatch")
+    monkeypatch.setattr("app.api.webhooks.stripe.Subscription.retrieve", lambda subscription_id: _stripe_subscription_object(subscription_id, customer_id=customer_id, workspace_id=workspace["id"], user_id=user_id, price_id="price_starter_test"))
+    monkeypatch.setattr("app.services.billing.stripe.Price.retrieve", lambda price_id: _stripe_price_object(price_id, amount=4900, lookup_key="outreachai_starter_monthly"))
+
+    raw, signature = stripe_signature(_checkout_completed_payload(event_id=f"evt_mismatch_{uuid4().hex}", session_id=session_id, customer_id=customer_id, subscription_id=subscription_id, workspace_id=workspace["id"], user_id=user_id, metadata_plan="Agency"))
+    response = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert response.status_code == 200
+
+    status = client.get("/api/billing/status", headers=headers).json()
+    assert status["plan"] == "Starter"
+    assert status["entitlement_source"] == "stripe"
+    assert status["limits"]["leads"] == 500
+
+
+@pytest.mark.parametrize(
+    "retrieve_subscription",
+    [
+        False,
+        True,
+    ],
+)
+def test_checkout_completed_missing_subscription_or_unknown_price_fails_closed(monkeypatch, retrieve_subscription: bool) -> None:
+    user_id = f"checkout-fail-closed-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace", headers=headers).json()
+    session_id = f"cs_fail_closed_{uuid4().hex}"
+    customer_id = f"cus_fail_closed_{uuid4().hex}"
+    subscription_id = f"sub_fail_closed_{uuid4().hex}"
+    _pending_checkout_session_for_test(workspace["id"], user_id, plan="Agency", customer_id=customer_id, session_id=session_id)
+    monkeypatch.setattr(get_settings(), "stripe_secret_key", "sk_test_fail_closed")
+    if not retrieve_subscription:
+        monkeypatch.setattr("app.api.webhooks.stripe.Subscription.retrieve", lambda subscription_id: None)
+    else:
+        subscription = _stripe_subscription_object(subscription_id, customer_id=customer_id, workspace_id=workspace["id"], user_id=user_id, price_id="price_retired_unknown")
+        monkeypatch.setattr("app.api.webhooks.stripe.Subscription.retrieve", lambda subscription_id: subscription)
+        monkeypatch.setattr("app.services.billing.stripe.Price.retrieve", lambda price_id: _stripe_price_object(price_id, amount=1, lookup_key="retired_price"))
+
+    raw, signature = stripe_signature(_checkout_completed_payload(event_id=f"evt_fail_closed_{uuid4().hex}", session_id=session_id, customer_id=customer_id, subscription_id=subscription_id, workspace_id=workspace["id"], user_id=user_id, metadata_plan="Agency"))
+    response = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert response.status_code == 200
+
+    status = client.get("/api/billing/status", headers=headers).json()
+    assert status["entitlement_source"] != "stripe"
+    assert status["status"] in {"degraded_unknown_price", "inactive"}
+    assert status["plan"] == "Starter"
+
+
+def test_valid_subscription_webhook_repairs_earlier_degraded_checkout_completion(monkeypatch) -> None:
+    user_id = f"checkout-repair-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace", headers=headers).json()
+    session_id = f"cs_repair_{uuid4().hex}"
+    customer_id = f"cus_repair_{uuid4().hex}"
+    subscription_id = f"sub_repair_{uuid4().hex}"
+    _pending_checkout_session_for_test(workspace["id"], user_id, plan="Pro", customer_id=customer_id, session_id=session_id)
+    monkeypatch.setattr(get_settings(), "stripe_secret_key", "sk_test_repair")
+    monkeypatch.setattr("app.api.webhooks.stripe.Subscription.retrieve", lambda subscription_id: None)
+
+    raw, signature = stripe_signature(_checkout_completed_payload(event_id=f"evt_repair_pending_{uuid4().hex}", session_id=session_id, customer_id=customer_id, subscription_id=subscription_id, workspace_id=workspace["id"], user_id=user_id, metadata_plan="Pro"))
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+    assert client.get("/api/billing/status", headers=headers).json()["entitlement_source"] != "stripe"
+
+    future = int(time.time()) + 14 * 24 * 60 * 60
+    update_payload = {
+        "id": f"evt_repair_valid_{uuid4().hex}",
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": subscription_id,
+                "customer": customer_id,
+                "status": "trialing",
+                "trial_end": future,
+                "current_period_end": future,
+                "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Pro"},
+                "items": {"data": [{"price": {"id": "price_pro_test"}}]},
+            }
+        },
+    }
+    monkeypatch.setattr("app.services.billing.stripe.Price.retrieve", lambda price_id: _stripe_price_object(price_id, amount=14900, lookup_key="outreachai_pro_monthly"))
+    raw, signature = stripe_signature(update_payload)
+    assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
+
+    status = client.get("/api/billing/status", headers=headers).json()
+    assert status["entitlement_source"] == "stripe"
+    assert status["plan"] == "Pro"
+    assert status["status"] == "trialing"
 
 
 def test_stripe_webhook_marks_pending_checkout_completed_and_expired() -> None:
@@ -11581,12 +11952,45 @@ def test_stripe_webhook_marks_pending_checkout_completed_and_expired() -> None:
         assert expired_row.completed_at is None
 
 
+def test_stripe_webhook_unknown_price_fails_closed_without_starter_fallback() -> None:
+    user_id = f"stripe-unknown-price-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace", headers=headers).json()
+    subscription_id = f"sub_unknown_price_{uuid4().hex}"
+    payload = {
+        "id": f"evt_unknown_price_{uuid4().hex}",
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": subscription_id,
+                "customer": f"cus_unknown_price_{uuid4().hex}",
+                "status": "active",
+                "metadata": {"user_id": user_id, "workspace_id": workspace["id"], "plan": "Agency"},
+                "items": {"data": [{"price": {"id": "price_retired_unknown"}}]},
+            }
+        },
+    }
+    raw, signature = stripe_signature(payload)
+    response = client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"})
+    assert response.status_code == 200
+    with get_sessionmaker()() as db:
+        subscription = db.query(Subscription).filter(Subscription.stripe_subscription_id == subscription_id).one()
+        assert subscription.plan == "Unknown"
+        assert subscription.status == "degraded_unknown_price"
+        assert subscription.plan_limits == {}
+    status = client.get("/api/billing/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["status"] == "degraded_unknown_price"
+    assert status.json()["entitlement_source"] == "stripe_inactive"
+    assert status.json()["stripe_subscription_id"] == subscription_id
+
+
 def test_billing_checkout_creates_pending_subscription_session(monkeypatch) -> None:
     checkout_user_id = f"checkout-{uuid4()}@example.com"
     checkout_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": checkout_user_id}
     captured = {}
 
-    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "", billing_period: str = "monthly") -> dict:
         captured.update({"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "customer_id": customer_id, "idempotency_key": idempotency_key})
         return {"url": "https://checkout.stripe.test/session", "id": "cs_test_pending", "customer_id": customer_id or "cus_pending", "expires_at": int((datetime.utcnow() + timedelta(hours=24)).timestamp()), "status": "open"}
 
@@ -11626,7 +12030,7 @@ def test_billing_checkout_reuses_open_pending_session(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": checkout_user_id}
     calls = {"count": 0}
 
-    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "", billing_period: str = "monthly") -> dict:
         calls["count"] += 1
         return {"url": "https://checkout.stripe.test/reuse", "id": "cs_reuse", "customer_id": "cus_reuse", "expires_at": int((datetime.utcnow() + timedelta(hours=24)).timestamp()), "status": "open"}
 
@@ -11647,7 +12051,7 @@ def test_billing_checkout_replaces_expired_pending_session(monkeypatch) -> None:
     calls = {"count": 0}
     idempotency_keys: list[str] = []
 
-    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "", billing_period: str = "monthly") -> dict:
         calls["count"] += 1
         idempotency_keys.append(idempotency_key)
         return {"url": f"https://checkout.stripe.test/session-{calls['count']}", "id": f"cs_expired_{calls['count']}", "customer_id": "cus_expired", "expires_at": int((datetime.utcnow() + timedelta(hours=24)).timestamp()), "status": "open"}
@@ -11679,7 +12083,7 @@ def test_billing_checkout_skips_when_stripe_subscription_active(monkeypatch) -> 
     _grant_subscription_for_test(workspace["id"], user_id=checkout_user_id, plan="Starter", status="trialing")
     calls = {"count": 0}
 
-    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "", billing_period: str = "monthly") -> dict:
         calls["count"] += 1
         return {"url": "https://checkout.stripe.test/should-not-create", "id": "cs_should_not_create", "customer_id": "cus_should_not_create"}
 
@@ -11721,7 +12125,7 @@ def test_billing_checkout_blocks_duplicate_active_stripe_subscriptions(monkeypat
         db.commit()
     calls = {"count": 0}
 
-    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+    def fake_checkout(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "", billing_period: str = "monthly") -> dict:
         calls["count"] += 1
         return {"url": "https://checkout.stripe.test/should-not-create", "id": "cs_should_not_create", "customer_id": "cus_should_not_create"}
 
@@ -11929,6 +12333,42 @@ def test_billing_sync_latest_subscription_repairs_paid_workspace(monkeypatch) ->
     assert status.json()["limits"]["leads"] == 5000
     assert status.json()["stripe_customer_id"] == "cus_sync_live"
     assert status.json()["stripe_subscription_id"] == "sub_sync_live"
+
+
+def test_billing_sync_unknown_price_requires_owner_review(monkeypatch) -> None:
+    sync_user_id = f"billing-sync-unknown-price-{uuid4()}@example.com"
+    sync_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": sync_user_id}
+    workspace = client.get("/api/workspace", headers=sync_headers).json()
+    workspace_id = UUID(workspace["id"])
+    customer_id = f"cus_sync_unknown_{uuid4().hex}"
+    with get_sessionmaker()() as db:
+        settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace_id))
+        if settings is None:
+            settings = AppSettings(user_id=sync_user_id, workspace_id=workspace_id, general={}, ai={}, email={}, billing={}, security={}, api={})
+            db.add(settings)
+        settings.billing = {"stripeCustomerId": customer_id, "checkoutSessionId": "cs_server_created_unknown"}
+        db.commit()
+
+    stripe_subscription = {
+        "id": "sub_sync_unknown_price",
+        "customer": customer_id,
+        "status": "active",
+        "trial_end": None,
+        "current_period_end": int(time.time()) + 14 * 24 * 60 * 60,
+        "metadata": {"user_id": sync_user_id, "workspace_id": workspace["id"], "plan": "Agency"},
+        "items": {"data": [{"price": {"id": "price_retired_unknown"}}]},
+        "created": int(time.time()),
+    }
+    customer = SimpleNamespace(id=customer_id)
+    monkeypatch.setattr("app.api.routes.subscription_diagnostics_for_customer", lambda customer_id="", customer_email="": SimpleNamespace(customer=customer, subscriptions=(stripe_subscription,)))
+
+    response = client.post("/api/billing/sync-latest-subscription", headers=sync_headers, json={})
+    assert response.status_code == 409
+    with get_sessionmaker()() as db:
+        subscription = db.query(Subscription).filter(Subscription.stripe_subscription_id == "sub_sync_unknown_price").one()
+        assert subscription.plan == "Unknown"
+        assert subscription.status == "degraded_unknown_price"
+        assert subscription.plan_limits == {}
 
 
 def test_billing_sync_canceled_duplicate_cannot_override_canonical_active(monkeypatch) -> None:

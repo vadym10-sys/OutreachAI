@@ -18,16 +18,18 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.observability import capture_provider_exception
 from app.models.entities import AppSettings, AuditLog, BillingCheckoutSession, Company, Deal, EmailMessage, Lead, LeadStatus, Note, Subscription, User, Workspace
-from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
+from app.schemas.dto import ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 from app.services.ai_memory import record_email_memory
-from app.services.billing import plan_from_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
-from app.services.entitlements import reconcile_app_settings_billing_cache
+from app.services.billing import UnknownStripePriceError, require_plan_for_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
+from app.services.entitlements import UNKNOWN_PRICE_STATUS, reconcile_app_settings_billing_cache
+from app.services.plan_catalog import PLAN_CATALOG, plan_limits
 from app.services.continuous_learning import apply_continuous_learning_event
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 logger = logging.getLogger("outreachai.stripe")
 PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
+PENDING_SUBSCRIPTION_VERIFICATION_STATUS = "degraded_pending_subscription_verification"
 
 
 def _verify_resend_signature(payload: bytes, request: Request, secret: str) -> None:
@@ -205,6 +207,9 @@ def _sync_subscription(
     price_id: str = "",
     stripe_event_created_at: datetime | None = None,
 ) -> Subscription | None:
+    if plan not in PLAN_CATALOG:
+        plan = "Unknown"
+        status = UNKNOWN_PRICE_STATUS
     parsed_workspace_id = _workspace_uuid(workspace_id)
     if parsed_workspace_id is None or db.get(Workspace, parsed_workspace_id) is None:
         return None
@@ -237,7 +242,7 @@ def _sync_subscription(
     subscription.current_period_end = current_period_end
     subscription.stripe_event_created_at = stripe_event_created_at or subscription.stripe_event_created_at
     subscription.updated_at = datetime.utcnow()
-    subscription.plan_limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])
+    subscription.plan_limits = plan_limits(plan) if plan in PLAN_CATALOG else {}
     if status in PAID_SUBSCRIPTION_STATUSES:
         subscription.last_payment_error = None
         subscription.last_decline_code = None
@@ -251,17 +256,75 @@ def _sync_subscription(
     return subscription
 
 
-def _mark_checkout_session_status(db: Session, session_id: str, status: str) -> None:
+def _mark_checkout_session_status(db: Session, session_id: str, status: str) -> BillingCheckoutSession | None:
     if not session_id:
-        return
+        return None
     checkout_session = db.scalar(select(BillingCheckoutSession).where(BillingCheckoutSession.stripe_session_id == session_id))
     if checkout_session is None:
-        return
+        return None
     checkout_session.status = status
     checkout_session.updated_at = datetime.utcnow()
     if status == "completed":
         checkout_session.completed_at = datetime.utcnow()
     db.add(checkout_session)
+    return checkout_session
+
+
+def _sync_degraded_checkout_completion(
+    db: Session,
+    *,
+    checkout_session: BillingCheckoutSession | None,
+    workspace_id: str,
+    user_id: str,
+    customer_id: str,
+    subscription_id: str,
+    status: str,
+    stripe_event_created_at: datetime | None,
+) -> None:
+    effective_workspace_id = str(checkout_session.workspace_id) if checkout_session else workspace_id
+    effective_user_id = checkout_session.user_id if checkout_session else user_id
+    effective_customer_id = customer_id or (checkout_session.stripe_customer_id if checkout_session else "")
+    if subscription_id:
+        effective_subscription_id = subscription_id
+    elif checkout_session:
+        effective_subscription_id = f"checkout_pending_{checkout_session.stripe_session_id}"
+    else:
+        effective_subscription_id = ""
+    if effective_workspace_id and effective_user_id and effective_subscription_id:
+        _sync_subscription(
+            db,
+            user_id=effective_user_id,
+            workspace_id=effective_workspace_id,
+            customer_id=effective_customer_id,
+            subscription_id=effective_subscription_id,
+            plan="Unknown",
+            status=status,
+            trial_end=None,
+            current_period_end=None,
+            price_id="",
+            stripe_event_created_at=stripe_event_created_at,
+        )
+
+
+def _checkout_binding_valid(checkout_session: BillingCheckoutSession | None, *, customer_id: str, workspace_id: str, user_id: str) -> bool:
+    if checkout_session is None:
+        return False
+    if workspace_id and str(checkout_session.workspace_id) != workspace_id:
+        return False
+    if user_id and checkout_session.user_id != user_id:
+        return False
+    if customer_id and checkout_session.stripe_customer_id and checkout_session.stripe_customer_id != customer_id:
+        return False
+    return True
+
+
+def _subscription_binding_valid(payload: dict, *, subscription_id: str, customer_id: str, workspace_id: str, user_id: str) -> bool:
+    return (
+        str(payload.get("subscription_id") or "") == subscription_id
+        and str(payload.get("customer_id") or "") == customer_id
+        and str(payload.get("workspace_id") or "") == workspace_id
+        and str(payload.get("user_id") or "") == user_id
+    )
 
 
 def _stripe_id_suffix(value: str | None) -> str:
@@ -288,24 +351,48 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
     event_workspace_id = _metadata_value(_stripe_get(data, "metadata", {}), "workspace_id")
     logger.info("Stripe webhook received", extra=_stripe_event_metadata(event, data, workspace_id=event_workspace_id))
     if event_type == "checkout.session.completed":
-        _mark_checkout_session_status(db, str(data.get("id") or ""), "completed")
+        session_id = str(data.get("id") or "")
+        checkout_session = _mark_checkout_session_status(db, session_id, "completed")
         subscription_id = str(data.get("subscription") or "")
         customer_id = str(data.get("customer") or "")
-        plan = _metadata_value(data.get("metadata"), "plan") or "Starter"
         workspace_id = _metadata_value(data.get("metadata"), "workspace_id")
         user_id = _metadata_value(data.get("metadata"), "user_id")
+        event_created_at = timestamp_to_datetime(event.get("created"))
+        if not _checkout_binding_valid(checkout_session, customer_id=customer_id, workspace_id=workspace_id, user_id=user_id):
+            _sync_degraded_checkout_completion(db, checkout_session=checkout_session, workspace_id=workspace_id, user_id=user_id, customer_id=customer_id, subscription_id=subscription_id, status=PENDING_SUBSCRIPTION_VERIFICATION_STATUS, stripe_event_created_at=event_created_at)
+            db.commit()
+            return {"received": True, "type": event_type}
+        workspace_id = str(checkout_session.workspace_id)
+        user_id = checkout_session.user_id
+        customer_id = customer_id or checkout_session.stripe_customer_id
         try:
             subscription = stripe.Subscription.retrieve(subscription_id) if subscription_id and settings.stripe_secret_key else None
         except stripe.StripeError as exc:
             capture_provider_exception(exc, provider="stripe", endpoint="stripe.subscription.retrieve", workspace_id=workspace_id)
             subscription = None
-        payload = subscription_payload(subscription) if subscription else {}
+        if subscription is None:
+            _sync_degraded_checkout_completion(db, checkout_session=checkout_session, workspace_id=workspace_id, user_id=user_id, customer_id=customer_id, subscription_id=subscription_id, status=PENDING_SUBSCRIPTION_VERIFICATION_STATUS, stripe_event_created_at=event_created_at)
+            db.commit()
+            return {"received": True, "type": event_type}
+        try:
+            payload = subscription_payload(subscription)
+        except UnknownStripePriceError:
+            _sync_degraded_checkout_completion(db, checkout_session=checkout_session, workspace_id=workspace_id, user_id=user_id, customer_id=customer_id, subscription_id=subscription_id, status=UNKNOWN_PRICE_STATUS, stripe_event_created_at=event_created_at)
+            db.commit()
+            return {"received": True, "type": event_type}
+        if not _subscription_binding_valid(payload, subscription_id=subscription_id, customer_id=customer_id, workspace_id=workspace_id, user_id=user_id):
+            _sync_degraded_checkout_completion(db, checkout_session=checkout_session, workspace_id=workspace_id, user_id=user_id, customer_id=customer_id, subscription_id=subscription_id, status=PENDING_SUBSCRIPTION_VERIFICATION_STATUS, stripe_event_created_at=event_created_at)
+            db.commit()
+            return {"received": True, "type": event_type}
         status = str(payload.get("status") or "active")
-        trial_end = payload.get("trial_end") if subscription else None
-        current_period_end = payload.get("current_period_end") if subscription else None
+        trial_end = payload.get("trial_end")
+        current_period_end = payload.get("current_period_end")
         price_id = str(payload.get("price_id") or "")
-        resolved_plan = str(payload.get("plan") or plan)
-        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=resolved_plan, status=status, trial_end=trial_end, current_period_end=current_period_end, price_id=price_id, stripe_event_created_at=timestamp_to_datetime(event.get("created")))
+        resolved_plan = str(payload.get("plan") or "")
+        if resolved_plan not in PLAN_CATALOG:
+            resolved_plan = "Unknown"
+            status = UNKNOWN_PRICE_STATUS
+        _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=resolved_plan, status=status, trial_end=trial_end, current_period_end=current_period_end, price_id=price_id, stripe_event_created_at=event_created_at)
     elif event_type == "checkout.session.expired":
         _mark_checkout_session_status(db, str(data.get("id") or ""), "expired")
     elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
@@ -314,8 +401,13 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         workspace_id = _metadata_value(data.get("metadata"), "workspace_id")
         user_id = _metadata_value(data.get("metadata"), "user_id")
         price_id = subscription_price_id(data)
-        plan = _metadata_value(data.get("metadata"), "plan") or plan_from_price_id(price_id) or "Starter"
-        status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
+        try:
+            plan, _ = require_plan_for_price_id(price_id)
+        except UnknownStripePriceError:
+            plan = "Unknown"
+            status = UNKNOWN_PRICE_STATUS
+        else:
+            status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
         _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=timestamp_to_datetime(data.get("trial_end")), current_period_end=timestamp_to_datetime(data.get("current_period_end")), price_id=price_id, stripe_event_created_at=timestamp_to_datetime(event.get("created")))
     elif event_type in {"invoice.paid", "invoice.payment_succeeded"}:
         subscription_id = str(data.get("subscription") or "")

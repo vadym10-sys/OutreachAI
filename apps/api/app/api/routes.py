@@ -198,10 +198,11 @@ from app.services.continuous_learning import apply_continuous_learning_event
 from app.services.workflow_engine import build_company_workflow_engine
 from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
-from app.services.billing import create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices, price_for_plan, subscription_diagnostics_for_customer, subscription_payload
+from app.services.billing import UnknownStripePriceError, create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices, price_for_plan, subscription_diagnostics_for_customer, subscription_payload
 from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, EmailProviderSendingDisabledError, send_email, verify_smtp_connection
 from app.services.entitlements import (
     DEGRADED_DUPLICATE_STATUS,
+    UNKNOWN_PRICE_STATUS,
     BillingEntitlement,
     active_test_entitlement,
     canonical_billing_entitlement,
@@ -212,6 +213,7 @@ from app.services.entitlements import (
     workspace_trial_end,
     workspace_trial_is_active,
 )
+from app.services.plan_catalog import PLAN_CATALOG, PLAN_ORDER, normalize_billing_period, plan_limits, public_plan_catalog
 from app.services.enrichment_queue import enqueue_autopilot_email_job
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
@@ -244,6 +246,7 @@ LEAD_PROVIDER_TIMEOUT_SECONDS = 10
 GMAIL_OAUTH_STATE_TTL_SECONDS = 600
 GMAIL_OAUTH_HANDOFF_TTL_SECONDS = 300
 GMAIL_OAUTH_HANDOFF_CLAIM_LOCK = threading.Lock()
+CAMPAIGN_MUTATION_LOCKS: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 
 
 LEGACY_STATUS_MAP = {
@@ -1110,8 +1113,17 @@ def _lock_billing_checkout(db: Session, workspace_id: UUID, user_id: str) -> Non
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"billing-checkout:{workspace_id}:{user_id}"})
 
 
-def _checkout_period() -> str:
-    return "monthly"
+def _lock_campaign_mutation(db: Session, workspace_id: UUID, user_id: str) -> threading.Lock | None:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"campaign:{workspace_id}:{user_id}"})
+        return None
+    lock = CAMPAIGN_MUTATION_LOCKS[f"{workspace_id}:{user_id}"]
+    lock.acquire()
+    return lock
+
+
+def _checkout_period(value: str | None = None) -> str:
+    return normalize_billing_period(value)
 
 
 def _checkout_idempotency_key(workspace_id: UUID, user_id: str, plan: str, billing_period: str, lifecycle_sequence: int) -> str:
@@ -1217,6 +1229,9 @@ def _sync_workspace_subscription(
     current_period_end: datetime | None,
     stripe_event_created_at: datetime | None = None,
 ) -> Subscription:
+    if plan not in PLAN_CATALOG:
+        plan = "Unknown"
+        status = UNKNOWN_PRICE_STATUS
     user = _user_for_subscription(db, user_id)
     subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == stripe_subscription_id))
     if subscription is not None:
@@ -1237,7 +1252,7 @@ def _sync_workspace_subscription(
     subscription.current_period_end = current_period_end
     subscription.stripe_event_created_at = stripe_event_created_at or subscription.stripe_event_created_at
     subscription.updated_at = datetime.utcnow()
-    subscription.plan_limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])
+    subscription.plan_limits = plan_limits(plan) if plan in PLAN_CATALOG else {}
     if status in {"active", "trialing"}:
         subscription.last_payment_error = None
         subscription.last_decline_code = None
@@ -4728,41 +4743,51 @@ def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentU
 @router.post("/campaigns/{campaign_id}/{action}", response_model=CampaignOut)
 def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
+    if action == "duplicate":
+        mutation_lock = _lock_campaign_mutation(db, workspace.id, user_id)
+        try:
+            current_count = db.scalar(select(func.count()).select_from(Campaign).where(_workspace_stmt(Campaign, workspace, user_id))) or 0
+            _enforce_count_limit(db, user_id, workspace, "campaigns", int(current_count))
+            campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+            if campaign is None:
+                raise HTTPException(status_code=404, detail="Campaign not found")
+            clone = Campaign(
+                user_id=user_id,
+                workspace_id=workspace.id,
+                name=f"{campaign.name} copy",
+                industry=campaign.industry,
+                countries=campaign.countries,
+                cities=campaign.cities,
+                company_size=campaign.company_size,
+                keywords=campaign.keywords,
+                website_filters=campaign.website_filters,
+                language=campaign.language,
+                offer=campaign.offer,
+                cta=campaign.cta,
+                email_tone=campaign.email_tone,
+                signature=campaign.signature,
+                follow_up_days=campaign.follow_up_days,
+                timezone=campaign.timezone,
+                status=CampaignStatus.draft,
+            )
+            db.add(clone)
+            db.flush()
+            sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
+            _replace_sequence(
+                db,
+                clone,
+                [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
+            )
+            log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
+            db.commit()
+            db.refresh(clone)
+            return _campaign_out(db, clone)
+        finally:
+            if mutation_lock:
+                mutation_lock.release()
     campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if action == "duplicate":
-        clone = Campaign(
-            user_id=user_id,
-            workspace_id=workspace.id,
-            name=f"{campaign.name} copy",
-            industry=campaign.industry,
-            countries=campaign.countries,
-            cities=campaign.cities,
-            company_size=campaign.company_size,
-            keywords=campaign.keywords,
-            website_filters=campaign.website_filters,
-            language=campaign.language,
-            offer=campaign.offer,
-            cta=campaign.cta,
-            email_tone=campaign.email_tone,
-            signature=campaign.signature,
-            follow_up_days=campaign.follow_up_days,
-            timezone=campaign.timezone,
-            status=CampaignStatus.draft,
-        )
-        db.add(clone)
-        db.flush()
-        sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
-        _replace_sequence(
-            db,
-            clone,
-            [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
-        )
-        log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
-        db.commit()
-        db.refresh(clone)
-        return _campaign_out(db, clone)
     mapping = {"launch": CampaignStatus.running, "resume": CampaignStatus.running, "pause": CampaignStatus.paused, "stop": CampaignStatus.stopped}
     if action not in mapping:
         raise HTTPException(status_code=400, detail="Unsupported campaign action")
@@ -4898,40 +4923,47 @@ def approve_autopilot_campaign(
 @router.post("/campaigns/{campaign_id}/duplicate", response_model=CampaignOut)
 def duplicate_campaign(campaign_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
-    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
-    if campaign is None:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    clone = Campaign(
-        user_id=user_id,
-        workspace_id=workspace.id,
-        name=f"{campaign.name} copy",
-        industry=campaign.industry,
-        countries=campaign.countries,
-        cities=campaign.cities,
-        company_size=campaign.company_size,
-        keywords=campaign.keywords,
-        website_filters=campaign.website_filters,
-        language=campaign.language,
-        offer=campaign.offer,
-        cta=campaign.cta,
-        email_tone=campaign.email_tone,
-        signature=campaign.signature,
-        follow_up_days=campaign.follow_up_days,
-        timezone=campaign.timezone,
-        status=CampaignStatus.draft,
-    )
-    db.add(clone)
-    db.flush()
-    sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
-    _replace_sequence(
-        db,
-        clone,
-        [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
-    )
-    log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
-    db.commit()
-    db.refresh(clone)
-    return _campaign_out(db, clone)
+    mutation_lock = _lock_campaign_mutation(db, workspace.id, user_id)
+    try:
+        current_count = db.scalar(select(func.count()).select_from(Campaign).where(_workspace_stmt(Campaign, workspace, user_id))) or 0
+        _enforce_count_limit(db, user_id, workspace, "campaigns", int(current_count))
+        campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        clone = Campaign(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            name=f"{campaign.name} copy",
+            industry=campaign.industry,
+            countries=campaign.countries,
+            cities=campaign.cities,
+            company_size=campaign.company_size,
+            keywords=campaign.keywords,
+            website_filters=campaign.website_filters,
+            language=campaign.language,
+            offer=campaign.offer,
+            cta=campaign.cta,
+            email_tone=campaign.email_tone,
+            signature=campaign.signature,
+            follow_up_days=campaign.follow_up_days,
+            timezone=campaign.timezone,
+            status=CampaignStatus.draft,
+        )
+        db.add(clone)
+        db.flush()
+        sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
+        _replace_sequence(
+            db,
+            clone,
+            [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
+        )
+        log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
+        db.commit()
+        db.refresh(clone)
+        return _campaign_out(db, clone)
+    finally:
+        if mutation_lock:
+            mutation_lock.release()
 
 
 @router.post("/leads", response_model=LeadOut)
@@ -6447,6 +6479,10 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
     workspace = _current_workspace(db, user_id)
     if payload.plan not in PLAN_LIMITS:
         raise HTTPException(status_code=400, detail="Unknown subscription plan")
+    try:
+        billing_period = _checkout_period(payload.billing_period)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _lock_billing_checkout(db, workspace.id, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     active_stripe_subscriptions = _active_stripe_subscriptions(db, workspace)
@@ -6472,7 +6508,6 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
         log_event(db, request, user_id, "billing.checkout_skipped_test_entitlement", {"workspace_id": str(workspace.id), "plan": entitlement.plan})
         db.commit()
         return {"url": f"{get_app_settings().public_app_url.rstrip('/')}/dashboard?billing=test-entitlement", "id": "", "customer_id": "", "skipped_checkout": True}
-    billing_period = _checkout_period()
     _expire_stale_checkout_sessions(db, workspace.id, user_id, payload.plan, billing_period)
     db.flush()
     open_session = _open_checkout_session(db, workspace.id, user_id, payload.plan, billing_period)
@@ -6484,7 +6519,7 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
     lifecycle_started_at = datetime.utcnow()
     idempotency_key = _checkout_idempotency_key(workspace.id, user_id, payload.plan, billing_period, _next_checkout_lifecycle_sequence(db, workspace.id, user_id, payload.plan, billing_period))
     try:
-        session = create_checkout_session(user_id, str(workspace.id), payload.plan, customer_id, idempotency_key=idempotency_key)
+        session = create_checkout_session(user_id, str(workspace.id), payload.plan, customer_id, idempotency_key=idempotency_key, billing_period=billing_period)
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     expires_at = datetime.utcfromtimestamp(int(session.get("expires_at"))) if session.get("expires_at") else lifecycle_started_at + timedelta(hours=24)
@@ -6527,7 +6562,12 @@ def billing_plans(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[B
     entitlement = _resolve_billing_entitlement(db, user_id, workspace)
     current = entitlement.plan
     active = entitlement.active
-    return [BillingPlanOut(name=name, price=int(limits["mrr"]), limits=limits, current=active and name == current, active_subscription=active) for name, limits in PLAN_LIMITS.items()]
+    return [BillingPlanOut(**plan, current=active and plan["name"] == current, active_subscription=active) for plan in public_plan_catalog()]
+
+
+@router.get("/billing/plan-catalog", response_model=list[BillingPlanOut])
+def billing_plan_catalog() -> list[BillingPlanOut]:
+    return [BillingPlanOut(**plan) for plan in public_plan_catalog()]
 
 
 @router.post("/billing/portal")
@@ -6555,7 +6595,7 @@ def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
     checkout_works = False
     if settings.stripe_secret_key and settings.stripe_webhook_secret:
         try:
-            checkout_works = all(price_for_plan(plan) for plan in ("Starter", "Pro", "Agency"))
+            checkout_works = all(price_for_plan(plan, "monthly") for plan in PLAN_ORDER)
         except Exception:
             checkout_works = False
     return BillingDiagnosticsOut(
@@ -6597,8 +6637,24 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
         return BillingSyncOut(synced=False, customer_found=True, subscription_found=False, stripe_customer_id=str(customer.id), message="No billing subscription found for customer")
     synced_count = 0
     price_id_loaded = False
+    unknown_price_count = 0
     for stripe_subscription in diagnostics.subscriptions:
-        sub = subscription_payload(stripe_subscription)
+        try:
+            sub = subscription_payload(stripe_subscription)
+        except UnknownStripePriceError:
+            sub = {
+                "subscription_id": str(getattr(stripe_subscription, "id", "") or (stripe_subscription.get("id", "") if isinstance(stripe_subscription, dict) else "")),
+                "customer_id": str(getattr(stripe_subscription, "customer", "") or (stripe_subscription.get("customer", "") if isinstance(stripe_subscription, dict) else customer.id)),
+                "price_id": "",
+                "plan": "Unknown",
+                "status": UNKNOWN_PRICE_STATUS,
+                "trial_end": None,
+                "current_period_end": None,
+                "created": None,
+                "workspace_id": str((getattr(stripe_subscription, "metadata", {}) or {}).get("workspace_id", "") if not isinstance(stripe_subscription, dict) else (stripe_subscription.get("metadata") or {}).get("workspace_id", "")),
+                "user_id": str((getattr(stripe_subscription, "metadata", {}) or {}).get("user_id", "") if not isinstance(stripe_subscription, dict) else (stripe_subscription.get("metadata") or {}).get("user_id", "")),
+            }
+            unknown_price_count += 1
         sub_workspace_id = str(sub.get("workspace_id") or "").strip()
         sub_user_id = str(sub.get("user_id") or "").strip()
         sub_customer_id = str(sub.get("customer_id") or customer.id)
@@ -6608,7 +6664,7 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
             raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different workspace.")
         if sub_user_id and sub_user_id != user_id:
             raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different user.")
-        plan = str(sub["plan"]) if str(sub["plan"]) in PLAN_LIMITS else "Starter"
+        plan = str(sub["plan"]) if str(sub["plan"]) in PLAN_LIMITS else "Unknown"
         _sync_workspace_subscription(
             db,
             user_id=user_id,
@@ -6618,7 +6674,7 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
             stripe_subscription_id=str(sub["subscription_id"]),
             stripe_price_id=str(sub["price_id"]),
             plan=plan,
-            status=str(sub["status"]),
+            status=str(sub["status"]) if plan != "Unknown" else UNKNOWN_PRICE_STATUS,
             trial_end=sub["trial_end"],
             current_period_end=sub["current_period_end"],
             stripe_event_created_at=sub.get("created"),
@@ -6639,6 +6695,11 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
         delete_key(cache_key("billing-status", workspace.id, user_id))
         db.commit()
         raise HTTPException(status_code=409, detail="Multiple active billing subscriptions require owner review before billing sync can continue.")
+    if unknown_price_count:
+        log_event(db, request, user_id, "billing.subscription_sync_blocked_unknown_price", {"workspace_id": str(workspace.id), "count": unknown_price_count})
+        delete_key(cache_key("billing-status", workspace.id, user_id))
+        db.commit()
+        raise HTTPException(status_code=409, detail="Stripe subscription uses an unknown or retired monthly price and requires owner review.")
     subscription = entitlement.subscription
     log_event(db, request, user_id, "billing.subscription_synced", {"workspace_id": str(workspace.id), "synced_count": synced_count, "entitlement_source": entitlement.source, "status": entitlement.status})
     delete_key(cache_key("billing-status", workspace.id, user_id))
@@ -6971,7 +7032,7 @@ def owner_console(owner: OwnerUser, db: Session = Depends(get_db)) -> OwnerConso
     revenue_subscription_rows, billing_duplicate_diagnostics = _billing_duplicate_diagnostics(subscription_rows)
     revenue_won = float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(Lead.status == LeadStatus.won)) or 0)
     active_subscriptions = len(revenue_subscription_rows)
-    mrr = float(sum(PLAN_LIMITS.get(subscription.plan, {}).get("mrr", 0) for subscription in revenue_subscription_rows))
+    mrr = float(sum(PLAN_LIMITS.get(subscription.plan, {}).get("mrr", 0) for subscription in revenue_subscription_rows if subscription.plan in PLAN_LIMITS))
     logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(25)).all())
     return OwnerConsoleOut(
         executive_overview={

@@ -1532,7 +1532,22 @@ export type Workspace = {
 };
 
 export type PlanLimits = Record<string, number | boolean>;
-export type BillingPlan = { name: string; price: number; limits: PlanLimits; current: boolean; active_subscription?: boolean };
+export type BillingPlan = {
+  name: string;
+  price: number;
+  monthly_price?: number;
+  currency?: string;
+  billing_period?: "monthly" | string;
+  trial_days?: number;
+  limits: PlanLimits;
+  features?: Record<string, boolean>;
+  reserved_features?: Record<string, string>;
+  roadmap_limits?: Record<string, number>;
+  upgrade_to?: string[];
+  downgrade_to?: string[];
+  current: boolean;
+  active_subscription?: boolean;
+};
 export type BillingStatus = {
   plan: string;
   price: number;
