@@ -13,7 +13,7 @@ from app.core.config import get_settings
 from app.core.observability import capture_provider_exception
 from app.models.entities import BillingSubscriptionTransition, Subscription, Workspace
 from app.services.billing import price_for_plan, require_plan_for_price_id, subscription_price_id
-from app.services.plan_catalog import PLAN_CATALOG, PLAN_ORDER
+from app.services.plan_catalog import PLAN_CATALOG, PLAN_ORDER, plan_limits
 
 OPEN_TRANSITION_STATUSES = {"pending", "scheduled"}
 TERMINAL_TRANSITION_STATUSES = {"applied", "canceled", "failed"}
@@ -36,6 +36,11 @@ def plan_direction(from_plan: str, to_plan: str) -> str:
 def transition_idempotency_key(workspace_id: UUID, subscription_id: str, from_plan: str, to_plan: str, direction: str) -> str:
     raw = f"{workspace_id}:{subscription_id}:{from_plan}:{to_plan}:monthly:{direction}"
     return "sub_change_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
+
+
+def schedule_modify_idempotency_key(transition: BillingSubscriptionTransition) -> str:
+    raw = f"{transition.idempotency_key}:schedule_modify:{transition.workspace_id}:{transition.stripe_subscription_id}:{transition.from_plan}:{transition.to_plan}:monthly"
+    return "sub_sched_mod_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 
 def cancellation_idempotency_key(workspace_id: UUID, subscription_id: str, action: str) -> str:
@@ -250,6 +255,7 @@ def schedule_downgrade(
                     {"items": [{"price": target_price_id}], "metadata": {**metadata, "plan": to_plan}},
                 ],
                 metadata=metadata,
+                idempotency_key=schedule_modify_idempotency_key(transition),
             )
         return schedule
     except stripe.StripeError as exc:
@@ -348,5 +354,38 @@ def mark_transition_from_subscription_event(
     if plan == transition.to_plan:
         transition.status = "applied"
         transition.completed_at = datetime.utcnow()
+    db.add(transition)
+    return transition
+
+
+def open_upgrade_transition_for_subscription(db: Session, *, subscription_id: str) -> BillingSubscriptionTransition | None:
+    return db.scalar(
+        select(BillingSubscriptionTransition)
+        .where(
+            BillingSubscriptionTransition.stripe_subscription_id == subscription_id,
+            BillingSubscriptionTransition.direction == "upgrade",
+            BillingSubscriptionTransition.status.in_(OPEN_TRANSITION_STATUSES),
+        )
+        .order_by(BillingSubscriptionTransition.created_at.desc())
+    )
+
+
+def apply_confirmed_upgrade_transition(
+    db: Session,
+    *,
+    subscription: Subscription,
+    transition: BillingSubscriptionTransition,
+    event_created_at: datetime | None,
+) -> BillingSubscriptionTransition:
+    if event_created_at and transition.stripe_event_created_at and event_created_at < transition.stripe_event_created_at:
+        return transition
+    transition.stripe_event_created_at = event_created_at or transition.stripe_event_created_at
+    if transition.status in OPEN_TRANSITION_STATUSES:
+        subscription.plan = transition.to_plan
+        subscription.plan_limits = plan_limits(transition.to_plan)
+        transition.status = "applied"
+        transition.completed_at = datetime.utcnow()
+    transition.updated_at = datetime.utcnow()
+    db.add(subscription)
     db.add(transition)
     return transition
