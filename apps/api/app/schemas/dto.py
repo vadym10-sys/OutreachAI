@@ -1064,10 +1064,34 @@ class BillingStatusOut(BaseModel):
     last_decline_code: str = ""
     last_failure_message: str = ""
     last_payment_failed_at: Optional[datetime] = None
+    transition: dict[str, Any] = Field(default_factory=dict)
+    cancel_at_period_end: bool = False
     limits: dict[str, Any]
     usage: dict[str, int]
     sales_employees_used: int = 0
     workspaces_used: int = 0
+
+
+class SubscriptionChangeRequest(BaseModel):
+    plan: str = Field(min_length=1, max_length=32)
+    billing_period: str = "monthly"
+
+
+class SubscriptionTransitionOut(BaseModel):
+    pending: bool = False
+    id: str = ""
+    from_plan: str = ""
+    to_plan: str = ""
+    billing_period: str = "monthly"
+    direction: str = ""
+    status: str = ""
+    effective_at: Optional[datetime] = None
+    stripe_subscription_id: str = ""
+    stripe_schedule_id: str = ""
+    created_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    canceled_at: Optional[datetime] = None
+    error_message: str = ""
 
 
 class BillingPortalRequest(BaseModel):

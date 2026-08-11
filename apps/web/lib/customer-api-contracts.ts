@@ -410,6 +410,17 @@ export const billingStatusSchema = z.object({
   last_decline_code: z.string().optional(),
   last_failure_message: z.string().optional(),
   last_payment_failed_at: z.string().nullable().optional(),
+  transition: z.object({
+    pending: z.boolean(),
+    id: z.string().optional(),
+    from_plan: z.string().optional(),
+    to_plan: z.string().optional(),
+    billing_period: z.string().optional(),
+    direction: z.string().optional(),
+    status: z.string().optional(),
+    effective_at: z.string().nullable().optional()
+  }).passthrough().optional(),
+  cancel_at_period_end: z.boolean().optional(),
   limits: z.record(z.union([z.number(), z.boolean()])),
   usage: z.record(z.number()),
   sales_employees_used: z.number(),
@@ -447,6 +458,11 @@ export const billingCheckoutSessionSchema = z.object({
   url: z.string()
 }).passthrough();
 export type BillingCheckoutSession = z.infer<typeof billingCheckoutSessionSchema>;
+
+export const billingTransitionSchema = z.object({
+  pending: z.boolean()
+}).passthrough();
+export type BillingTransition = z.infer<typeof billingTransitionSchema>;
 
 export const profileResponseSchema = z.object({
   workspace: z.string(),

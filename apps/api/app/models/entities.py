@@ -173,6 +173,38 @@ class BillingCheckoutSession(Base):
     workspace: Mapped[Workspace] = relationship()
 
 
+class BillingSubscriptionTransition(Base):
+    __tablename__ = "billing_subscription_transitions"
+    __table_args__ = (
+        Index("idx_billing_subscription_transitions_workspace", "workspace_id", "status"),
+        Index("idx_billing_subscription_transitions_subscription", "stripe_subscription_id", "status"),
+        Index("uq_billing_subscription_transition_open", "workspace_id", "stripe_subscription_id", unique=True, postgresql_where=text("status IN ('pending', 'scheduled')"), sqlite_where=text("status IN ('pending', 'scheduled')")),
+        Index("uq_billing_subscription_transition_idempotency_key", "idempotency_key", unique=True),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    stripe_customer_id: Mapped[str] = mapped_column(String(128))
+    stripe_subscription_id: Mapped[str] = mapped_column(String(128), index=True)
+    stripe_schedule_id: Mapped[str] = mapped_column(String(128), default="")
+    from_plan: Mapped[str] = mapped_column(String(32))
+    to_plan: Mapped[str] = mapped_column(String(32))
+    billing_period: Mapped[str] = mapped_column(String(32), default="monthly")
+    direction: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    effective_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    stripe_event_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    workspace: Mapped[Workspace] = relationship()
+
+
 class TestEntitlement(Base):
     __tablename__ = "test_entitlements"
     __table_args__ = (

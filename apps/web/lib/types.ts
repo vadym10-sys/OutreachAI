@@ -1566,10 +1566,28 @@ export type BillingStatus = {
   last_decline_code?: string;
   last_failure_message?: string;
   last_payment_failed_at?: string | null;
+  transition?: BillingTransition;
+  cancel_at_period_end?: boolean;
   limits: PlanLimits;
   usage: Record<string, number>;
   sales_employees_used: number;
   workspaces_used: number;
+};
+export type BillingTransition = {
+  pending: boolean;
+  id?: string;
+  from_plan?: string;
+  to_plan?: string;
+  billing_period?: string;
+  direction?: string;
+  status?: string;
+  effective_at?: string | null;
+  stripe_subscription_id?: string;
+  stripe_schedule_id?: string;
+  created_at?: string | null;
+  completed_at?: string | null;
+  canceled_at?: string | null;
+  error_message?: string;
 };
 export type Usage = { plan: string; period: string; limits: PlanLimits; usage: Record<string, number> };
 export type AdminSummary = { users: number; workspaces: number; subscriptions: number; revenue: number; usage: Record<string, number>; system_health: Record<string, string> };

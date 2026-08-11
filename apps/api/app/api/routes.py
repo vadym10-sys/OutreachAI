@@ -20,6 +20,7 @@ from uuid import UUID
 from uuid import uuid4
 
 import httpx
+import stripe
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import and_, asc, desc, func, or_, select, text
@@ -40,6 +41,7 @@ from app.models.entities import (
     AuditLog,
     BackupRun,
     BillingCheckoutSession,
+    BillingSubscriptionTransition,
     Campaign,
     CampaignSequence,
     CampaignStatus,
@@ -99,6 +101,8 @@ from app.schemas.dto import (
     CampaignSequenceIn,
     CampaignUpdate,
     CheckoutRequest,
+    SubscriptionChangeRequest,
+    SubscriptionTransitionOut,
     CrmCompanyOut,
     CrmContactOut,
     CrmDealOut,
@@ -214,6 +218,21 @@ from app.services.entitlements import (
     workspace_trial_is_active,
 )
 from app.services.plan_catalog import PLAN_CATALOG, PLAN_ORDER, normalize_billing_period, plan_limits, public_plan_catalog
+from app.services.subscription_transitions import (
+    SubscriptionTransitionError,
+    apply_upgrade_now,
+    cancel_scheduled_transition,
+    create_transition_row,
+    open_transition,
+    plan_direction,
+    request_cancel_at_period_end,
+    require_single_app_controlled_subscription,
+    retrieve_bound_stripe_subscription,
+    schedule_downgrade,
+    transition_idempotency_key,
+    transition_out,
+    undo_cancel_at_period_end,
+)
 from app.services.enrichment_queue import enqueue_autopilot_email_job
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
 from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
@@ -1111,6 +1130,11 @@ def _billing_duplicate_diagnostics(subscription_rows: list[Subscription]) -> tup
 def _lock_billing_checkout(db: Session, workspace_id: UUID, user_id: str) -> None:
     if db.bind and db.bind.dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"billing-checkout:{workspace_id}:{user_id}"})
+
+
+def _lock_billing_transition(db: Session, workspace_id: UUID, subscription_id: str) -> None:
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"billing-transition:{workspace_id}:{subscription_id}"})
 
 
 def _lock_campaign_mutation(db: Session, workspace_id: UUID, user_id: str) -> threading.Lock | None:
@@ -6588,6 +6612,159 @@ def billing_portal(payload: BillingPortalRequest, request: Request, user_id: Cur
     return session
 
 
+@router.get("/billing/subscription/change", response_model=SubscriptionTransitionOut)
+def billing_subscription_change_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> SubscriptionTransitionOut:
+    workspace = _current_workspace(db, user_id)
+    try:
+        subscription = require_single_app_controlled_subscription(db, workspace)
+    except SubscriptionTransitionError:
+        return SubscriptionTransitionOut(**transition_out(None))
+    return SubscriptionTransitionOut(**transition_out(open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or ""))))
+
+
+@router.post("/billing/subscription/change", response_model=SubscriptionTransitionOut)
+def billing_subscription_change(payload: SubscriptionChangeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SubscriptionTransitionOut:
+    workspace = _current_workspace(db, user_id)
+    if payload.plan not in PLAN_CATALOG:
+        raise HTTPException(status_code=400, detail="Unknown subscription plan")
+    try:
+        normalize_billing_period(payload.billing_period)
+        subscription = require_single_app_controlled_subscription(db, workspace)
+        direction = plan_direction(subscription.plan, payload.plan)
+    except SubscriptionTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _lock_billing_transition(db, workspace.id, str(subscription.stripe_subscription_id or ""))
+    existing = open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or ""))
+    if existing is not None:
+        return SubscriptionTransitionOut(**transition_out(existing))
+    idempotency_key = transition_idempotency_key(workspace.id, str(subscription.stripe_subscription_id), subscription.plan, payload.plan, direction)
+    previous = db.scalar(select(BillingSubscriptionTransition).where(BillingSubscriptionTransition.idempotency_key == idempotency_key))
+    if previous is not None:
+        return SubscriptionTransitionOut(**transition_out(previous))
+    try:
+        stripe_subscription = retrieve_bound_stripe_subscription(local_subscription=subscription, workspace_id=workspace.id, user_id=user_id)
+        effective_at = subscription.current_period_end if direction == "downgrade" else None
+        transition = create_transition_row(
+            db,
+            workspace_id=workspace.id,
+            user_id=user_id,
+            subscription=subscription,
+            to_plan=payload.plan,
+            direction=direction,
+            idempotency_key=idempotency_key,
+            effective_at=effective_at,
+        )
+        if direction == "upgrade":
+            apply_upgrade_now(transition=transition, stripe_subscription=stripe_subscription, to_plan=payload.plan)
+            transition.status = "pending"
+        else:
+            schedule = schedule_downgrade(transition=transition, stripe_subscription=stripe_subscription, to_plan=payload.plan)
+            transition.status = "scheduled"
+            transition.stripe_schedule_id = str(getattr(schedule, "id", "") or (schedule.get("id", "") if isinstance(schedule, dict) else ""))
+        transition.updated_at = datetime.utcnow()
+        db.add(transition)
+        settings = _settings_for_workspace(db, user_id, workspace)
+        settings.billing = {
+            **(settings.billing or {}),
+            "pendingPlan": payload.plan,
+            "pendingPlanDirection": direction,
+            "pendingPlanEffectiveAt": transition.effective_at.isoformat() if transition.effective_at else "",
+            "subscriptionTransitionId": str(transition.id),
+        }
+        flag_modified(settings, "billing")
+        log_event(db, request, user_id, f"billing.subscription_change_{direction}", {"workspace_id": str(workspace.id), "from_plan": subscription.plan, "to_plan": payload.plan})
+        delete_key(cache_key("billing-status", workspace.id, user_id))
+        db.commit()
+        db.refresh(transition)
+        return SubscriptionTransitionOut(**transition_out(transition))
+    except stripe.StripeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=502, detail="Stripe subscription change failed. Please retry.") from exc
+    except SubscriptionTransitionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        existing = open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or ""))
+        if existing is not None:
+            return SubscriptionTransitionOut(**transition_out(existing))
+        raise HTTPException(status_code=409, detail="Subscription change conflicted with another request. Please retry.") from exc
+
+
+@router.delete("/billing/subscription/change", response_model=SubscriptionTransitionOut)
+def billing_subscription_change_cancel(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SubscriptionTransitionOut:
+    workspace = _current_workspace(db, user_id)
+    try:
+        subscription = require_single_app_controlled_subscription(db, workspace)
+    except SubscriptionTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _lock_billing_transition(db, workspace.id, str(subscription.stripe_subscription_id or ""))
+    transition = open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or ""))
+    if transition is None:
+        return SubscriptionTransitionOut(**transition_out(None))
+    if transition.direction == "upgrade":
+        raise HTTPException(status_code=409, detail="Immediate upgrades cannot be canceled after submission. Wait for Stripe confirmation or payment resolution.")
+    try:
+        cancel_scheduled_transition(transition=transition)
+    except stripe.StripeError as exc:
+        raise HTTPException(status_code=502, detail="Stripe scheduled change cancellation failed. Please retry.") from exc
+    except SubscriptionTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    transition.status = "canceled"
+    transition.canceled_at = datetime.utcnow()
+    transition.updated_at = datetime.utcnow()
+    settings = _settings_for_workspace(db, user_id, workspace)
+    billing = dict(settings.billing or {})
+    for key_name in ("pendingPlan", "pendingPlanDirection", "pendingPlanEffectiveAt", "subscriptionTransitionId"):
+        billing.pop(key_name, None)
+    settings.billing = billing
+    flag_modified(settings, "billing")
+    log_event(db, request, user_id, "billing.subscription_change_canceled", {"workspace_id": str(workspace.id), "transition_id": str(transition.id)})
+    delete_key(cache_key("billing-status", workspace.id, user_id))
+    db.commit()
+    return SubscriptionTransitionOut(**transition_out(transition))
+
+
+@router.post("/billing/subscription/cancel")
+def billing_subscription_cancel(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+    workspace = _current_workspace(db, user_id)
+    try:
+        subscription = require_single_app_controlled_subscription(db, workspace)
+        request_cancel_at_period_end(subscription=subscription, workspace_id=workspace.id, user_id=user_id)
+    except stripe.StripeError as exc:
+        raise HTTPException(status_code=502, detail="Stripe cancellation request failed. Please retry.") from exc
+    except SubscriptionTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    settings = _settings_for_workspace(db, user_id, workspace)
+    settings.billing = {**(settings.billing or {}), "cancelAtPeriodEnd": True}
+    flag_modified(settings, "billing")
+    log_event(db, request, user_id, "billing.subscription_cancel_requested", {"workspace_id": str(workspace.id)})
+    delete_key(cache_key("billing-status", workspace.id, user_id))
+    db.commit()
+    return {"cancel_at_period_end": True}
+
+
+@router.post("/billing/subscription/cancel/undo")
+def billing_subscription_cancel_undo(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+    workspace = _current_workspace(db, user_id)
+    try:
+        subscription = require_single_app_controlled_subscription(db, workspace)
+        undo_cancel_at_period_end(subscription=subscription, workspace_id=workspace.id, user_id=user_id)
+    except stripe.StripeError as exc:
+        raise HTTPException(status_code=502, detail="Stripe cancellation undo failed. Please retry.") from exc
+    except SubscriptionTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    settings = _settings_for_workspace(db, user_id, workspace)
+    settings.billing = {**(settings.billing or {}), "cancelAtPeriodEnd": False}
+    flag_modified(settings, "billing")
+    log_event(db, request, user_id, "billing.subscription_cancel_undone", {"workspace_id": str(workspace.id)})
+    delete_key(cache_key("billing-status", workspace.id, user_id))
+    db.commit()
+    return {"cancel_at_period_end": False}
+
+
 @router.get("/billing/diagnostics", response_model=BillingDiagnosticsOut)
 def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
     del user_id
@@ -6742,6 +6919,8 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
             stripe_customer_id="",
             stripe_subscription_id="",
             last_failure_message="Multiple active billing subscriptions require owner review.",
+            transition=transition_out(None),
+            cancel_at_period_end=False,
             limits=limits,
             usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
             sales_employees_used=0,
@@ -6780,6 +6959,8 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
         last_decline_code=str((subscription.last_decline_code if subscription else None) or billing.get("lastDeclineCode") or ""),
         last_failure_message=str((subscription.last_failure_message if subscription else None) or billing.get("lastFailureMessage") or ""),
         last_payment_failed_at=(subscription.last_payment_failed_at if subscription else None) or _parse_billing_datetime(billing.get("lastPaymentFailedAt")),
+        transition=transition_out(open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or "")) if subscription and not beta_override else None),
+        cancel_at_period_end=bool(billing.get("cancelAtPeriodEnd")),
         limits=limits,
         usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
         sales_employees_used=int(sales_employees_used),

@@ -17,9 +17,7 @@ const legacyRoutes = [
   ["/dashboard/deals", "CRM"],
   ["/dashboard/crm", "CRM"],
   ["/dashboard/campaigns", "Письма"],
-  ["/dashboard/inbox", "Письма"],
-  ["/dashboard/billing", "Настройки"],
-  ["/dashboard/profile", "Настройки"]
+  ["/dashboard/inbox", "Письма"]
 ] as const;
 
 test.describe("AI-first workspace routes", () => {

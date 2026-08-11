@@ -276,7 +276,19 @@ def reconcile_app_settings_billing_cache(
     entitlement = resolve_billing_entitlement(db, user_id, workspace)
     current = dict(settings.billing or {})
     derived = billing_cache_payload(entitlement)
-    for key in ("lastPaymentError", "lastDeclineCode", "lastFailureMessage", "lastPaymentFailedAt", "lastFailedInvoiceId", "lastFailedPaymentIntentId"):
+    for key in (
+        "lastPaymentError",
+        "lastDeclineCode",
+        "lastFailureMessage",
+        "lastPaymentFailedAt",
+        "lastFailedInvoiceId",
+        "lastFailedPaymentIntentId",
+        "pendingPlan",
+        "pendingPlanDirection",
+        "pendingPlanEffectiveAt",
+        "subscriptionTransitionId",
+        "cancelAtPeriodEnd",
+    ):
         if key in current and key not in derived:
             derived[key] = current[key]
     changed = current != derived
