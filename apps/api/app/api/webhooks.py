@@ -18,11 +18,12 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.observability import capture_provider_exception
 from app.models.entities import AppSettings, AuditLog, BillingCheckoutSession, Company, Deal, EmailMessage, Lead, LeadStatus, Note, Subscription, User, Workspace
-from app.schemas.dto import PLAN_LIMITS, ReplyAssistantRequest
+from app.schemas.dto import ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 from app.services.ai_memory import record_email_memory
-from app.services.billing import plan_from_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
-from app.services.entitlements import reconcile_app_settings_billing_cache
+from app.services.billing import UnknownStripePriceError, require_plan_for_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
+from app.services.entitlements import UNKNOWN_PRICE_STATUS, reconcile_app_settings_billing_cache
+from app.services.plan_catalog import PLAN_CATALOG, plan_limits
 from app.services.continuous_learning import apply_continuous_learning_event
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -205,6 +206,9 @@ def _sync_subscription(
     price_id: str = "",
     stripe_event_created_at: datetime | None = None,
 ) -> Subscription | None:
+    if plan not in PLAN_CATALOG:
+        plan = "Unknown"
+        status = UNKNOWN_PRICE_STATUS
     parsed_workspace_id = _workspace_uuid(workspace_id)
     if parsed_workspace_id is None or db.get(Workspace, parsed_workspace_id) is None:
         return None
@@ -237,7 +241,7 @@ def _sync_subscription(
     subscription.current_period_end = current_period_end
     subscription.stripe_event_created_at = stripe_event_created_at or subscription.stripe_event_created_at
     subscription.updated_at = datetime.utcnow()
-    subscription.plan_limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])
+    subscription.plan_limits = plan_limits(plan) if plan in PLAN_CATALOG else {}
     if status in PAID_SUBSCRIPTION_STATUSES:
         subscription.last_payment_error = None
         subscription.last_decline_code = None
@@ -299,12 +303,18 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         except stripe.StripeError as exc:
             capture_provider_exception(exc, provider="stripe", endpoint="stripe.subscription.retrieve", workspace_id=workspace_id)
             subscription = None
-        payload = subscription_payload(subscription) if subscription else {}
+        try:
+            payload = subscription_payload(subscription) if subscription else {}
+        except UnknownStripePriceError:
+            payload = {"status": UNKNOWN_PRICE_STATUS, "trial_end": None, "current_period_end": None, "price_id": "", "plan": "Unknown"}
         status = str(payload.get("status") or "active")
         trial_end = payload.get("trial_end") if subscription else None
         current_period_end = payload.get("current_period_end") if subscription else None
         price_id = str(payload.get("price_id") or "")
         resolved_plan = str(payload.get("plan") or plan)
+        if resolved_plan not in PLAN_CATALOG:
+            resolved_plan = "Unknown"
+            status = UNKNOWN_PRICE_STATUS
         _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=resolved_plan, status=status, trial_end=trial_end, current_period_end=current_period_end, price_id=price_id, stripe_event_created_at=timestamp_to_datetime(event.get("created")))
     elif event_type == "checkout.session.expired":
         _mark_checkout_session_status(db, str(data.get("id") or ""), "expired")
@@ -314,8 +324,13 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         workspace_id = _metadata_value(data.get("metadata"), "workspace_id")
         user_id = _metadata_value(data.get("metadata"), "user_id")
         price_id = subscription_price_id(data)
-        plan = _metadata_value(data.get("metadata"), "plan") or plan_from_price_id(price_id) or "Starter"
-        status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
+        try:
+            plan, _ = require_plan_for_price_id(price_id)
+        except UnknownStripePriceError:
+            plan = "Unknown"
+            status = UNKNOWN_PRICE_STATUS
+        else:
+            status = "canceled" if event_type == "customer.subscription.deleted" else str(data.get("status") or "active")
         _sync_subscription(db, user_id=user_id, workspace_id=workspace_id, customer_id=customer_id, subscription_id=subscription_id, plan=plan, status=status, trial_end=timestamp_to_datetime(data.get("trial_end")), current_period_end=timestamp_to_datetime(data.get("current_period_end")), price_id=price_id, stripe_event_created_at=timestamp_to_datetime(event.get("created")))
     elif event_type in {"invoice.paid", "invoice.payment_succeeded"}:
         subscription_id = str(data.get("subscription") or "")

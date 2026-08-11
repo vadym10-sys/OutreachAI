@@ -7,32 +7,13 @@ import stripe
 
 from app.core.config import get_settings
 from app.core.observability import capture_provider_exception
-
-PLAN_CATALOG = {
-    "Starter": {
-        "amount": 4900,
-        "currency": "eur",
-        "lookup_key": "outreachai_starter_monthly",
-        "name": "OutreachAI Starter",
-        "description": "OutreachAI Starter monthly subscription with a 14-day free trial.",
-    },
-    "Pro": {
-        "amount": 14900,
-        "currency": "eur",
-        "lookup_key": "outreachai_pro_monthly",
-        "name": "OutreachAI Pro",
-        "description": "OutreachAI Pro monthly subscription with a 14-day free trial.",
-    },
-    "Agency": {
-        "amount": 49900,
-        "currency": "eur",
-        "lookup_key": "outreachai_agency_monthly",
-        "name": "OutreachAI Agency",
-        "description": "OutreachAI Agency monthly subscription with a 14-day free trial.",
-    },
-}
+from app.services.plan_catalog import PLAN_CATALOG, TRIAL_DAYS, configured_price_id, normalize_billing_period, plan_from_configured_price_id
 
 ACTIVE_STRIPE_STATUSES = {"active", "trialing"}
+
+
+class UnknownStripePriceError(ValueError):
+    pass
 
 
 def _object_status(value: object) -> str:
@@ -60,35 +41,32 @@ def _capture_stripe_error(exc: BaseException, endpoint: str, *, workspace_id: st
 
 
 def _validate_monthly_price(plan: str, price: object) -> None:
-    spec = PLAN_CATALOG[plan]
+    spec = PLAN_CATALOG[plan].stripe_monthly
     if not getattr(price, "recurring", None) or price.recurring.get("interval") != "month":
         raise ValueError(f"{plan} Stripe price must be a recurring monthly price")
-    if int(getattr(price, "unit_amount", 0) or 0) != int(spec["amount"]) or str(getattr(price, "currency", "")).lower() != spec["currency"]:
-        raise ValueError(f"{plan} Stripe price must be €{spec['amount'] // 100}/month")
+    if int(getattr(price, "unit_amount", 0) or 0) != int(spec.amount) or str(getattr(price, "currency", "")).lower() != spec.currency:
+        raise ValueError(f"{plan} Stripe price must be €{spec.amount // 100}/month")
 
 
-def price_for_plan(plan: str) -> str:
+def price_for_plan(plan: str, billing_period: str = "monthly") -> str:
+    normalize_billing_period(billing_period)
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
-    prices = {
-        "Starter": settings.stripe_starter_price_id,
-        "Pro": settings.stripe_pro_price_id,
-        "Agency": settings.stripe_agency_price_id
-    }
-    if plan not in prices:
+    if plan not in PLAN_CATALOG:
         raise ValueError("Invalid billing plan")
     if not settings.stripe_secret_key:
         raise ValueError("STRIPE_SECRET_KEY is required to resolve billing prices")
-    if prices[plan]:
+    price_id = configured_price_id(plan, "monthly")
+    if price_id:
         try:
-            price = stripe.Price.retrieve(prices[plan])
+            price = stripe.Price.retrieve(price_id)
         except stripe.StripeError as exc:
             _capture_stripe_error(exc, "stripe.price.retrieve")
             raise
         _validate_monthly_price(plan, price)
-        return prices[plan]
+        return price_id
     try:
-        found = stripe.Price.list(lookup_keys=[PLAN_CATALOG[plan]["lookup_key"]], active=True, limit=1)
+        found = stripe.Price.list(lookup_keys=[PLAN_CATALOG[plan].stripe_monthly.lookup_key], active=True, limit=1)
     except stripe.StripeError as exc:
         _capture_stripe_error(exc, "stripe.price.list")
         raise
@@ -99,7 +77,8 @@ def price_for_plan(plan: str) -> str:
     raise ValueError(f"STRIPE_{plan.upper()}_PRICE_ID is required for {plan} checkout")
 
 
-def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "") -> dict:
+def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer_id: str = "", idempotency_key: str = "", billing_period: str = "monthly") -> dict:
+    normalize_billing_period(billing_period)
     settings = get_settings()
     stripe.api_key = settings.stripe_secret_key
     if not settings.stripe_secret_key:
@@ -118,13 +97,13 @@ def create_checkout_session(user_id: str, workspace_id: str, plan: str, customer
         session = stripe.checkout.Session.create(
             mode="subscription",
             customer=customer_id,
-            line_items=[{"price": price_for_plan(plan), "quantity": 1}],
+            line_items=[{"price": price_for_plan(plan, "monthly"), "quantity": 1}],
             success_url=f"{settings.public_app_url.rstrip('/')}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{settings.public_app_url.rstrip('/')}/pricing",
             allow_promotion_codes=True,
             client_reference_id=user_id,
-            subscription_data={"trial_period_days": 14, "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": plan}},
-            metadata={"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "product": f"OutreachAI {plan}"},
+            subscription_data={"trial_period_days": TRIAL_DAYS, "metadata": {"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "billing_period": "monthly"}},
+            metadata={"user_id": user_id, "workspace_id": workspace_id, "plan": plan, "billing_period": "monthly", "product": f"OutreachAI {plan}"},
             custom_text={
                 "submit": {"message": "Start your OutreachAI subscription. Your plan renews monthly after the 14-day free trial unless canceled."},
                 "after_submit": {"message": "Your OutreachAI workspace will activate after Stripe confirms your subscription."},
@@ -178,38 +157,35 @@ def ensure_subscription_catalog() -> list[dict]:
 
     created: list[dict] = []
     for plan, spec in PLAN_CATALOG.items():
-        products = stripe.Product.search(query=f"name:'{spec['name']}' AND active:'true'", limit=1)
-        product = products.data[0] if products.data else stripe.Product.create(name=spec["name"], description=spec["description"], metadata={"plan": plan, "brand": "OutreachAI"})
-        if getattr(product, "name", "") != spec["name"] or getattr(product, "description", "") != spec["description"] or getattr(product, "metadata", {}).get("brand") != "OutreachAI":
-            product = stripe.Product.modify(product.id, name=spec["name"], description=spec["description"], metadata={"plan": plan, "brand": "OutreachAI"})
-        prices = stripe.Price.list(lookup_keys=[spec["lookup_key"]], active=True, limit=10)
-        price = next((item for item in prices.data if int(getattr(item, "unit_amount", 0) or 0) == spec["amount"] and str(getattr(item, "currency", "")).lower() == spec["currency"] and getattr(item, "recurring", None) and item.recurring.get("interval") == "month"), None)
+        stripe_spec = spec.stripe_monthly
+        products = stripe.Product.search(query=f"name:'{spec.display_name}' AND active:'true'", limit=1)
+        product = products.data[0] if products.data else stripe.Product.create(name=spec.display_name, description=spec.description, metadata={"plan": plan, "brand": "OutreachAI"})
+        if getattr(product, "name", "") != spec.display_name or getattr(product, "description", "") != spec.description or getattr(product, "metadata", {}).get("brand") != "OutreachAI":
+            product = stripe.Product.modify(product.id, name=spec.display_name, description=spec.description, metadata={"plan": plan, "brand": "OutreachAI"})
+        prices = stripe.Price.list(lookup_keys=[stripe_spec.lookup_key], active=True, limit=10)
+        price = next((item for item in prices.data if int(getattr(item, "unit_amount", 0) or 0) == stripe_spec.amount and str(getattr(item, "currency", "")).lower() == stripe_spec.currency and getattr(item, "recurring", None) and item.recurring.get("interval") == "month"), None)
         if price is None:
             price_payload = {
                 "product": product.id,
-                "unit_amount": spec["amount"],
-                "currency": spec["currency"],
+                "unit_amount": stripe_spec.amount,
+                "currency": stripe_spec.currency,
                 "recurring": {"interval": "month"},
-                "metadata": {"plan": plan},
+                "metadata": {"plan": plan, "billing_period": "monthly"},
             }
             if not prices.data:
-                price_payload["lookup_key"] = spec["lookup_key"]
+                price_payload["lookup_key"] = stripe_spec.lookup_key
             price = stripe.Price.create(
                 **price_payload,
             )
-        created.append({"plan": plan, "product_id": product.id, "price_id": price.id, "lookup_key": spec["lookup_key"]})
+        created.append({"plan": plan, "billing_period": "monthly", "product_id": product.id, "price_id": price.id, "lookup_key": stripe_spec.lookup_key})
     return created
 
 
-def plan_from_price_id(price_id: str) -> str | None:
+def plan_from_price_id(price_id: str) -> tuple[str, str] | None:
     settings = get_settings()
-    configured = {
-        settings.stripe_starter_price_id: "Starter",
-        settings.stripe_pro_price_id: "Pro",
-        settings.stripe_agency_price_id: "Agency",
-    }
-    if price_id in configured:
-        return configured[price_id]
+    configured = plan_from_configured_price_id(price_id)
+    if configured:
+        return configured
     if not settings.stripe_secret_key:
         return None
     stripe.api_key = settings.stripe_secret_key
@@ -219,9 +195,16 @@ def plan_from_price_id(price_id: str) -> str | None:
         return None
     lookup_key = getattr(price, "lookup_key", None)
     for plan, spec in PLAN_CATALOG.items():
-        if lookup_key == spec["lookup_key"]:
-            return plan
+        if lookup_key == spec.stripe_monthly.lookup_key:
+            return plan, "monthly"
     return None
+
+
+def require_plan_for_price_id(price_id: str) -> tuple[str, str]:
+    resolved = plan_from_price_id(price_id)
+    if not resolved:
+        raise UnknownStripePriceError("Unknown or retired Stripe price")
+    return resolved
 
 
 def timestamp_to_datetime(value: int | None) -> datetime | None:
@@ -249,11 +232,20 @@ def subscription_payload(subscription: object) -> dict:
     metadata = _stripe_get(subscription, "metadata", {}) or {}
     if not isinstance(metadata, dict):
         metadata = {}
+    resolved_plan: str | None = None
+    billing_period = "monthly"
+    if price_id:
+        resolved_plan, billing_period = require_plan_for_price_id(price_id)
+    elif metadata.get("plan") in PLAN_CATALOG:
+        resolved_plan = str(metadata.get("plan"))
+    if not resolved_plan:
+        raise UnknownStripePriceError("Stripe subscription is missing an allowlisted monthly price")
     return {
         "subscription_id": str(_stripe_get(subscription, "id", "") or ""),
         "customer_id": str(_stripe_get(subscription, "customer", "") or ""),
         "price_id": price_id,
-        "plan": str(metadata.get("plan") or plan_from_price_id(price_id) or "Starter"),
+        "plan": resolved_plan,
+        "billing_period": billing_period,
         "status": str(_stripe_get(subscription, "status", "") or "active"),
         "trial_end": timestamp_to_datetime(_stripe_get(subscription, "trial_end")),
         "current_period_end": timestamp_to_datetime(_stripe_get(subscription, "current_period_end")),

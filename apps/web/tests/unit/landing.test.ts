@@ -11,24 +11,22 @@ describe("pricing plans", () => {
   });
 
   it("matches backend billing prices and plan limits", () => {
-    const dto = readFileSync(resolve(process.cwd(), "../api/app/schemas/dto.py"), "utf8");
-    const billing = readFileSync(resolve(process.cwd(), "../api/app/services/billing.py"), "utf8");
+    const catalog = readFileSync(resolve(process.cwd(), "../api/app/services/plan_catalog.py"), "utf8");
 
     for (const plan of publicPlans) {
-      const backendPlan = dto.match(new RegExp(`"${plan.name}": \\{([\\s\\S]*?)\\n    \\}`))?.[1] ?? "";
-      const stripePlan = billing.match(new RegExp(`"${plan.name}": \\{([\\s\\S]*?)\\n    \\}`))?.[1] ?? "";
+      const backendPlan = catalog.match(new RegExp(`"${plan.name}": PlanSpec\\(([\\s\\S]*?)\\n    \\),`))?.[1] ?? "";
 
-      expect(stripePlan).toContain(`"amount": ${plan.monthlyPrice * 100}`);
-      expect(stripePlan).toContain(`"currency": "${plan.currency.toLowerCase()}"`);
-      expect(stripePlan).toContain("14-day free trial");
-      expect(backendPlan).toContain(`"mrr": ${plan.monthlyPrice}`);
-      expect(backendPlan).toContain(`"leads": ${plan.limits.leads}`);
-      expect(backendPlan).toContain(`"ai_generations": ${plan.limits.aiGenerations}`);
-      expect(backendPlan).toContain(`"email_sends": ${plan.limits.emailSends}`);
-      expect(backendPlan).toContain(`"sales_employees": ${plan.limits.salesEmployees}`);
-      expect(backendPlan).toContain(`"workspaces": ${plan.limits.workspaces}`);
-      expect(backendPlan).toContain(`"team_members": ${plan.limits.teamMembers}`);
-      expect(backendPlan).toContain(`"campaigns": ${plan.limits.campaigns}`);
+      expect(backendPlan).toContain(`monthly_price=${plan.monthlyPrice}`);
+      expect(backendPlan).toContain(`currency="${plan.currency}"`);
+      expect(backendPlan).toContain(`trial_days=TRIAL_DAYS`);
+      expect(backendPlan).toContain(`amount=${plan.monthlyPrice * 100}`);
+      expect(backendPlan).toContain(`leads=${plan.limits.leads}`);
+      expect(backendPlan).toContain(`ai_generations=${plan.limits.aiGenerations}`);
+      expect(backendPlan).toContain(`email_sends=${plan.limits.emailSends}`);
+      expect(backendPlan).toContain(`sales_employees=${plan.limits.salesEmployees}`);
+      expect(backendPlan).toContain(`workspaces=${plan.limits.workspaces}`);
+      expect(backendPlan).toContain(`team_members=${plan.limits.teamMembers}`);
+      expect(backendPlan).toContain(`campaigns=${plan.limits.campaigns}`);
     }
   });
 });

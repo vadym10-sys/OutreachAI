@@ -28,6 +28,9 @@ export type PublicPlan = {
   };
 };
 
+// Display fallback for unauthenticated public pages. Authenticated billing,
+// checkout, usage and access control are server-authoritative through the API
+// catalog and entitlement resolver.
 export const publicPlans: PublicPlan[] = [
   {
     name: "Starter",
@@ -117,4 +120,3 @@ export function planByName(name: PlanName): PublicPlan {
 export function selectedPlanFromQuery(value: string | null | undefined): PublicPlan | null {
   return isPlanName(value) ? planByName(value) : null;
 }
-

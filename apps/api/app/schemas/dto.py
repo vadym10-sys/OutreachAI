@@ -6,6 +6,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator
 
+from app.services.plan_catalog import PLAN_LIMITS as _PLAN_LIMITS
+
+PLAN_LIMITS = _PLAN_LIMITS
+
 
 PIPELINE_STATUSES = ["New", "Qualified", "Contacted", "Interested", "Meeting", "Won", "Lost", "Archive"]
 CRM_STAGES = [
@@ -22,67 +26,6 @@ CRM_STAGES = [
     "Lost",
 ]
 SALES_EMPLOYEE_MODES = ["Review Mode", "Semi-Auto Mode", "Autonomous Mode"]
-
-PLAN_LIMITS = {
-    "Starter": {
-        "mrr": 49,
-        "leads": 500,
-        "ai_generations": 1000,
-        "email_sends": 1000,
-        "sales_employees": 1,
-        "workspaces": 1,
-        "team_members": 1,
-        "campaigns": 3,
-        "review_mode": True,
-        "semi_auto_mode": False,
-        "autonomous_mode": False,
-        "basic_analytics": True,
-        "advanced_analytics": False,
-        "reply_ai": False,
-        "api_access": False,
-        "webhooks": False,
-        "white_label": False,
-    },
-    "Pro": {
-        "mrr": 149,
-        "leads": 5000,
-        "ai_generations": 10000,
-        "email_sends": 10000,
-        "sales_employees": 3,
-        "workspaces": 3,
-        "team_members": 10,
-        "campaigns": 25,
-        "review_mode": True,
-        "semi_auto_mode": True,
-        "autonomous_mode": False,
-        "basic_analytics": True,
-        "advanced_analytics": True,
-        "reply_ai": True,
-        "api_access": False,
-        "webhooks": False,
-        "white_label": False,
-    },
-    "Agency": {
-        "mrr": 499,
-        "leads": 50000,
-        "ai_generations": 100000,
-        "email_sends": 100000,
-        "sales_employees": 10,
-        "workspaces": 0,
-        "team_members": 0,
-        "campaigns": 0,
-        "review_mode": True,
-        "semi_auto_mode": True,
-        "autonomous_mode": True,
-        "basic_analytics": True,
-        "advanced_analytics": True,
-        "reply_ai": True,
-        "api_access": True,
-        "webhooks": True,
-        "white_label": True,
-    },
-}
-
 
 class LeadFinderRequest(BaseModel):
     niche: str = Field(default="", max_length=120)
@@ -1089,7 +1032,15 @@ class MemberInvite(BaseModel):
 class BillingPlanOut(BaseModel):
     name: str
     price: int
+    monthly_price: int = 0
+    currency: str = "EUR"
+    billing_period: str = "monthly"
+    trial_days: int = 14
     limits: dict[str, Any]
+    features: dict[str, bool] = Field(default_factory=dict)
+    reserved_features: dict[str, str] = Field(default_factory=dict)
+    upgrade_to: list[str] = Field(default_factory=list)
+    downgrade_to: list[str] = Field(default_factory=list)
     current: bool = False
     active_subscription: bool = False
 
@@ -1472,5 +1423,6 @@ class GmailOAuthFinalizeRequest(BaseModel):
 
 class CheckoutRequest(BaseModel):
     plan: str
+    billing_period: str = "monthly"
     success_url: Optional[HttpUrl] = None
     cancel_url: Optional[HttpUrl] = None
