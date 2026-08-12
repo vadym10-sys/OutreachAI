@@ -189,6 +189,29 @@ def _clerk_email_value(email_address: dict) -> str:
     return ""
 
 
+def _verified_email_from_claims(claims: dict) -> str:
+    email_addresses = claims.get("email_addresses")
+    if not isinstance(email_addresses, list):
+        return ""
+
+    primary_id = claims.get("primary_email_address_id")
+    primary = next((item for item in email_addresses if isinstance(item, dict) and primary_id and item.get("id") == primary_id), None)
+    primary_value = _clerk_email_value(primary) if isinstance(primary, dict) else ""
+    if primary_value:
+        return primary_value
+
+    verified_values = []
+    for item in email_addresses:
+        if not isinstance(item, dict) or item is primary:
+            continue
+        value = _clerk_email_value(item)
+        if value:
+            verified_values.append(value)
+    if len(verified_values) == 1:
+        return verified_values[0]
+    return ""
+
+
 @lru_cache(maxsize=256)
 def _fetch_clerk_user_email(user_id: str) -> str:
     settings = get_settings()
@@ -214,7 +237,7 @@ def _fetch_clerk_user_email(user_id: str) -> str:
     primary_id = payload.get("primary_email_address_id")
     email_addresses = payload.get("email_addresses")
     if isinstance(email_addresses, list):
-        primary = next((item for item in email_addresses if isinstance(item, dict) and item.get("id") == primary_id), None)
+        primary = next((item for item in email_addresses if isinstance(item, dict) and primary_id and item.get("id") == primary_id), None)
         ordered = [primary] if primary else []
         ordered.extend(item for item in email_addresses if item is not primary)
         for item in ordered:
@@ -272,7 +295,7 @@ def get_current_workspace_user_context(
 
     claims = _verify_clerk_token(token)
     user_id = str(claims["sub"])
-    email = _email_from_claims(claims)
+    email = _verified_email_from_claims(claims)
     if not email:
         try:
             email = _fetch_clerk_user_email(user_id)
