@@ -12646,7 +12646,7 @@ def test_subscription_upgrade_waits_for_successful_invoice_before_entitlement_ch
 
     paid_invoice = {
         "id": f"evt_upgrade_paid_{uuid4().hex}",
-        "created": int(time.time()) + 30,
+        "created": int(time.time()) + 5,
         "type": "invoice.paid",
         "data": {
             "object": {

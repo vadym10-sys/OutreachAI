@@ -580,13 +580,17 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         subscription_id = str(data.get("subscription") or "")
         customer_id = _stripe_id(_stripe_get(data, "customer"))
         subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
-        if subscription and not _subscription_event_is_stale(subscription, event_created_at):
+        if subscription:
             if customer_id and str(subscription.stripe_customer_id or "") != customer_id:
                 _audit_rejected_stripe_event(db, event=event, data=data, workspace_id=str(subscription.workspace_id or ""), reason="stripe_invoice_customer_binding_mismatch")
                 db.commit()
                 return {"received": True, "type": event_type}
             transition = open_upgrade_transition_for_subscription(db, subscription_id=subscription_id)
-            if transition and _invoice_has_verified_price(data, expected_plan=transition.to_plan):
+            is_upgrade_invoice = bool(transition and _invoice_has_verified_price(data, expected_plan=transition.to_plan))
+            if _subscription_event_is_stale(subscription, event_created_at) and not is_upgrade_invoice:
+                db.commit()
+                return {"received": True, "type": event_type}
+            if transition and is_upgrade_invoice:
                 apply_confirmed_upgrade_transition(db, subscription=subscription, transition=transition, event_created_at=event_created_at)
             subscription.status = "active"
             subscription.last_payment_error = None
