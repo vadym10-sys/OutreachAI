@@ -10000,6 +10000,29 @@ def _record_email_send_provider_context(db: Session, *, workspace_id: UUID, emai
     db.commit()
 
 
+def _record_smoke_send_confirmation_once(db: Session, *, workspace_id: UUID, user_id: str, action: str, smoke_test_id: str, email_id: UUID, recipient_email: str) -> None:
+    existing = db.scalar(
+        select(AuditLog.id)
+        .where(
+            AuditLog.workspace_id == workspace_id,
+            AuditLog.action == action,
+            AuditLog.metadata_json["smoke_test_id"].as_string() == smoke_test_id,
+            AuditLog.metadata_json["email_id"].as_string() == str(email_id),
+        )
+        .limit(1)
+    )
+    if existing:
+        return
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            action=action,
+            metadata_json={"smoke_test_id": smoke_test_id, "email_id": str(email_id), "recipient_email": recipient_email, "user_id": user_id},
+        )
+    )
+
+
 @router.post("/emails/{email_id}/recover", response_model=UsageActionOut)
 def recover_email_send(email_id: UUID, payload: RecoverEmailSendIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
@@ -10058,6 +10081,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     initial_lead = db.scalar(select(Lead).where(Lead.id == initial_email.lead_id, Lead.workspace_id == workspace.id)) if initial_email.lead_id else None
     is_production_smoke_test = _is_production_smoke_test_email(initial_email) or _is_production_smoke_test_lead(initial_lead)
     is_internal_email_smoke_draft = _is_internal_email_smoke_draft_email(initial_email) or _is_internal_email_smoke_draft_lead(initial_lead)
+    smoke_confirmation_audits: list[tuple[str, str, str]] = []
     if is_production_smoke_test:
         _require_production_smoke_owner(db, user=user)
         tags = initial_email.tags if isinstance(initial_email.tags, dict) else {}
@@ -10071,15 +10095,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
             raise HTTPException(status_code=409, detail="Recipient confirmation does not match this smoke-test draft.")
         if initial_email.campaign_id or (initial_lead and initial_lead.campaign_id):
             raise HTTPException(status_code=409, detail="Production smoke-test records cannot be attached to campaigns or automations.")
-        db.add(
-            AuditLog(
-                user_id=user.user_id,
-                workspace_id=workspace.id,
-                action="production_smoke_test.send_confirmed",
-                metadata_json={"smoke_test_id": smoke_test_id, "email_id": str(initial_email.id), "recipient_email": smoke_recipient, "user_id": user.user_id},
-            )
-        )
-        db.commit()
+        smoke_confirmation_audits.append(("production_smoke_test.send_confirmed", smoke_test_id, smoke_recipient))
     if is_internal_email_smoke_draft:
         tags = initial_email.tags if isinstance(initial_email.tags, dict) else {}
         smoke_test_id = str(tags.get("smoke_test_id") or "").strip()
@@ -10093,17 +10109,11 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
             raise HTTPException(status_code=409, detail="Recipient confirmation does not match this smoke-test draft.")
         if initial_email.campaign_id or (initial_lead and initial_lead.campaign_id):
             raise HTTPException(status_code=409, detail="Internal smoke-test records cannot be attached to campaigns or automations.")
-        db.add(
-            AuditLog(
-                user_id=user.user_id,
-                workspace_id=workspace.id,
-                action="internal_email_smoke_draft.send_confirmed",
-                metadata_json={"smoke_test_id": smoke_test_id, "email_id": str(initial_email.id), "recipient_email": smoke_recipient, "user_id": user.user_id},
-            )
-        )
-        db.commit()
+        smoke_confirmation_audits.append(("internal_email_smoke_draft.send_confirmed", smoke_test_id, smoke_recipient))
     idempotency_key = _email_send_idempotency_key(workspace.id, email_id, _email_approval_version(initial_email))
     email = _claim_approved_email_for_send(db, workspace_id=workspace.id, email_id=email_id, idempotency_key=idempotency_key)
+    for action, smoke_test_id, smoke_recipient in smoke_confirmation_audits:
+        _record_smoke_send_confirmation_once(db, workspace_id=workspace.id, user_id=user.user_id, action=action, smoke_test_id=smoke_test_id, email_id=email.id, recipient_email=smoke_recipient)
     lead = db.scalar(select(Lead).where(Lead.id == email.lead_id, Lead.workspace_id == workspace.id)) if email.lead_id else None
     recipient_email = str(email.recipient_email or (lead.email if lead else "") or "").strip().lower()
     if not lead or not recipient_email:

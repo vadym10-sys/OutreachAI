@@ -6357,6 +6357,14 @@ def test_workspace_app_contact_discovery_email_approval_and_send(monkeypatch) ->
         assert saved_email.provider_message_id == "workspace-app-send-1"
         assert saved_email.sent_at is not None
         assert db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.id == UUID(email["id"]), EmailMessage.provider_message_id.is_not(None), EmailMessage.sent_at.is_not(None))) == 1
+        assert db.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action.in_(("internal_email_smoke_draft.send_confirmed", "production_smoke_test.send_confirmed")),
+                AuditLog.metadata_json["email_id"].as_string() == email["id"],
+            )
+        ) == 0
         edit_log = db.scalar(select(AuditLog).where(AuditLog.action == "email.edited", AuditLog.workspace_id == saved_email.workspace_id).order_by(AuditLog.created_at.desc()))
         assert edit_log is not None
         assert edit_log.metadata_json["fields"] == ["body", "recipient_email", "subject"]
@@ -6571,6 +6579,17 @@ def test_workspace_app_internal_smoke_draft_is_normal_user_scoped_and_no_send_by
     assert sent.status_code == 200
     assert sent.json()["email"]["delivery_status"] == "sent"
     assert provider_calls[0]["to_email"] == recipient
+    with get_sessionmaker()() as db:
+        send_confirmed_count = db.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action == "internal_email_smoke_draft.send_confirmed",
+                AuditLog.metadata_json["smoke_test_id"].as_string() == email["tags"]["smoke_test_id"],
+                AuditLog.metadata_json["email_id"].as_string() == email["id"],
+            )
+        )
+        assert send_confirmed_count == 1
 
     duplicate_send = client.post(
         f"/api/workspace-app/emails/{email['id']}/send",
@@ -6595,6 +6614,97 @@ def test_workspace_app_internal_smoke_draft_is_normal_user_scoped_and_no_send_by
         assert saved_email.tags["send_idempotency_key"] == f"workspace-app-email-send:{saved_email.workspace_id}:{email['id']}:v1"
         assert saved_email.tags["source"] == "internal_email_smoke_draft"
         assert saved_company.metadata_json["source"] == "internal_email_smoke_draft"
+        assert db.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action == "internal_email_smoke_draft.send_confirmed",
+                AuditLog.metadata_json["smoke_test_id"].as_string() == email["tags"]["smoke_test_id"],
+                AuditLog.metadata_json["email_id"].as_string() == email["id"],
+            )
+        ) == 1
+        assert db.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action == "production_smoke_test.send_confirmed",
+                AuditLog.metadata_json["email_id"].as_string() == email["id"],
+            )
+        ) == 0
+
+
+def test_workspace_app_internal_smoke_send_confirmation_audit_is_single_on_uncertain_retry(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"client-smoke-uncertain-{uuid4()}@example.com"}
+    recipient = INTERNAL_SMOKE_DRAFT_RECIPIENT
+    created = client.post(
+        "/api/workspace-app/internal-email-smoke-draft",
+        headers=headers,
+        json=_internal_smoke_draft_payload(recipient),
+    )
+    assert created.status_code == 200
+    email = created.json()["email"]
+    smoke_test_id = email["tags"]["smoke_test_id"]
+
+    monkeypatch.setattr(
+        "app.api.usage._outreach_sender_runtime_config",
+        lambda db, user_id, workspace: (
+            SimpleNamespace(provider="smtp", sender_email="sender@internal-smoke.example", sender_name="Internal Smoke Sender", reply_to="reply@internal-smoke.example"),
+            {"host": "smtp.internal-smoke.example", "port": 587, "username": "sender", "password": "secret", "use_tls": True},
+        ),
+    )
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@internal-smoke.example"))
+    assert approved.status_code == 200
+
+    provider_calls: list[dict[str, Any]] = []
+
+    def fail_send(**kwargs):
+        provider_calls.append(kwargs)
+        raise EmailProviderRequestError("SMTP email sending failed.")
+
+    monkeypatch.setattr("app.api.usage.send_email", fail_send)
+    first_send = client.post(
+        f"/api/workspace-app/emails/{email['id']}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": smoke_test_id, "recipient_email": recipient},
+    )
+    assert first_send.status_code == 502
+    assert first_send.json()["detail"] == "Email sending could not be confirmed. Check the mailbox before recovering or sending again."
+    assert len(provider_calls) == 1
+
+    retry_without_recovery = client.post(
+        f"/api/workspace-app/emails/{email['id']}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": smoke_test_id, "recipient_email": recipient},
+    )
+    assert retry_without_recovery.status_code == 409
+    assert len(provider_calls) == 1
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        assert saved_email.delivery_status == "send_confirmation_pending"
+        assert saved_email.provider_message_id is None
+        assert saved_email.sent_at is None
+        assert saved_email.tags["sender_provider"] == "smtp"
+        assert saved_email.tags["provider_idempotency_supported"] is False
+        assert db.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action == "internal_email_smoke_draft.send_confirmed",
+                AuditLog.metadata_json["smoke_test_id"].as_string() == smoke_test_id,
+                AuditLog.metadata_json["email_id"].as_string() == email["id"],
+            )
+        ) == 1
+        assert db.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action == "email.send_confirmation_pending",
+                AuditLog.workspace_id == saved_email.workspace_id,
+                AuditLog.metadata_json["email_id"].as_string() == email["id"],
+            )
+        ) == 1
 
 
 def test_workspace_app_internal_smoke_draft_concurrent_create_is_bounded_and_single_record() -> None:
