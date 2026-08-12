@@ -12671,6 +12671,20 @@ def test_subscription_upgrade_waits_for_successful_invoice_before_entitlement_ch
         assert transitions[0].status == "applied"
 
 
+def test_invoice_price_detection_accepts_stripe_list_like_line_data() -> None:
+    from app.api.webhooks import _invoice_has_verified_price
+
+    invoice = SimpleNamespace(
+        lines=SimpleNamespace(
+            data=(
+                SimpleNamespace(price=SimpleNamespace(id="price_starter_test", product="prod_starter_test")),
+                SimpleNamespace(price=SimpleNamespace(id="price_pro_test", product="prod_pro_test")),
+            )
+        )
+    )
+    assert _invoice_has_verified_price(invoice, expected_plan="Pro") is True
+
+
 def test_subscription_webhook_rejects_forged_workspace_user_customer_and_product_metadata() -> None:
     user_id = f"forged-binding-{uuid4()}@example.com"
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}

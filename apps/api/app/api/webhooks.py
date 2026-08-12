@@ -139,7 +139,9 @@ def _invoice_line_price_objects(invoice: object) -> list[object]:
     lines = _stripe_get(invoice, "lines", {}) or {}
     data = _stripe_get(lines, "data", []) or []
     prices: list[object] = []
-    for line in data if isinstance(data, list) else []:
+    if isinstance(data, (str, bytes)) or not hasattr(data, "__iter__"):
+        return prices
+    for line in data:
         price = _stripe_get(line, "price")
         if price:
             prices.append(price)
