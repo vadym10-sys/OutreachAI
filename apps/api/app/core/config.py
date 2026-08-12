@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     google_oauth_client_secret: str = ""
     google_oauth_redirect_uri: str = ""
     google_oauth_allowed_test_users: str = ""
+    internal_email_smoke_draft_recipients: str = ""
     clay_api_key: str = ""
     clay_workspace_id: str = ""
     crm_sync_webhook_url: str = ""

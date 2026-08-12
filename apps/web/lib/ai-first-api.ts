@@ -48,6 +48,10 @@ export type ProductionEmailSmokeTestResponse = WorkspaceAppActionResponse & {
   };
 };
 
+export type InternalEmailSmokeDraftConfig = {
+  recipient_email: string;
+};
+
 export type AiFirstApi = {
   ready: boolean;
   bootstrap(): Promise<WorkspaceAppBootstrapResponse>;
@@ -61,6 +65,8 @@ export type AiFirstApi = {
   sendApprovedEmail(emailId: string, payload?: { confirmed_send?: boolean; smoke_test_id?: string; recipient_email?: string }): Promise<WorkspaceAppActionResponse>;
   recoverEmailForRetry(emailId: string, confirmedNotDelivered: boolean): Promise<WorkspaceAppActionResponse>;
   createProductionEmailSmokeTest(payload: { recipient_email: string; confirmed_recipient_control: boolean }): Promise<ProductionEmailSmokeTestResponse>;
+  getInternalEmailSmokeDraftConfig(): Promise<InternalEmailSmokeDraftConfig>;
+  createInternalEmailSmokeDraft(payload: { recipient_email: string; confirmed_recipient_control: boolean }): Promise<ProductionEmailSmokeTestResponse>;
   getActiveProductionEmailSmokeTest(): Promise<ProductionEmailSmokeTestResponse>;
   cleanupProductionEmailSmokeTest(smokeTestId: string): Promise<ProductionEmailSmokeTestResponse>;
   listEmails(cursor?: string, pageSize?: number): Promise<{ messages: Email[]; nextCursor: string; hasMore: boolean }>;
@@ -223,6 +229,11 @@ export function useAiFirstApi(): AiFirstApi {
       body: JSON.stringify({ confirmed_not_delivered: confirmedNotDelivered })
     })),
     createProductionEmailSmokeTest: async (payload) => requireSuccessfulAction(await request<ProductionEmailSmokeTestResponse>("/api/workspace-app/production-email-smoke-test", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    })),
+    getInternalEmailSmokeDraftConfig: () => request<InternalEmailSmokeDraftConfig>("/api/workspace-app/internal-email-smoke-draft/config"),
+    createInternalEmailSmokeDraft: async (payload) => requireSuccessfulAction(await request<ProductionEmailSmokeTestResponse>("/api/workspace-app/internal-email-smoke-draft", {
       method: "POST",
       body: JSON.stringify(payload)
     })),

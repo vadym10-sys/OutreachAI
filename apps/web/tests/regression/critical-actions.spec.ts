@@ -307,6 +307,53 @@ test("ordinary workspace owner cannot see production email smoke-test UI", async
   expect(activeSmokeRequests).toBe(0);
 });
 
+test("ordinary workspace owner can create internal test draft without sending", async ({ page }) => {
+  let createPayload: Record<string, unknown> | null = null;
+  let sendRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/workspace-app/internal-email-smoke-draft")) {
+      createPayload = request.postDataJSON() as Record<string, unknown>;
+    }
+    if (request.method() === "POST" && request.url().includes("/api/workspace-app/emails/bbbbbbbb-1111-4111-8111-bbbbbbbb1111/send")) {
+      sendRequests += 1;
+    }
+  });
+
+  await page.goto("/dashboard/settings");
+  await expect(page.getByRole("heading", { name: "Production email smoke test" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Internal email test draft" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Controlled recipient" })).toHaveValue("romaniukvadym10+client-smoke-20260812-1@gmail.com");
+  await page.getByLabel("I control this recipient email and want to create an internal test draft in this workspace.").check();
+  const createResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/internal-email-smoke-draft")
+  );
+  await page.getByRole("button", { name: "Create internal test draft" }).click();
+  await expect((await createResponse).ok()).toBe(true);
+  expect(createPayload).toEqual({
+    recipient_email: "romaniukvadym10+client-smoke-20260812-1@gmail.com",
+    confirmed_recipient_control: true
+  });
+  await expect(page.getByText("Internal email smoke draft created. Nothing was sent.")).toBeVisible();
+
+  await page.getByRole("link", { name: "Open draft" }).click();
+  await expect(page).toHaveURL(/\/dashboard\/emails/);
+  await expect(page.getByText("Internal test draft")).toBeVisible();
+  await expect(page.getByTestId("evidence-recipient").getByText("romaniukvadym10+client-smoke-20260812-1@gmail.com", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Body")).toHaveValue(/Internal OutreachAI non-owner smoke-test draft/);
+
+  const approveResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/bbbbbbbb-1111-4111-8111-bbbbbbbb1111/approve")
+  );
+  await page.getByRole("button", { name: /Approve email/ }).click();
+  await expect((await approveResponse).ok()).toBe(true);
+  await page.getByRole("button", { name: /Send email/ }).click();
+  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("romaniukvadym10+client-smoke-20260812-1@gmail.com")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toHaveCount(0);
+  expect(sendRequests).toBe(0);
+});
+
 test("owner production email smoke-test UI stops before final send", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("outreachai.e2eUserEmail", "romaniukvadym10@gmail.com");
