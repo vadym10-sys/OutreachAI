@@ -12424,7 +12424,9 @@ def test_subscription_transition_stripe_payloads_are_idempotent_and_do_not_mutat
         to_plan="Pro",
     )
     assert captured_schedule["create"]["idempotency_key"] == "sub_change_schedule"
+    assert captured_schedule["create"] == {"from_subscription": "sub_payload", "idempotency_key": "sub_change_schedule"}
     assert captured_schedule["modify"]["idempotency_key"].startswith("sub_sched_mod_")
+    assert captured_schedule["modify"]["metadata"]["transition_id"] == str(transition.id)
     assert all("quantity" not in item for phase in captured_schedule["modify"]["phases"] for item in phase["items"])
 
 
@@ -12566,7 +12568,7 @@ def test_subscription_change_webhook_confirmation_applies_entitlement_and_stale_
     assert client.get("/api/billing/status", headers=headers).json()["plan"] == "Pro"
 
 
-def test_subscription_upgrade_waits_for_successful_invoice_before_entitlement_change() -> None:
+def test_subscription_upgrade_waits_for_successful_invoice_before_entitlement_change(monkeypatch) -> None:
     user_id = f"upgrade-confirmation-{uuid4()}@example.com"
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
     workspace = client.get("/api/workspace/me", headers=headers).json()
@@ -12650,12 +12652,24 @@ def test_subscription_upgrade_waits_for_successful_invoice_before_entitlement_ch
             "object": {
                 "id": "in_upgrade_paid",
                 "customer": "cus_upgrade_confirm",
-                "subscription": "sub_upgrade_confirm",
                 "status": "paid",
-                "lines": {"data": [_invoice_line_for_price("price_pro_test")]},
+                "lines": {"data": [{"id": "il_thin_payload"}]},
             }
         },
     }
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fixture")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        "app.api.webhooks.stripe.Invoice.retrieve",
+        lambda invoice_id: {
+            "id": invoice_id,
+            "customer": "cus_upgrade_confirm",
+            "subscription": "sub_upgrade_confirm",
+            "status": "paid",
+            "lines": {"data": [_invoice_line_for_price("price_pro_test")]},
+        },
+    )
+    monkeypatch.setattr("app.api.webhooks.stripe.Price.retrieve", lambda price_id, **_kwargs: _stripe_price_object(price_id))
     raw, signature = stripe_signature(paid_invoice)
     assert client.post("/webhooks/stripe", content=raw, headers={"stripe-signature": signature, "content-type": "application/json"}).status_code == 200
     raw, signature = stripe_signature(paid_invoice)
@@ -12667,6 +12681,21 @@ def test_subscription_upgrade_waits_for_successful_invoice_before_entitlement_ch
         transitions = db.query(BillingSubscriptionTransition).filter(BillingSubscriptionTransition.stripe_subscription_id == "sub_upgrade_confirm").all()
         assert len(transitions) == 1
         assert transitions[0].status == "applied"
+    get_settings.cache_clear()
+
+
+def test_invoice_price_detection_accepts_stripe_list_like_line_data() -> None:
+    from app.api.webhooks import _invoice_has_verified_price
+
+    invoice = SimpleNamespace(
+        lines=SimpleNamespace(
+            data=(
+                SimpleNamespace(price=SimpleNamespace(id="price_starter_test", product="prod_starter_test")),
+                SimpleNamespace(price=SimpleNamespace(id="price_pro_test", product="prod_pro_test")),
+            )
+        )
+    )
+    assert _invoice_has_verified_price(invoice, expected_plan="Pro") is True
 
 
 def test_subscription_webhook_rejects_forged_workspace_user_customer_and_product_metadata() -> None:
