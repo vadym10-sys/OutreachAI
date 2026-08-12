@@ -737,6 +737,9 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
         } : null
       });
     }
+    if (apiPath === "/api/workspace-app/internal-email-smoke-draft/config" && route.request().method() === "GET") {
+      return fulfillJson(route, { recipient_email: "romaniukvadym10+client-smoke-20260812-1@gmail.com" });
+    }
     if (apiPath === "/api/workspace-app/production-email-smoke-test" && route.request().method() === "POST") {
       const body = route.request().postDataJSON() as { recipient_email?: string; confirmed_recipient_control?: boolean };
       if (!body.confirmed_recipient_control) return fulfillJson(route, { detail: "Confirm that you control this recipient email before creating test records." }, 409);
@@ -792,7 +795,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     if (apiPath === "/api/workspace-app/internal-email-smoke-draft" && route.request().method() === "POST") {
       const body = route.request().postDataJSON() as { recipient_email?: string; confirmed_recipient_control?: boolean };
       if (!body.confirmed_recipient_control) return fulfillJson(route, { detail: "Confirm that you control this recipient email before creating internal test records." }, 409);
-      const recipient = String(body.recipient_email || "").trim().toLowerCase();
+      const recipient = String(body.recipient_email || "");
       if (recipient !== "romaniukvadym10+client-smoke-20260812-1@gmail.com") return fulfillJson(route, { detail: "Use the approved controlled internal smoke alias for this smoke test." }, 400);
       const smokeTestId = "bbbbbbbb-1111-4222-8333-bbbbbbbbbbbb";
       const email = {

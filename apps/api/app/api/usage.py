@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
@@ -92,7 +92,7 @@ EMAIL_SEND_CONFIRMATION_PENDING_STATUS = "send_confirmation_pending"
 EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED = {"resend"}
 PRODUCTION_SMOKE_TEST_SOURCE = "production_smoke_test"
 INTERNAL_EMAIL_SMOKE_DRAFT_SOURCE = "internal_email_smoke_draft"
-INTERNAL_EMAIL_SMOKE_DRAFT_RECIPIENT_RE = re.compile(r"^romaniukvadym10\+client-smoke-20260812-1@gmail\.com$")
+INTERNAL_EMAIL_SMOKE_DRAFT_ALLOWED_FIELDS = {"recipient_email", "confirmed_recipient_control"}
 LOCALE_LANGUAGE_NAMES = {
     "en": "English",
     "en-us": "American English",
@@ -257,8 +257,12 @@ class ProductionEmailSmokeTestCreateIn(BaseModel):
 class InternalEmailSmokeDraftCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    recipient_email: EmailStr
+    recipient_email: str
     confirmed_recipient_control: bool = False
+
+
+class InternalEmailSmokeDraftConfigOut(BaseModel):
+    recipient_email: str = ""
 
 
 class ProductionEmailSmokeTestCleanupIn(BaseModel):
@@ -852,9 +856,53 @@ def _is_internal_email_smoke_draft_email(email: EmailMessage | None) -> bool:
     return bool(email and _is_internal_email_smoke_draft_metadata(email.tags if isinstance(email.tags, dict) else {}))
 
 
+def _internal_email_smoke_allowed_recipients() -> list[str]:
+    settings = get_settings()
+    return [item.strip() for item in settings.internal_email_smoke_draft_recipients.split(",") if item.strip()]
+
+
 def _validate_internal_email_smoke_recipient(recipient: str) -> None:
-    if not INTERNAL_EMAIL_SMOKE_DRAFT_RECIPIENT_RE.fullmatch(recipient):
+    if recipient not in _internal_email_smoke_allowed_recipients():
         raise HTTPException(status_code=400, detail="Use the approved controlled internal smoke alias for this smoke test.")
+
+
+async def _internal_email_smoke_draft_payload(request: Request) -> InternalEmailSmokeDraftCreateIn:
+    raw_body = await request.body()
+    duplicate_keys: set[str] = set()
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        seen: set[str] = set()
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in seen:
+                duplicate_keys.add(key)
+            seen.add(key)
+            result[key] = value
+        return result
+
+    try:
+        parsed = json.loads(raw_body.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.") from None
+
+    if duplicate_keys:
+        raise HTTPException(status_code=400, detail="Duplicate JSON fields are not allowed.")
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
+    unknown_fields = set(parsed) - INTERNAL_EMAIL_SMOKE_DRAFT_ALLOWED_FIELDS
+    if unknown_fields:
+        raise HTTPException(status_code=422, detail="Unknown fields are not allowed for internal smoke draft creation.")
+    missing_fields = INTERNAL_EMAIL_SMOKE_DRAFT_ALLOWED_FIELDS - set(parsed)
+    if missing_fields:
+        raise HTTPException(status_code=422, detail="recipient_email and confirmed_recipient_control are required.")
+    recipient = parsed.get("recipient_email")
+    if not isinstance(recipient, str):
+        raise HTTPException(status_code=422, detail="recipient_email must be a string.")
+    _validate_internal_email_smoke_recipient(recipient)
+    confirmed = parsed.get("confirmed_recipient_control")
+    if type(confirmed) is not bool:
+        raise HTTPException(status_code=422, detail="confirmed_recipient_control must be a boolean.")
+    return InternalEmailSmokeDraftCreateIn(recipient_email=recipient, confirmed_recipient_control=confirmed)
 
 
 def _smoke_test_id_from_email(email: EmailMessage) -> str:
@@ -895,6 +943,65 @@ def _production_smoke_context(
         cleanup_deleted=cleanup_deleted or {},
         cleanup_already_clean=cleanup_already_clean,
     )
+
+
+def _internal_email_smoke_draft_response(
+    db: Session,
+    *,
+    workspace: Workspace,
+    user_id: str,
+    lead: Lead,
+    message: str,
+) -> ProductionEmailSmokeTestOut:
+    company = db.scalar(
+        select(Company)
+        .where(Company.workspace_id == workspace.id, Company.lead_id == lead.id)
+        .order_by(Company.updated_at.desc())
+    )
+    email = db.scalar(
+        select(EmailMessage)
+        .where(EmailMessage.workspace_id == workspace.id, EmailMessage.lead_id == lead.id)
+        .order_by(EmailMessage.created_at.desc())
+    )
+    if not company or not _is_internal_email_smoke_draft_company(company) or not email or not _is_internal_email_smoke_draft_email(email):
+        raise HTTPException(status_code=409, detail="Internal smoke-test records are incomplete. Review existing workspace data before retrying.")
+    tags = email.tags if isinstance(email.tags, dict) else {}
+    smoke_test_id = _valid_smoke_test_id(tags.get("smoke_test_id") or _lead_metadata(lead).get("smoke_test_id"))
+    if not smoke_test_id:
+        raise HTTPException(status_code=409, detail="Internal smoke-test records are missing a smoke-test ID.")
+    recipient = str(tags.get("recipient_email") or email.recipient_email or lead.email or "")
+    _validate_internal_email_smoke_recipient(recipient)
+    return ProductionEmailSmokeTestOut(
+        status="success",
+        message=message,
+        company=_crm_company_out(db, workspace, user_id, company),
+        email=EmailOut.model_validate(email),
+        smoke_test=ProductionEmailSmokeTestContextOut(
+            smoke_test_id=smoke_test_id,
+            workspace_id=workspace.id,
+            workspace_name=workspace.name,
+            sender_email=str(tags.get("sender_email") or ""),
+            sender_provider=str(tags.get("sender_provider") or ""),
+            recipient_email=recipient,
+        ),
+    )
+
+
+def _active_internal_email_smoke_draft_lead(db: Session, *, workspace_id: UUID) -> Lead | None:
+    for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace_id).order_by(Lead.created_at.desc())).all():
+        if _is_internal_email_smoke_draft_lead(lead):
+            return lead
+    return None
+
+
+def _internal_email_smoke_sender_status(db: Session, *, user_id: str, workspace: Workspace) -> Any:
+    for _attempt in range(2):
+        try:
+            sender_status, _smtp_config = _outreach_sender_runtime_config(db, user_id, workspace)
+            return sender_status
+        except IntegrityError:
+            db.rollback()
+    return SimpleNamespace(sender_email="", provider="not_configured")
 
 
 def _active_production_smoke_context(db: Session, *, workspace: Workspace) -> ProductionEmailSmokeTestContextOut | None:
@@ -7826,21 +7933,30 @@ def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanup
     )
 
 
+@router.get("/internal-email-smoke-draft/config", response_model=InternalEmailSmokeDraftConfigOut)
+def get_internal_email_smoke_draft_config(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> InternalEmailSmokeDraftConfigOut:
+    _current_workspace(db, user.user_id, user.email)
+    allowed_recipients = _internal_email_smoke_allowed_recipients()
+    return InternalEmailSmokeDraftConfigOut(recipient_email=allowed_recipients[0] if len(allowed_recipients) == 1 else "")
+
+
 @router.post("/internal-email-smoke-draft", response_model=ProductionEmailSmokeTestOut)
-def create_internal_email_smoke_draft(payload: InternalEmailSmokeDraftCreateIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
+def create_internal_email_smoke_draft(request: Request, user: WorkspaceUserContext, payload: InternalEmailSmokeDraftCreateIn = Depends(_internal_email_smoke_draft_payload), db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
     workspace = _current_workspace(db, user.user_id, user.email)
-    recipient = str(payload.recipient_email).strip().lower()
+    recipient = payload.recipient_email
     if not payload.confirmed_recipient_control:
         raise HTTPException(status_code=409, detail="Confirm that you control this recipient email before creating internal test records.")
     _validate_internal_email_smoke_recipient(recipient)
 
-    active_smoke = [
-        lead
-        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id)).all()
-        if _is_internal_email_smoke_draft_lead(lead)
-    ]
+    active_smoke = _active_internal_email_smoke_draft_lead(db, workspace_id=workspace.id)
     if active_smoke:
-        raise HTTPException(status_code=409, detail="An internal email smoke draft already exists in this workspace.")
+        return _internal_email_smoke_draft_response(
+            db,
+            workspace=workspace,
+            user_id=user.user_id,
+            lead=active_smoke,
+            message="Internal email smoke draft already exists in this workspace. Nothing was sent.",
+        )
     existing_real = [
         lead
         for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, func.lower(Lead.email) == recipient)).all()
@@ -7849,7 +7965,7 @@ def create_internal_email_smoke_draft(payload: InternalEmailSmokeDraftCreateIn, 
     if existing_real:
         raise HTTPException(status_code=409, detail="This recipient already belongs to a CRM lead. Use only the isolated controlled smoke recipient.")
 
-    sender_status, _smtp_config = _outreach_sender_runtime_config(db, user.user_id, workspace)
+    sender_status = _internal_email_smoke_sender_status(db, user_id=user.user_id, workspace=workspace)
     smoke_test_id = uuid4()
     metadata = _internal_email_smoke_metadata(smoke_test_id, recipient, workspace.id)
     now = datetime.utcnow()
@@ -7892,7 +8008,20 @@ def create_internal_email_smoke_draft(payload: InternalEmailSmokeDraftCreateIn, 
         ),
     )
     db.add(lead)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        active_smoke = _active_internal_email_smoke_draft_lead(db, workspace_id=workspace.id)
+        if active_smoke:
+            return _internal_email_smoke_draft_response(
+                db,
+                workspace=workspace,
+                user_id=user.user_id,
+                lead=active_smoke,
+                message="Internal email smoke draft already exists in this workspace. Nothing was sent.",
+            )
+        raise HTTPException(status_code=409, detail="An internal email smoke draft already exists or is being created. Retry after refreshing the workspace.") from None
     company = Company(
         user_id=user.user_id,
         workspace_id=workspace.id,
@@ -7950,7 +8079,20 @@ def create_internal_email_smoke_draft(payload: InternalEmailSmokeDraftCreateIn, 
             metadata_json={"smoke_test_id": str(smoke_test_id), "lead_id": str(lead.id), "company_id": str(company.id), "email_id": str(draft.id), "recipient_email": recipient, "sender_provider": sender_status.provider, "sender_email": sender_status.sender_email},
         )
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        active_smoke = _active_internal_email_smoke_draft_lead(db, workspace_id=workspace.id)
+        if active_smoke:
+            return _internal_email_smoke_draft_response(
+                db,
+                workspace=workspace,
+                user_id=user.user_id,
+                lead=active_smoke,
+                message="Internal email smoke draft already exists in this workspace. Nothing was sent.",
+            )
+        raise HTTPException(status_code=409, detail="An internal email smoke draft already exists or is being created. Retry after refreshing the workspace.") from None
     db.refresh(company)
     db.refresh(draft)
     return ProductionEmailSmokeTestOut(

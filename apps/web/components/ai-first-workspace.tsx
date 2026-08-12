@@ -46,7 +46,6 @@ function pretty(value: string) {
 }
 
 const providerLockedEmailStatuses = new Set(["sent", "delivered", "opened", "replied", "bounced", "failed"]);
-const internalSmokeDraftRecipient = "romaniukvadym10+client-smoke-20260812-1@gmail.com";
 
 export function canEditEmailDraft(email: Pick<Email, "delivery_status" | "direction" | "sent_at" | "delivered_at" | "opened_at" | "bounced_at" | "replied_at">) {
   const status = String(email.delivery_status || "").toLowerCase();
@@ -1389,7 +1388,8 @@ function SettingsSection() {
   const [smokeRecipient, setSmokeRecipient] = useState("");
   const [smokeRecipientConfirmed, setSmokeRecipientConfirmed] = useState(false);
   const [lastSmokeTest, setLastSmokeTest] = useState<ProductionEmailSmokeTestResponse["smoke_test"] | null>(null);
-  const [internalSmokeRecipient, setInternalSmokeRecipient] = useState(internalSmokeDraftRecipient);
+  const [internalSmokeRecipient, setInternalSmokeRecipient] = useState("");
+  const [internalSmokeConfigLoaded, setInternalSmokeConfigLoaded] = useState(false);
   const [internalSmokeConfirmed, setInternalSmokeConfirmed] = useState(false);
   const [lastInternalSmokeDraft, setLastInternalSmokeDraft] = useState<ProductionEmailSmokeTestResponse["smoke_test"] | null>(null);
 
@@ -1397,16 +1397,19 @@ function SettingsSection() {
     if (!api.ready) return;
     setLoading(true);
     try {
-      const [nextWorkspace, nextIntegrations, nextSender, activeSmokeTest] = await Promise.all([
+      const [nextWorkspace, nextIntegrations, nextSender, activeSmokeTest, internalSmokeConfig] = await Promise.all([
         api.getWorkspace(),
         api.integrations(),
         api.senderStatus(),
-        isSystemOwner ? api.getActiveProductionEmailSmokeTest() : Promise.resolve<ProductionEmailSmokeTestResponse | null>(null)
+        isSystemOwner ? api.getActiveProductionEmailSmokeTest() : Promise.resolve<ProductionEmailSmokeTestResponse | null>(null),
+        isSystemOwner ? Promise.resolve(null) : api.getInternalEmailSmokeDraftConfig()
       ]);
       setWorkspace(nextWorkspace);
       setIntegrations(nextIntegrations.integrations);
       setSender(nextSender);
       setLastSmokeTest(activeSmokeTest?.smoke_test || null);
+      if (internalSmokeConfig?.recipient_email) setInternalSmokeRecipient(internalSmokeConfig.recipient_email);
+      if (!isSystemOwner) setInternalSmokeConfigLoaded(true);
       setError("");
     } catch (err) {
       setError(friendlyErrorMessage(err, "Could not load settings."));
@@ -1520,7 +1523,7 @@ function SettingsSection() {
     setNotice("");
     try {
       const response = await api.createInternalEmailSmokeDraft({
-        recipient_email: internalSmokeRecipient.trim(),
+        recipient_email: internalSmokeRecipient,
         confirmed_recipient_control: internalSmokeConfirmed
       });
       setLastInternalSmokeDraft(response.smoke_test || null);
@@ -1610,14 +1613,14 @@ function SettingsSection() {
         <form onSubmit={createInternalSmokeDraft} className="mt-4 grid gap-3">
           <label className="text-sm font-bold text-[var(--ui-text-soft)]">
             Controlled recipient
-            <input type="email" value={internalSmokeRecipient} onChange={(event) => setInternalSmokeRecipient(event.target.value)} className={fieldClass} />
+            <input type="email" value={internalSmokeRecipient} readOnly className={fieldClass} />
           </label>
           <label className="flex items-start gap-3 text-sm font-bold text-slate-700">
             <input type="checkbox" checked={internalSmokeConfirmed} onChange={(event) => setInternalSmokeConfirmed(event.target.checked)} className="mt-1 h-4 w-4 rounded border-[var(--ui-border)]" />
             I control this recipient email and want to create an internal test draft in this workspace.
           </label>
           <div className="flex flex-wrap gap-2">
-            <AppButton type="submit" size="sm" disabled={Boolean(busy) || !internalSmokeRecipient.trim() || !internalSmokeConfirmed}>
+            <AppButton type="submit" size="sm" disabled={Boolean(busy) || !internalSmokeConfigLoaded || !internalSmokeRecipient || !internalSmokeConfirmed}>
               {busy === "internal-smoke:create" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
               Create internal test draft
             </AppButton>
