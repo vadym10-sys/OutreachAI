@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
@@ -91,6 +91,8 @@ EMAIL_SEND_CLAIM_LEASE_SECONDS = 15 * 60
 EMAIL_SEND_CONFIRMATION_PENDING_STATUS = "send_confirmation_pending"
 EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED = {"resend"}
 PRODUCTION_SMOKE_TEST_SOURCE = "production_smoke_test"
+INTERNAL_EMAIL_SMOKE_DRAFT_SOURCE = "internal_email_smoke_draft"
+INTERNAL_EMAIL_SMOKE_DRAFT_RECIPIENT_RE = re.compile(r"^romaniukvadym10\+client-smoke-20260812-1@gmail\.com$")
 LOCALE_LANGUAGE_NAMES = {
     "en": "English",
     "en-us": "American English",
@@ -248,6 +250,13 @@ class EmailApproveIn(BaseModel):
 
 
 class ProductionEmailSmokeTestCreateIn(BaseModel):
+    recipient_email: EmailStr
+    confirmed_recipient_control: bool = False
+
+
+class InternalEmailSmokeDraftCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     recipient_email: EmailStr
     confirmed_recipient_control: bool = False
 
@@ -789,8 +798,23 @@ def _production_smoke_metadata(smoke_test_id: UUID, recipient_email: str) -> dic
     }
 
 
+def _internal_email_smoke_metadata(smoke_test_id: UUID, recipient_email: str, workspace_id: UUID) -> dict[str, Any]:
+    return {
+        "source": INTERNAL_EMAIL_SMOKE_DRAFT_SOURCE,
+        "is_test": True,
+        "automation_disabled": True,
+        "smoke_test_id": str(smoke_test_id),
+        "recipient_email": recipient_email,
+        "workspace_id": str(workspace_id),
+    }
+
+
 def _is_production_smoke_test_metadata(metadata: Any) -> bool:
     return isinstance(metadata, dict) and metadata.get("source") == PRODUCTION_SMOKE_TEST_SOURCE and metadata.get("is_test") is True
+
+
+def _is_internal_email_smoke_draft_metadata(metadata: Any) -> bool:
+    return isinstance(metadata, dict) and metadata.get("source") == INTERNAL_EMAIL_SMOKE_DRAFT_SOURCE and metadata.get("is_test") is True
 
 
 def _valid_smoke_test_id(value: Any) -> UUID | None:
@@ -812,6 +836,25 @@ def _is_production_smoke_test_company(company: Company | None) -> bool:
 
 def _is_production_smoke_test_email(email: EmailMessage | None) -> bool:
     return bool(email and _is_production_smoke_test_metadata(email.tags if isinstance(email.tags, dict) else {}))
+
+
+def _is_internal_email_smoke_draft_lead(lead: Lead | None) -> bool:
+    if not lead:
+        return False
+    return _is_internal_email_smoke_draft_metadata(_lead_metadata(lead))
+
+
+def _is_internal_email_smoke_draft_company(company: Company | None) -> bool:
+    return bool(company and _is_internal_email_smoke_draft_metadata(company.metadata_json if isinstance(company.metadata_json, dict) else {}))
+
+
+def _is_internal_email_smoke_draft_email(email: EmailMessage | None) -> bool:
+    return bool(email and _is_internal_email_smoke_draft_metadata(email.tags if isinstance(email.tags, dict) else {}))
+
+
+def _validate_internal_email_smoke_recipient(recipient: str) -> None:
+    if not INTERNAL_EMAIL_SMOKE_DRAFT_RECIPIENT_RE.fullmatch(recipient):
+        raise HTTPException(status_code=400, detail="Use the approved controlled internal smoke alias for this smoke test.")
 
 
 def _smoke_test_id_from_email(email: EmailMessage) -> str:
@@ -7783,6 +7826,149 @@ def cleanup_production_email_smoke_test(payload: ProductionEmailSmokeTestCleanup
     )
 
 
+@router.post("/internal-email-smoke-draft", response_model=ProductionEmailSmokeTestOut)
+def create_internal_email_smoke_draft(payload: InternalEmailSmokeDraftCreateIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> ProductionEmailSmokeTestOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    recipient = str(payload.recipient_email).strip().lower()
+    if not payload.confirmed_recipient_control:
+        raise HTTPException(status_code=409, detail="Confirm that you control this recipient email before creating internal test records.")
+    _validate_internal_email_smoke_recipient(recipient)
+
+    active_smoke = [
+        lead
+        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id)).all()
+        if _is_internal_email_smoke_draft_lead(lead)
+    ]
+    if active_smoke:
+        raise HTTPException(status_code=409, detail="An internal email smoke draft already exists in this workspace.")
+    existing_real = [
+        lead
+        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, func.lower(Lead.email) == recipient)).all()
+        if not _is_internal_email_smoke_draft_lead(lead) and not _is_production_smoke_test_lead(lead)
+    ]
+    if existing_real:
+        raise HTTPException(status_code=409, detail="This recipient already belongs to a CRM lead. Use only the isolated controlled smoke recipient.")
+
+    sender_status, _smtp_config = _outreach_sender_runtime_config(db, user.user_id, workspace)
+    smoke_test_id = uuid4()
+    metadata = _internal_email_smoke_metadata(smoke_test_id, recipient, workspace.id)
+    now = datetime.utcnow()
+    lead = Lead(
+        user_id=user.user_id,
+        workspace_id=workspace.id,
+        campaign_id=None,
+        sales_employee_id=None,
+        company=f"Internal email smoke draft {smoke_test_id}",
+        website=None,
+        industry="Internal QA",
+        country=workspace.target_country or "",
+        city="",
+        contact="Controlled internal smoke recipient",
+        email=recipient,
+        status=LeadStatus.email_generated,
+        notes=json.dumps(
+            {
+                **metadata,
+                "email_status": "Draft Ready",
+                "email_generated_at": now.isoformat(),
+                "workflow_stages": {
+                    "company_profile": "completed",
+                    "website_analysis": "completed",
+                    "decision_maker": "completed",
+                    "verified_email": "completed",
+                    "ai_email": "completed",
+                    "approval": "waiting",
+                },
+                "workflow_stage_messages": {
+                    "company_profile": "Internal smoke-test profile for the authenticated workspace.",
+                    "website_analysis": "Skipped for isolated internal smoke-test record.",
+                    "decision_maker": "Controlled internal recipient supplied explicitly.",
+                    "verified_email": "Recipient matched the current controlled internal smoke alias.",
+                    "ai_email": "Internal smoke-test draft prepared.",
+                    "approval": "Manual approval and separate final send confirmation are required.",
+                },
+            },
+            sort_keys=True,
+        ),
+    )
+    db.add(lead)
+    db.flush()
+    company = Company(
+        user_id=user.user_id,
+        workspace_id=workspace.id,
+        lead_id=lead.id,
+        name=lead.company,
+        email=recipient,
+        source=INTERNAL_EMAIL_SMOKE_DRAFT_SOURCE,
+        industry="Internal QA",
+        country=workspace.target_country or "",
+        ai_summary="Internal non-owner smoke-test record. Not a real customer or discovered contact.",
+        suggested_offer="Internal test only.",
+        outreach_strategy="Manual draft review, manual approval, and separate final send confirmation.",
+        sales_angle="Internal manual approval and reply tracking verification only.",
+        expected_reply_rate="Not counted",
+        email_status="Draft Ready",
+        crm_stage="Internal Test",
+        metadata_json=metadata,
+    )
+    db.add(company)
+    draft = EmailMessage(
+        user_id=user.user_id,
+        workspace_id=workspace.id,
+        campaign_id=None,
+        lead_id=lead.id,
+        direction="outbound",
+        recipient_email=recipient,
+        subject=f"[OutreachAI Internal Smoke Draft] {smoke_test_id}",
+        preview="Internal non-owner smoke-test draft. This is not customer outreach.",
+        body=(
+            "Internal OutreachAI non-owner smoke-test draft.\n\n"
+            f"Smoke test ID: {smoke_test_id}\n"
+            f"Workspace: {workspace.name}\n"
+            f"Sender: {sender_status.sender_email or 'not configured'} via {sender_status.provider}\n"
+            f"Recipient: {recipient}\n\n"
+            "This draft is created only for manual approval, explicit send confirmation, and reply tracking verification."
+        ),
+        cta="Internal test only",
+        tags={
+            **metadata,
+            "sender_email": sender_status.sender_email,
+            "sender_provider": sender_status.provider,
+            "workspace_name": workspace.name,
+            "owner_user_id": user.user_id,
+            "recipient_control_confirmed": True,
+        },
+        delivery_status="draft",
+    )
+    db.add(draft)
+    _add_lead_activity(db, request, user.user_id, workspace, "lead.internal_email_smoke_draft_created", lead, {"email_id": str(draft.id), **metadata})
+    db.add(
+        AuditLog(
+            user_id=user.user_id,
+            workspace_id=workspace.id,
+            action="internal_email_smoke_draft.created",
+            metadata_json={"smoke_test_id": str(smoke_test_id), "lead_id": str(lead.id), "company_id": str(company.id), "email_id": str(draft.id), "recipient_email": recipient, "sender_provider": sender_status.provider, "sender_email": sender_status.sender_email},
+        )
+    )
+    db.commit()
+    db.refresh(company)
+    db.refresh(draft)
+    return ProductionEmailSmokeTestOut(
+        status="success",
+        message="Internal email smoke draft created. Nothing was sent. Review, edit if needed, approve manually, then use a separate final Send confirmation.",
+        company=_crm_company_out(db, workspace, user.user_id, company),
+        email=EmailOut.model_validate(draft),
+        smoke_test=ProductionEmailSmokeTestContextOut(
+            smoke_test_id=smoke_test_id,
+            workspace_id=workspace.id,
+            workspace_name=workspace.name,
+            sender_email=sender_status.sender_email or "",
+            sender_provider=sender_status.provider,
+            recipient_email=recipient,
+        ),
+    )
+
+
 @router.post("/companies", response_model=UsageCompanyCreateOut)
 def create_company(payload: UsageCompanyCreateIn, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> UsageCompanyCreateOut:
     workspace = _current_workspace(db, user.user_id, user.email)
@@ -9729,6 +9915,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
         raise HTTPException(status_code=404, detail="Email draft not found.")
     initial_lead = db.scalar(select(Lead).where(Lead.id == initial_email.lead_id, Lead.workspace_id == workspace.id)) if initial_email.lead_id else None
     is_production_smoke_test = _is_production_smoke_test_email(initial_email) or _is_production_smoke_test_lead(initial_lead)
+    is_internal_email_smoke_draft = _is_internal_email_smoke_draft_email(initial_email) or _is_internal_email_smoke_draft_lead(initial_lead)
     if is_production_smoke_test:
         _require_production_smoke_owner(db, user=user)
         tags = initial_email.tags if isinstance(initial_email.tags, dict) else {}
@@ -9747,6 +9934,28 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
                 user_id=user.user_id,
                 workspace_id=workspace.id,
                 action="production_smoke_test.send_confirmed",
+                metadata_json={"smoke_test_id": smoke_test_id, "email_id": str(initial_email.id), "recipient_email": smoke_recipient, "user_id": user.user_id},
+            )
+        )
+        db.commit()
+    if is_internal_email_smoke_draft:
+        tags = initial_email.tags if isinstance(initial_email.tags, dict) else {}
+        smoke_test_id = str(tags.get("smoke_test_id") or "").strip()
+        smoke_recipient = str(tags.get("recipient_email") or initial_email.recipient_email or (initial_lead.email if initial_lead else "") or "").strip().lower()
+        _validate_internal_email_smoke_recipient(smoke_recipient)
+        if not payload or not payload.confirmed_send:
+            raise HTTPException(status_code=409, detail="Final send confirmation is required for internal smoke-test email.")
+        if str(payload.smoke_test_id or "") != smoke_test_id:
+            raise HTTPException(status_code=409, detail="Smoke-test ID confirmation does not match this draft.")
+        if str(payload.recipient_email or "").strip().lower() != smoke_recipient:
+            raise HTTPException(status_code=409, detail="Recipient confirmation does not match this smoke-test draft.")
+        if initial_email.campaign_id or (initial_lead and initial_lead.campaign_id):
+            raise HTTPException(status_code=409, detail="Internal smoke-test records cannot be attached to campaigns or automations.")
+        db.add(
+            AuditLog(
+                user_id=user.user_id,
+                workspace_id=workspace.id,
+                action="internal_email_smoke_draft.send_confirmed",
                 metadata_json={"smoke_test_id": smoke_test_id, "email_id": str(initial_email.id), "recipient_email": smoke_recipient, "user_id": user.user_id},
             )
         )

@@ -6414,6 +6414,149 @@ def _exact_email_approval_payload(email: dict[str, Any], sender_email: str) -> d
     }
 
 
+def test_workspace_app_internal_smoke_draft_is_normal_user_scoped_and_no_send_by_default(monkeypatch) -> None:
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"client-smoke-{uuid4()}@example.com"}
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"client-smoke-other-{uuid4()}@example.com"}
+    recipient = "romaniukvadym10+client-smoke-20260812-1@gmail.com"
+
+    denied_owner_bypass = client.post(
+        "/api/workspace-app/production-email-smoke-test",
+        headers=headers,
+        json={"recipient_email": recipient, "confirmed_recipient_control": True},
+    )
+    assert denied_owner_bypass.status_code == 403
+
+    arbitrary_recipient = client.post(
+        "/api/workspace-app/internal-email-smoke-draft",
+        headers=headers,
+        json={"recipient_email": "real.customer@example-business.com", "confirmed_recipient_control": True},
+    )
+    assert arbitrary_recipient.status_code == 400
+    assert "controlled internal smoke alias" in arbitrary_recipient.json()["detail"]
+
+    injected_scope = client.post(
+        "/api/workspace-app/internal-email-smoke-draft",
+        headers=headers,
+        json={
+            "recipient_email": recipient,
+            "confirmed_recipient_control": True,
+            "workspace_id": str(uuid4()),
+            "user_id": "system-owner",
+            "role": "owner",
+        },
+    )
+    assert injected_scope.status_code == 422
+
+    created = client.post(
+        "/api/workspace-app/internal-email-smoke-draft",
+        headers=headers,
+        json={"recipient_email": recipient.upper(), "confirmed_recipient_control": True},
+    )
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["status"] == "success"
+    assert "Nothing was sent" in payload["message"]
+    email = payload["email"]
+    company = payload["company"]
+    assert email["delivery_status"] == "draft"
+    assert email["recipient_email"] == recipient
+    assert company["source"] == "internal_email_smoke_draft"
+    assert company["email"] == recipient
+    assert email["tags"]["source"] == "internal_email_smoke_draft"
+    assert email["tags"]["is_test"] is True
+    assert email["tags"]["recipient_email"] == recipient
+    assert email["tags"]["workspace_id"] == payload["smoke_test"]["workspace_id"]
+    assert "smoke_test_id" in email["tags"]
+
+    duplicate = client.post(
+        "/api/workspace-app/internal-email-smoke-draft",
+        headers=headers,
+        json={"recipient_email": recipient, "confirmed_recipient_control": True},
+    )
+    assert duplicate.status_code == 409
+    assert "already exists" in duplicate.json()["detail"]
+
+    cross_workspace_company = client.get(f"/api/workspace-app/companies/{company['id']}", headers=other_headers)
+    assert cross_workspace_company.status_code == 404
+    cross_workspace_send = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=other_headers)
+    assert cross_workspace_send.status_code == 404
+
+    provider_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("app.api.usage.send_email", lambda **kwargs: provider_calls.append(kwargs) or {"id": "must-not-send"})
+    send_before_approval = client.post(
+        f"/api/workspace-app/emails/{email['id']}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": email["tags"]["smoke_test_id"], "recipient_email": recipient},
+    )
+    assert send_before_approval.status_code == 409
+    assert "Approve the email before sending" in send_before_approval.json()["detail"]
+    assert provider_calls == []
+
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Internal Smoke Sender",
+            "sender_email": "sender@internal-smoke.example",
+            "reply_to": "reply@internal-smoke.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+    approved = client.post(f"/api/workspace-app/emails/{email['id']}/approve", headers=headers, json=_exact_email_approval_payload(email, "sender@internal-smoke.example"))
+    assert approved.status_code == 200
+    assert approved.json()["email"]["delivery_status"] == "approved"
+
+    missing_final_confirmation = client.post(f"/api/workspace-app/emails/{email['id']}/send", headers=headers)
+    assert missing_final_confirmation.status_code == 409
+    assert "Final send confirmation is required" in missing_final_confirmation.json()["detail"]
+    assert provider_calls == []
+
+    wrong_recipient_confirmation = client.post(
+        f"/api/workspace-app/emails/{email['id']}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": email["tags"]["smoke_test_id"], "recipient_email": "romaniukvadym10+client-smoke-20260812-2@gmail.com"},
+    )
+    assert wrong_recipient_confirmation.status_code == 409
+    assert "Recipient confirmation does not match" in wrong_recipient_confirmation.json()["detail"]
+    assert provider_calls == []
+
+    sent = client.post(
+        f"/api/workspace-app/emails/{email['id']}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": email["tags"]["smoke_test_id"], "recipient_email": recipient},
+    )
+    assert sent.status_code == 200
+    assert sent.json()["email"]["delivery_status"] == "sent"
+    assert provider_calls[0]["to_email"] == recipient
+
+    duplicate_send = client.post(
+        f"/api/workspace-app/emails/{email['id']}/send",
+        headers=headers,
+        json={"confirmed_send": True, "smoke_test_id": email["tags"]["smoke_test_id"], "recipient_email": recipient},
+    )
+    assert duplicate_send.status_code == 409
+    assert "already been sent" in duplicate_send.json()["detail"]
+    assert len(provider_calls) == 1
+
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        saved_lead = db.get(Lead, saved_email.lead_id)
+        saved_company = db.get(Company, UUID(company["id"]))
+        assert saved_lead is not None
+        assert saved_company is not None
+        assert str(saved_email.workspace_id) == payload["smoke_test"]["workspace_id"]
+        assert saved_lead.email == recipient
+        assert saved_lead.campaign_id is None
+        assert saved_email.campaign_id is None
+        assert saved_email.tags["send_idempotency_key"] == f"workspace-app-email-send:{saved_email.workspace_id}:{email['id']}:v1"
+        assert saved_email.tags["source"] == "internal_email_smoke_draft"
+        assert saved_company.metadata_json["source"] == "internal_email_smoke_draft"
+
+
 def test_workspace_app_exact_send_confirmation_invalidates_after_draft_change(monkeypatch) -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"exact-confirmation-{uuid4()}@example.com"}
     email = _workspace_app_test_draft(headers, monkeypatch, company_name="Exact Confirmation Co")

@@ -46,6 +46,7 @@ function pretty(value: string) {
 }
 
 const providerLockedEmailStatuses = new Set(["sent", "delivered", "opened", "replied", "bounced", "failed"]);
+const internalSmokeDraftRecipient = "romaniukvadym10+client-smoke-20260812-1@gmail.com";
 
 export function canEditEmailDraft(email: Pick<Email, "delivery_status" | "direction" | "sent_at" | "delivered_at" | "opened_at" | "bounced_at" | "replied_at">) {
   const status = String(email.delivery_status || "").toLowerCase();
@@ -68,6 +69,11 @@ function canRecoverEmailForRetry(email: Email) {
 function isProductionSmokeTestEmail(email: Email) {
   const tags = email.tags || {};
   return tags.source === "production_smoke_test" && tags.is_test === true;
+}
+
+function isInternalEmailSmokeDraft(email: Email) {
+  const tags = email.tags || {};
+  return tags.source === "internal_email_smoke_draft" && tags.is_test === true;
 }
 
 function emailSafetyState(email: Email) {
@@ -998,7 +1004,9 @@ function EmailsSection() {
   }
 
   async function confirmSend(email: Email) {
-    const smokeTest = isProductionSmokeTestEmail(email);
+    const productionSmokeTest = isProductionSmokeTestEmail(email);
+    const internalSmokeDraft = isInternalEmailSmokeDraft(email);
+    const smokeTest = productionSmokeTest || internalSmokeDraft;
     const smokeTestId = String(email.tags?.smoke_test_id || "");
     const smokeRecipient = emailRecipient(email);
     const relatedCompany = companyForEmail(companies, email);
@@ -1009,7 +1017,7 @@ function EmailsSection() {
     setNotice("");
     setActionError("");
     try {
-      if (!smokeTest) {
+      if (!productionSmokeTest) {
         if (!senderEmail || !recipientEmail || !edit.subject || !edit.body) {
           throw new Error("Sender, recipient, subject, and body are required before final send confirmation.");
         }
@@ -1099,13 +1107,15 @@ function EmailsSection() {
         const sendable = canSendApprovedEmail(email) && Boolean(recipient);
         const recoverable = canRecoverEmailForRetry(email);
         const recoveryConfirmed = Boolean(recoverConfirmations[email.id]);
-        const smokeTest = isProductionSmokeTestEmail(email);
+        const productionSmokeTest = isProductionSmokeTestEmail(email);
+        const internalSmokeDraft = isInternalEmailSmokeDraft(email);
+        const smokeTest = productionSmokeTest || internalSmokeDraft;
         return <SurfaceCard as="article" key={email.id} className="rounded-[1.75rem] p-5 transition motion-safe:hover:-translate-y-0.5">
           <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
             <div>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{smokeTest ? "Production smoke-test draft" : "Editable email draft"}</p>
+                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{productionSmokeTest ? "Production smoke-test draft" : internalSmokeDraft ? "Internal test draft" : "Editable email draft"}</p>
                   <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{email.subject || "No subject"}</h2>
                   <p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p>
                 </div>
@@ -1169,7 +1179,7 @@ function EmailsSection() {
           <div className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--ui-border)] bg-white p-5 shadow-2xl">
             <h2 id="send-confirmation-title" className="text-lg font-black text-ink">Final Send confirmation</h2>
             <p className="mt-2 text-sm leading-6 text-slate-600">OutreachAI will send this approved email only after this confirmation. Closing this dialog sends nothing.</p>
-            {isProductionSmokeTestEmail(sendConfirmationEmail) ? (
+            {isProductionSmokeTestEmail(sendConfirmationEmail) || isInternalEmailSmokeDraft(sendConfirmationEmail) ? (
               <div className="mt-4 grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
                 <EvidenceLine label="Smoke test ID" value={String(sendConfirmationEmail.tags?.smoke_test_id || "")} />
                 <EvidenceLine label="Recipient" value={emailRecipient(sendConfirmationEmail)} />
@@ -1379,6 +1389,9 @@ function SettingsSection() {
   const [smokeRecipient, setSmokeRecipient] = useState("");
   const [smokeRecipientConfirmed, setSmokeRecipientConfirmed] = useState(false);
   const [lastSmokeTest, setLastSmokeTest] = useState<ProductionEmailSmokeTestResponse["smoke_test"] | null>(null);
+  const [internalSmokeRecipient, setInternalSmokeRecipient] = useState(internalSmokeDraftRecipient);
+  const [internalSmokeConfirmed, setInternalSmokeConfirmed] = useState(false);
+  const [lastInternalSmokeDraft, setLastInternalSmokeDraft] = useState<ProductionEmailSmokeTestResponse["smoke_test"] | null>(null);
 
   const load = useCallback(async () => {
     if (!api.ready) return;
@@ -1500,6 +1513,25 @@ function SettingsSection() {
     }
   }
 
+  async function createInternalSmokeDraft(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy("internal-smoke:create");
+    setError("");
+    setNotice("");
+    try {
+      const response = await api.createInternalEmailSmokeDraft({
+        recipient_email: internalSmokeRecipient.trim(),
+        confirmed_recipient_control: internalSmokeConfirmed
+      });
+      setLastInternalSmokeDraft(response.smoke_test || null);
+      setNotice(`${response.message} Workspace: ${response.smoke_test?.workspace_name || workspace?.name || "current"}. Recipient: ${response.smoke_test?.recipient_email || internalSmokeRecipient}.`);
+    } catch (err) {
+      setError(friendlyErrorMessage(err, "Could not create internal test draft."));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function cleanupSmokeTest() {
     if (!lastSmokeTest?.smoke_test_id) {
       setError("No smoke-test ID is available for cleanup.");
@@ -1566,6 +1598,33 @@ function SettingsSection() {
           </div>
         </form>
         {lastSmokeTest ? <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 sm:grid-cols-2"><EvidenceLine label="Workspace" value={lastSmokeTest.workspace_name} /><EvidenceLine label="Sender" value={lastSmokeTest.sender_email || "Not returned"} /><EvidenceLine label="Provider" value={providerLabel(lastSmokeTest.sender_provider)} /><EvidenceLine label="Recipient" value={lastSmokeTest.recipient_email} /><EvidenceLine label="Smoke test ID" value={lastSmokeTest.smoke_test_id} /></div> : null}
+      </SurfaceCard> : null}
+      {!isSystemOwner ? <SurfaceCard className="rounded-[1.75rem] p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-black text-ink">Internal email test draft</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-600">Creates one marked test CRM record and draft for the current workspace. Nothing is sent.</p>
+          </div>
+          <AppBadge tone="warning">test only</AppBadge>
+        </div>
+        <form onSubmit={createInternalSmokeDraft} className="mt-4 grid gap-3">
+          <label className="text-sm font-bold text-[var(--ui-text-soft)]">
+            Controlled recipient
+            <input type="email" value={internalSmokeRecipient} onChange={(event) => setInternalSmokeRecipient(event.target.value)} className={fieldClass} />
+          </label>
+          <label className="flex items-start gap-3 text-sm font-bold text-slate-700">
+            <input type="checkbox" checked={internalSmokeConfirmed} onChange={(event) => setInternalSmokeConfirmed(event.target.checked)} className="mt-1 h-4 w-4 rounded border-[var(--ui-border)]" />
+            I control this recipient email and want to create an internal test draft in this workspace.
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <AppButton type="submit" size="sm" disabled={Boolean(busy) || !internalSmokeRecipient.trim() || !internalSmokeConfirmed}>
+              {busy === "internal-smoke:create" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
+              Create internal test draft
+            </AppButton>
+            {lastInternalSmokeDraft?.smoke_test_id ? <Link href="/dashboard/emails" className="focus-ring inline-flex min-h-10 items-center rounded-full border border-[var(--ui-border)] bg-white px-3 text-sm font-black text-ink transition hover:border-[var(--ui-brand)]">Open draft</Link> : null}
+          </div>
+        </form>
+        {lastInternalSmokeDraft ? <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 sm:grid-cols-2"><EvidenceLine label="Workspace" value={lastInternalSmokeDraft.workspace_name} /><EvidenceLine label="Sender" value={lastInternalSmokeDraft.sender_email || "Not returned"} /><EvidenceLine label="Provider" value={providerLabel(lastInternalSmokeDraft.sender_provider)} /><EvidenceLine label="Recipient" value={lastInternalSmokeDraft.recipient_email} /><EvidenceLine label="Smoke test ID" value={lastInternalSmokeDraft.smoke_test_id} /></div> : null}
       </SurfaceCard> : null}
       <section className="grid gap-4 md:grid-cols-3">
         <PremiumPanel><p className="text-sm font-black text-ink">Email safety</p><p className="mt-2 text-sm leading-6 text-slate-600">Manual approval, Pause and Stop remain visible before external sending.</p></PremiumPanel>
