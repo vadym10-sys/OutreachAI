@@ -32,7 +32,7 @@ from app.core.cache import cache_key, delete_key, get_json, set_json
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
 from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
-from app.core.security import CurrentUser, CurrentUserContext, OwnerUser, WorkspaceUserContext, authenticated_user_id_from_authorization
+from app.core.security import CurrentUser, OwnerUser, WorkspaceUserContext, authenticated_user_id_from_authorization
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
@@ -6403,7 +6403,7 @@ def inbox(
 
 
 @router.get("/workspace", response_model=WorkspaceOut)
-def get_workspace(user: CurrentUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+def get_workspace(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
     return _workspace_out(db, _current_workspace(db, user.user_id, user.email))
 
 

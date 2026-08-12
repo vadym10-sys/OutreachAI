@@ -5072,6 +5072,47 @@ def test_workspace_request_without_verified_fallback_does_not_persist_binding(mo
         assert db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)) is None
 
 
+@pytest.mark.parametrize("fallback", ["", None])
+def test_legacy_workspace_request_without_verified_fallback_fails_closed_without_writes(monkeypatch, fallback) -> None:
+    user_id = f"legacy-workspace-no-verified-{uuid4()}"
+
+    def fake_verify(_: str) -> dict:
+        return {"sub": user_id}
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: fallback)
+
+    response = client.get("/api/workspace", headers={"Authorization": "Bearer token"})
+    assert response.status_code == 401
+
+    with get_sessionmaker()() as db:
+        assert db.scalar(select(User).where(User.clerk_user_id == user_id)) is None
+        assert db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id)) is None
+        assert db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)) is None
+
+
+@pytest.mark.parametrize("exc_type", [ValueError, httpx.TimeoutException, httpx.HTTPError])
+def test_legacy_workspace_request_lookup_error_fails_closed_without_writes(monkeypatch, exc_type) -> None:
+    user_id = f"legacy-workspace-lookup-error-{uuid4()}"
+
+    def fake_verify(_: str) -> dict:
+        return {"sub": user_id}
+
+    def failed_lookup(_: str) -> str:
+        raise exc_type("lookup failed")
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", failed_lookup)
+
+    response = client.get("/api/workspace", headers={"Authorization": "Bearer token"})
+    assert response.status_code == 401
+
+    with get_sessionmaker()() as db:
+        assert db.scalar(select(User).where(User.clerk_user_id == user_id)) is None
+        assert db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id)) is None
+        assert db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)) is None
+
+
 def test_verified_clerk_fallback_workspace_resolution_is_idempotent_and_isolated(monkeypatch) -> None:
     user_id = f"workspace-verified-{uuid4()}"
     other_user_id = f"workspace-other-{uuid4()}"
@@ -5091,6 +5132,46 @@ def test_verified_clerk_fallback_workspace_resolution_is_idempotent_and_isolated
 
     first = client.get("/api/workspace/me", headers={"Authorization": "Bearer token"})
     second = client.get("/api/workspace/me", headers={"Authorization": "Bearer token"})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["id"] != other_workspace_id
+
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+        assert user is not None
+        assert user.email == verified_email
+        owned_workspaces = list(db.scalars(select(Workspace).where(Workspace.owner_user_id == user_id)).all())
+        assert len(owned_workspaces) == 1
+        assert str(owned_workspaces[0].id) == first.json()["id"]
+        other_workspace = db.get(Workspace, UUID(other_workspace_id))
+        assert other_workspace is not None
+        assert other_workspace.owner_user_id == other_user_id
+        members = list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)).all())
+        assert len(members) == 1
+        assert members[0].workspace_id == owned_workspaces[0].id
+        assert members[0].email == verified_email
+
+
+def test_verified_clerk_fallback_legacy_workspace_resolution_is_idempotent_and_isolated(monkeypatch) -> None:
+    user_id = f"legacy-workspace-verified-{uuid4()}"
+    other_user_id = f"legacy-workspace-other-{uuid4()}"
+    verified_email = f"legacy-verified-{uuid4()}@example.com"
+    other_email = f"legacy-other-{uuid4()}@example.com"
+
+    with get_sessionmaker()() as db:
+        other_workspace = Workspace(owner_user_id=other_user_id, name="Other legacy customer workspace")
+        db.add(other_workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=other_workspace.id, user_id=other_user_id, email=other_email, role=WorkspaceRole.owner, status="active"))
+        db.commit()
+        other_workspace_id = str(other_workspace.id)
+
+    monkeypatch.setattr(security, "_verify_clerk_token", lambda _: {"sub": user_id})
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: verified_email)
+
+    first = client.get("/api/workspace", headers={"Authorization": "Bearer token"})
+    second = client.get("/api/workspace", headers={"Authorization": "Bearer token"})
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json()["id"] == second.json()["id"]
