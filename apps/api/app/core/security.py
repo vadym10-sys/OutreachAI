@@ -175,23 +175,42 @@ def _email_from_claims(claims: dict) -> str:
     return ""
 
 
+def _clerk_email_verified(email_address: dict) -> bool:
+    verification = email_address.get("verification")
+    return isinstance(verification, dict) and verification.get("status") == "verified"
+
+
+def _clerk_email_value(email_address: dict) -> str:
+    if not _clerk_email_verified(email_address):
+        return ""
+    value = email_address.get("email_address") or email_address.get("email")
+    if isinstance(value, str) and value.strip():
+        return value.strip().lower()
+    return ""
+
+
 @lru_cache(maxsize=256)
 def _fetch_clerk_user_email(user_id: str) -> str:
     settings = get_settings()
     if not settings.clerk_secret_key or settings.clerk_secret_key == "dev":
         return ""
 
-    response = retry_operation(
-        lambda: httpx.get(
-            f"https://api.clerk.com/v1/users/{user_id}",
-            headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
-            timeout=5,
-        ),
-        attempts=3,
-        operation_name="clerk.user_email",
-    )
-    response.raise_for_status()
-    payload = response.json()
+    try:
+        response = retry_operation(
+            lambda: httpx.get(
+                f"https://api.clerk.com/v1/users/{user_id}",
+                headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
+                timeout=5,
+            ),
+            attempts=3,
+            operation_name="clerk.user_email",
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
     primary_id = payload.get("primary_email_address_id")
     email_addresses = payload.get("email_addresses")
     if isinstance(email_addresses, list):
@@ -200,9 +219,9 @@ def _fetch_clerk_user_email(user_id: str) -> str:
         ordered.extend(item for item in email_addresses if item is not primary)
         for item in ordered:
             if isinstance(item, dict):
-                value = item.get("email_address") or item.get("email")
-                if isinstance(value, str) and value.strip():
-                    return value.strip().lower()
+                value = _clerk_email_value(item)
+                if value:
+                    return value
     return ""
 
 
@@ -240,7 +259,7 @@ def get_current_workspace_user_context(
     authorization: Annotated[Optional[str], Header()] = None,
     x_test_user_email: Annotated[Optional[str], Header(alias="X-Test-User-Email")] = None,
 ) -> AuthenticatedUser:
-    """Verify JWT and return a workspace user without requiring Clerk Management API email lookup."""
+    """Verify JWT and return a workspace user with a trusted email binding."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
 
@@ -258,8 +277,9 @@ def get_current_workspace_user_context(
         try:
             email = _fetch_clerk_user_email(user_id)
         except (httpx.HTTPError, ValueError):
-            # Keep authenticated workspace access even when Clerk email lookup is unavailable.
-            email = ""
+            raise _unauthorized("Verified email required") from None
+    if not email:
+        raise _unauthorized("Verified email required")
     return AuthenticatedUser(user_id=user_id, email=email)
 
 
