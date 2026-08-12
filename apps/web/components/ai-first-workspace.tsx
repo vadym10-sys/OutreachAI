@@ -1409,22 +1409,40 @@ function SettingsSection() {
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    const payload = {
+      name: String(data.get("name") || "").trim(),
+      company: String(data.get("company") || "").trim(),
+      industry: String(data.get("industry") || "").trim(),
+      target_country: String(data.get("target_country") || "").trim(),
+      target_customer: String(data.get("target_customer") || "").trim(),
+      offer: String(data.get("offer") || "").trim(),
+      cta: String(data.get("cta") || "Book a quick call").trim() || "Book a quick call",
+      tone: String(data.get("tone") || "Professional").trim() || "Professional",
+      timezone: workspace?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+    };
+    const missing = [
+      ["name", "Name"],
+      ["company", "Company"],
+      ["industry", "Industry"],
+      ["target_country", "Target country"],
+      ["target_customer", "Target customer"]
+    ].filter(([key]) => !payload[key as keyof typeof payload]).map(([, label]) => label);
+    if (missing.length) {
+      setNotice("");
+      setError(`Complete these workspace fields before saving: ${missing.join(", ")}.`);
+      return;
+    }
+    setBusy("workspace:save");
+    setError("");
+    setNotice("");
     try {
-      const updated = await api.updateWorkspace({
-        name: String(data.get("name") || ""),
-        company: String(data.get("company") || ""),
-        industry: String(data.get("industry") || ""),
-        target_country: String(data.get("target_country") || ""),
-        target_customer: String(data.get("target_customer") || ""),
-        offer: String(data.get("offer") || ""),
-        cta: String(data.get("cta") || "Book a quick call"),
-        tone: String(data.get("tone") || "Professional"),
-        timezone: workspace?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
-      });
+      const updated = await api.updateWorkspace(payload);
       setWorkspace(updated);
       setNotice("Workspace settings saved.");
     } catch (err) {
       setError(friendlyErrorMessage(err, "Could not save workspace."));
+    } finally {
+      setBusy("");
     }
   }
 
@@ -1515,7 +1533,7 @@ function SettingsSection() {
       {error ? <Notice tone="bad">{error}</Notice> : null}
       {loading ? <LoadingStateView title="Loading workspace settings." /> : null}
       <section className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-        <form onSubmit={save} className="ui-card rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-[var(--ui-text-soft)]">Name<input name="name" defaultValue={workspace?.name || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Company<input name="company" defaultValue={workspace?.company || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Industry<input name="industry" defaultValue={workspace?.industry || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Offer<textarea name="offer" defaultValue={workspace?.offer || ""} className="focus-ring mt-2 min-h-28 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7" /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Tone<input name="tone" defaultValue={workspace?.tone || "Professional"} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">CTA<input name="cta" defaultValue={workspace?.cta || "Book a quick call"} className={fieldClass} /></label></div><AppButton type="submit" size="md" className="mt-4"><CheckCircle2 size={16} /> Save workspace</AppButton></form>
+        <form onSubmit={save} className="ui-card rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Workspace</h2><p className="mt-1 text-sm leading-6 text-slate-600">Profile and workspace fields used by AI context.</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-bold text-[var(--ui-text-soft)]">Name<input name="name" defaultValue={workspace?.name || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Company<input name="company" defaultValue={workspace?.company || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Industry<input name="industry" defaultValue={workspace?.industry || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Target country<input name="target_country" defaultValue={workspace?.target_country || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Target customer<input name="target_customer" defaultValue={workspace?.target_customer || ""} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)] sm:col-span-2">Offer<textarea name="offer" defaultValue={workspace?.offer || ""} className="focus-ring mt-2 min-h-28 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7" /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">Tone<input name="tone" defaultValue={workspace?.tone || "Professional"} className={fieldClass} /></label><label className="text-sm font-bold text-[var(--ui-text-soft)]">CTA<input name="cta" defaultValue={workspace?.cta || "Book a quick call"} className={fieldClass} /></label></div><AppButton type="submit" size="md" disabled={busy === "workspace:save"} className="mt-4">{busy === "workspace:save" ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} {busy === "workspace:save" ? "Saving workspace..." : "Save workspace"}</AppButton></form>
         <div className="grid gap-4"><SurfaceCard className="rounded-[1.75rem] p-5"><h2 className="text-lg font-black text-ink">Integrations</h2><div className="mt-3 grid gap-2">{integrations.length ? integrations.map((item) => <div key={item.key} className="rounded-2xl border border-[var(--ui-border)] p-3 transition hover:border-[var(--ui-border-strong)]"><div className="flex items-center justify-between gap-3"><p className="font-black text-ink">{item.label}</p><AppBadge tone={item.status === "connected" ? "success" : "warning"}>{item.status}</AppBadge></div><p className="mt-1 text-sm leading-6 text-slate-600">{item.message}</p></div>) : <p className="text-sm text-slate-600">Integration status not loaded.</p>}</div></SurfaceCard><SurfaceCard className="rounded-[1.75rem] p-5"><div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-black text-ink">Email sender</h2><p className="mt-1 text-sm leading-6 text-slate-600">Gmail OAuth is checked separately from other staging senders.</p></div><AppBadge tone={gmailReady ? "success" : "warning"}>{gmailReady ? "connected" : "needs OAuth"}</AppBadge></div><div className="mt-4 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm leading-6 text-slate-700"><p><span className="font-black text-ink">Provider:</span> {oauthProvider}</p><p><span className="font-black text-ink">Mailbox:</span> {sender?.oauth_mailbox || "Not connected"}</p><p><span className="font-black text-ink">OAuth status:</span> {sender?.oauth_status || "not_connected"}</p><p><span className="font-black text-ink">Connected at:</span> {formatDateTime(sender?.oauth_connected_at)}</p><p><span className="font-black text-ink">Other sender:</span> {currentProvider}{sender?.provider !== "gmail" && sender?.sender_email ? ` (${sender.sender_email})` : ""}</p></div>{!gmailReady && !canStartGmailOAuth ? <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{gmailOAuthStartReason(sender)}</p> : null}<div className="mt-4 flex flex-wrap gap-2"><AppButton size="sm" disabled={Boolean(busy) || !canStartGmailOAuth} onClick={() => void connectGmail()}><Mail size={16} /> {busy === "connect" ? "Opening Gmail..." : gmailReady ? "Reconnect Gmail" : "Connect Gmail"}</AppButton>{gmailReady ? <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void disconnectGmail()}>Disconnect</AppButton> : null}<AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void load()} aria-label="Refresh settings"><RefreshCw size={16} /> Refresh</AppButton></div></SurfaceCard></div>
       </section>
       {isSystemOwner ? <SurfaceCard className="rounded-[1.75rem] p-5">

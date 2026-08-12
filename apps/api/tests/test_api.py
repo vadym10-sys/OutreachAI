@@ -3836,6 +3836,7 @@ def test_workspace_me_creates_private_workspace_with_owner_email() -> None:
 
 def test_workspace_business_profile_offer_tone_cta_persist_after_refresh() -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"profile-owner-{uuid4()}@example.com"}
+    user_email = headers["X-Test-User-Email"]
     payload = {
         "name": "Client profile workspace",
         "company": "Client Profile Co",
@@ -3853,14 +3854,29 @@ def test_workspace_business_profile_offer_tone_cta_persist_after_refresh() -> No
     assert saved.status_code == 200, saved.text
     for key, value in payload.items():
         assert saved.json()[key] == value
+    assert saved.json()["onboarding_completed"] is True
+    assert saved.json()["onboarding_step"] == 6
 
     first_refresh = client.get("/api/workspace/me", headers=headers)
     second_refresh = client.get("/api/workspace/me", headers=headers)
     assert first_refresh.status_code == 200
     assert second_refresh.status_code == 200
+    assert first_refresh.json()["onboarding_completed"] is True
     for key in ("offer", "tone", "cta"):
         assert first_refresh.json()[key] == payload[key]
         assert second_refresh.json()[key] == payload[key]
+
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == user_email))
+        assert user is not None
+        assert user.email == user_email
+        workspace = db.get(Workspace, UUID(saved.json()["id"]))
+        assert workspace is not None
+        assert workspace.onboarding_completed is True
+        assert workspace.onboarding_step == 6
+        member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_email))
+        assert member is not None
+        assert member.email == user_email
 
 
 def test_workspace_me_concurrent_initialization_creates_one_workspace() -> None:
@@ -4470,9 +4486,9 @@ def test_stripe_subscription_state_remains_authoritative_over_test_entitlement(m
     with SessionLocal() as db:
         workspace_row = db.get(Workspace, UUID(workspace["id"]))
         assert workspace_row is not None
-        user = User(clerk_user_id=target_user_id, email=target_user_id)
-        db.add(user)
-        db.flush()
+        user = db.scalar(select(User).where(User.clerk_user_id == target_user_id))
+        assert user is not None
+        assert user.email == target_user_id
         db.add(
             Subscription(
                 user_id=user.id,
@@ -4892,6 +4908,18 @@ def test_current_user_context_without_email_claim_uses_clerk_lookup(monkeypatch)
     user = security.get_current_user_context(authorization="Bearer token")
     assert user.user_id == "user_lookup_success"
     assert user.email == "lookup@example.com"
+
+
+def test_workspace_user_context_without_email_claim_uses_clerk_lookup(monkeypatch) -> None:
+    def fake_verify(_: str) -> dict:
+        return {"sub": "workspace_lookup_success"}
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: "workspace-lookup@example.com")
+
+    user = security.get_current_workspace_user_context(authorization="Bearer token")
+    assert user.user_id == "workspace_lookup_success"
+    assert user.email == "workspace-lookup@example.com"
 
 
 def test_current_user_context_lookup_failure_returns_authenticated_user(monkeypatch) -> None:

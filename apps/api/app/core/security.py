@@ -252,7 +252,15 @@ def get_current_workspace_user_context(
         return AuthenticatedUser(user_id=test_user or "dev_user", email=test_user)
 
     claims = _verify_clerk_token(token)
-    return AuthenticatedUser(user_id=str(claims["sub"]), email=_email_from_claims(claims))
+    user_id = str(claims["sub"])
+    email = _email_from_claims(claims)
+    if not email:
+        try:
+            email = _fetch_clerk_user_email(user_id)
+        except (httpx.HTTPError, ValueError):
+            # Keep authenticated workspace access even when Clerk email lookup is unavailable.
+            email = ""
+    return AuthenticatedUser(user_id=user_id, email=email)
 
 
 def authenticated_user_id_from_authorization(authorization: str | None) -> str | None:
