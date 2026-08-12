@@ -22,3 +22,24 @@ test("settings show real workspace, integration, and sender readiness", async ({
   await expect(page.getByText("Business profile: OutreachAI sells AI-powered outbound workflow software.")).toBeVisible();
   await guards.assertClean();
 });
+
+test("workspace save validates required fields and shows the save result", async ({ page }) => {
+  await page.goto("/dashboard/settings");
+  await expect(page.getByRole("heading", { name: "Workspace" })).toBeVisible();
+
+  await page.getByLabel("Company").fill("");
+  await page.getByRole("button", { name: "Save workspace" }).click();
+  await expect(page.getByText("Complete these workspace fields before saving: Company.")).toBeVisible();
+
+  await page.getByLabel("Company").fill("Outreachaiaiai.com");
+  const saveResponse = page.waitForResponse((response) =>
+    response.request().method() === "PUT" && response.url().includes("/api/workspace")
+  );
+  await page.getByRole("button", { name: "Save workspace" }).click();
+  const response = await saveResponse;
+  expect(response.ok()).toBe(true);
+  const body = await response.json();
+  expect(body.onboarding_completed).toBe(true);
+  expect(body.onboarding_step).toBe(6);
+  await expect(page.getByText("Workspace settings saved.")).toBeVisible();
+});

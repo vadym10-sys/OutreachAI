@@ -32,7 +32,7 @@ from app.core.cache import cache_key, delete_key, get_json, set_json
 from app.core.database import get_db
 from app.core.config import get_settings as get_app_settings
 from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
-from app.core.security import CurrentUser, CurrentUserContext, OwnerUser, WorkspaceUserContext, authenticated_user_id_from_authorization
+from app.core.security import CurrentUser, OwnerUser, WorkspaceUserContext, authenticated_user_id_from_authorization
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
@@ -310,6 +310,26 @@ def _lock_workspace_creation(db: Session, user_id: str) -> None:
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"workspace:{user_id}"})
 
 
+def _ensure_local_user(db: Session, user_id: str, email: str = "") -> User | None:
+    if not user_id:
+        return None
+    user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+    if user is None:
+        user = User(clerk_user_id=user_id, email=email or f"{user_id}@outreachai.local")
+        db.add(user)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+        return user
+    if email and user.email != email:
+        user.email = email
+        db.add(user)
+        db.flush()
+    return user
+
+
 def _ensure_workspace_owner_member(db: Session, workspace: Workspace, user_id: str, email: str = "") -> None:
     existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
     if existing_member:
@@ -323,6 +343,7 @@ def _ensure_workspace_owner_member(db: Session, workspace: Workspace, user_id: s
 
 def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
     _lock_workspace_creation(db, user_id)
+    _ensure_local_user(db, user_id, email)
     workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
     if workspace is not None:
         if workspace.name in {"Outreach workspace", "Private workspace"}:
@@ -352,6 +373,19 @@ def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
         db.refresh(workspace)
     set_workspace_context(workspace.id)
     return workspace
+
+
+def _workspace_profile_complete(workspace: Workspace) -> bool:
+    return all(
+        str(value or "").strip()
+        for value in (
+            workspace.name,
+            workspace.company,
+            workspace.industry,
+            workspace.target_country,
+            workspace.target_customer,
+        )
+    )
 
 
 def _workspace_members(db: Session, workspace_id: UUID) -> list[WorkspaceMember]:
@@ -6369,7 +6403,7 @@ def inbox(
 
 
 @router.get("/workspace", response_model=WorkspaceOut)
-def get_workspace(user: CurrentUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+def get_workspace(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
     return _workspace_out(db, _current_workspace(db, user.user_id, user.email))
 
 
@@ -6383,6 +6417,9 @@ def update_workspace(payload: WorkspaceUpdate, request: Request, user: Workspace
     workspace = _current_workspace(db, user.user_id, user.email)
     for key, value in payload.model_dump().items():
         setattr(workspace, key, value)
+    if _workspace_profile_complete(workspace):
+        workspace.onboarding_step = max(workspace.onboarding_step, 6)
+        workspace.onboarding_completed = True
     log_event(db, request, user.user_id, "workspace.updated", {"workspace_id": str(workspace.id)})
     db.commit()
     db.refresh(workspace)

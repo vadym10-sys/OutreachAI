@@ -3836,6 +3836,7 @@ def test_workspace_me_creates_private_workspace_with_owner_email() -> None:
 
 def test_workspace_business_profile_offer_tone_cta_persist_after_refresh() -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": f"profile-owner-{uuid4()}@example.com"}
+    user_email = headers["X-Test-User-Email"]
     payload = {
         "name": "Client profile workspace",
         "company": "Client Profile Co",
@@ -3853,14 +3854,29 @@ def test_workspace_business_profile_offer_tone_cta_persist_after_refresh() -> No
     assert saved.status_code == 200, saved.text
     for key, value in payload.items():
         assert saved.json()[key] == value
+    assert saved.json()["onboarding_completed"] is True
+    assert saved.json()["onboarding_step"] == 6
 
     first_refresh = client.get("/api/workspace/me", headers=headers)
     second_refresh = client.get("/api/workspace/me", headers=headers)
     assert first_refresh.status_code == 200
     assert second_refresh.status_code == 200
+    assert first_refresh.json()["onboarding_completed"] is True
     for key in ("offer", "tone", "cta"):
         assert first_refresh.json()[key] == payload[key]
         assert second_refresh.json()[key] == payload[key]
+
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == user_email))
+        assert user is not None
+        assert user.email == user_email
+        workspace = db.get(Workspace, UUID(saved.json()["id"]))
+        assert workspace is not None
+        assert workspace.onboarding_completed is True
+        assert workspace.onboarding_step == 6
+        member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_email))
+        assert member is not None
+        assert member.email == user_email
 
 
 def test_workspace_me_concurrent_initialization_creates_one_workspace() -> None:
@@ -4470,9 +4486,9 @@ def test_stripe_subscription_state_remains_authoritative_over_test_entitlement(m
     with SessionLocal() as db:
         workspace_row = db.get(Workspace, UUID(workspace["id"]))
         assert workspace_row is not None
-        user = User(clerk_user_id=target_user_id, email=target_user_id)
-        db.add(user)
-        db.flush()
+        user = db.scalar(select(User).where(User.clerk_user_id == target_user_id))
+        assert user is not None
+        assert user.email == target_user_id
         db.add(
             Subscription(
                 user_id=user.id,
@@ -4892,6 +4908,525 @@ def test_current_user_context_without_email_claim_uses_clerk_lookup(monkeypatch)
     user = security.get_current_user_context(authorization="Bearer token")
     assert user.user_id == "user_lookup_success"
     assert user.email == "lookup@example.com"
+
+
+def test_fetch_clerk_user_email_uses_only_verified_addresses(monkeypatch) -> None:
+    security._fetch_clerk_user_email.cache_clear()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_verified_lookup")
+    monkeypatch.setattr(security, "retry_operation", lambda operation, **_: operation())
+
+    class ClerkResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "primary_email_address_id": "primary_unverified",
+                "email_addresses": [
+                    {
+                        "id": "primary_unverified",
+                        "email_address": "primary-unverified@example.com",
+                        "verification": {"status": "unverified"},
+                    },
+                    {
+                        "id": "secondary_verified",
+                        "email_address": "SECONDARY-VERIFIED@example.com",
+                        "verification": {"status": "verified"},
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(security.httpx, "get", lambda *_, **__: ClerkResponse())
+
+    assert security._fetch_clerk_user_email("user_verified_secondary") == "secondary-verified@example.com"
+
+
+def test_fetch_clerk_user_email_prefers_verified_primary(monkeypatch) -> None:
+    security._fetch_clerk_user_email.cache_clear()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_verified_primary")
+    monkeypatch.setattr(security, "retry_operation", lambda operation, **_: operation())
+
+    class ClerkResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {
+                "primary_email_address_id": "primary_verified",
+                "email_addresses": [
+                    {
+                        "id": "secondary_verified",
+                        "email_address": "secondary@example.com",
+                        "verification": {"status": "verified"},
+                    },
+                    {
+                        "id": "primary_verified",
+                        "email_address": "PRIMARY@example.com",
+                        "verification": {"status": "verified"},
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(security.httpx, "get", lambda *_, **__: ClerkResponse())
+
+    assert security._fetch_clerk_user_email("user_verified_primary") == "primary@example.com"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "primary_email_address_id": "primary_unverified",
+            "email_addresses": [
+                {
+                    "id": "primary_unverified",
+                    "email_address": "primary-unverified@example.com",
+                    "verification": {"status": "unverified"},
+                }
+            ],
+        },
+        {"primary_email_address_id": "missing", "email_addresses": []},
+        {"primary_email_address_id": "malformed", "email_addresses": [{"id": "malformed", "email_address": "broken@example.com"}]},
+        {"primary_email_address_id": "not_a_list", "email_addresses": "broken"},
+        {"primary_email_address_id": "missing_addresses"},
+    ],
+)
+def test_fetch_clerk_user_email_returns_empty_without_verified_address(monkeypatch, payload: dict) -> None:
+    security._fetch_clerk_user_email.cache_clear()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_unverified")
+    monkeypatch.setattr(security, "retry_operation", lambda operation, **_: operation())
+
+    class ClerkResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return payload
+
+    monkeypatch.setattr(security.httpx, "get", lambda *_, **__: ClerkResponse())
+
+    assert security._fetch_clerk_user_email(f"user_unverified_{uuid4()}") == ""
+
+
+def test_workspace_user_context_without_email_claim_uses_clerk_lookup(monkeypatch) -> None:
+    def fake_verify(_: str) -> dict:
+        return {"sub": "workspace_lookup_success"}
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: "workspace-lookup@example.com")
+
+    user = security.get_current_workspace_user_context(authorization="Bearer token")
+    assert user.user_id == "workspace_lookup_success"
+    assert user.email == "workspace-lookup@example.com"
+
+
+@pytest.mark.parametrize("fallback", ["", None])
+def test_workspace_user_context_without_verified_email_fails_closed(monkeypatch, fallback) -> None:
+    def fake_verify(_: str) -> dict:
+        return {"sub": "workspace_lookup_no_verified_email"}
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: fallback)
+
+    with pytest.raises(HTTPException) as exc:
+        security.get_current_workspace_user_context(authorization="Bearer token")
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.parametrize("exc_type", [ValueError, httpx.TimeoutException, httpx.HTTPError])
+def test_workspace_user_context_lookup_error_fails_closed(monkeypatch, exc_type) -> None:
+    def fake_verify(_: str) -> dict:
+        return {"sub": "workspace_lookup_failure"}
+
+    def failed_lookup(_: str) -> str:
+        raise exc_type("lookup failed")
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", failed_lookup)
+
+    with pytest.raises(HTTPException) as exc:
+        security.get_current_workspace_user_context(authorization="Bearer token")
+
+    assert exc.value.status_code == 401
+
+
+WORKSPACE_ROUTE_CASES = [
+    ("GET", "/api/workspace", None),
+    ("GET", "/api/workspace/me", None),
+    (
+        "PUT",
+        "/api/workspace",
+        {
+            "name": "Trusted workspace",
+            "company": "Trusted Co",
+            "industry": "Security",
+            "target_country": "United States",
+            "target_customer": "Internal QA",
+            "offer": "Internal validation",
+            "cta": "Review",
+            "tone": "Direct",
+            "timezone": "UTC",
+            "language": "English",
+        },
+    ),
+]
+
+
+def _call_workspace_route(method: str, path: str, payload: dict | None):
+    headers = {"Authorization": "Bearer token"}
+    if method == "GET":
+        return client.get(path, headers=headers)
+    return client.put(path, headers=headers, json=payload)
+
+
+def _assert_no_workspace_identity_rows(user_id: str) -> None:
+    with get_sessionmaker()() as db:
+        assert db.scalar(select(User).where(User.clerk_user_id == user_id)) is None
+        assert db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id)) is None
+        assert db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)) is None
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), WORKSPACE_ROUTE_CASES)
+def test_workspace_routes_reject_unverified_jwt_email_addresses_without_writes(monkeypatch, method: str, path: str, payload: dict | None) -> None:
+    user_id = f"workspace-unverified-claim-{uuid4()}"
+
+    monkeypatch.setattr(
+        security,
+        "_verify_clerk_token",
+        lambda _: {
+            "sub": user_id,
+            "email_addresses": [
+                {
+                    "email_address": "unverified@example.com",
+                    "verification": {"status": "unverified"},
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: "")
+
+    response = _call_workspace_route(method, path, payload)
+    assert response.status_code == 401
+    _assert_no_workspace_identity_rows(user_id)
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), WORKSPACE_ROUTE_CASES)
+@pytest.mark.parametrize("email_claim", [{"email": "scalar@example.com"}, {"email_address": "scalar@example.com"}, {"primary_email_address": "scalar@example.com"}])
+def test_workspace_routes_reject_scalar_jwt_email_without_verified_evidence(
+    monkeypatch,
+    method: str,
+    path: str,
+    payload: dict | None,
+    email_claim: dict,
+) -> None:
+    user_id = f"workspace-scalar-claim-{uuid4()}"
+
+    monkeypatch.setattr(security, "_verify_clerk_token", lambda _: {"sub": user_id, **email_claim})
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: "")
+
+    response = _call_workspace_route(method, path, payload)
+    assert response.status_code == 401
+    _assert_no_workspace_identity_rows(user_id)
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), WORKSPACE_ROUTE_CASES)
+@pytest.mark.parametrize(
+    "email_claims",
+    [
+        {"email": "   "},
+        {"email_addresses": "malformed"},
+        {"email_addresses": []},
+        {"email_addresses": [{"email_address": "   ", "verification": {"status": "verified"}}]},
+        {"email_addresses": [{"email_address": "missing-verification@example.com"}]},
+        {"email_addresses": [{"email_address": "pending@example.com", "verification": {"status": "pending"}}]},
+        {
+            "email_addresses": [
+                {"email_address": "first@example.com", "verification": {"status": "verified"}},
+                {"email_address": "second@example.com", "verification": {"status": "verified"}},
+            ]
+        },
+    ],
+)
+def test_workspace_routes_reject_malformed_ambiguous_or_unverifiable_jwt_email_claims_without_writes(
+    monkeypatch,
+    method: str,
+    path: str,
+    payload: dict | None,
+    email_claims: dict,
+) -> None:
+    user_id = f"workspace-bad-claim-{uuid4()}"
+
+    monkeypatch.setattr(security, "_verify_clerk_token", lambda _: {"sub": user_id, **email_claims})
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: "")
+
+    response = _call_workspace_route(method, path, payload)
+    assert response.status_code == 401
+    _assert_no_workspace_identity_rows(user_id)
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), WORKSPACE_ROUTE_CASES)
+def test_workspace_routes_accept_verified_primary_jwt_email_idempotently_and_isolated(monkeypatch, method: str, path: str, payload: dict | None) -> None:
+    user_id = f"workspace-verified-primary-claim-{uuid4()}"
+    other_user_id = f"workspace-verified-primary-other-{uuid4()}"
+    verified_email = f"verified-primary-{uuid4()}@example.com"
+    secondary_email = f"verified-secondary-{uuid4()}@example.com"
+    other_email = f"other-{uuid4()}@example.com"
+
+    with get_sessionmaker()() as db:
+        other_workspace = Workspace(owner_user_id=other_user_id, name="Other verified JWT workspace")
+        db.add(other_workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=other_workspace.id, user_id=other_user_id, email=other_email, role=WorkspaceRole.owner, status="active"))
+        db.commit()
+        other_workspace_id = str(other_workspace.id)
+
+    monkeypatch.setattr(
+        security,
+        "_verify_clerk_token",
+        lambda _: {
+            "sub": user_id,
+            "primary_email_address_id": "primary_verified",
+            "email_addresses": [
+                {"id": "secondary_verified", "email_address": secondary_email, "verification": {"status": "verified"}},
+                {"id": "primary_verified", "email_address": verified_email.upper(), "verification": {"status": "verified"}},
+            ],
+        },
+    )
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: (_ for _ in ()).throw(AssertionError("fallback should not run")))
+
+    first = _call_workspace_route(method, path, payload)
+    second = _call_workspace_route(method, path, payload)
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["id"] != other_workspace_id
+
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+        assert user is not None
+        assert user.email == verified_email.lower()
+        owned_workspaces = list(db.scalars(select(Workspace).where(Workspace.owner_user_id == user_id)).all())
+        assert len(owned_workspaces) == 1
+        assert str(owned_workspaces[0].id) == first.json()["id"]
+        other_workspace = db.get(Workspace, UUID(other_workspace_id))
+        assert other_workspace is not None
+        assert other_workspace.owner_user_id == other_user_id
+        members = list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)).all())
+        assert len(members) == 1
+        assert members[0].workspace_id == owned_workspaces[0].id
+        assert members[0].email == verified_email.lower()
+
+
+def test_workspace_verified_primary_jwt_email_concurrent_requests_are_idempotent(monkeypatch) -> None:
+    user_id = f"workspace-verified-primary-concurrent-{uuid4()}"
+    verified_email = f"verified-primary-concurrent-{uuid4()}@example.com"
+
+    monkeypatch.setattr(
+        security,
+        "_verify_clerk_token",
+        lambda _: {
+            "sub": user_id,
+            "primary_email_address_id": "primary_verified",
+            "email_addresses": [{"id": "primary_verified", "email_address": verified_email, "verification": {"status": "verified"}}],
+        },
+    )
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: (_ for _ in ()).throw(AssertionError("fallback should not run")))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(client.get, "/api/workspace/me", headers={"Authorization": "Bearer token"})
+        second = executor.submit(client.get, "/api/workspace/me", headers={"Authorization": "Bearer token"})
+        responses = [first.result(), second.result()]
+
+    assert {response.status_code for response in responses} == {200}
+    assert responses[0].json()["id"] == responses[1].json()["id"]
+    with get_sessionmaker()() as db:
+        assert len(list(db.scalars(select(User).where(User.clerk_user_id == user_id)).all())) == 1
+        assert len(list(db.scalars(select(Workspace).where(Workspace.owner_user_id == user_id)).all())) == 1
+        assert len(list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)).all())) == 1
+
+
+@pytest.mark.parametrize(("method", "path", "payload"), WORKSPACE_ROUTE_CASES)
+def test_workspace_routes_accept_verified_clerk_fallback_idempotently_and_isolated(monkeypatch, method: str, path: str, payload: dict | None) -> None:
+    user_id = f"workspace-verified-fallback-route-{uuid4()}"
+    other_user_id = f"workspace-verified-fallback-other-{uuid4()}"
+    verified_email = f"verified-fallback-route-{uuid4()}@example.com"
+    other_email = f"other-fallback-{uuid4()}@example.com"
+
+    with get_sessionmaker()() as db:
+        other_workspace = Workspace(owner_user_id=other_user_id, name="Other verified fallback workspace")
+        db.add(other_workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=other_workspace.id, user_id=other_user_id, email=other_email, role=WorkspaceRole.owner, status="active"))
+        db.commit()
+        other_workspace_id = str(other_workspace.id)
+
+    monkeypatch.setattr(security, "_verify_clerk_token", lambda _: {"sub": user_id})
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: verified_email)
+
+    first = _call_workspace_route(method, path, payload)
+    second = _call_workspace_route(method, path, payload)
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["id"] != other_workspace_id
+
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+        assert user is not None
+        assert user.email == verified_email
+        owned_workspaces = list(db.scalars(select(Workspace).where(Workspace.owner_user_id == user_id)).all())
+        assert len(owned_workspaces) == 1
+        assert str(owned_workspaces[0].id) == first.json()["id"]
+        other_workspace = db.get(Workspace, UUID(other_workspace_id))
+        assert other_workspace is not None
+        assert other_workspace.owner_user_id == other_user_id
+        members = list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)).all())
+        assert len(members) == 1
+        assert members[0].workspace_id == owned_workspaces[0].id
+        assert members[0].email == verified_email
+
+
+def test_workspace_request_without_verified_fallback_does_not_persist_binding(monkeypatch) -> None:
+    user_id = f"workspace-no-verified-{uuid4()}"
+
+    def fake_verify(_: str) -> dict:
+        return {"sub": user_id}
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: "")
+
+    response = client.get("/api/workspace/me", headers={"Authorization": "Bearer token"})
+    assert response.status_code == 401
+
+    with get_sessionmaker()() as db:
+        assert db.scalar(select(User).where(User.clerk_user_id == user_id)) is None
+        assert db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id)) is None
+        assert db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)) is None
+
+
+@pytest.mark.parametrize("fallback", ["", None])
+def test_legacy_workspace_request_without_verified_fallback_fails_closed_without_writes(monkeypatch, fallback) -> None:
+    user_id = f"legacy-workspace-no-verified-{uuid4()}"
+
+    def fake_verify(_: str) -> dict:
+        return {"sub": user_id}
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: fallback)
+
+    response = client.get("/api/workspace", headers={"Authorization": "Bearer token"})
+    assert response.status_code == 401
+
+    with get_sessionmaker()() as db:
+        assert db.scalar(select(User).where(User.clerk_user_id == user_id)) is None
+        assert db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id)) is None
+        assert db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)) is None
+
+
+@pytest.mark.parametrize("exc_type", [ValueError, httpx.TimeoutException, httpx.HTTPError])
+def test_legacy_workspace_request_lookup_error_fails_closed_without_writes(monkeypatch, exc_type) -> None:
+    user_id = f"legacy-workspace-lookup-error-{uuid4()}"
+
+    def fake_verify(_: str) -> dict:
+        return {"sub": user_id}
+
+    def failed_lookup(_: str) -> str:
+        raise exc_type("lookup failed")
+
+    monkeypatch.setattr(security, "_verify_clerk_token", fake_verify)
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", failed_lookup)
+
+    response = client.get("/api/workspace", headers={"Authorization": "Bearer token"})
+    assert response.status_code == 401
+
+    with get_sessionmaker()() as db:
+        assert db.scalar(select(User).where(User.clerk_user_id == user_id)) is None
+        assert db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id)) is None
+        assert db.scalar(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)) is None
+
+
+def test_verified_clerk_fallback_workspace_resolution_is_idempotent_and_isolated(monkeypatch) -> None:
+    user_id = f"workspace-verified-{uuid4()}"
+    other_user_id = f"workspace-other-{uuid4()}"
+    verified_email = f"verified-{uuid4()}@example.com"
+    other_email = f"other-{uuid4()}@example.com"
+
+    with get_sessionmaker()() as db:
+        other_workspace = Workspace(owner_user_id=other_user_id, name="Other customer workspace")
+        db.add(other_workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=other_workspace.id, user_id=other_user_id, email=other_email, role=WorkspaceRole.owner, status="active"))
+        db.commit()
+        other_workspace_id = str(other_workspace.id)
+
+    monkeypatch.setattr(security, "_verify_clerk_token", lambda _: {"sub": user_id})
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: verified_email)
+
+    first = client.get("/api/workspace/me", headers={"Authorization": "Bearer token"})
+    second = client.get("/api/workspace/me", headers={"Authorization": "Bearer token"})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["id"] != other_workspace_id
+
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+        assert user is not None
+        assert user.email == verified_email
+        owned_workspaces = list(db.scalars(select(Workspace).where(Workspace.owner_user_id == user_id)).all())
+        assert len(owned_workspaces) == 1
+        assert str(owned_workspaces[0].id) == first.json()["id"]
+        other_workspace = db.get(Workspace, UUID(other_workspace_id))
+        assert other_workspace is not None
+        assert other_workspace.owner_user_id == other_user_id
+        members = list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)).all())
+        assert len(members) == 1
+        assert members[0].workspace_id == owned_workspaces[0].id
+        assert members[0].email == verified_email
+
+
+def test_verified_clerk_fallback_legacy_workspace_resolution_is_idempotent_and_isolated(monkeypatch) -> None:
+    user_id = f"legacy-workspace-verified-{uuid4()}"
+    other_user_id = f"legacy-workspace-other-{uuid4()}"
+    verified_email = f"legacy-verified-{uuid4()}@example.com"
+    other_email = f"legacy-other-{uuid4()}@example.com"
+
+    with get_sessionmaker()() as db:
+        other_workspace = Workspace(owner_user_id=other_user_id, name="Other legacy customer workspace")
+        db.add(other_workspace)
+        db.flush()
+        db.add(WorkspaceMember(workspace_id=other_workspace.id, user_id=other_user_id, email=other_email, role=WorkspaceRole.owner, status="active"))
+        db.commit()
+        other_workspace_id = str(other_workspace.id)
+
+    monkeypatch.setattr(security, "_verify_clerk_token", lambda _: {"sub": user_id})
+    monkeypatch.setattr(security, "_fetch_clerk_user_email", lambda _: verified_email)
+
+    first = client.get("/api/workspace", headers={"Authorization": "Bearer token"})
+    second = client.get("/api/workspace", headers={"Authorization": "Bearer token"})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["id"] != other_workspace_id
+
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.clerk_user_id == user_id))
+        assert user is not None
+        assert user.email == verified_email
+        owned_workspaces = list(db.scalars(select(Workspace).where(Workspace.owner_user_id == user_id)).all())
+        assert len(owned_workspaces) == 1
+        assert str(owned_workspaces[0].id) == first.json()["id"]
+        other_workspace = db.get(Workspace, UUID(other_workspace_id))
+        assert other_workspace is not None
+        assert other_workspace.owner_user_id == other_user_id
+        members = list(db.scalars(select(WorkspaceMember).where(WorkspaceMember.user_id == user_id)).all())
+        assert len(members) == 1
+        assert members[0].workspace_id == owned_workspaces[0].id
+        assert members[0].email == verified_email
 
 
 def test_current_user_context_lookup_failure_returns_authenticated_user(monkeypatch) -> None:

@@ -478,6 +478,17 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace" && route.request().method() === "PUT") {
       currentWorkspace = { ...currentWorkspace, ...route.request().postDataJSON() };
+      const profileComplete = Boolean(
+        currentWorkspace.name
+        && currentWorkspace.company
+        && currentWorkspace.industry
+        && currentWorkspace.target_country
+        && currentWorkspace.target_customer
+      );
+      if (profileComplete) {
+        currentWorkspace.onboarding_step = Math.max(Number(currentWorkspace.onboarding_step || 1), 6);
+        currentWorkspace.onboarding_completed = true;
+      }
       return fulfillJson(route, currentWorkspace);
     }
     if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, currentWorkspace);
