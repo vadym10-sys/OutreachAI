@@ -12424,7 +12424,9 @@ def test_subscription_transition_stripe_payloads_are_idempotent_and_do_not_mutat
         to_plan="Pro",
     )
     assert captured_schedule["create"]["idempotency_key"] == "sub_change_schedule"
+    assert captured_schedule["create"] == {"from_subscription": "sub_payload", "idempotency_key": "sub_change_schedule"}
     assert captured_schedule["modify"]["idempotency_key"].startswith("sub_sched_mod_")
+    assert captured_schedule["modify"]["metadata"]["transition_id"] == str(transition.id)
     assert all("quantity" not in item for phase in captured_schedule["modify"]["phases"] for item in phase["items"])
 
 

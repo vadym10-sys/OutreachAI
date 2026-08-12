@@ -242,7 +242,6 @@ def schedule_downgrade(
     try:
         schedule = stripe.SubscriptionSchedule.create(
             from_subscription=transition.stripe_subscription_id,
-            metadata=metadata,
             idempotency_key=transition.idempotency_key,
         )
         schedule_id = str(_object_get(schedule, "id", "") or "")
