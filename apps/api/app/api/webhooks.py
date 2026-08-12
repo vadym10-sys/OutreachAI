@@ -161,6 +161,19 @@ def _invoice_has_verified_price(invoice: object, *, expected_plan: str) -> bool:
     return False
 
 
+def _hydrated_invoice_for_billing_event(invoice: object) -> object:
+    invoice_id = _stripe_id(invoice)
+    if not invoice_id or not get_settings().stripe_secret_key:
+        return invoice
+    if _stripe_id(_stripe_get(invoice, "subscription")) and _invoice_line_price_objects(invoice):
+        return invoice
+    try:
+        return stripe.Invoice.retrieve(invoice_id)
+    except stripe.StripeError as exc:
+        capture_provider_exception(exc, provider="stripe", endpoint="stripe.invoice.retrieve")
+        return invoice
+
+
 def _safe_text(value: object, *, max_length: int = 500) -> str:
     text = str(value or "").strip()
     return text[:max_length]
@@ -577,8 +590,9 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
         )
     elif event_type in {"invoice.paid", "invoice.payment_succeeded"}:
         event_created_at = timestamp_to_datetime(event.get("created"))
-        subscription_id = str(data.get("subscription") or "")
-        customer_id = _stripe_id(_stripe_get(data, "customer"))
+        invoice_data = _hydrated_invoice_for_billing_event(data)
+        subscription_id = _stripe_id(_stripe_get(invoice_data, "subscription"))
+        customer_id = _stripe_id(_stripe_get(invoice_data, "customer"))
         subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == subscription_id)) if subscription_id else None
         if subscription:
             if customer_id and str(subscription.stripe_customer_id or "") != customer_id:
@@ -586,7 +600,7 @@ async def stripe_webhook(request: Request, stripe_signature: Optional[str] = Hea
                 db.commit()
                 return {"received": True, "type": event_type}
             transition = open_upgrade_transition_for_subscription(db, subscription_id=subscription_id)
-            is_upgrade_invoice = bool(transition and _invoice_has_verified_price(data, expected_plan=transition.to_plan))
+            is_upgrade_invoice = bool(transition and _invoice_has_verified_price(invoice_data, expected_plan=transition.to_plan))
             if _subscription_event_is_stale(subscription, event_created_at) and not is_upgrade_invoice:
                 db.commit()
                 return {"received": True, "type": event_type}
