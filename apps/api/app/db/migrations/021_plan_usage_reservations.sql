@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS plan_usage_reservations (
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   updated_at TIMESTAMP NOT NULL DEFAULT now(),
   CONSTRAINT ck_plan_usage_reservations_amount_positive CHECK (amount > 0),
-  CONSTRAINT uq_plan_usage_reservation_idempotency UNIQUE (workspace_id, period, metric, idempotency_key)
+  CONSTRAINT ck_plan_usage_reservations_status CHECK (status IN ('reserved', 'finalized', 'released', 'expired'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_plan_usage_reservations_workspace_id
@@ -24,3 +24,7 @@ CREATE INDEX IF NOT EXISTS idx_plan_usage_reservations_workspace_id
 
 CREATE INDEX IF NOT EXISTS idx_plan_usage_reservations_active
   ON plan_usage_reservations(workspace_id, period, metric, status, expires_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_plan_usage_reservation_idempotency
+  ON plan_usage_reservations(workspace_id, period, metric, idempotency_key)
+  WHERE status IN ('reserved', 'finalized');

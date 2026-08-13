@@ -15457,9 +15457,7 @@ def send_approved_email(
             sender_provider
             and sender_provider not in EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED
         ):
-            release_usage_reservation(
-                db, usage_reservation_id, reason="provider_confirmation_pending"
-            )
+            finalize_usage_reservation(db, usage_reservation_id, user_id=user.user_id)
             db.commit()
             _mark_email_send_confirmation_pending(
                 db,
@@ -15514,9 +15512,7 @@ def send_approved_email(
             sender_provider
             and sender_provider not in EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED
         ):
-            release_usage_reservation(
-                db, usage_reservation_id, reason="provider_confirmation_pending"
-            )
+            finalize_usage_reservation(db, usage_reservation_id, user_id=user.user_id)
             db.commit()
             _mark_email_send_confirmation_pending(
                 db,
@@ -15567,7 +15563,7 @@ def send_approved_email(
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))
     email.delivery_status = "sent"
-    finalize_usage_reservation(db, usage_reservation_id)
+    finalize_usage_reservation(db, usage_reservation_id, user_id=user.user_id)
     provider_thread_id = str(
         provider_response.get("thread_id") or provider_response.get("threadId") or ""
     ).strip()

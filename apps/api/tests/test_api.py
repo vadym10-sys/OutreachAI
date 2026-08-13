@@ -3810,6 +3810,8 @@ def test_postgres_schema_assets_include_plan_usage_reservations() -> None:
     assert packaged_migration == root_migration
     assert "CREATE TABLE IF NOT EXISTS plan_usage_reservations" in schema
     assert "uq_plan_usage_reservation_idempotency" in packaged_migration
+    assert "WHERE status IN ('reserved', 'finalized')" in packaged_migration
+    assert "ck_plan_usage_reservations_status" in packaged_migration
     assert "idx_plan_usage_reservations_active" in packaged_migration
     assert "DROP TABLE IF EXISTS plan_usage_reservations" in packaged_migration
     assert "021_plan_usage_reservations" in REQUIRED_POSTGRES_MIGRATIONS
@@ -6213,7 +6215,7 @@ def test_plan_usage_reservation_release_idempotency_and_month_boundary() -> None
             now=january,
         )
         assert january_reservation is not None
-        finalize_usage_reservation(db, january_reservation.id)
+        finalize_usage_reservation(db, january_reservation.id, now=january)
         february_reservation = reserve_usage_capacity(
             db,
             user_id,
@@ -6223,7 +6225,7 @@ def test_plan_usage_reservation_release_idempotency_and_month_boundary() -> None
             now=february,
         )
         assert february_reservation is not None
-        finalize_usage_reservation(db, february_reservation.id)
+        finalize_usage_reservation(db, february_reservation.id, now=february)
         db.commit()
 
         january_usage = db.scalar(
@@ -10726,6 +10728,79 @@ def test_workspace_app_email_provider_failure_uses_non_200_http_status(
         )
         assert usage is not None
         assert usage.email_sends == 1
+
+
+def test_workspace_app_non_idempotent_provider_uncertain_failure_consumes_usage(
+    monkeypatch,
+) -> None:
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"usage-uncertain-send-{uuid4()}@example.com",
+    }
+    email = _workspace_app_test_draft(
+        headers, monkeypatch, company_name="Uncertain Send Co"
+    )
+    monkeypatch.setenv("ENCRYPTION_KEY", "test-custom-encryption-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.api.routes.verify_smtp_connection", lambda **kwargs: None)
+    try:
+        sender_setup = client.put(
+            "/api/outreach/sender",
+            headers=headers,
+            json={
+                "provider": "smtp",
+                "sender_name": "Usage Sales",
+                "sender_email": "sales@uncertain-send.example",
+                "reply_to": "reply@uncertain-send.example",
+                "smtp_host": "smtp.uncertain-send.example",
+                "smtp_port": 587,
+                "smtp_username": "smtp-user",
+                "smtp_password": "smtp-pass",
+                "daily_send_limit": 25,
+                "enabled": True,
+            },
+        )
+        assert sender_setup.status_code == 200
+        approved = client.post(
+            f"/api/workspace-app/emails/{email['id']}/approve",
+            headers=headers,
+            json=_exact_email_approval_payload(email, "sales@uncertain-send.example"),
+        )
+        assert approved.status_code == 200
+        monkeypatch.setattr(
+            "app.api.usage.send_email",
+            lambda **kwargs: (_ for _ in ()).throw(
+                EmailProviderRequestError("provider confirmation unknown")
+            ),
+        )
+
+        sent = client.post(
+            f"/api/workspace-app/emails/{email['id']}/send", headers=headers
+        )
+        assert sent.status_code == 502
+        assert "could not be confirmed" in sent.json()["detail"]
+
+        with get_sessionmaker()() as db:
+            saved_email = db.get(EmailMessage, UUID(email["id"]))
+            assert saved_email is not None
+            usage = db.scalar(
+                select(UsageCounter).where(
+                    UsageCounter.workspace_id == saved_email.workspace_id,
+                    UsageCounter.period == month_period(),
+                )
+            )
+            reservations = db.scalars(
+                select(PlanUsageReservation).where(
+                    PlanUsageReservation.workspace_id == saved_email.workspace_id,
+                    PlanUsageReservation.metric == "email_sends",
+                )
+            ).all()
+            assert saved_email.delivery_status == "send_confirmation_pending"
+            assert usage is not None
+            assert usage.email_sends == 1
+            assert [row.status for row in reservations] == ["finalized"]
+    finally:
+        get_settings.cache_clear()
 
 
 def test_workspace_app_email_unexpected_exception_restores_approved_with_audit(

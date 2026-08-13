@@ -15,11 +15,18 @@ from app.models.entities import PlanUsageReservation, UsageCounter, Workspace
 from app.services.entitlements import BillingEntitlement, resolve_billing_entitlement
 
 PLAN_USAGE_METRICS = {"leads", "ai_generations", "email_sends"}
-_non_postgres_usage_locks: defaultdict[str, threading.RLock] = defaultdict(threading.RLock)
+_non_postgres_usage_locks: defaultdict[str, threading.RLock] = defaultdict(
+    threading.RLock
+)
 RESERVATION_STATUS_RESERVED = "reserved"
 RESERVATION_STATUS_FINALIZED = "finalized"
 RESERVATION_STATUS_RELEASED = "released"
 RESERVATION_STATUS_EXPIRED = "expired"
+TERMINAL_RESERVATION_STATUSES = {
+    RESERVATION_STATUS_FINALIZED,
+    RESERVATION_STATUS_RELEASED,
+    RESERVATION_STATUS_EXPIRED,
+}
 DEFAULT_RESERVATION_TTL_SECONDS = 15 * 60
 
 
@@ -41,6 +48,13 @@ def plan_limit_error(
             "requested": requested,
             "message": f"{metric.replace('_', ' ').title()} limit reached for the {plan} plan. Upgrade in Billing to continue.",
         },
+    )
+
+
+def reservation_state_error(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": "usage_reservation_state_error", "message": message},
     )
 
 
@@ -108,7 +122,11 @@ def usage_for_workspace(
 
 
 def expire_stale_reservations(
-    db: Session, workspace: Workspace, *, period: str | None = None, now: datetime | None = None
+    db: Session,
+    workspace: Workspace,
+    *,
+    period: str | None = None,
+    now: datetime | None = None,
 ) -> int:
     target_period = period or month_period(now)
     timestamp = now or datetime.utcnow()
@@ -131,20 +149,24 @@ def expire_stale_reservations(
 
 
 def _active_reserved_amount(
-    db: Session, workspace: Workspace, *, period: str, metric: str, now: datetime
+    db: Session,
+    workspace: Workspace,
+    *,
+    period: str,
+    metric: str,
+    now: datetime,
+    exclude_reservation_id: UUID | None = None,
 ) -> int:
-    return int(
-        db.scalar(
-            select(func.coalesce(func.sum(PlanUsageReservation.amount), 0)).where(
-                PlanUsageReservation.workspace_id == workspace.id,
-                PlanUsageReservation.period == period,
-                PlanUsageReservation.metric == metric,
-                PlanUsageReservation.status == RESERVATION_STATUS_RESERVED,
-                PlanUsageReservation.expires_at > now,
-            )
-        )
-        or 0
+    stmt = select(func.coalesce(func.sum(PlanUsageReservation.amount), 0)).where(
+        PlanUsageReservation.workspace_id == workspace.id,
+        PlanUsageReservation.period == period,
+        PlanUsageReservation.metric == metric,
+        PlanUsageReservation.status == RESERVATION_STATUS_RESERVED,
+        PlanUsageReservation.expires_at > now,
     )
+    if exclude_reservation_id is not None:
+        stmt = stmt.where(PlanUsageReservation.id != exclude_reservation_id)
+    return int(db.scalar(stmt) or 0)
 
 
 def check_usage_available(
@@ -159,7 +181,9 @@ def check_usage_available(
     expire_stale_reservations(db, workspace, period=period, now=now)
     usage = usage_for_workspace(db, workspace, period=period)
     current = int(getattr(usage, metric) or 0)
-    reserved = _active_reserved_amount(db, workspace, period=period, metric=metric, now=now)
+    reserved = _active_reserved_amount(
+        db, workspace, period=period, metric=metric, now=now
+    )
     if current + reserved + amount > limit:
         raise plan_limit_error(
             plan=entitlement.plan,
@@ -239,41 +263,31 @@ def _reserve_usage_capacity_locked(
                 PlanUsageReservation.period == period,
                 PlanUsageReservation.metric == metric,
                 PlanUsageReservation.idempotency_key == key,
+                PlanUsageReservation.status.in_(
+                    [RESERVATION_STATUS_RESERVED, RESERVATION_STATUS_FINALIZED]
+                ),
             )
             .with_for_update()
         )
         if existing is not None:
             if existing.status == RESERVATION_STATUS_FINALIZED:
                 return existing
-            if existing.status == RESERVATION_STATUS_RESERVED and existing.expires_at > timestamp:
+            if (
+                existing.status == RESERVATION_STATUS_RESERVED
+                and existing.expires_at > timestamp
+            ):
                 return existing
-            if existing.status in {
-                RESERVATION_STATUS_RESERVED,
-                RESERVATION_STATUS_RELEASED,
-                RESERVATION_STATUS_EXPIRED,
-            }:
-                current = int(getattr(usage, metric) or 0)
-                reserved = _active_reserved_amount(db, workspace, period=period, metric=metric, now=timestamp)
-                if current + reserved + amount > limit:
-                    raise plan_limit_error(
-                        plan=entitlement.plan,
-                        metric=metric,
-                        limit=limit,
-                        current=current + reserved,
-                        requested=amount,
-                    )
-                existing.status = RESERVATION_STATUS_RESERVED
-                existing.amount = amount
-                existing.expires_at = timestamp + timedelta(seconds=expires_in_seconds)
-                existing.released_at = None
-                existing.release_reason = ""
-                existing.updated_at = timestamp
-                db.add(existing)
-                db.flush()
-                return existing
+            existing.status = RESERVATION_STATUS_EXPIRED
+            existing.released_at = timestamp
+            existing.release_reason = "stale_reservation_expired"
+            existing.updated_at = timestamp
+            db.add(existing)
+            db.flush()
 
     current = int(getattr(usage, metric) or 0)
-    reserved = _active_reserved_amount(db, workspace, period=period, metric=metric, now=timestamp)
+    reserved = _active_reserved_amount(
+        db, workspace, period=period, metric=metric, now=timestamp
+    )
     if current + reserved + amount > limit:
         raise plan_limit_error(
             plan=entitlement.plan,
@@ -289,7 +303,8 @@ def _reserve_usage_capacity_locked(
         metric=metric,
         amount=amount,
         status=RESERVATION_STATUS_RESERVED,
-        idempotency_key=key or f"{workspace.id}:{period}:{metric}:{timestamp.timestamp()}",
+        idempotency_key=key
+        or f"{workspace.id}:{period}:{metric}:{timestamp.timestamp()}",
         expires_at=timestamp + timedelta(seconds=expires_in_seconds),
     )
     db.add(reservation)
@@ -297,12 +312,24 @@ def _reserve_usage_capacity_locked(
     return reservation
 
 
-def finalize_usage_reservation(
-    db: Session, reservation: PlanUsageReservation | UUID | None
-) -> UsageCounter | None:
+def renew_usage_reservation(
+    db: Session,
+    reservation: PlanUsageReservation | UUID | None,
+    *,
+    extend_seconds: int = DEFAULT_RESERVATION_TTL_SECONDS,
+    now: datetime | None = None,
+) -> PlanUsageReservation | None:
     if reservation is None:
         return None
     reservation_id = reservation if isinstance(reservation, UUID) else reservation.id
+    timestamp = now or datetime.utcnow()
+    existing = db.get(PlanUsageReservation, reservation_id)
+    if existing is None:
+        raise ValueError("Usage reservation was not found.")
+    workspace = db.get(Workspace, existing.workspace_id)
+    if workspace is None:
+        raise ValueError("Usage reservation workspace was not found.")
+    usage_for_workspace(db, workspace, period=existing.period, for_update=True)
     row = db.scalar(
         select(PlanUsageReservation)
         .where(PlanUsageReservation.id == reservation_id)
@@ -310,16 +337,88 @@ def finalize_usage_reservation(
     )
     if row is None:
         raise ValueError("Usage reservation was not found.")
-    usage = usage_for_workspace(db, row.workspace, period=row.period, for_update=True)
+    if row.status != RESERVATION_STATUS_RESERVED:
+        raise reservation_state_error(f"Cannot renew {row.status} usage reservation.")
+    if row.expires_at <= timestamp:
+        row.status = RESERVATION_STATUS_EXPIRED
+        row.released_at = timestamp
+        row.release_reason = "reservation_lease_expired_before_renewal"
+        row.updated_at = timestamp
+        db.add(row)
+        db.flush()
+        raise reservation_state_error("Cannot renew an expired usage reservation.")
+    row.expires_at = timestamp + timedelta(seconds=extend_seconds)
+    row.updated_at = timestamp
+    db.add(row)
+    db.flush()
+    return row
+
+
+def finalize_usage_reservation(
+    db: Session,
+    reservation: PlanUsageReservation | UUID | None,
+    *,
+    user_id: str | None = None,
+    now: datetime | None = None,
+) -> UsageCounter | None:
+    if reservation is None:
+        return None
+    timestamp = now or datetime.utcnow()
+    reservation_id = reservation if isinstance(reservation, UUID) else reservation.id
+    existing = db.get(PlanUsageReservation, reservation_id)
+    if existing is None:
+        raise ValueError("Usage reservation was not found.")
+    workspace = db.get(Workspace, existing.workspace_id)
+    if workspace is None:
+        raise ValueError("Usage reservation workspace was not found.")
+    usage = usage_for_workspace(db, workspace, period=existing.period, for_update=True)
+    row = db.scalar(
+        select(PlanUsageReservation)
+        .where(PlanUsageReservation.id == reservation_id)
+        .with_for_update()
+    )
+    if row is None:
+        raise ValueError("Usage reservation was not found.")
     if row.status == RESERVATION_STATUS_FINALIZED:
         return usage
     if row.status != RESERVATION_STATUS_RESERVED:
-        raise ValueError(f"Cannot finalize {row.status} usage reservation.")
+        raise reservation_state_error(
+            f"Cannot finalize {row.status} usage reservation."
+        )
+    if row.expires_at <= timestamp:
+        row.status = RESERVATION_STATUS_EXPIRED
+        row.released_at = timestamp
+        row.release_reason = "reservation_lease_expired_before_finalize"
+        row.updated_at = timestamp
+        db.add(row)
+        db.flush()
+        raise reservation_state_error("Cannot finalize an expired usage reservation.")
+    if user_id is not None:
+        entitlement = resolve_billing_entitlement(db, user_id, workspace)
+        limit = _metric_limit(entitlement, row.metric)
+        if limit > 0:
+            current = int(getattr(usage, row.metric) or 0)
+            other_reserved = _active_reserved_amount(
+                db,
+                workspace,
+                period=row.period,
+                metric=row.metric,
+                now=timestamp,
+                exclude_reservation_id=row.id,
+            )
+            if current + other_reserved + row.amount > limit:
+                raise plan_limit_error(
+                    plan=entitlement.plan,
+                    metric=row.metric,
+                    limit=limit,
+                    current=current + other_reserved,
+                    requested=row.amount,
+                )
     current = int(getattr(usage, row.metric) or 0)
     setattr(usage, row.metric, current + row.amount)
-    usage.updated_at = datetime.utcnow()
+    usage.updated_at = timestamp
     row.status = RESERVATION_STATUS_FINALIZED
-    row.finalized_at = datetime.utcnow()
+    row.finalized_at = timestamp
     row.updated_at = row.finalized_at
     db.add_all([usage, row])
     db.flush()
@@ -331,6 +430,7 @@ def release_usage_reservation(
     reservation: PlanUsageReservation | UUID | None,
     *,
     reason: str = "operation_failed",
+    now: datetime | None = None,
 ) -> None:
     if reservation is None:
         return
@@ -340,13 +440,21 @@ def release_usage_reservation(
         .where(PlanUsageReservation.id == reservation_id)
         .with_for_update()
     )
-    if row is None or row.status != RESERVATION_STATUS_RESERVED:
+    if row is None or row.status in TERMINAL_RESERVATION_STATUSES:
         return
-    now = datetime.utcnow()
+    timestamp = now or datetime.utcnow()
+    if row.expires_at <= timestamp:
+        row.status = RESERVATION_STATUS_EXPIRED
+        row.released_at = timestamp
+        row.release_reason = "reservation_lease_expired_before_release"
+        row.updated_at = timestamp
+        db.add(row)
+        db.flush()
+        return
     row.status = RESERVATION_STATUS_RELEASED
-    row.released_at = now
+    row.released_at = timestamp
     row.release_reason = reason[:240]
-    row.updated_at = now
+    row.updated_at = timestamp
     db.add(row)
     db.flush()
 
@@ -375,7 +483,7 @@ def increment_usage_after_success(
             db.flush()
             return usage
     reservation = reserve_usage_capacity(db, user_id, workspace, metric, amount)
-    usage = finalize_usage_reservation(db, reservation)
+    usage = finalize_usage_reservation(db, reservation, user_id=user_id)
     if usage is None:
         usage = usage_for_workspace(db, workspace)
     return usage

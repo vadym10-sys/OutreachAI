@@ -10720,8 +10720,17 @@ def mark_email_sent(
         release_usage_reservation(db, usage_reservation_id, reason=str(exc))
         db.commit()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except EmailProviderConfigurationError as exc:
+        release_usage_reservation(db, usage_reservation_id, reason=str(exc))
+        db.commit()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
-        release_usage_reservation(db, usage_reservation_id, reason=exc.__class__.__name__)
+        if sender_status.provider == "resend":
+            release_usage_reservation(
+                db, usage_reservation_id, reason=exc.__class__.__name__
+            )
+        else:
+            finalize_usage_reservation(db, usage_reservation_id, user_id=user_id)
         db.commit()
         message.delivery_status = "failed"
         db.add(message)
@@ -10741,7 +10750,7 @@ def mark_email_sent(
     message.sent_at = datetime.utcnow()
     message.provider_message_id = str(provider_response.get("id"))
     message.delivery_status = "sent"
-    finalize_usage_reservation(db, usage_reservation_id)
+    finalize_usage_reservation(db, usage_reservation_id, user_id=user_id)
     provider_thread_id = str(
         provider_response.get("thread_id") or provider_response.get("threadId") or ""
     ).strip()

@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS plan_usage_reservations (
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   updated_at TIMESTAMP NOT NULL DEFAULT now(),
   CONSTRAINT ck_plan_usage_reservations_amount_positive CHECK (amount > 0),
-  CONSTRAINT uq_plan_usage_reservation_idempotency UNIQUE (workspace_id, period, metric, idempotency_key)
+  CONSTRAINT ck_plan_usage_reservations_status CHECK (status IN ('reserved', 'finalized', 'released', 'expired'))
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -581,6 +581,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON workspace_members(us
 CREATE INDEX IF NOT EXISTS idx_usage_counters_workspace_id ON usage_counters(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_plan_usage_reservations_workspace_id ON plan_usage_reservations(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_plan_usage_reservations_active ON plan_usage_reservations(workspace_id, period, metric, status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_plan_usage_reservation_idempotency ON plan_usage_reservations(workspace_id, period, metric, idempotency_key) WHERE status IN ('reserved', 'finalized');
 CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace_id ON subscriptions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_workspace_status_customer ON subscriptions(workspace_id, status, stripe_customer_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_stripe_subscription_id ON subscriptions(stripe_subscription_id) WHERE stripe_subscription_id IS NOT NULL AND stripe_subscription_id <> '';
