@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -107,6 +107,30 @@ class UsageCounter(Base):
     leads: Mapped[int] = mapped_column(Integer, default=0)
     ai_generations: Mapped[int] = mapped_column(Integer, default=0)
     email_sends: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workspace: Mapped[Workspace] = relationship()
+
+
+class PlanUsageReservation(Base):
+    __tablename__ = "plan_usage_reservations"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "period", "metric", "idempotency_key", name="uq_plan_usage_reservation_idempotency"),
+        CheckConstraint("amount > 0", name="ck_plan_usage_reservations_amount_positive"),
+        Index("idx_plan_usage_reservations_active", "workspace_id", "period", "metric", "status", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    period: Mapped[str] = mapped_column(String(7), index=True)
+    metric: Mapped[str] = mapped_column(String(32), index=True)
+    amount: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="reserved", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    finalized_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    released_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    release_reason: Mapped[str] = mapped_column(String(240), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     workspace: Mapped[Workspace] = relationship()

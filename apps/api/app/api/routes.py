@@ -265,7 +265,10 @@ from app.services.plan_catalog import (
 )
 from app.services.plan_enforcement import (
     check_usage_available,
+    finalize_usage_reservation,
     increment_usage_after_success,
+    release_usage_reservation,
+    reserve_usage_capacity,
     usage_for_workspace,
 )
 from app.services.subscription_transitions import (
@@ -5735,56 +5738,73 @@ def create_sales_employee(
 ) -> AISalesEmployeeOut:
     workspace = _current_workspace(db, user_id)
     mode = _sales_employee_mode(payload.sending_mode)
-    with SALES_EMPLOYEE_LIMIT_LOCKS[str(workspace.id)]:
-        _enforce_sales_employee_mode(db, user_id, workspace, mode)
-        db.scalar(
-            select(Workspace).where(Workspace.id == workspace.id).with_for_update()
+    lock = (
+        SALES_EMPLOYEE_LIMIT_LOCKS[str(workspace.id)]
+        if db.bind is not None and db.bind.dialect.name != "postgresql"
+        else None
+    )
+    if lock is None:
+        employee = _create_sales_employee_with_database_limit(
+            db, request, user_id, workspace, payload, mode
         )
-        current_count = (
-            db.scalar(
-                select(func.count())
-                .select_from(AISalesEmployee)
-                .where(
-                    AISalesEmployee.workspace_id == workspace.id,
-                    AISalesEmployee.user_id == user_id,
-                )
+    else:
+        with lock:
+            employee = _create_sales_employee_with_database_limit(
+                db, request, user_id, workspace, payload, mode
             )
-            or 0
-        )
-        _enforce_count_limit(
-            db, user_id, workspace, "sales_employees", int(current_count)
-        )
-        employee = AISalesEmployee(
-            user_id=user_id,
-            workspace_id=workspace.id,
-            **payload.model_dump(exclude={"sending_mode"}),
-            sending_mode=mode,
-            strict_limits={
-                "default_mode": "Review Mode",
-                "daily_limit": payload.daily_limit,
-                "max_autonomous_leads_per_run": min(payload.daily_limit, 50),
-            },
-        )
-        db.add(employee)
-        db.flush()
-        employee.strict_limits = _default_employee_limits(employee)
-        log_event(
-            db,
-            request,
-            user_id,
-            "sales_employee.created",
-            {"employee_id": str(employee.id), "mode": employee.sending_mode.value},
-        )
-        _notify(
-            db,
-            user_id,
-            NotificationKind.success,
-            "AI Sales Employee created",
-            f"{employee.name} is ready in {employee.sending_mode.value}.",
-        )
-        db.commit()
     db.refresh(employee)
     return _employee_out(db, employee)
+
+
+def _create_sales_employee_with_database_limit(
+    db: Session,
+    request: Request,
+    user_id: str,
+    workspace: Workspace,
+    payload: AISalesEmployeeCreate,
+    mode: SalesEmployeeMode,
+) -> AISalesEmployee:
+    _enforce_sales_employee_mode(db, user_id, workspace, mode)
+    db.scalar(select(Workspace).where(Workspace.id == workspace.id).with_for_update())
+    current_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(AISalesEmployee)
+            .where(AISalesEmployee.workspace_id == workspace.id)
+        )
+        or 0
+    )
+    _enforce_count_limit(db, user_id, workspace, "sales_employees", int(current_count))
+    employee = AISalesEmployee(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        **payload.model_dump(exclude={"sending_mode"}),
+        sending_mode=mode,
+        strict_limits={
+            "default_mode": "Review Mode",
+            "daily_limit": payload.daily_limit,
+            "max_autonomous_leads_per_run": min(payload.daily_limit, 50),
+        },
+    )
+    db.add(employee)
+    db.flush()
+    employee.strict_limits = _default_employee_limits(employee)
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.created",
+        {"employee_id": str(employee.id), "mode": employee.sending_mode.value},
+    )
+    _notify(
+        db,
+        user_id,
+        NotificationKind.success,
+        "AI Sales Employee created",
+        f"{employee.name} is ready in {employee.sending_mode.value}.",
+    )
+    db.commit()
+    return employee
 
 
 @router.get("/sales-employees", response_model=list[AISalesEmployeeOut])
@@ -10675,7 +10695,17 @@ def mark_email_sent(
         raise HTTPException(
             status_code=400, detail="Lead email is required before sending."
         )
+    usage_reservation_id: UUID | None = None
     try:
+        usage_reservation = reserve_usage_capacity(
+            db,
+            user_id,
+            workspace,
+            "email_sends",
+            idempotency_key=f"legacy-email-send:{workspace.id}:{email_id}",
+        )
+        usage_reservation_id = usage_reservation.id if usage_reservation else None
+        db.commit()
         provider_response = send_email(
             to_email=lead.email,
             subject=message.subject,
@@ -10687,8 +10717,12 @@ def mark_email_sent(
             smtp_config=smtp_config,
         )
     except EmailProviderSendingDisabledError as exc:
+        release_usage_reservation(db, usage_reservation_id, reason=str(exc))
+        db.commit()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
+        release_usage_reservation(db, usage_reservation_id, reason=exc.__class__.__name__)
+        db.commit()
         message.delivery_status = "failed"
         db.add(message)
         if lead:
@@ -10707,7 +10741,7 @@ def mark_email_sent(
     message.sent_at = datetime.utcnow()
     message.provider_message_id = str(provider_response.get("id"))
     message.delivery_status = "sent"
-    _record_usage_after_success(db, user_id, workspace, "email_sends")
+    finalize_usage_reservation(db, usage_reservation_id)
     provider_thread_id = str(
         provider_response.get("thread_id") or provider_response.get("threadId") or ""
     ).strip()

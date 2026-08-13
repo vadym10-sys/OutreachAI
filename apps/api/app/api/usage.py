@@ -119,6 +119,11 @@ from app.services.google_maps import (
     search_google_places,
 )
 from app.services.hunter import DECISION_MAKER_TITLES, hunter_key_loaded
+from app.services.plan_enforcement import (
+    finalize_usage_reservation,
+    release_usage_reservation,
+    reserve_usage_capacity,
+)
 from app.services.deep_contact_search import normalize_domain, run_deep_contact_search
 from app.services.ai_customer_finder.schemas import (
     CustomerFinderCriteria,
@@ -15357,11 +15362,20 @@ def send_approved_email(
                 detail="Confirm the exact sender, recipient, subject, and body before sending.",
             )
 
+    usage_reservation_id: UUID | None = None
     try:
         sender_status, smtp_config = _outreach_sender_runtime_config(
             db, user.user_id, workspace
         )
-        _check_usage_available(db, user.user_id, workspace, "email_sends")
+        usage_reservation = reserve_usage_capacity(
+            db,
+            user.user_id,
+            workspace,
+            "email_sends",
+            idempotency_key=idempotency_key,
+        )
+        usage_reservation_id = usage_reservation.id if usage_reservation else None
+        db.commit()
         _record_email_send_provider_context(
             db,
             workspace_id=workspace.id,
@@ -15369,6 +15383,7 @@ def send_approved_email(
             sender_provider=sender_status.provider,
             sender_email=sender_status.sender_email,
         )
+        db.commit()
         provider_response = send_email(
             to_email=recipient_email,
             subject=email.subject,
@@ -15381,6 +15396,8 @@ def send_approved_email(
             idempotency_key=idempotency_key,
         )
     except HTTPException as exc:
+        release_usage_reservation(db, usage_reservation_id, reason=str(exc.detail))
+        db.commit()
         _restore_email_send_retry_state(
             db,
             request=request,
@@ -15395,6 +15412,8 @@ def send_approved_email(
             detail=str(exc.detail),
         ) from exc
     except EmailProviderSendingDisabledError as exc:
+        release_usage_reservation(db, usage_reservation_id, reason=str(exc))
+        db.commit()
         _restore_email_send_retry_state(
             db,
             request=request,
@@ -15406,6 +15425,8 @@ def send_approved_email(
         )
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EmailProviderConfigurationError as exc:
+        release_usage_reservation(db, usage_reservation_id, reason=str(exc))
+        db.commit()
         _restore_email_send_retry_state(
             db,
             request=request,
@@ -15436,6 +15457,10 @@ def send_approved_email(
             sender_provider
             and sender_provider not in EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED
         ):
+            release_usage_reservation(
+                db, usage_reservation_id, reason="provider_confirmation_pending"
+            )
+            db.commit()
             _mark_email_send_confirmation_pending(
                 db,
                 request=request,
@@ -15457,6 +15482,8 @@ def send_approved_email(
                 status_code=502,
                 detail="Email sending could not be confirmed. Check the mailbox before recovering or sending again.",
             ) from exc
+        release_usage_reservation(db, usage_reservation_id, reason=str(exc))
+        db.commit()
         _restore_email_send_retry_state(
             db,
             request=request,
@@ -15487,6 +15514,10 @@ def send_approved_email(
             sender_provider
             and sender_provider not in EMAIL_SEND_PROVIDER_IDEMPOTENCY_SUPPORTED
         ):
+            release_usage_reservation(
+                db, usage_reservation_id, reason="provider_confirmation_pending"
+            )
+            db.commit()
             _mark_email_send_confirmation_pending(
                 db,
                 request=request,
@@ -15508,6 +15539,10 @@ def send_approved_email(
                 status_code=500,
                 detail="Email sending could not be confirmed. Check the mailbox before recovering or sending again.",
             ) from exc
+        release_usage_reservation(
+            db, usage_reservation_id, reason=exc.__class__.__name__
+        )
+        db.commit()
         _restore_email_send_retry_state(
             db,
             request=request,
@@ -15532,7 +15567,7 @@ def send_approved_email(
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))
     email.delivery_status = "sent"
-    _record_usage_after_success(db, user.user_id, workspace, "email_sends")
+    finalize_usage_reservation(db, usage_reservation_id)
     provider_thread_id = str(
         provider_response.get("thread_id") or provider_response.get("threadId") or ""
     ).strip()
