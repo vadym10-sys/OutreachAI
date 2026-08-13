@@ -30,6 +30,7 @@ from app.services.ai_customer_finder.dedupe import canonical_url, company_dedupe
 from app.services.ai_customer_finder.providers import provider_for_key
 from app.services.ai_customer_finder.schemas import CustomerFinderCriteria, CustomerFinderJobOut, CustomerFinderResultOut, PublicCustomerCandidate, VerifiedCustomerSignal
 from app.services.ai_customer_finder.scoring import score_candidate, signal_type_from_text
+from app.services.plan_enforcement import check_usage_available, increment_usage_after_success
 from app.services.website import WebsiteFetchError, WebsiteTemporaryUnavailableError, collect_website, normalize_website_url
 
 logger = logging.getLogger("outreachai.ai_customer_finder")
@@ -904,6 +905,7 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
         result.company_id = company.id
         result.updated_at = datetime.utcnow()
         return
+    check_usage_available(db, job.user_id, job.workspace, "leads")
     lead = Lead(
         user_id=job.user_id,
         workspace_id=job.workspace_id,
@@ -924,6 +926,7 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
     result.lead_id = lead.id
     result.company_id = company.id
     result.updated_at = datetime.utcnow()
+    increment_usage_after_success(db, job.user_id, job.workspace, "leads")
 
 
 def _ensure_customer_finder_email_draft(db: Session, *, job: AICustomerFinderJob, lead: Lead, result: AICustomerFinderResult, criteria: CustomerFinderCriteria) -> EmailMessage:

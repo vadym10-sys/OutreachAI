@@ -41,7 +41,8 @@ from app.api.routes import (
     _settings_for_workspace,
     _sync_lead_to_crm,
     _workspace_out,
-    _enforce_usage,
+    _check_usage_available,
+    _record_usage_after_success,
 )
 from app.core.config import get_settings
 from app.core.database import get_db, get_sessionmaker, validate_runtime_schema
@@ -8172,6 +8173,7 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
             company=_safe_company_out(db, workspace, user.user_id, company),
         )
 
+    _check_usage_available(db, user.user_id, workspace, "leads")
     lead = Lead(
         user_id=user.user_id,
         workspace_id=workspace.id,
@@ -8210,6 +8212,7 @@ def create_company(payload: UsageCompanyCreateIn, request: Request, user: Worksp
         language=_workspace_language(request, workspace),
         max_attempts=max(1, min(5, int(get_settings().enrichment_max_retries or 2) + 1)),
     )
+    _record_usage_after_success(db, user.user_id, workspace, "leads")
     db.commit()
     db.refresh(company)
     return UsageCompanyCreateOut(
@@ -10132,7 +10135,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
 
     try:
         sender_status, smtp_config = _outreach_sender_runtime_config(db, user.user_id, workspace)
-        _enforce_usage(db, user.user_id, workspace, "email_sends")
+        _check_usage_available(db, user.user_id, workspace, "email_sends")
         _record_email_send_provider_context(db, workspace_id=workspace.id, email_id=email.id, sender_provider=sender_status.provider, sender_email=sender_status.sender_email)
         provider_response = send_email(
             to_email=recipient_email,
@@ -10177,6 +10180,7 @@ def send_approved_email(email_id: UUID, request: Request, user: WorkspaceUserCon
     email.sent_at = datetime.utcnow()
     email.provider_message_id = str(provider_response.get("id"))
     email.delivery_status = "sent"
+    _record_usage_after_success(db, user.user_id, workspace, "email_sends")
     provider_thread_id = str(provider_response.get("thread_id") or provider_response.get("threadId") or "").strip()
     email.tags = {
         **(email.tags if isinstance(email.tags, dict) else {}),

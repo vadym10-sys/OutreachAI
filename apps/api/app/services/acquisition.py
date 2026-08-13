@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -22,7 +23,6 @@ from app.models.entities import (
     LeadStatus,
     Notification,
     NotificationKind,
-    UsageCounter,
     Workspace,
     WebsiteAnalysis,
 )
@@ -30,6 +30,7 @@ from app.schemas.dto import LeadFinderRequest, PersonalizeRequest
 from app.services.ai import adaptive_follow_ups, personalize_email, sales_copilot
 from app.services.emailer import send_email
 from app.services.lead_finder import find_leads
+from app.services.plan_enforcement import check_usage_available, increment_usage_after_success
 from app.services.website import collect_website
 from app.services.ai import analyze_company_website
 
@@ -235,6 +236,11 @@ def _import_daily_leads(db: Session, workspace: Workspace, campaign: Campaign) -
         existing = db.scalar(select(Lead.id).where(Lead.workspace_id == workspace.id, or_(*duplicate_terms))) if duplicate_terms else None
         if existing:
             continue
+        try:
+            check_usage_available(db, workspace.owner_user_id, workspace, "leads")
+        except HTTPException:
+            logger.info("automation.lead_import_plan_limit_reached workspace_id=%s campaign_id=%s", workspace.id, campaign.id)
+            break
         lead = Lead(
             user_id=workspace.owner_user_id,
             workspace_id=workspace.id,
@@ -256,6 +262,7 @@ def _import_daily_leads(db: Session, workspace: Workspace, campaign: Campaign) -
         db.add(lead)
         db.flush()
         _analyze_website(db, workspace, lead)
+        increment_usage_after_success(db, workspace.owner_user_id, workspace, "leads")
         imported += 1
         _audit(db, workspace.owner_user_id, workspace.id, "automation.lead_imported", {"lead_id": str(lead.id), "company": lead.company})
     return imported
@@ -305,6 +312,11 @@ def _analyze_website(db: Session, workspace: Workspace, lead: Lead) -> None:
 def _qualify_lead(db: Session, workspace: Workspace, campaign: Campaign, lead: Lead) -> bool:
     if lead.status != LeadStatus.new:
         return False
+    try:
+        check_usage_available(db, workspace.owner_user_id, workspace, "ai_generations")
+    except HTTPException:
+        logger.info("automation.qualify_plan_limit_reached workspace_id=%s campaign_id=%s", workspace.id, campaign.id)
+        return False
     analysis = _latest_analysis(db, workspace, lead)
     messages = list(db.scalars(select(EmailMessage).where(EmailMessage.lead_id == lead.id).limit(10)).all())
     result = sales_copilot(
@@ -315,7 +327,7 @@ def _qualify_lead(db: Session, workspace: Workspace, campaign: Campaign, lead: L
             "email_history": [{"status": message.delivery_status, "opened": bool(message.opened_at), "replied": bool(message.replied_at)} for message in messages],
         }
     )
-    _usage(db, workspace, "ai_generations", 1)
+    increment_usage_after_success(db, workspace.owner_user_id, workspace, "ai_generations")
     if not lead.revenue and result.estimated_revenue is not None:
         lead.revenue = result.estimated_revenue
     lead.notes = "\n".join(
@@ -335,6 +347,11 @@ def _generate_email_if_needed(db: Session, workspace: Workspace, campaign: Campa
     existing = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == lead.id, EmailMessage.direction == "outbound").order_by(EmailMessage.created_at.asc()))
     if existing or lead.status != LeadStatus.qualified:
         return None
+    try:
+        check_usage_available(db, workspace.owner_user_id, workspace, "ai_generations")
+    except HTTPException:
+        logger.info("automation.email_generation_plan_limit_reached workspace_id=%s campaign_id=%s", workspace.id, campaign.id)
+        return None
     analysis = _latest_analysis(db, workspace, lead)
     generated = personalize_email(
         PersonalizeRequest(
@@ -348,7 +365,7 @@ def _generate_email_if_needed(db: Session, workspace: Workspace, campaign: Campa
             signature=campaign.signature,
         )
     )
-    _usage(db, workspace, "ai_generations", 1)
+    increment_usage_after_success(db, workspace.owner_user_id, workspace, "ai_generations")
     follow_ups = generated.follow_ups[:2]
     message = EmailMessage(
         user_id=workspace.owner_user_id,
@@ -388,12 +405,17 @@ def _send_ready_email(db: Session, workspace: Workspace, campaign: Campaign, lea
     )
     if not message:
         return False
+    try:
+        check_usage_available(db, workspace.owner_user_id, workspace, "email_sends")
+    except HTTPException:
+        logger.info("automation.email_send_plan_limit_reached workspace_id=%s campaign_id=%s", workspace.id, campaign.id)
+        return False
     response = send_email(to_email=lead.email, subject=message.subject, body=message.body)
     message.sent_at = datetime.utcnow()
     message.provider_message_id = str(response.get("id"))
     message.delivery_status = "sent"
     lead.status = LeadStatus.contacted
-    _usage(db, workspace, "email_sends", 1)
+    increment_usage_after_success(db, workspace.owner_user_id, workspace, "email_sends")
     _audit(db, workspace.owner_user_id, workspace.id, "automation.email_sent", {"lead_id": str(lead.id), "email_id": str(message.id)})
     return True
 
@@ -445,12 +467,17 @@ def _send_due_follow_ups(db: Session, workspace: Workspace, campaign: Campaign) 
             )
             db.add(message)
             db.flush()
+            try:
+                check_usage_available(db, workspace.owner_user_id, workspace, "email_sends")
+            except HTTPException:
+                logger.info("automation.follow_up_send_plan_limit_reached workspace_id=%s campaign_id=%s", workspace.id, campaign.id)
+                return sent
             response = send_email(to_email=lead.email, subject=message.subject, body=message.body)
             message.sent_at = datetime.utcnow()
             message.provider_message_id = str(response.get("id"))
             message.delivery_status = "sent"
             lead.status = LeadStatus.contacted
-            _usage(db, workspace, "email_sends", 1)
+            increment_usage_after_success(db, workspace.owner_user_id, workspace, "email_sends")
             _audit(db, workspace.owner_user_id, workspace.id, "automation.follow_up_sent", {"lead_id": str(lead.id), "step": step_order})
             sent += 1
             break
@@ -459,6 +486,7 @@ def _send_due_follow_ups(db: Session, workspace: Workspace, campaign: Campaign) 
 
 def _adaptive_follow_up_body(db: Session, workspace: Workspace, campaign: Campaign, lead: Lead, message: EmailMessage, behavior: str) -> str:
     try:
+        check_usage_available(db, workspace.owner_user_id, workspace, "ai_generations")
         result = adaptive_follow_ups(
             {
                 "lead": _lead_payload(lead),
@@ -466,7 +494,7 @@ def _adaptive_follow_up_body(db: Session, workspace: Workspace, campaign: Campai
                 "last_email": {"subject": message.subject, "body": message.body, "opened": bool(message.opened_at), "clicked": bool(message.clicked_at), "replied": bool(message.replied_at)},
             }
         )
-        _usage(db, workspace, "ai_generations", 1)
+        increment_usage_after_success(db, workspace.owner_user_id, workspace, "ai_generations")
         return (getattr(result, behavior) or [""])[0]
     except Exception:
         logger.exception("Adaptive follow-up generation failed; using stored sequence body")
@@ -594,16 +622,6 @@ def _daily_send_limit(campaign: Campaign) -> int:
             except ValueError:
                 return 25
     return 25
-
-
-def _usage(db: Session, workspace: Workspace, field: str, amount: int) -> None:
-    period = datetime.utcnow().strftime("%Y-%m")
-    usage = db.scalar(select(UsageCounter).where(UsageCounter.workspace_id == workspace.id, UsageCounter.period == period))
-    if usage is None:
-        usage = UsageCounter(workspace_id=workspace.id, period=period)
-        db.add(usage)
-        db.flush()
-    setattr(usage, field, int(getattr(usage, field)) + amount)
 
 
 def _audit(db: Session, user_id: str | None, workspace_id, action: str, metadata: dict[str, Any]) -> None:

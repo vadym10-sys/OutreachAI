@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.cache import cache_key, delete_key, get_json, set_json
-from app.core.database import get_db
+from app.core.database import get_db, get_sessionmaker
 from app.core.config import get_settings as get_app_settings
 from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
 from app.core.security import CurrentUser, OwnerUser, WorkspaceUserContext, authenticated_user_id_from_authorization
@@ -218,6 +218,7 @@ from app.services.entitlements import (
     workspace_trial_is_active,
 )
 from app.services.plan_catalog import PLAN_CATALOG, PLAN_ORDER, normalize_billing_period, plan_limits, public_plan_catalog
+from app.services.plan_enforcement import check_usage_available, increment_usage_after_success, usage_for_workspace
 from app.services.subscription_transitions import (
     SubscriptionTransitionError,
     apply_upgrade_now,
@@ -1340,25 +1341,19 @@ def _require_active_subscription(db: Session, workspace: Workspace, user_id: str
 
 
 def _usage_for_workspace(db: Session, workspace: Workspace) -> UsageCounter:
-    usage = db.scalar(select(UsageCounter).where(UsageCounter.workspace_id == workspace.id, UsageCounter.period == _month_period()))
-    if usage is None:
-        usage = UsageCounter(workspace_id=workspace.id, period=_month_period())
-        db.add(usage)
-        db.flush()
-    return usage
+    return usage_for_workspace(db, workspace, period=_month_period())
 
 
 def _enforce_usage(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> UsageCounter:
-    plan = _plan_for_workspace(db, user_id, workspace)
-    limits = _limits_for_workspace(db, user_id, workspace)
-    usage = _usage_for_workspace(db, workspace)
-    current = int(getattr(usage, metric))
-    limit = int(limits[metric])
-    if limit and current + amount > limit:
-        raise HTTPException(status_code=402, detail=f"{metric.replace('_', ' ').title()} limit reached for the {plan} plan. Upgrade in Billing to continue.")
-    setattr(usage, metric, current + amount)
-    db.add(usage)
-    return usage
+    return increment_usage_after_success(db, user_id, workspace, metric, amount)
+
+
+def _check_usage_available(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> None:
+    check_usage_available(db, user_id, workspace, metric, amount)
+
+
+def _record_usage_after_success(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> UsageCounter:
+    return increment_usage_after_success(db, user_id, workspace, metric, amount)
 
 
 def _team_limit(db: Session, user_id: str, workspace: Workspace) -> int:
@@ -4766,7 +4761,7 @@ def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentU
     plan = _plan_for_workspace(db, user_id, workspace)
     if not _limits_for_workspace(db, user_id, workspace)["advanced_analytics"]:
         raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Advanced Analytics"))
-    _enforce_usage(db, user_id, workspace, "ai_generations")
+    _check_usage_available(db, user_id, workspace, "ai_generations")
     campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -4793,6 +4788,7 @@ def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentU
         )
     except Exception as exc:
         raise _provider_error(exc) from exc
+    _record_usage_after_success(db, user_id, workspace, "ai_generations")
     log_event(db, request, user_id, "campaign.analytics_generated", {"campaign_id": str(campaign.id), "success": result.campaign_success})
     db.commit()
     return result
@@ -5027,7 +5023,6 @@ def duplicate_campaign(campaign_id: UUID, request: Request, user_id: CurrentUser
 @router.post("/leads", response_model=LeadOut)
 def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> LeadOut:
     workspace = _current_workspace(db, user_id)
-    _enforce_usage(db, user_id, workspace, "leads")
     candidate = LeadOut(
         company=payload.company,
         website=payload.website,
@@ -5070,6 +5065,7 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
             db.commit()
             db.refresh(existing)
             return _lead_out(existing)
+    _check_usage_available(db, user_id, workspace, "leads")
     enriched = candidate if candidate.email else _hunter_enriched_leads(db, request, user_id, workspace, [candidate])[0]
     metadata = {**_lead_metadata(enriched), "saved_to_crm_at": datetime.utcnow().isoformat()}
     lead = Lead(
@@ -5094,6 +5090,7 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
     _analyze_lead_if_possible(db, user_id, workspace, lead)
     _sync_lead_to_crm(db, user_id, workspace, lead)
     log_event(db, request, user_id, "lead.imported", {"company": lead.company, "source": "manual", "hunter_verified": bool(enriched.hunter_verified)})
+    _record_usage_after_success(db, user_id, workspace, "leads")
     if enriched.hunter_verified:
         _notify(db, user_id, NotificationKind.success, "Company analyzed", f"{lead.company} was saved, an email was verified, and AI prepared the company summary.")
     else:
@@ -5788,9 +5785,25 @@ def ai_personalize(payload: PersonalizeRequest, request: Request, user_id: Curre
 
 
 @router.post("/ai/personalize/stream")
-def ai_personalize_stream(payload: PersonalizeRequest, user_id: CurrentUser) -> StreamingResponse:
-    del user_id
-    return StreamingResponse(stream_email_generation(payload), media_type="text/plain")
+def ai_personalize_stream(payload: PersonalizeRequest, user_id: CurrentUser, db: Session = Depends(get_db)) -> StreamingResponse:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace, user_id)
+    _check_usage_available(db, user_id, workspace, "ai_generations")
+    workspace_id = workspace.id
+
+    def metered_stream():
+        completed = False
+        for chunk in stream_email_generation(payload):
+            completed = True
+            yield chunk
+        if completed:
+            with get_sessionmaker()() as usage_db:
+                usage_workspace = usage_db.get(Workspace, workspace_id)
+                if usage_workspace is not None:
+                    _record_usage_after_success(usage_db, user_id, usage_workspace, "ai_generations")
+                    usage_db.commit()
+
+    return StreamingResponse(metered_stream(), media_type="text/plain")
 
 
 @router.post("/ai/rewrite")
@@ -6312,7 +6325,7 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     sender_status, smtp_config = _outreach_sender_runtime_config(db, user_id, workspace)
-    _enforce_usage(db, user_id, workspace, "email_sends")
+    _check_usage_available(db, user_id, workspace, "email_sends")
     message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
     if message is None:
         raise HTTPException(status_code=404, detail="Email not found")
@@ -6347,6 +6360,7 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     message.sent_at = datetime.utcnow()
     message.provider_message_id = str(provider_response.get("id"))
     message.delivery_status = "sent"
+    _record_usage_after_success(db, user_id, workspace, "email_sends")
     provider_thread_id = str(provider_response.get("thread_id") or provider_response.get("threadId") or "").strip()
     message.tags = {**(message.tags if isinstance(message.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider, **({"provider_thread_id": provider_thread_id} if provider_thread_id else {})}
     lead.status = LeadStatus.contacted

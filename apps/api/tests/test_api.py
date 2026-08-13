@@ -1598,6 +1598,8 @@ def test_lead_finder_first_customers_requires_manual_crm_save_and_keeps_outreach
 
 def test_revenue_intelligence_feed_scores_watchlist_and_tenant_isolation() -> None:
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": "revenue-intelligence@example.com"}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(workspace["id"], user_id="revenue-intelligence@example.com", plan="Pro", status="active")
     company_response = client.post(
         "/api/workspace-app/companies",
         headers=headers,
@@ -1672,6 +1674,8 @@ def test_revenue_intelligence_feed_scores_watchlist_and_tenant_isolation() -> No
     assert watch.status_code == 200, watch.text
     assert watch.json()["watchlisted"] is True
 
+    isolated_workspace = client.get("/api/workspace/me", headers=USER_B_AUTH).json()
+    _grant_subscription_for_test(isolated_workspace["id"], user_id="tenant-b@example.com", plan="Pro", status="active")
     isolated = client.get("/api/workspace-app/revenue-intelligence", headers=USER_B_AUTH)
     assert isolated.status_code == 200
     assert all(item["company"] != "Revenue Intel Co" for item in isolated.json()["top_opportunities"])
@@ -4157,6 +4161,145 @@ def test_usage_limit_boundaries_fail_closed_for_every_plan() -> None:
                 with pytest.raises(HTTPException) as exc:
                     routes_module._enforce_usage(db, user_id, workspace_row, metric)
                 assert exc.value.status_code == 402
+                assert exc.value.detail["code"] == "plan_limit_exceeded"
+                assert exc.value.detail["metric"] == metric
+
+
+def test_plan_usage_check_then_record_boundaries_and_failed_operation_no_charge() -> None:
+    user_id = f"usage-check-record-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(workspace["id"], user_id=user_id, plan="Starter", status="active")
+    limit = int(PLAN_LIMITS["Starter"]["ai_generations"])
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        usage = routes_module._usage_for_workspace(db, workspace_row)
+        usage.ai_generations = limit - 1
+        db.commit()
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        routes_module._check_usage_available(db, user_id, workspace_row, "ai_generations")
+        db.commit()
+
+    with get_sessionmaker()() as db:
+        usage = db.scalar(select(UsageCounter).where(UsageCounter.workspace_id == UUID(workspace["id"])))
+        assert usage is not None
+        assert usage.ai_generations == limit - 1
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        routes_module._record_usage_after_success(db, user_id, workspace_row, "ai_generations")
+        db.commit()
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        with pytest.raises(HTTPException) as exc:
+            routes_module._check_usage_available(db, user_id, workspace_row, "ai_generations")
+        assert exc.value.status_code == 402
+        assert exc.value.detail == {
+            "code": "plan_limit_exceeded",
+            "metric": "ai_generations",
+            "plan": "Starter",
+            "limit": limit,
+            "current": limit,
+            "requested": 1,
+            "message": "Ai Generations limit reached for the Starter plan. Upgrade in Billing to continue.",
+        }
+
+
+def test_plan_usage_concurrent_records_cannot_exceed_limit() -> None:
+    user_id = f"usage-concurrent-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(workspace["id"], user_id=user_id, plan="Starter", status="active")
+    limit = int(PLAN_LIMITS["Starter"]["email_sends"])
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        usage = routes_module._usage_for_workspace(db, workspace_row)
+        usage.email_sends = limit - 1
+        db.commit()
+
+    def record_once() -> int:
+        with get_sessionmaker()() as db:
+            workspace_row = db.get(Workspace, UUID(workspace["id"]))
+            assert workspace_row is not None
+            try:
+                routes_module._record_usage_after_success(db, user_id, workspace_row, "email_sends")
+                db.commit()
+                return 200
+            except HTTPException as exc:
+                db.rollback()
+                return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        statuses = list(executor.map(lambda _: record_once(), range(3)))
+
+    assert statuses.count(200) == 1
+    assert all(status in {200, 402} for status in statuses)
+    with get_sessionmaker()() as db:
+        usage = db.scalar(select(UsageCounter).where(UsageCounter.workspace_id == UUID(workspace["id"])))
+        assert usage is not None
+        assert usage.email_sends == limit
+
+
+def test_plan_usage_is_workspace_isolated_and_owner_does_not_bypass_customer_limit() -> None:
+    metric = "leads"
+    owner_workspace = client.get("/api/workspace/me", headers=OWNER_AUTH).json()
+    other_email = f"usage-isolated-{uuid4()}@example.com"
+    other_headers = {"Authorization": "Bearer dev", "X-Test-User-Email": other_email}
+    other_workspace = client.get("/api/workspace/me", headers=other_headers).json()
+    _grant_subscription_for_test(owner_workspace["id"], user_id="romaniukvadym10@gmail.com", plan="Starter", status="active")
+    _grant_subscription_for_test(other_workspace["id"], user_id=other_email, plan="Starter", status="active")
+    limit = int(PLAN_LIMITS["Starter"][metric])
+
+    with get_sessionmaker()() as db:
+        owner_row = db.get(Workspace, UUID(owner_workspace["id"]))
+        other_row = db.get(Workspace, UUID(other_workspace["id"]))
+        assert owner_row is not None and other_row is not None
+        owner_usage = routes_module._usage_for_workspace(db, owner_row)
+        owner_usage.leads = limit
+        other_usage = routes_module._usage_for_workspace(db, other_row)
+        other_usage.leads = 0
+        db.commit()
+
+    with get_sessionmaker()() as db:
+        owner_row = db.get(Workspace, UUID(owner_workspace["id"]))
+        other_row = db.get(Workspace, UUID(other_workspace["id"]))
+        assert owner_row is not None and other_row is not None
+        with pytest.raises(HTTPException):
+            routes_module._check_usage_available(db, "romaniukvadym10@gmail.com", owner_row, metric)
+        routes_module._check_usage_available(db, other_email, other_row, metric)
+
+
+@pytest.mark.parametrize(
+    ("status", "allowed"),
+    [("active", True), ("trialing", True), ("inactive", False), ("canceled", False)],
+)
+def test_plan_usage_follows_subscription_status_for_active_gate(monkeypatch, status: str, allowed: bool) -> None:
+    user_id = f"usage-status-{status}-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(workspace["id"], user_id=user_id, plan="Starter", status=status)
+    monkeypatch.setattr(get_settings(), "app_env", "production")
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        if allowed:
+            _require_active_subscription(db, workspace_row, user_id)
+            routes_module._check_usage_available(db, user_id, workspace_row, "leads")
+        else:
+            with pytest.raises(HTTPException) as exc:
+                _require_active_subscription(db, workspace_row, user_id)
+            assert exc.value.status_code == 402
 
 
 @pytest.mark.parametrize("plan", ["Starter", "Pro"])
@@ -4312,7 +4455,7 @@ def test_autopilot_worker_ignores_forged_settings_billing_entitlements(monkeypat
             assert entitlement is not None
             assert entitlement.active is False
             assert entitlement.plan == "Starter"
-            assert autopilot_module._plan_limit(entitlement) == PLAN_LIMITS["Starter"]["email_sends"]
+            assert entitlement.limits["email_sends"] == PLAN_LIMITS["Starter"]["email_sends"]
     finally:
         monkeypatch.setattr(app_settings, "app_env", original_env)
 
@@ -11122,6 +11265,9 @@ def test_gmail_reply_sync_updates_crm_and_is_idempotent(monkeypatch) -> None:
     try:
         workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_email))
         app_settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
+        if app_settings is None:
+            app_settings = AppSettings(user_id=user_email, workspace_id=workspace.id)
+            db.add(app_settings)
         app_settings.email = {
             "sender": {
                 "provider": "gmail",

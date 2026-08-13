@@ -10,11 +10,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models.entities import AppSettings, AuditLog, Campaign, CampaignStatus, Company, EmailMessage, EnrichmentJob, Lead, LeadStatus, UsageCounter, Workspace
-from app.schemas.dto import PLAN_LIMITS
+from app.models.entities import AppSettings, AuditLog, Campaign, CampaignStatus, Company, EmailMessage, EnrichmentJob, Lead, LeadStatus, Workspace
 from app.services.emailer import EmailProviderSendingDisabledError, send_email
 from app.services.entitlements import BillingEntitlement, resolve_billing_entitlement
 from app.services.enrichment_queue import complete_job, mark_cancelled, update_job_progress
+from app.services.plan_enforcement import check_usage_available, increment_usage_after_success
 from app.services.secret_box import decrypt_secret
 
 logger = logging.getLogger("outreachai.autopilot")
@@ -93,30 +93,9 @@ def _sent_today(db: Session, workspace_id, campaign_id) -> int:  # type: ignore[
     return int(db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.workspace_id == workspace_id, EmailMessage.campaign_id == campaign_id, EmailMessage.sent_at >= today)) or 0)
 
 
-def _increment_usage(db: Session, workspace_id) -> None:  # type: ignore[no-untyped-def]
-    period = datetime.utcnow().strftime("%Y-%m")
-    usage = db.scalar(select(UsageCounter).where(UsageCounter.workspace_id == workspace_id, UsageCounter.period == period))
-    if usage is None:
-        usage = UsageCounter(workspace_id=workspace_id, period=period, email_sends=0)
-        db.add(usage)
-    usage.email_sends = int(usage.email_sends or 0) + 1
-    usage.updated_at = datetime.utcnow()
-
-
 def _billing_entitlement_for_job(db: Session, job: EnrichmentJob) -> BillingEntitlement | None:
     workspace = db.get(Workspace, job.workspace_id)
     return resolve_billing_entitlement(db, job.user_id, workspace) if workspace else None
-
-
-def _plan_limit(entitlement: BillingEntitlement | None) -> int:
-    plan = entitlement.plan if entitlement else "Starter"
-    limit = int(PLAN_LIMITS.get(plan, PLAN_LIMITS["Starter"])["email_sends"])
-    return limit if limit > 0 else 10**9
-
-
-def _usage_this_month(db: Session, workspace_id) -> int:  # type: ignore[no-untyped-def]
-    period = datetime.utcnow().strftime("%Y-%m")
-    return int(db.scalar(select(UsageCounter.email_sends).where(UsageCounter.workspace_id == workspace_id, UsageCounter.period == period)) or 0)
 
 
 def _within_working_hours(campaign: Campaign) -> bool:
@@ -203,7 +182,13 @@ def process_autopilot_email_job(db: Session, job: EnrichmentJob, *, claim_token:
     entitlement = _billing_entitlement_for_job(db, job)
     if get_settings().app_env == "production" and (entitlement is None or not entitlement.active):
         raise AutopilotDeferred("Active subscription required.", delay_seconds=3600)
-    if _usage_this_month(db, job.workspace_id) >= _plan_limit(entitlement):
+    workspace = db.get(Workspace, job.workspace_id)
+    if workspace is None:
+        return mark_cancelled(db, job, message="Workspace no longer exists.", claim_token=claim_token)
+    try:
+        check_usage_available(db, job.user_id, workspace, "email_sends")
+    except Exception as exc:
+        logger.info("autopilot.plan_limit_deferred workspace_id=%s job_id=%s reason=%s", job.workspace_id, job.id, exc)
         raise AutopilotDeferred("Plan email sending limit reached.", delay_seconds=3600)
     if email.delivery_status == "sent":
         return complete_job(db, job, partial=False, claim_token=claim_token)
@@ -232,7 +217,7 @@ def process_autopilot_email_job(db: Session, job: EnrichmentJob, *, claim_token:
     if company:
         company.email_status = "Sent"
         company.crm_stage = "Contacted"
-    _increment_usage(db, job.workspace_id)
+    increment_usage_after_success(db, job.user_id, workspace, "email_sends")
     db.add(AuditLog(user_id=job.user_id, workspace_id=job.workspace_id, action="autopilot.email.sent", metadata_json={"campaign_id": str(campaign.id), "lead_id": str(lead.id), "email_id": str(email.id), "provider_message_id": email.provider_message_id}))
     db.commit()
     return complete_job(db, job, partial=False, claim_token=claim_token)
