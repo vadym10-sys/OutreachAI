@@ -10,29 +10,34 @@ test("landing explains the B2B outbound product and pricing", async ({ page }, t
   const guards = installQaGuards(page, testInfo);
   await page.goto("/");
   const main = page.getByRole("main");
-  await expect(page.getByRole("heading", { name: "Find the right companies. Understand why they will buy. Reach out with AI." })).toBeVisible();
-  await expect(main.getByText("OutreachAI understands your business, finds relevant companies").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Find B2B companies, see why they fit, and send only after approval." })).toBeVisible();
+  await expect(main.getByText("OutreachAI is for small B2B teams").first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Start finding customers" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Login" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "View demo dashboard" })).toHaveCount(0);
   await expect(main.getByText("Business description", { exact: true })).toBeVisible();
   await expect(main.getByText("Company with evidence", { exact: true })).toBeVisible();
   await expect(main.getByText("Manual confirmation", { exact: true })).toBeVisible();
-  await expect(main.getByText("Demo evidence uses safe fixture data, not customer production records.", { exact: true })).toBeVisible();
+  await expect(main.getByText("Use the evidence to decide whether the company belongs in your CRM.", { exact: true })).toBeVisible();
+  await expect(main.getByText("AI creates drafts only. A real send requires a reviewed recipient, subject, body and explicit approval.", { exact: true })).toBeVisible();
   await expect(main).toContainText("49 EUR/month");
   await expect(main).toContainText("149 EUR/month");
   await expect(main).toContainText("499 EUR/month");
   await expect(main).toContainText("500 leads per month");
   await expect(main).toContainText("50,000 leads per month");
   await expect(main).toContainText("14 day trial");
+  await expect(main).toContainText("Actual email sending also depends on a connected sender and provider limits.");
   await expect(main.getByRole("link", { name: "Choose Starter" })).toHaveAttribute("href", "/sign-up?plan=Starter");
   await expect(main.getByRole("link", { name: "Choose Pro" })).toHaveAttribute("href", "/sign-up?plan=Pro");
   await expect(main.getByRole("link", { name: "Choose Agency" })).toHaveAttribute("href", "/sign-up?plan=Agency");
   await expect(page.locator("#contact").getByRole("link", { name: "outreachaiaiai@gmail.com" })).toHaveAttribute("href", supportHref);
   await expect(main).not.toContainText("Clerk");
   await expect(main).not.toContainText("Stripe");
-  await expect(page.getByRole("heading", { name: "AI Lead Intelligence" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Explainable AI" })).toBeVisible();
+  await expect(main).not.toContainText("Demonstration fixture");
+  await expect(main).not.toContainText("safe fixture");
+  await expect(main).not.toContainText("production records");
+  await expect(page.getByRole("heading", { name: "AI research" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Buying signals" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Starter" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Pro" }).first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Agency" }).first()).toBeVisible();
@@ -45,8 +50,8 @@ test("landing follows the selected language without mixed English hero copy", as
   const main = page.getByRole("main");
   await visibleLanguageSelect(page).selectOption("ru");
 
-  await expect(page.getByRole("heading", { name: "Находите правильные компании. Понимайте, почему они купят. Пишите с AI." })).toBeVisible();
-  await expect(page.getByText("OutreachAI понимает ваш бизнес")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Находите B2B-компании, понимайте их соответствие и отправляйте только после подтверждения." })).toBeVisible();
+  await expect(page.getByText("OutreachAI создан для небольших B2B-команд")).toBeVisible();
   await expect(page.getByRole("link", { name: "Начать поиск клиентов" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Войти" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Посмотреть демо-панель" })).toHaveCount(0);
@@ -61,6 +66,8 @@ test("landing follows the selected language without mixed English hero copy", as
   await expect(main).not.toContainText("Find qualified companies, analyze their websites");
   await expect(main).not.toContainText("Start free trial");
   await expect(main).not.toContainText("Questions before signing up?");
+  await expect(main).not.toContainText("Does OutreachAI send emails without me?");
+  await expect(main).not.toContainText("What does autonomous preparation mean?");
   await guards.assertClean();
 });
 
@@ -70,14 +77,14 @@ for (const width of [360, 390, 430]) {
     await page.goto("/");
     await visibleLanguageSelect(page).selectOption("ru");
 
-    await expect(page.getByRole("heading", { name: "Находите правильные компании. Понимайте, почему они купят. Пишите с AI." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Находите B2B-компании, понимайте их соответствие и отправляйте только после подтверждения." })).toBeVisible();
     await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("Something went wrong");
 
     const metrics = await page.evaluate(() => {
       const ctaRect = document.querySelector('[data-testid="hero-start-free-trial"]')?.getBoundingClientRect();
       const headingRect = Array.from(document.querySelectorAll("h1"))
-        .find((heading) => heading.textContent?.includes("Находите правильные компании"))
+        .find((heading) => heading.textContent?.includes("Находите B2B-компании"))
         ?.getBoundingClientRect();
       return {
         innerWidth: window.innerWidth,
@@ -111,7 +118,7 @@ test("Russian landing works in Telegram-like in-app mobile browser", async ({ br
   await page.goto("/");
   await visibleLanguageSelect(page).selectOption("ru");
 
-  await expect(page.getByRole("heading", { name: "Находите правильные компании. Понимайте, почему они купят. Пишите с AI." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Находите B2B-компании, понимайте их соответствие и отправляйте только после подтверждения." })).toBeVisible();
   await expect(page.getByRole("main").getByTestId("hero-start-free-trial")).toBeVisible();
   const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1 || document.body.scrollWidth > window.innerWidth + 1);
   expect(hasOverflow).toBe(false);
