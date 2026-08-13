@@ -98,9 +98,9 @@ describe("i18n", () => {
       "Business description",
       "Company with evidence",
       "Manual confirmation",
-      "Demo evidence uses safe fixture data, not customer production records.",
-      "Insufficient data stays visible and is routed to manual review.",
-      "Prices and limits come from the billing catalogue used by the application. Subscription changes are managed securely in the billing portal according to the active portal configuration.",
+      "Use the evidence to decide whether the company belongs in your CRM.",
+      "Missing evidence stays visible for review.",
+      "Prices, trial length and usage counters match the active billing catalog. Actual email sending also depends on a connected sender and provider limits.",
       "Secure authentication",
       "Workspace billing",
       "Questions before signing up?",
@@ -113,6 +113,43 @@ describe("i18n", () => {
 
     expect(translateVisibleText("Secure authentication", "ru")).not.toMatch(/Clerk/i);
     expect(translateVisibleText("Workspace billing", "ru")).not.toMatch(/Stripe/i);
+  });
+
+  it("keeps every visible landing phrase complete across supported locales", () => {
+    const landingSource = readFileSync(resolve(process.cwd(), "components/landing-page.tsx"), "utf8");
+    const phrases = [...new Set([...landingSource.matchAll(/t\("([^"]+)"\)/g)].map((match) => match[1]))];
+    const allowedSame = new Set(["AI Customer Finder", "Gmail OAuth", "CRM", "FAQ", "Starter", "Pro", "Agency"]);
+
+    expect(phrases.length).toBeGreaterThan(40);
+
+    for (const phrase of phrases) {
+      for (const locale of locales) {
+        const translated = translate(phrase, locale);
+        expect(translated, `${locale}.${phrase}`).toBeTruthy();
+        if (locale !== "en" && locale !== "en-US" && !allowedSame.has(phrase)) {
+          expect(translated, `${locale}.${phrase}`).not.toBe(phrase);
+        }
+      }
+
+      const visible = visiblePhraseTranslations[phrase];
+      if (visible) {
+        for (const locale of locales) {
+          if (locale === "en") continue;
+          expect(visible[locale], `${locale}.${phrase}`).toBeTruthy();
+        }
+      }
+    }
+  });
+
+  it("keeps public landing claims aligned with approval-first production behavior", () => {
+    const landingSource = readFileSync(resolve(process.cwd(), "components/landing-page.tsx"), "utf8");
+
+    expect(landingSource).toContain("AI creates drafts only. A real send requires a reviewed recipient, subject, body and explicit approval.");
+    expect(landingSource).toContain("Actual email sending also depends on a connected sender and provider limits.");
+    expect(landingSource).toContain("Gmail OAuth is supported, but sending depends on a connected mailbox, workspace settings and provider limits.");
+    expect(landingSource).not.toMatch(/demo fixture|Demonstration fixture|safe fixture|production records|fake customer result/i);
+    expect(landingSource).not.toMatch(/unattended email sending|send automatically|Autonomous mode included|Autonomous mode not included/i);
+    expect(landingSource).not.toMatch(/booked \d+|trusted by outbound teams|customer result|conversion rate|revenue generated/i);
   });
 
   it("localizes public legal and support text in Russian and English", () => {

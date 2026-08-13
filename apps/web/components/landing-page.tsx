@@ -21,28 +21,30 @@ import { publicPlans } from "@/lib/plan-catalog";
 import { publicSupportEmail } from "@/lib/public-contact";
 
 const workflow = [
-  "Describe the business",
-  "Find a company with evidence",
+  "Describe your business or paste a website",
+  "Find relevant companies",
+  "Review evidence and buying signals",
   "Save to CRM",
-  "Prepare a personal draft",
-  "Approve manually",
-  "Track the reply",
+  "Prepare a personalized draft",
+  "Approve before sending",
+  "Track replies and meetings",
 ] as const;
 
 const features = [
-  ["AI Lead Intelligence", "Scores ICP match, buying intent, growth, hiring, funding, expansion, website quality and outreach readiness."],
-  ["Explainable AI", "Shows facts, evidence, missing evidence, positive and negative signals before action."],
-  ["Research Profile", "Summarises business model, ICP, digital maturity, AI readiness, momentum and risks."],
-  ["Outreach Strategy", "Recommends decision maker, channel, CTA, timing, priority and manual review status."],
-  ["Email approval safety", "AI creates drafts only. Real sending requires explicit user confirmation."],
-  ["CRM handoff", "Qualified companies can be saved into the existing CRM without turning discovery into a complex pipeline."],
+  ["AI research", "Finds companies, reads public context and shows the evidence behind each recommendation."],
+  ["Buying signals", "Highlights fit, urgency, missing proof and the reason a company is worth reviewing."],
+  ["CRM handoff", "Saves qualified companies into the workspace CRM so the next step is ready."],
+  ["Draft generation", "Prepares a personalized first email from the saved company and available evidence."],
+  ["Approval-first sending", "AI creates drafts only. A real send requires a reviewed recipient, subject, body and explicit approval."],
+  ["Reply tracking", "Tracks replies after approved messages are sent through a connected workspace sender."],
 ] as const;
 
 const faq = [
-  ["Does OutreachAI send automatically?", "No. AI prepares drafts only, and every real send requires manual approval."],
-  ["Where do scores come from?", "AI Lead Intelligence fields and available evidence in the production lead record."],
-  ["Can Gmail be skipped?", "Yes. Users can start discovery first and connect Gmail later from settings."],
-  ["What happens with insufficient data?", "Insufficient data stays visible and should be routed to review instead of being treated as a fact."],
+  ["Does OutreachAI send emails without me?", "No. OutreachAI researches companies and prepares drafts, but real email sending requires explicit approval."],
+  ["What does semi-automatic mean?", "OutreachAI can prepare research, CRM records and drafts in sequence. You still review before external actions."],
+  ["What does autonomous preparation mean?", "Higher plans can run more preparation steps, but unattended sending is not promised on the public site."],
+  ["Can I use Gmail?", "Gmail OAuth is supported, but sending depends on a connected mailbox, workspace settings and provider limits."],
+  ["What happens with insufficient data?", "Missing evidence stays visible so you can review, retry or skip the company."],
   ["How do I get support?", "Email the confirmed support contact listed on this page."],
 ] as const;
 
@@ -83,12 +85,12 @@ function AuthNavigationLink({
 function ProductPreview() {
   const { t } = useI18n();
   const previewSteps = [
-    ["Business description", "Demo business: logistics software for mid-market operators in Germany."],
-    ["Company with evidence", "Demo candidate shows website context, hiring signal and fit notes before any CRM save."],
-    ["Saved CRM record", "The company is saved as a reviewable opportunity, not as a fake customer result."],
-    ["Personal draft", "AI prepares a draft using available evidence and flags missing proof."],
-    ["Manual confirmation", "The user reviews the draft and approves before any send action is available."],
-    ["Reply tracking", "Replies are tracked only after an approved email is sent through the workspace."],
+    ["Business description", "Paste your site or describe what you sell and who should buy it."],
+    ["Company with evidence", "OutreachAI shows website context, fit notes and buying signals before you save the lead."],
+    ["Saved CRM record", "The company becomes a reviewable opportunity in your workspace CRM."],
+    ["Personal draft", "AI prepares a first email using the available evidence and flags missing proof."],
+    ["Manual confirmation", "You review the recipient, subject and body before any send action is available."],
+    ["Reply tracking", "Replies are tracked after an approved email is sent from a connected workspace sender."],
   ] as const;
 
   return (
@@ -96,7 +98,7 @@ function ProductPreview() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-sm font-black text-[var(--ui-text)]">{t("AI Customer Finder")}</p>
-          <p className="mt-1 text-xs font-bold text-[var(--ui-text-soft)]">{t("Demonstration fixture")}</p>
+          <p className="mt-1 text-xs font-bold text-[var(--ui-text-soft)]">{t("Lead review workflow")}</p>
         </div>
         <AppBadge tone="brand">{t("Draft-only")}</AppBadge>
       </div>
@@ -126,12 +128,12 @@ function ProductPreview() {
       <div className="mt-4 grid gap-4 min-[520px]:grid-cols-2">
         <article className="rounded-[1.25rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">
           <p className="text-xs font-bold text-[var(--ui-text-soft)]">{t("Company candidate")}</p>
-          <h3 className="mt-2 text-base font-black text-[var(--ui-text)]">{t("Evidence shown before action")}</h3>
+          <h3 className="mt-2 text-base font-black text-[var(--ui-text)]">{t("Evidence before action")}</h3>
           <div className="mt-4 flex flex-wrap gap-2">
             <AppBadge tone="success">{t("Overall Lead Score")}</AppBadge>
             <AppBadge tone="brand">{t("Quality Gate")}</AppBadge>
           </div>
-          <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{t("Demo evidence uses safe fixture data, not customer production records.")}</p>
+          <p className="mt-3 text-sm leading-6 text-[var(--ui-text-soft)]">{t("Use the evidence to decide whether the company belongs in your CRM.")}</p>
         </article>
         <article className="rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-brand-soft)] p-4 shadow-sm">
           <p className="text-xs font-bold text-[var(--ui-text-soft)]">{t("AI reasoning")}</p>
@@ -142,7 +144,7 @@ function ProductPreview() {
 
       <div className="mt-4 rounded-[1.25rem] border border-[var(--ui-border)] bg-[var(--ui-surface-danger)] p-4">
         <p className="text-sm font-black text-danger">{t("AI prepares drafts only. Users approve before sending.")}</p>
-        <p className="mt-1 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{t("Insufficient data stays visible and is routed to manual review.")}</p>
+        <p className="mt-1 text-xs font-semibold leading-5 text-[var(--ui-text-soft)]">{t("Missing evidence stays visible for review.")}</p>
       </div>
     </SurfaceCard>
   );
@@ -197,10 +199,10 @@ export function LandingPage() {
         <div className="min-w-0">
           <AppBadge tone="brand" className="mb-5">{t("AI-first sales workflow")}</AppBadge>
           <h1 className="max-w-3xl text-[clamp(2.65rem,10vw,4.9rem)] font-black leading-[0.96] tracking-normal text-[var(--ui-text)]">
-            {t("Find the right companies. Understand why they will buy. Reach out with AI.")}
+            {t("Find B2B companies, see why they fit, and send only after approval.")}
           </h1>
           <p className="mt-6 max-w-2xl text-base leading-8 text-[var(--ui-text-soft)] min-[390px]:text-lg">
-            {t("OutreachAI understands your business, finds relevant companies, explains buying signals and prepares personalised outreach.")}
+            {t("OutreachAI is for small B2B teams that need qualified leads without manual prospecting. Describe your business or paste a website, then review evidence-backed companies, CRM records and personalized drafts.")}
           </p>
           <div className="mt-8 flex flex-col gap-3 min-[430px]:flex-row">
             <AuthNavigationLink href="/sign-up?plan=Starter" testId="hero-start-free-trial" className="focus-ring inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[var(--ui-brand)] px-5 text-sm font-black text-white shadow-soft transition hover:bg-[var(--ui-brand-strong)] min-[430px]:w-auto">
@@ -211,7 +213,7 @@ export function LandingPage() {
             </a>
           </div>
           <div className="mt-8 grid gap-3 text-sm font-bold text-[var(--ui-text-soft)] sm:grid-cols-3">
-            {["Manual approval", "Explainable scores", "No fake CRM data"].map((item) => (
+            {["Manual approval", "Evidence-backed leads", "Connected CRM handoff"].map((item) => (
               <span key={item} className="inline-flex items-center gap-2">
                 <CheckCircle2 size={17} className="text-success" />
                 {t(item)}
@@ -225,7 +227,7 @@ export function LandingPage() {
       <section id="workflow" className="mx-auto max-w-7xl px-4 py-16 min-[360px]:px-5">
         <div className="max-w-3xl">
           <p className="ui-eyebrow">{t("How it works")}</p>
-          <h2 className="ui-title mt-3 text-4xl">{t("A real workflow, shown as a demo fixture")}</h2>
+          <h2 className="ui-title mt-3 text-4xl">{t("One path from search to approved outreach")}</h2>
         </div>
         <ol className="mt-8 grid gap-3 md:grid-cols-4">
           {workflow.map((step, index) => (
@@ -246,7 +248,7 @@ export function LandingPage() {
           {features.map(([title, copy]) => (
             <SurfaceCard key={title} as="article" className="rounded-[1.5rem] p-5">
               <div className="grid size-10 place-items-center rounded-2xl bg-[var(--ui-brand-soft)] text-[var(--ui-brand)]">
-                {title === "Email approval safety" ? <ShieldCheck size={20} /> : title === "CRM handoff" ? <CircleDot size={20} /> : <Sparkles size={20} />}
+                {title === "Approval-first sending" ? <ShieldCheck size={20} /> : title === "CRM handoff" ? <CircleDot size={20} /> : <Sparkles size={20} />}
               </div>
               <h3 className="mt-5 text-lg font-black text-[var(--ui-text)]">{t(title)}</h3>
               <p className="mt-2 text-sm leading-6 text-[var(--ui-text-soft)]">{t(copy)}</p>
@@ -259,8 +261,8 @@ export function LandingPage() {
         <SurfaceCard className="grid gap-6 rounded-[2rem] p-6 lg:grid-cols-[0.8fr_1.2fr] lg:items-center">
           <div>
             <p className="ui-eyebrow">{t("Integrations")}</p>
-            <h2 className="ui-title mt-3 text-4xl">{t("Works with the systems already in OutreachAI.")}</h2>
-            <p className="ui-copy mt-3">{t("Authentication, Gmail OAuth, billing, CRM save and email approval stay connected to production logic.")}</p>
+            <h2 className="ui-title mt-3 text-4xl">{t("Works with the core sales systems already in the product.")}</h2>
+            <p className="ui-copy mt-3">{t("Sign-in, Gmail OAuth, billing, CRM save, draft approval and reply tracking stay in one workflow.")}</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {["Secure authentication", "Gmail OAuth", "Workspace billing", "Existing CRM"].map((item) => (
@@ -277,7 +279,7 @@ export function LandingPage() {
         <div className="max-w-3xl">
           <p className="ui-eyebrow">{t("Pricing")}</p>
           <h2 className="ui-title mt-3 text-4xl">{t("Simple monthly pricing")}</h2>
-          <p className="ui-copy mt-3">{t("Prices and limits come from the billing catalogue used by the application. Subscription changes are managed securely in the billing portal according to the active portal configuration.")}</p>
+          <p className="ui-copy mt-3">{t("Prices, trial length and usage counters match the active billing catalog. Actual email sending also depends on a connected sender and provider limits.")}</p>
         </div>
         <div className="mt-8 grid gap-5 lg:grid-cols-3">
           {publicPlans.map((plan, index) => (
@@ -295,9 +297,9 @@ export function LandingPage() {
                 <li><strong className="text-[var(--ui-text)]">{plan.limits.emailSends.toLocaleString()}</strong> {t("reviewed email sends per month")}</li>
                 <li><strong className="text-[var(--ui-text)]">{plan.limits.salesEmployees}</strong> {t("AI Sales Employees")}</li>
                 <li>{plan.limits.workspaces} {t("owner workspace")}</li>
-                <li>{t("Team invitations planned")}</li>
+                <li>{t("One user today")}</li>
                 <li>{plan.features.semiAutoMode ? t("Semi-auto mode included") : t("Review mode only")}</li>
-                <li>{plan.features.autonomousMode ? t("Autonomous mode included") : t("Autonomous mode not included")}</li>
+                <li>{plan.features.autonomousMode ? t("Autonomous preparation included") : t("Autonomous preparation not included")}</li>
                 <li>{plan.features.advancedAnalytics ? t("Advanced analytics included") : t("Basic analytics included")}</li>
               </ul>
               <AuthNavigationLink href={`/sign-up?plan=${encodeURIComponent(plan.name)}`} className="focus-ring mt-6 inline-flex min-h-11 w-full items-center justify-center rounded-full bg-[var(--ui-text)] px-4 text-sm font-black text-white">
@@ -339,7 +341,7 @@ export function LandingPage() {
         <div className="mx-auto flex max-w-7xl flex-col gap-6 overflow-hidden rounded-[1.75rem] bg-[var(--ui-text)] p-6 text-white shadow-raised sm:p-8 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <MailCheck className="text-[var(--ui-accent)]" size={24} />
-            <h2 className="mt-4 text-3xl font-black leading-tight">{t("Start with one sentence. Let AI find the next customer.")}</h2>
+            <h2 className="mt-4 text-3xl font-black leading-tight">{t("Start with one sentence. Review the next customer before outreach.")}</h2>
           </div>
           <AuthNavigationLink href="/sign-up?plan=Starter" className="focus-ring inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-white px-5 text-sm font-black text-[var(--ui-text)] sm:w-auto">
             {t("Start finding customers")} <ArrowRight size={18} />
