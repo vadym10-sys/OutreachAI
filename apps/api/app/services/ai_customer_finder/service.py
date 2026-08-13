@@ -26,11 +26,35 @@ from app.models.entities import (
     NotificationKind,
 )
 from app.schemas.dto import LeadOut
-from app.services.ai_customer_finder.dedupe import canonical_url, company_dedupe_key, content_hash, normalized_domain, signal_fingerprint
+from app.services.ai_customer_finder.dedupe import (
+    canonical_url,
+    company_dedupe_key,
+    content_hash,
+    normalized_domain,
+    signal_fingerprint,
+)
 from app.services.ai_customer_finder.providers import provider_for_key
-from app.services.ai_customer_finder.schemas import CustomerFinderCriteria, CustomerFinderJobOut, CustomerFinderResultOut, PublicCustomerCandidate, VerifiedCustomerSignal
-from app.services.ai_customer_finder.scoring import score_candidate, signal_type_from_text
-from app.services.website import WebsiteFetchError, WebsiteTemporaryUnavailableError, collect_website, normalize_website_url
+from app.services.ai_customer_finder.schemas import (
+    CustomerFinderCriteria,
+    CustomerFinderJobOut,
+    CustomerFinderResultOut,
+    PublicCustomerCandidate,
+    VerifiedCustomerSignal,
+)
+from app.services.ai_customer_finder.scoring import (
+    score_candidate,
+    signal_type_from_text,
+)
+from app.services.plan_enforcement import (
+    check_usage_available,
+    increment_usage_after_success,
+)
+from app.services.website import (
+    WebsiteFetchError,
+    WebsiteTemporaryUnavailableError,
+    collect_website,
+    normalize_website_url,
+)
 
 logger = logging.getLogger("outreachai.ai_customer_finder")
 
@@ -54,7 +78,13 @@ def enqueue_ai_customer_finder_job(
     request_id: str,
 ) -> AICustomerFinderJob:
     settings = get_settings()
-    max_results = max(1, min(criteria.max_results, int(settings.ai_customer_finder_max_results_per_job or 10)))
+    max_results = max(
+        1,
+        min(
+            criteria.max_results,
+            int(settings.ai_customer_finder_max_results_per_job or 10),
+        ),
+    )
     clean_criteria = criteria.model_copy(update={"max_results": max_results})
     job = AICustomerFinderJob(
         user_id=user_id,
@@ -63,7 +93,11 @@ def enqueue_ai_customer_finder_job(
         max_attempts=max(1, min(5, int(settings.enrichment_max_retries or 2) + 1)),
         request_id=request_id,
         criteria_json=clean_criteria.model_dump(),
-        progress_json={"stage": "queued", "message": "AI Customer Finder is queued.", "percent": 5},
+        progress_json={
+            "stage": "queued",
+            "message": "AI Customer Finder is queued.",
+            "percent": 5,
+        },
         run_after=datetime.utcnow(),
     )
     db.add(job)
@@ -72,13 +106,19 @@ def enqueue_ai_customer_finder_job(
             user_id=user_id,
             workspace_id=workspace_id,
             action="ai_customer_finder.queued",
-            metadata_json={"request_id": request_id, "target_country": clean_criteria.target_country, "target_industry": clean_criteria.target_industry},
+            metadata_json={
+                "request_id": request_id,
+                "target_country": clean_criteria.target_country,
+                "target_industry": clean_criteria.target_industry,
+            },
         )
     )
     return job
 
 
-def claim_next_ai_customer_finder_job(db: Session, *, worker_id: str | None = None, stale_after_seconds: int = 900) -> AICustomerFinderJob | None:
+def claim_next_ai_customer_finder_job(
+    db: Session, *, worker_id: str | None = None, stale_after_seconds: int = 900
+) -> AICustomerFinderJob | None:
     now = datetime.utcnow()
     stale_before = now - timedelta(seconds=stale_after_seconds)
     stmt = (
@@ -87,11 +127,21 @@ def claim_next_ai_customer_finder_job(db: Session, *, worker_id: str | None = No
             AICustomerFinderJob.cancel_requested.is_(False),
             or_(
                 AICustomerFinderJob.status == "queued",
-                (AICustomerFinderJob.status.in_(("searching", "verifying", "enriching"))) & (AICustomerFinderJob.locked_at.is_not(None)) & (AICustomerFinderJob.locked_at < stale_before),
+                (
+                    AICustomerFinderJob.status.in_(
+                        ("searching", "verifying", "enriching")
+                    )
+                )
+                & (AICustomerFinderJob.locked_at.is_not(None))
+                & (AICustomerFinderJob.locked_at < stale_before),
             ),
             AICustomerFinderJob.run_after <= now,
         )
-        .order_by(AICustomerFinderJob.priority.desc(), AICustomerFinderJob.run_after.asc(), AICustomerFinderJob.created_at.asc())
+        .order_by(
+            AICustomerFinderJob.priority.desc(),
+            AICustomerFinderJob.run_after.asc(),
+            AICustomerFinderJob.created_at.asc(),
+        )
         .limit(1)
     )
     if db.bind and db.bind.dialect.name == "postgresql":
@@ -105,14 +155,20 @@ def claim_next_ai_customer_finder_job(db: Session, *, worker_id: str | None = No
     job.locked_at = now
     job.started_at = job.started_at or now
     job.attempts = int(job.attempts or 0) + 1
-    job.progress_json = {"stage": "searching", "message": "Searching approved public sources.", "percent": 15}
+    job.progress_json = {
+        "stage": "searching",
+        "message": "Searching approved public sources.",
+        "percent": 15,
+    }
     job.updated_at = now
     db.commit()
     db.refresh(job)
     return job
 
 
-def heartbeat_ai_customer_finder_job(db: Session, *, job_id: UUID, claim_token: str) -> bool:
+def heartbeat_ai_customer_finder_job(
+    db: Session, *, job_id: UUID, claim_token: str
+) -> bool:
     job = db.get(AICustomerFinderJob, job_id)
     if not job or job.locked_by != claim_token:
         return False
@@ -122,7 +178,9 @@ def heartbeat_ai_customer_finder_job(db: Session, *, job_id: UUID, claim_token: 
     return True
 
 
-def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = None) -> bool:
+def process_ai_customer_finder_job(
+    job_id: UUID, *, claim_token: str | None = None
+) -> bool:
     db = get_sessionmaker()()
     try:
         job = db.get(AICustomerFinderJob, job_id)
@@ -131,27 +189,62 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
         if claim_token and job.locked_by != claim_token:
             return False
         criteria = CustomerFinderCriteria.model_validate(job.criteria_json or {})
-        _set_progress(db, job, "searching", "Searching approved public sources.", 20, claim_token=claim_token)
+        _set_progress(
+            db,
+            job,
+            "searching",
+            "Searching approved public sources.",
+            20,
+            claim_token=claim_token,
+        )
         settings = get_settings()
         provider = provider_for_key(settings.ai_customer_finder_provider)
-        candidates = provider.search(criteria, max_candidates=max(criteria.max_results, int(settings.ai_customer_finder_max_candidates_per_job or 25)))
+        candidates = provider.search(
+            criteria,
+            max_candidates=max(
+                criteria.max_results,
+                int(settings.ai_customer_finder_max_candidates_per_job or 25),
+            ),
+        )
         if job.cancel_requested:
-            _mark_cancelled(db, job, "AI Customer Finder was stopped.", claim_token=claim_token)
+            _mark_cancelled(
+                db, job, "AI Customer Finder was stopped.", claim_token=claim_token
+            )
             return True
-        _set_progress(db, job, "verifying", "Verifying source URLs and evidence.", 40, claim_token=claim_token)
+        _set_progress(
+            db,
+            job,
+            "verifying",
+            "Verifying source URLs and evidence.",
+            40,
+            claim_token=claim_token,
+        )
         warnings: list[str] = []
-        quality_counts = {"verified": 0, "partially_verified": 0, "unknown": 0, "rejected": 0}
+        quality_counts = {
+            "verified": 0,
+            "partially_verified": 0,
+            "unknown": 0,
+            "rejected": 0,
+        }
         verified_signals: list[VerifiedCustomerSignal] = []
         seen_companies: set[str] = set()
         for index, candidate in enumerate(candidates):
             db.refresh(job)
             if job.cancel_requested:
-                _mark_cancelled(db, job, "AI Customer Finder was stopped.", claim_token=claim_token)
+                _mark_cancelled(
+                    db, job, "AI Customer Finder was stopped.", claim_token=claim_token
+                )
                 return True
-            dedupe = company_dedupe_key(website=candidate.website, company_name=candidate.company_name, country=candidate.country or criteria.target_country)
+            dedupe = company_dedupe_key(
+                website=candidate.website,
+                company_name=candidate.company_name,
+                country=candidate.country or criteria.target_country,
+            )
             if dedupe in seen_companies:
                 quality_counts["rejected"] += 1
-                warnings.append(f"{candidate.company_name}: Duplicate candidate skipped.")
+                warnings.append(
+                    f"{candidate.company_name}: Duplicate candidate skipped."
+                )
                 continue
             seen_companies.add(dedupe)
             try:
@@ -170,11 +263,18 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
                     f"Rejected weak or unverified source for {candidate.company_name}.",
                     min(85, 45 + index * 5),
                     claim_token=claim_token,
-                    summary={"candidates": len(candidates), "saved": 0, **quality_counts, "warnings": warnings[:10]},
+                    summary={
+                        "candidates": len(candidates),
+                        "saved": 0,
+                        **quality_counts,
+                        "warnings": warnings[:10],
+                    },
                 )
                 continue
             verified_signals.append(signal)
-            quality_counts[signal.verified_status] = quality_counts.get(signal.verified_status, 0) + 1
+            quality_counts[signal.verified_status] = (
+                quality_counts.get(signal.verified_status, 0) + 1
+            )
             _set_progress(
                 db,
                 job,
@@ -182,22 +282,43 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
                 f"Scored {signal.company_name} with lead intelligence.",
                 min(85, 45 + index * 5),
                 claim_token=claim_token,
-                summary={"candidates": len(candidates), "scored": len(verified_signals), "saved": 0, **quality_counts, "warnings": warnings[:10]},
+                summary={
+                    "candidates": len(candidates),
+                    "scored": len(verified_signals),
+                    "saved": 0,
+                    **quality_counts,
+                    "warnings": warnings[:10],
+                },
             )
         ranked_signals = _rank_verified_signals(verified_signals)
         persisted = 0
         for signal in ranked_signals[: criteria.max_results]:
             db.refresh(job)
             if job.cancel_requested:
-                _mark_cancelled(db, job, "AI Customer Finder was stopped.", claim_token=claim_token)
+                _mark_cancelled(
+                    db, job, "AI Customer Finder was stopped.", claim_token=claim_token
+                )
                 return True
-            _set_progress(db, job, "enriching", f"Preparing top-ranked result for {signal.company_name}.", min(95, 85 + persisted * 2), claim_token=claim_token)
+            _set_progress(
+                db,
+                job,
+                "enriching",
+                f"Preparing top-ranked result for {signal.company_name}.",
+                min(95, 85 + persisted * 2),
+                claim_token=claim_token,
+            )
             result = _persist_signal(db, job, signal)
-            metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+            metadata = (
+                result.metadata_json if isinstance(result.metadata_json, dict) else {}
+            )
             result.metadata_json = {
                 **metadata,
                 "authorization": {
-                    **(metadata.get("authorization") if isinstance(metadata.get("authorization"), dict) else {}),
+                    **(
+                        metadata.get("authorization")
+                        if isinstance(metadata.get("authorization"), dict)
+                        else {}
+                    ),
                     "crm_save_requires_user_action": True,
                     "outreach_requires_user_action": True,
                     "search_created_crm_record": False,
@@ -206,17 +327,59 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
             }
             persisted += 1
             db.commit()
-        final_status = "completed" if persisted > 0 and not warnings else ("partially_completed" if persisted > 0 else "failed")
-        message = "AI Customer Finder results are ready for review." if persisted else "No verified public-source results were found."
+        final_status = (
+            "completed"
+            if persisted > 0 and not warnings
+            else ("partially_completed" if persisted > 0 else "failed")
+        )
+        message = (
+            "AI Customer Finder results are ready for review."
+            if persisted
+            else "No verified public-source results were found."
+        )
         job.status = final_status
-        job.summary_json = {"results": persisted, "saved": 0, "saved_to_crm": 0, "candidates": len(candidates), **quality_counts, "warnings": warnings[:10]}
-        job.progress_json = {"stage": final_status, "message": message, "percent": 100, "warnings": warnings[:10], **quality_counts, "results": persisted, "saved": 0, "saved_to_crm": 0, "candidates": len(candidates)}
-        job.error_message = "" if persisted else "; ".join(warnings[:3]) or "No verified public-source results were found."
+        job.summary_json = {
+            "results": persisted,
+            "saved": 0,
+            "saved_to_crm": 0,
+            "candidates": len(candidates),
+            **quality_counts,
+            "warnings": warnings[:10],
+        }
+        job.progress_json = {
+            "stage": final_status,
+            "message": message,
+            "percent": 100,
+            "warnings": warnings[:10],
+            **quality_counts,
+            "results": persisted,
+            "saved": 0,
+            "saved_to_crm": 0,
+            "candidates": len(candidates),
+        }
+        job.error_message = (
+            ""
+            if persisted
+            else "; ".join(warnings[:3])
+            or "No verified public-source results were found."
+        )
         job.locked_by = ""
         job.locked_at = None
         job.completed_at = datetime.utcnow()
         job.updated_at = datetime.utcnow()
-        db.add(AuditLog(user_id=job.user_id, workspace_id=job.workspace_id, action="ai_customer_finder.completed", metadata_json={"job_id": str(job.id), "status": final_status, "results": persisted, "saved_to_crm": 0}))
+        db.add(
+            AuditLog(
+                user_id=job.user_id,
+                workspace_id=job.workspace_id,
+                action="ai_customer_finder.completed",
+                metadata_json={
+                    "job_id": str(job.id),
+                    "status": final_status,
+                    "results": persisted,
+                    "saved_to_crm": 0,
+                },
+            )
+        )
         db.commit()
         return True
     except Exception as exc:
@@ -225,10 +388,14 @@ def process_ai_customer_finder_job(job_id: UUID, *, claim_token: str | None = No
         try:
             retry_job = retry_db.get(AICustomerFinderJob, job_id)
             if retry_job is not None:
-                fail_or_retry_ai_customer_finder_job(retry_db, retry_job, exc, claim_token=claim_token)
+                fail_or_retry_ai_customer_finder_job(
+                    retry_db, retry_job, exc, claim_token=claim_token
+                )
         finally:
             retry_db.close()
-        logger.warning("AI Customer Finder job failed job_id=%s reason=%s", job_id, str(exc)[:300])
+        logger.warning(
+            "AI Customer Finder job failed job_id=%s reason=%s", job_id, str(exc)[:300]
+        )
         return True
     finally:
         db.close()
@@ -250,7 +417,13 @@ def search_first_customer_candidates(
     explicit save endpoint.
     """
     settings = get_settings()
-    max_results = max(1, min(criteria.max_results, int(settings.ai_customer_finder_max_results_per_job or 10)))
+    max_results = max(
+        1,
+        min(
+            criteria.max_results,
+            int(settings.ai_customer_finder_max_results_per_job or 10),
+        ),
+    )
     clean_criteria = criteria.model_copy(update={"max_results": max_results})
     job = AICustomerFinderJob(
         user_id=user_id,
@@ -259,7 +432,11 @@ def search_first_customer_candidates(
         max_attempts=1,
         request_id=request_id,
         criteria_json=clean_criteria.model_dump(),
-        progress_json={"stage": "searching", "message": "Searching public first-customer signals.", "percent": 20},
+        progress_json={
+            "stage": "searching",
+            "message": "Searching public first-customer signals.",
+            "percent": 20,
+        },
         started_at=datetime.utcnow(),
         locked_by="lead-finder:first-customers",
         locked_at=datetime.utcnow(),
@@ -281,17 +458,34 @@ def search_first_customer_candidates(
         )
     )
     warnings: list[str] = []
-    quality_counts = {"verified": 0, "partially_verified": 0, "unknown": 0, "rejected": 0}
+    quality_counts = {
+        "verified": 0,
+        "partially_verified": 0,
+        "unknown": 0,
+        "rejected": 0,
+    }
     try:
         provider = provider_for_key(settings.ai_customer_finder_provider)
-        candidates = provider.search(clean_criteria, max_candidates=max(clean_criteria.max_results, int(settings.ai_customer_finder_max_candidates_per_job or 25)))
+        candidates = provider.search(
+            clean_criteria,
+            max_candidates=max(
+                clean_criteria.max_results,
+                int(settings.ai_customer_finder_max_candidates_per_job or 25),
+            ),
+        )
         seen_companies: set[str] = set()
         verified_signals: list[VerifiedCustomerSignal] = []
         for index, candidate in enumerate(candidates):
-            dedupe = company_dedupe_key(website=candidate.website, company_name=candidate.company_name, country=candidate.country or clean_criteria.target_country)
+            dedupe = company_dedupe_key(
+                website=candidate.website,
+                company_name=candidate.company_name,
+                country=candidate.country or clean_criteria.target_country,
+            )
             if dedupe in seen_companies:
                 quality_counts["rejected"] += 1
-                warnings.append(f"{candidate.company_name}: Duplicate candidate skipped.")
+                warnings.append(
+                    f"{candidate.company_name}: Duplicate candidate skipped."
+                )
                 continue
             seen_companies.add(dedupe)
             try:
@@ -304,7 +498,9 @@ def search_first_customer_candidates(
                 warnings.append(f"{candidate.company_name}: {str(exc)[:180]}")
                 continue
             verified_signals.append(signal)
-            quality_counts[signal.verified_status] = quality_counts.get(signal.verified_status, 0) + 1
+            quality_counts[signal.verified_status] = (
+                quality_counts.get(signal.verified_status, 0) + 1
+            )
             job.progress_json = {
                 "stage": "verifying",
                 "message": f"Scored {len(verified_signals)} first-customer candidates.",
@@ -316,9 +512,13 @@ def search_first_customer_candidates(
             }
             db.flush()
         persisted = 0
-        for signal in _rank_verified_signals(verified_signals)[: clean_criteria.max_results]:
+        for signal in _rank_verified_signals(verified_signals)[
+            : clean_criteria.max_results
+        ]:
             result = _persist_signal(db, job, signal)
-            metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
+            metadata = (
+                result.metadata_json if isinstance(result.metadata_json, dict) else {}
+            )
             result.metadata_json = {
                 **metadata,
                 "source": "lead_finder_first_customers",
@@ -339,8 +539,16 @@ def search_first_customer_candidates(
                 **quality_counts,
             }
             db.flush()
-        final_status = "completed" if persisted > 0 and not warnings else ("partially_completed" if persisted > 0 else "failed")
-        message = "First-customer candidates are ready for review." if persisted else "No evidence-backed first customers were found."
+        final_status = (
+            "completed"
+            if persisted > 0 and not warnings
+            else ("partially_completed" if persisted > 0 else "failed")
+        )
+        message = (
+            "First-customer candidates are ready for review."
+            if persisted
+            else "No evidence-backed first customers were found."
+        )
         job.status = final_status
         job.summary_json = {
             "results": persisted,
@@ -358,11 +566,20 @@ def search_first_customer_candidates(
             "warnings": warnings[:10],
             **quality_counts,
         }
-        job.error_message = "" if persisted else "; ".join(warnings[:3]) or "No evidence-backed first customers were found."
+        job.error_message = (
+            ""
+            if persisted
+            else "; ".join(warnings[:3])
+            or "No evidence-backed first customers were found."
+        )
     except Exception as exc:
         job.status = "failed"
         job.error_message = str(exc)[:2000]
-        job.progress_json = {"stage": "failed", "message": "First-customer search could not finish.", "percent": 100}
+        job.progress_json = {
+            "stage": "failed",
+            "message": "First-customer search could not finish.",
+            "percent": 100,
+        }
         raise
     finally:
         job.locked_by = ""
@@ -387,7 +604,9 @@ def search_first_customer_candidates(
     return job
 
 
-def save_first_customer_result_to_crm(db: Session, *, workspace_id: UUID, result_id: UUID) -> AICustomerFinderResult:
+def save_first_customer_result_to_crm(
+    db: Session, *, workspace_id: UUID, result_id: UUID
+) -> AICustomerFinderResult:
     result = db.scalar(
         select(AICustomerFinderResult).where(
             AICustomerFinderResult.id == result_id,
@@ -396,7 +615,12 @@ def save_first_customer_result_to_crm(db: Session, *, workspace_id: UUID, result
     )
     if result is None:
         raise ValueError("First-customer result not found.")
-    job = db.scalar(select(AICustomerFinderJob).where(AICustomerFinderJob.id == result.job_id, AICustomerFinderJob.workspace_id == workspace_id))
+    job = db.scalar(
+        select(AICustomerFinderJob).where(
+            AICustomerFinderJob.id == result.job_id,
+            AICustomerFinderJob.workspace_id == workspace_id,
+        )
+    )
     if job is None:
         raise ValueError("First-customer search not found.")
     criteria = CustomerFinderCriteria.model_validate(job.criteria_json or {})
@@ -405,7 +629,11 @@ def save_first_customer_result_to_crm(db: Session, *, workspace_id: UUID, result
     result.metadata_json = {
         **metadata,
         "authorization": {
-            **(metadata.get("authorization") if isinstance(metadata.get("authorization"), dict) else {}),
+            **(
+                metadata.get("authorization")
+                if isinstance(metadata.get("authorization"), dict)
+                else {}
+            ),
             "crm_save_authorized_at": datetime.utcnow().isoformat(),
             "crm_save_requires_user_action": True,
             "outreach_requires_user_action": True,
@@ -417,7 +645,14 @@ def save_first_customer_result_to_crm(db: Session, *, workspace_id: UUID, result
     return result
 
 
-def fail_or_retry_ai_customer_finder_job(db: Session, job: AICustomerFinderJob, exc: Exception, *, claim_token: str | None = None, retry_delay_seconds: int = 60) -> bool:
+def fail_or_retry_ai_customer_finder_job(
+    db: Session,
+    job: AICustomerFinderJob,
+    exc: Exception,
+    *,
+    claim_token: str | None = None,
+    retry_delay_seconds: int = 60,
+) -> bool:
     if claim_token and job.locked_by != claim_token:
         return False
     now = datetime.utcnow()
@@ -427,27 +662,46 @@ def fail_or_retry_ai_customer_finder_job(db: Session, job: AICustomerFinderJob, 
     job.locked_by = ""
     job.locked_at = None
     if attempts < max_attempts and not job.cancel_requested:
-        retry_delay = min(MAX_RETRY_BACKOFF_SECONDS, retry_delay_seconds * (2 ** max(0, attempts - 1)))
+        retry_delay = min(
+            MAX_RETRY_BACKOFF_SECONDS, retry_delay_seconds * (2 ** max(0, attempts - 1))
+        )
         job.status = "queued"
         job.run_after = now + timedelta(seconds=retry_delay)
-        job.progress_json = {"stage": "queued", "message": "Temporary issue. AI Customer Finder will retry.", "percent": 20, "attempts": attempts, "max_attempts": max_attempts}
+        job.progress_json = {
+            "stage": "queued",
+            "message": "Temporary issue. AI Customer Finder will retry.",
+            "percent": 20,
+            "attempts": attempts,
+            "max_attempts": max_attempts,
+        }
     else:
         job.status = "failed"
         job.completed_at = now
-        job.progress_json = {"stage": "failed", "message": "AI Customer Finder could not finish.", "percent": 100, "attempts": attempts, "max_attempts": max_attempts}
+        job.progress_json = {
+            "stage": "failed",
+            "message": "AI Customer Finder could not finish.",
+            "percent": 100,
+            "attempts": attempts,
+            "max_attempts": max_attempts,
+        }
     job.updated_at = now
     db.commit()
     return True
 
 
-def cancel_ai_customer_finder_job(db: Session, *, workspace_id: UUID, job_id: UUID) -> AICustomerFinderJob:
+def cancel_ai_customer_finder_job(
+    db: Session, *, workspace_id: UUID, job_id: UUID
+) -> AICustomerFinderJob:
     job = _scoped_job(db, workspace_id=workspace_id, job_id=job_id)
     job.cancel_requested = True
     if job.status == "queued":
         job.status = "failed"
         job.error_message = "Cancelled before processing."
         job.completed_at = datetime.utcnow()
-    job.progress_json = {**(job.progress_json or {}), "message": "Cancellation requested."}
+    job.progress_json = {
+        **(job.progress_json or {}),
+        "message": "Cancellation requested.",
+    }
     job.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(job)
@@ -458,8 +712,14 @@ def job_out(db: Session, job: AICustomerFinderJob) -> CustomerFinderJobOut:
     results = list(
         db.scalars(
             select(AICustomerFinderResult)
-            .where(AICustomerFinderResult.workspace_id == job.workspace_id, AICustomerFinderResult.job_id == job.id)
-            .order_by(AICustomerFinderResult.ai_relevance_score.desc(), AICustomerFinderResult.created_at.asc())
+            .where(
+                AICustomerFinderResult.workspace_id == job.workspace_id,
+                AICustomerFinderResult.job_id == job.id,
+            )
+            .order_by(
+                AICustomerFinderResult.ai_relevance_score.desc(),
+                AICustomerFinderResult.created_at.asc(),
+            )
         ).all()
     )
     return CustomerFinderJobOut(
@@ -477,10 +737,24 @@ def job_out(db: Session, job: AICustomerFinderJob) -> CustomerFinderJobOut:
 
 def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
     metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
-    source_verification = metadata.get("source_verification") if isinstance(metadata.get("source_verification"), dict) else {}
-    scoring = metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
-    lead_intelligence = metadata.get("lead_intelligence") if isinstance(metadata.get("lead_intelligence"), dict) else {}
-    lead_components = lead_intelligence.get("components") if isinstance(lead_intelligence.get("components"), dict) else {}
+    source_verification = (
+        metadata.get("source_verification")
+        if isinstance(metadata.get("source_verification"), dict)
+        else {}
+    )
+    scoring = (
+        metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
+    )
+    lead_intelligence = (
+        metadata.get("lead_intelligence")
+        if isinstance(metadata.get("lead_intelligence"), dict)
+        else {}
+    )
+    lead_components = (
+        lead_intelligence.get("components")
+        if isinstance(lead_intelligence.get("components"), dict)
+        else {}
+    )
     ai_research_profile = metadata.get("ai_research_profile")
     if not isinstance(ai_research_profile, dict):
         ai_research_profile = lead_intelligence.get("research_profile")
@@ -496,9 +770,19 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         lead_reasoning = lead_intelligence.get("reasoning")
     if not isinstance(lead_reasoning, dict):
         lead_reasoning = {}
-    outreach = metadata.get("outreach_draft") if isinstance(metadata.get("outreach_draft"), dict) else {}
-    simple = metadata.get("simple_customer_finder") if isinstance(metadata.get("simple_customer_finder"), dict) else {}
-    email_meta = metadata.get("email") if isinstance(metadata.get("email"), dict) else {}
+    outreach = (
+        metadata.get("outreach_draft")
+        if isinstance(metadata.get("outreach_draft"), dict)
+        else {}
+    )
+    simple = (
+        metadata.get("simple_customer_finder")
+        if isinstance(metadata.get("simple_customer_finder"), dict)
+        else {}
+    )
+    email_meta = (
+        metadata.get("email") if isinstance(metadata.get("email"), dict) else {}
+    )
     return CustomerFinderResultOut(
         id=str(result.id),
         company_name=result.company_name,
@@ -517,43 +801,95 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         source_type=result.source_type,
         evidence_excerpt=result.evidence_excerpt,
         evidence_summary=result.evidence_summary,
-        observed_fact=str(source_verification.get("observed_fact") or metadata.get("observed_fact") or ""),
-        model_inference=str(source_verification.get("model_inference") or metadata.get("model_inference") or ""),
+        observed_fact=str(
+            source_verification.get("observed_fact")
+            or metadata.get("observed_fact")
+            or ""
+        ),
+        model_inference=str(
+            source_verification.get("model_inference")
+            or metadata.get("model_inference")
+            or ""
+        ),
         fit_explanation=result.fit_explanation,
         ai_relevance_score=result.ai_relevance_score,
         confidence_score=result.confidence_score,
         verified_status=result.verified_status,
         checked_at=result.checked_at,
         source_provider=result.source_provider,
-        canonical_source_url=str(source_verification.get("canonical_url") or metadata.get("canonical_source_url") or canonical_url(result.source_url)),
-        publication_date=str(source_verification.get("publication_date") or metadata.get("publication_date") or "Unknown"),
+        canonical_source_url=str(
+            source_verification.get("canonical_url")
+            or metadata.get("canonical_source_url")
+            or canonical_url(result.source_url)
+        ),
+        publication_date=str(
+            source_verification.get("publication_date")
+            or metadata.get("publication_date")
+            or "Unknown"
+        ),
         retrieved_at=source_verification.get("retrieved_at") or result.checked_at,
-        source_confidence=_safe_int(source_verification.get("confidence"), result.confidence_score),
-        source_verification_status=str(source_verification.get("status") or result.verified_status),
+        source_confidence=_safe_int(
+            source_verification.get("confidence"), result.confidence_score
+        ),
+        source_verification_status=str(
+            source_verification.get("status") or result.verified_status
+        ),
         result_tier=str(metadata.get("result_tier") or ""),
-        website_verification_status=str(metadata.get("website_verification_status") or source_verification.get("status") or result.verified_status),
-        website_verification_warning=str(metadata.get("website_verification_warning") or source_verification.get("warning") or ""),
+        website_verification_status=str(
+            metadata.get("website_verification_status")
+            or source_verification.get("status")
+            or result.verified_status
+        ),
+        website_verification_warning=str(
+            metadata.get("website_verification_warning")
+            or source_verification.get("warning")
+            or ""
+        ),
         missing_buying_signal=bool(metadata.get("missing_buying_signal")),
-        scoring_version=str(scoring.get("version") or metadata.get("scoring_version") or ""),
-        score_factors=scoring.get("factors") if isinstance(scoring.get("factors"), dict) else {},
-        score_weights=scoring.get("weights") if isinstance(scoring.get("weights"), dict) else {},
-        score_penalties=scoring.get("penalties") if isinstance(scoring.get("penalties"), dict) else {},
-        score_explanation=str(scoring.get("explanation") or result.fit_explanation or ""),
+        scoring_version=str(
+            scoring.get("version") or metadata.get("scoring_version") or ""
+        ),
+        score_factors=scoring.get("factors")
+        if isinstance(scoring.get("factors"), dict)
+        else {},
+        score_weights=scoring.get("weights")
+        if isinstance(scoring.get("weights"), dict)
+        else {},
+        score_penalties=scoring.get("penalties")
+        if isinstance(scoring.get("penalties"), dict)
+        else {},
+        score_explanation=str(
+            scoring.get("explanation") or result.fit_explanation or ""
+        ),
         icp_fit_score=_safe_int(scoring.get("icp_fit_score"), 0),
-        buying_intent_score=_safe_int(scoring.get("buying_intent_score"), result.ai_relevance_score),
-        revenue_opportunity_score=_safe_int(scoring.get("revenue_opportunity_score"), 0),
-        overall_lead_score=_safe_int(lead_intelligence.get("overall_lead_score") or scoring.get("overall_lead_score"), result.ai_relevance_score),
+        buying_intent_score=_safe_int(
+            scoring.get("buying_intent_score"), result.ai_relevance_score
+        ),
+        revenue_opportunity_score=_safe_int(
+            scoring.get("revenue_opportunity_score"), 0
+        ),
+        overall_lead_score=_safe_int(
+            lead_intelligence.get("overall_lead_score")
+            or scoring.get("overall_lead_score"),
+            result.ai_relevance_score,
+        ),
         growth_signal_score=_safe_int(lead_components.get("growth_signal"), 0),
         hiring_signal_score=_safe_int(lead_components.get("hiring_signal"), 0),
         funding_signal_score=_safe_int(lead_components.get("funding_signal"), 0),
         expansion_signal_score=_safe_int(lead_components.get("expansion_signal"), 0),
         website_quality_score=_safe_int(lead_components.get("website_quality"), 0),
         technology_fit_score=_safe_int(lead_components.get("technology_fit"), 0),
-        contact_confidence_score=_safe_int(lead_components.get("contact_confidence"), 0),
-        outreach_readiness_score=_safe_int(lead_components.get("outreach_readiness"), 0),
+        contact_confidence_score=_safe_int(
+            lead_components.get("contact_confidence"), 0
+        ),
+        outreach_readiness_score=_safe_int(
+            lead_components.get("outreach_readiness"), 0
+        ),
         company_momentum_score=_safe_int(lead_components.get("company_momentum"), 0),
         urgency_score=_safe_int(lead_components.get("urgency"), 0),
-        ai_confidence_score=_safe_int(lead_components.get("ai_confidence"), result.confidence_score),
+        ai_confidence_score=_safe_int(
+            lead_components.get("ai_confidence"), result.confidence_score
+        ),
         lead_intelligence=lead_intelligence,
         lead_reasoning=lead_reasoning,
         ai_research_profile=ai_research_profile,
@@ -564,9 +900,17 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
         company_id=str(result.company_id or ""),
         score_delta=_safe_int((result.metadata_json or {}).get("score_delta"), 0),
         intent_alert=bool((result.metadata_json or {}).get("intent_alert")),
-        intent_timeline=[item for item in (result.metadata_json or {}).get("intent_timeline", []) if isinstance(item, dict)] if isinstance((result.metadata_json or {}).get("intent_timeline"), list) else [],
+        intent_timeline=[
+            item
+            for item in (result.metadata_json or {}).get("intent_timeline", [])
+            if isinstance(item, dict)
+        ]
+        if isinstance((result.metadata_json or {}).get("intent_timeline"), list)
+        else [],
         lead_status=str(simple.get("lead_status") or ""),
-        simple_status=str(simple.get("simple_status") or email_meta.get("simple_status") or ""),
+        simple_status=str(
+            simple.get("simple_status") or email_meta.get("simple_status") or ""
+        ),
         email_id=str(email_meta.get("email_id") or ""),
         email_subject=str(email_meta.get("subject") or ""),
         email_body=str(email_meta.get("body") or outreach.get("draft_email") or ""),
@@ -575,7 +919,9 @@ def result_out(result: AICustomerFinderResult) -> CustomerFinderResultOut:
     )
 
 
-def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustomerCandidate) -> VerifiedCustomerSignal:
+def _verify_candidate(
+    criteria: CustomerFinderCriteria, candidate: PublicCustomerCandidate
+) -> VerifiedCustomerSignal:
     website = normalize_website_url(candidate.website)
     verification_status = "verified"
     verification_warning = ""
@@ -600,7 +946,12 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
     excerpt = _evidence_excerpt(text, criteria)
     if not source_url or not normalized_domain(source_url):
         raise ValueError("Rejected: source URL could not be canonicalized.")
-    fingerprint = signal_fingerprint(source_url=source_url, signal_type=signal_type, evidence=excerpt, company_name=candidate.company_name)
+    fingerprint = signal_fingerprint(
+        source_url=source_url,
+        signal_type=signal_type,
+        evidence=excerpt,
+        company_name=candidate.company_name,
+    )
     domain = normalized_domain(source_url)
     public_email = _public_business_email(text, domain)
     score = score_candidate(
@@ -616,15 +967,31 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
         contact_title=", ".join(criteria.contact_titles[:2]),
     )
     provider_identity_evidence = _provider_identity_evidence(candidate)
-    result_tier = _result_tier(score, verification_status=verification_status, provider_identity_evidence=provider_identity_evidence)
+    result_tier = _result_tier(
+        score,
+        verification_status=verification_status,
+        provider_identity_evidence=provider_identity_evidence,
+    )
     if not score.passes_quality_gate and result_tier == "Rejected":
-        raise ValueError(score.rejection_reason or "Rejected: lead quality gate did not pass.")
-    signal_description = _signal_description(signal_type, candidate.company_name, criteria)
+        raise ValueError(
+            score.rejection_reason or "Rejected: lead quality gate did not pass."
+        )
+    signal_description = _signal_description(
+        signal_type, candidate.company_name, criteria
+    )
     observed_fact = _observed_fact(signal_type, excerpt, candidate.company_name)
     model_inference = _model_inference(signal_type, criteria)
     first_line = _first_line_opener(candidate.company_name, observed_fact)
-    draft_email = _draft_email(criteria, candidate.company_name, first_line, model_inference)
-    verified_status = "verified" if verification_status == "verified" else "partially_verified" if result_tier in {"Strong match", "Relevant match"} else "unknown"
+    draft_email = _draft_email(
+        criteria, candidate.company_name, first_line, model_inference
+    )
+    verified_status = (
+        "verified"
+        if verification_status == "verified"
+        else "partially_verified"
+        if result_tier in {"Strong match", "Relevant match"}
+        else "unknown"
+    )
     evidence_summary = (
         f"Verified public website content supports this company as a potential fit for {criteria.target_industry}."
         if verification_status == "verified"
@@ -632,7 +999,11 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
     )
     if not score.has_meaningful_signal:
         evidence_summary = f"{evidence_summary} No current buying signal found."
-    confidence_score = score.confidence_score if verification_status == "verified" else max(20, score.confidence_score - 18)
+    confidence_score = (
+        score.confidence_score
+        if verification_status == "verified"
+        else max(20, score.confidence_score - 18)
+    )
     return VerifiedCustomerSignal(
         company_name=candidate.company_name,
         official_website=source_url,
@@ -659,12 +1030,18 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
         verified_status=verified_status,
         checked_at=datetime.utcnow(),
         source_provider=candidate.source_provider,
-        dedupe_key=company_dedupe_key(website=source_url, company_name=candidate.company_name, country=candidate.country or criteria.target_country),
+        dedupe_key=company_dedupe_key(
+            website=source_url,
+            company_name=candidate.company_name,
+            country=candidate.country or criteria.target_country,
+        ),
         signal_fingerprint=fingerprint,
         canonical_source_url=source_url,
         publication_date="Unknown",
         retrieved_at=datetime.utcnow(),
-        source_confidence=score.source_quality_score if verification_status == "verified" else max(10, score.source_quality_score - 12),
+        source_confidence=score.source_quality_score
+        if verification_status == "verified"
+        else max(10, score.source_quality_score - 12),
         source_verification_status=verification_status,
         first_line_opener=first_line,
         draft_email=draft_email,
@@ -735,8 +1112,12 @@ def _verify_candidate(criteria: CustomerFinderCriteria, candidate: PublicCustome
     )
 
 
-def _provider_evidence_text(criteria: CustomerFinderCriteria, candidate: PublicCustomerCandidate) -> str:
-    payload = candidate.source_payload if isinstance(candidate.source_payload, dict) else {}
+def _provider_evidence_text(
+    criteria: CustomerFinderCriteria, candidate: PublicCustomerCandidate
+) -> str:
+    payload = (
+        candidate.source_payload if isinstance(candidate.source_payload, dict) else {}
+    )
     parts = [
         candidate.company_name,
         candidate.industry or criteria.target_industry,
@@ -752,20 +1133,45 @@ def _provider_evidence_text(criteria: CustomerFinderCriteria, candidate: PublicC
 
 
 def _provider_identity_evidence(candidate: PublicCustomerCandidate) -> bool:
-    payload = candidate.source_payload if isinstance(candidate.source_payload, dict) else {}
-    has_provider_identity = bool(payload.get("place_id") or payload.get("address") or payload.get("business_category"))
-    has_company_identity = bool(candidate.company_name and (candidate.website or candidate.country or candidate.industry))
+    payload = (
+        candidate.source_payload if isinstance(candidate.source_payload, dict) else {}
+    )
+    has_provider_identity = bool(
+        payload.get("place_id")
+        or payload.get("address")
+        or payload.get("business_category")
+    )
+    has_company_identity = bool(
+        candidate.company_name
+        and (candidate.website or candidate.country or candidate.industry)
+    )
     return has_provider_identity and has_company_identity
 
 
-def _result_tier(score, *, verification_status: str, provider_identity_evidence: bool = False) -> str:  # type: ignore[no-untyped-def]
-    if score.rejection_reason.startswith("Rejected: matched an explicit exclusion") or score.rejection_reason.startswith("Rejected: public evidence contains strong negative"):
+def _result_tier(
+    score, *, verification_status: str, provider_identity_evidence: bool = False
+) -> str:  # type: ignore[no-untyped-def]
+    if score.rejection_reason.startswith(
+        "Rejected: matched an explicit exclusion"
+    ) or score.rejection_reason.startswith(
+        "Rejected: public evidence contains strong negative"
+    ):
         return "Rejected"
-    if provider_identity_evidence and verification_status == "temporarily_unavailable" and score.source_quality_score >= 28 and score.confidence_score >= 30:
+    if (
+        provider_identity_evidence
+        and verification_status == "temporarily_unavailable"
+        and score.source_quality_score >= 28
+        and score.confidence_score >= 30
+    ):
         return "Relevant match"
     if score.icp_fit_score < 24 and score.buying_intent_score < 45:
         return "Rejected"
-    if score.overall_lead_score >= 72 and score.confidence_score >= 60 and score.has_meaningful_signal and verification_status == "verified":
+    if (
+        score.overall_lead_score >= 72
+        and score.confidence_score >= 60
+        and score.has_meaningful_signal
+        and verification_status == "verified"
+    ):
         return "Strong match"
     if score.icp_fit_score >= 28 and score.confidence_score >= 34:
         return "Relevant match"
@@ -774,7 +1180,9 @@ def _result_tier(score, *, verification_status: str, provider_identity_evidence:
     return "Rejected"
 
 
-def _persist_signal(db: Session, job: AICustomerFinderJob, signal: VerifiedCustomerSignal) -> AICustomerFinderResult:
+def _persist_signal(
+    db: Session, job: AICustomerFinderJob, signal: VerifiedCustomerSignal
+) -> AICustomerFinderResult:
     existing = db.scalar(
         select(AICustomerFinderResult).where(
             AICustomerFinderResult.workspace_id == job.workspace_id,
@@ -829,7 +1237,9 @@ def _persist_signal(db: Session, job: AICustomerFinderJob, signal: VerifiedCusto
             source_type=signal.source_type,
             publication_date=signal.signal_date or "Unknown",
             retrieved_at=signal.checked_at,
-            content_hash=content_hash(signal.evidence_excerpt or signal.evidence_summary),
+            content_hash=content_hash(
+                signal.evidence_excerpt or signal.evidence_summary
+            ),
             metadata_json={
                 "verified_status": signal.verified_status,
                 "observed_fact": signal.observed_fact,
@@ -841,14 +1251,39 @@ def _persist_signal(db: Session, job: AICustomerFinderJob, signal: VerifiedCusto
     return result
 
 
-def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustomerFinderResult, criteria: CustomerFinderCriteria) -> None:
-    from app.api.routes import _existing_duplicate_lead, _merge_lead_metadata, _sync_lead_to_crm
+def _save_signal_to_crm(
+    db: Session,
+    job: AICustomerFinderJob,
+    result: AICustomerFinderResult,
+    criteria: CustomerFinderCriteria,
+) -> None:
+    from app.api.routes import (
+        _existing_duplicate_lead,
+        _merge_lead_metadata,
+        _sync_lead_to_crm,
+    )
 
-    result_metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
-    lead_intelligence = result_metadata.get("lead_intelligence") if isinstance(result_metadata.get("lead_intelligence"), dict) else {}
-    ai_research_profile = result_metadata.get("ai_research_profile") if isinstance(result_metadata.get("ai_research_profile"), dict) else {}
-    outreach_strategy = result_metadata.get("outreach_strategy") if isinstance(result_metadata.get("outreach_strategy"), dict) else {}
-    source_summary = result.fit_explanation or result.evidence_summary or result.signal_description
+    result_metadata = (
+        result.metadata_json if isinstance(result.metadata_json, dict) else {}
+    )
+    lead_intelligence = (
+        result_metadata.get("lead_intelligence")
+        if isinstance(result_metadata.get("lead_intelligence"), dict)
+        else {}
+    )
+    ai_research_profile = (
+        result_metadata.get("ai_research_profile")
+        if isinstance(result_metadata.get("ai_research_profile"), dict)
+        else {}
+    )
+    outreach_strategy = (
+        result_metadata.get("outreach_strategy")
+        if isinstance(result_metadata.get("outreach_strategy"), dict)
+        else {}
+    )
+    source_summary = (
+        result.fit_explanation or result.evidence_summary or result.signal_description
+    )
     metadata = {
         "source": "ai_customer_finder",
         "simple_customer_finder": {
@@ -868,14 +1303,17 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
             "signal_description": result.signal_description,
             "verified_status": result.verified_status,
             "email_status": "verified" if result.public_work_contact else "not_found",
-            "simple_status": SIMPLE_STATUS_EMAIL_VERIFIED if result.public_work_contact else SIMPLE_STATUS_FOUND,
+            "simple_status": SIMPLE_STATUS_EMAIL_VERIFIED
+            if result.public_work_contact
+            else SIMPLE_STATUS_FOUND,
             "checked_at": result.checked_at.isoformat(),
             "overall_lead_score": _lead_intelligence_score(result),
             "lead_intelligence": lead_intelligence,
             "ai_research_profile": ai_research_profile,
             "outreach_strategy": outreach_strategy,
         },
-        "recommended_decision_maker_role": result.contact_title or ", ".join(criteria.contact_titles[:2]),
+        "recommended_decision_maker_role": result.contact_title
+        or ", ".join(criteria.contact_titles[:2]),
         "email_status": "Verified" if result.public_work_contact else "Not found",
         "overall_lead_score": _lead_intelligence_score(result),
         "lead_intelligence": lead_intelligence,
@@ -896,14 +1334,28 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
     existing = _existing_duplicate_lead(db, job.workspace, job.user_id, lead_out)
     if existing:
         existing.notes = _merge_lead_metadata(existing, metadata)
-        existing.status = LeadStatus.email_generated if result.public_work_contact else LeadStatus.qualified
+        existing.status = (
+            LeadStatus.email_generated
+            if result.public_work_contact
+            else LeadStatus.qualified
+        )
         company = _sync_lead_to_crm(db, job.user_id, job.workspace, existing)
-        draft = _ensure_customer_finder_email_draft(db, job=job, lead=existing, result=result, criteria=criteria)
-        _mark_simple_crm_state(db, company=company, lead=existing, result=result, draft=draft, metadata=metadata)
+        draft = _ensure_customer_finder_email_draft(
+            db, job=job, lead=existing, result=result, criteria=criteria
+        )
+        _mark_simple_crm_state(
+            db,
+            company=company,
+            lead=existing,
+            result=result,
+            draft=draft,
+            metadata=metadata,
+        )
         result.lead_id = existing.id
         result.company_id = company.id
         result.updated_at = datetime.utcnow()
         return
+    check_usage_available(db, job.user_id, job.workspace, "leads")
     lead = Lead(
         user_id=job.user_id,
         workspace_id=job.workspace_id,
@@ -914,19 +1366,33 @@ def _save_signal_to_crm(db: Session, job: AICustomerFinderJob, result: AICustome
         contact=result.contact_name or None,
         email=result.public_work_contact or None,
         notes=json.dumps(metadata),
-        status=LeadStatus.email_generated if result.public_work_contact else LeadStatus.qualified,
+        status=LeadStatus.email_generated
+        if result.public_work_contact
+        else LeadStatus.qualified,
     )
     db.add(lead)
     db.flush()
     company = _sync_lead_to_crm(db, job.user_id, job.workspace, lead)
-    draft = _ensure_customer_finder_email_draft(db, job=job, lead=lead, result=result, criteria=criteria)
-    _mark_simple_crm_state(db, company=company, lead=lead, result=result, draft=draft, metadata=metadata)
+    draft = _ensure_customer_finder_email_draft(
+        db, job=job, lead=lead, result=result, criteria=criteria
+    )
+    _mark_simple_crm_state(
+        db, company=company, lead=lead, result=result, draft=draft, metadata=metadata
+    )
     result.lead_id = lead.id
     result.company_id = company.id
     result.updated_at = datetime.utcnow()
+    increment_usage_after_success(db, job.user_id, job.workspace, "leads")
 
 
-def _ensure_customer_finder_email_draft(db: Session, *, job: AICustomerFinderJob, lead: Lead, result: AICustomerFinderResult, criteria: CustomerFinderCriteria) -> EmailMessage:
+def _ensure_customer_finder_email_draft(
+    db: Session,
+    *,
+    job: AICustomerFinderJob,
+    lead: Lead,
+    result: AICustomerFinderResult,
+    criteria: CustomerFinderCriteria,
+) -> EmailMessage:
     existing = db.scalar(
         select(EmailMessage)
         .where(
@@ -937,11 +1403,28 @@ def _ensure_customer_finder_email_draft(db: Session, *, job: AICustomerFinderJob
         .order_by(EmailMessage.created_at.desc())
     )
     if existing:
-        _sync_result_email_metadata(result, existing, simple_status=SIMPLE_STATUS_SENT if existing.delivery_status == "sent" else SIMPLE_STATUS_DRAFT_READY)
+        _sync_result_email_metadata(
+            result,
+            existing,
+            simple_status=SIMPLE_STATUS_SENT
+            if existing.delivery_status == "sent"
+            else SIMPLE_STATUS_DRAFT_READY,
+        )
         return existing
-    outreach = result.metadata_json.get("outreach_draft") if isinstance(result.metadata_json, dict) and isinstance(result.metadata_json.get("outreach_draft"), dict) else {}
-    subject = str(outreach.get("subject") or _draft_subject(result.company_name, criteria))[:300]
-    body = str(outreach.get("draft_email") or result.fit_explanation or result.signal_description).strip()
+    outreach = (
+        result.metadata_json.get("outreach_draft")
+        if isinstance(result.metadata_json, dict)
+        and isinstance(result.metadata_json.get("outreach_draft"), dict)
+        else {}
+    )
+    subject = str(
+        outreach.get("subject") or _draft_subject(result.company_name, criteria)
+    )[:300]
+    body = str(
+        outreach.get("draft_email")
+        or result.fit_explanation
+        or result.signal_description
+    ).strip()
     message = EmailMessage(
         user_id=job.user_id,
         workspace_id=job.workspace_id,
@@ -950,7 +1433,13 @@ def _ensure_customer_finder_email_draft(db: Session, *, job: AICustomerFinderJob
         recipient_email=str(lead.email or "").strip().lower() or None,
         subject=subject,
         preview=(body.replace("\n", " ")[:220] if body else ""),
-        body=body or _draft_email(criteria, result.company_name, _first_line_opener(result.company_name, result.signal_description), result.fit_explanation),
+        body=body
+        or _draft_email(
+            criteria,
+            result.company_name,
+            _first_line_opener(result.company_name, result.signal_description),
+            result.fit_explanation,
+        ),
         cta="Worth a quick fit review?",
         tags={
             "source": "ai_customer_finder",
@@ -965,12 +1454,26 @@ def _ensure_customer_finder_email_draft(db: Session, *, job: AICustomerFinderJob
     )
     db.add(message)
     db.flush()
-    _sync_result_email_metadata(result, message, simple_status=SIMPLE_STATUS_DRAFT_READY)
+    _sync_result_email_metadata(
+        result, message, simple_status=SIMPLE_STATUS_DRAFT_READY
+    )
     return message
 
 
-def _mark_simple_crm_state(db: Session, *, company: Company, lead: Lead, result: AICustomerFinderResult, draft: EmailMessage, metadata: dict[str, Any]) -> None:
-    simple_status = SIMPLE_STATUS_SENT if draft.delivery_status == "sent" else SIMPLE_STATUS_DRAFT_READY
+def _mark_simple_crm_state(
+    db: Session,
+    *,
+    company: Company,
+    lead: Lead,
+    result: AICustomerFinderResult,
+    draft: EmailMessage,
+    metadata: dict[str, Any],
+) -> None:
+    simple_status = (
+        SIMPLE_STATUS_SENT
+        if draft.delivery_status == "sent"
+        else SIMPLE_STATUS_DRAFT_READY
+    )
     company.source = "ai_customer_finder"
     company.crm_stage = simple_status
     company.email_status = "Verified" if lead.email else "Not found"
@@ -984,16 +1487,22 @@ def _mark_simple_crm_state(db: Session, *, company: Company, lead: Lead, result:
             "email_delivery_status": draft.delivery_status,
         },
     }
-    lead.status = LeadStatus.email_generated if draft.delivery_status != "sent" else LeadStatus.contacted
-    lead.notes = json.dumps({
-        **metadata,
-        "simple_customer_finder": {
-            **metadata["simple_customer_finder"],
-            "simple_status": simple_status,
-            "email_id": str(draft.id),
-            "email_delivery_status": draft.delivery_status,
-        },
-    })
+    lead.status = (
+        LeadStatus.email_generated
+        if draft.delivery_status != "sent"
+        else LeadStatus.contacted
+    )
+    lead.notes = json.dumps(
+        {
+            **metadata,
+            "simple_customer_finder": {
+                **metadata["simple_customer_finder"],
+                "simple_status": simple_status,
+                "email_id": str(draft.id),
+                "email_delivery_status": draft.delivery_status,
+            },
+        }
+    )
     lead.updated_at = datetime.utcnow()
     company.updated_at = datetime.utcnow()
     _sync_result_email_metadata(result, draft, simple_status=simple_status)
@@ -1002,17 +1511,28 @@ def _mark_simple_crm_state(db: Session, *, company: Company, lead: Lead, result:
             user_id=result.user_id,
             workspace_id=result.workspace_id,
             action="ai_customer_finder.crm_saved",
-            metadata_json={"result_id": str(result.id), "lead_id": str(lead.id), "company_id": str(company.id), "email_id": str(draft.id)},
+            metadata_json={
+                "result_id": str(result.id),
+                "lead_id": str(lead.id),
+                "company_id": str(company.id),
+                "email_id": str(draft.id),
+            },
         )
     )
 
 
-def _sync_result_email_metadata(result: AICustomerFinderResult, email: EmailMessage, *, simple_status: str) -> None:
+def _sync_result_email_metadata(
+    result: AICustomerFinderResult, email: EmailMessage, *, simple_status: str
+) -> None:
     metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
     result.metadata_json = {
         **metadata,
         "simple_customer_finder": {
-            **(metadata.get("simple_customer_finder") if isinstance(metadata.get("simple_customer_finder"), dict) else {}),
+            **(
+                metadata.get("simple_customer_finder")
+                if isinstance(metadata.get("simple_customer_finder"), dict)
+                else {}
+            ),
             "lead_status": simple_status,
             "simple_status": simple_status,
         },
@@ -1022,37 +1542,86 @@ def _sync_result_email_metadata(result: AICustomerFinderResult, email: EmailMess
             "body": email.body,
             "delivery_status": email.delivery_status,
             "simple_status": simple_status,
-            "can_send": bool(result.public_work_contact and email.delivery_status == "approved"),
+            "can_send": bool(
+                result.public_work_contact and email.delivery_status == "approved"
+            ),
         },
     }
 
 
-def _rank_verified_signals(signals: list[VerifiedCustomerSignal]) -> list[VerifiedCustomerSignal]:
-    return sorted(signals, key=lambda signal: (_signal_lead_intelligence_score(signal), signal.confidence_score, signal.ai_relevance_score), reverse=True)
+def _rank_verified_signals(
+    signals: list[VerifiedCustomerSignal],
+) -> list[VerifiedCustomerSignal]:
+    return sorted(
+        signals,
+        key=lambda signal: (
+            _signal_lead_intelligence_score(signal),
+            signal.confidence_score,
+            signal.ai_relevance_score,
+        ),
+        reverse=True,
+    )
 
 
 def _signal_lead_intelligence_score(signal: VerifiedCustomerSignal) -> int:
     metadata = signal.metadata if isinstance(signal.metadata, dict) else {}
-    lead_intelligence = metadata.get("lead_intelligence") if isinstance(metadata.get("lead_intelligence"), dict) else {}
-    scoring = metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
-    return _safe_int(lead_intelligence.get("overall_lead_score") or scoring.get("overall_lead_score"), signal.ai_relevance_score)
+    lead_intelligence = (
+        metadata.get("lead_intelligence")
+        if isinstance(metadata.get("lead_intelligence"), dict)
+        else {}
+    )
+    scoring = (
+        metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
+    )
+    return _safe_int(
+        lead_intelligence.get("overall_lead_score")
+        or scoring.get("overall_lead_score"),
+        signal.ai_relevance_score,
+    )
 
 
 def _lead_intelligence_score(result: AICustomerFinderResult) -> int:
     metadata = result.metadata_json if isinstance(result.metadata_json, dict) else {}
-    lead_intelligence = metadata.get("lead_intelligence") if isinstance(metadata.get("lead_intelligence"), dict) else {}
-    scoring = metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
-    return _safe_int(lead_intelligence.get("overall_lead_score") or scoring.get("overall_lead_score"), result.ai_relevance_score)
+    lead_intelligence = (
+        metadata.get("lead_intelligence")
+        if isinstance(metadata.get("lead_intelligence"), dict)
+        else {}
+    )
+    scoring = (
+        metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
+    )
+    return _safe_int(
+        lead_intelligence.get("overall_lead_score")
+        or scoring.get("overall_lead_score"),
+        result.ai_relevance_score,
+    )
 
 
-def _record_intent_score_movement(db: Session, job: AICustomerFinderJob, company: Company, result: AICustomerFinderResult) -> None:
+def _record_intent_score_movement(
+    db: Session,
+    job: AICustomerFinderJob,
+    company: Company,
+    result: AICustomerFinderResult,
+) -> None:
     metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
-    live = metadata.get("ai_live_buying_signals") if isinstance(metadata.get("ai_live_buying_signals"), dict) else {}
+    live = (
+        metadata.get("ai_live_buying_signals")
+        if isinstance(metadata.get("ai_live_buying_signals"), dict)
+        else {}
+    )
     previous_score = _score_or_none(live.get("current_score"))
     current_score = _lead_intelligence_score(result)
     score_delta = current_score - previous_score if previous_score is not None else 0
-    timeline = [item for item in live.get("change_timeline", []) if isinstance(item, dict)] if isinstance(live.get("change_timeline"), list) else []
-    existing_fingerprints = {str(item.get("signal_fingerprint") or "") for item in timeline if isinstance(item, dict)}
+    timeline = (
+        [item for item in live.get("change_timeline", []) if isinstance(item, dict)]
+        if isinstance(live.get("change_timeline"), list)
+        else []
+    )
+    existing_fingerprints = {
+        str(item.get("signal_fingerprint") or "")
+        for item in timeline
+        if isinstance(item, dict)
+    }
     is_new_event = result.signal_fingerprint not in existing_fingerprints
     event = {
         "change_type": _change_type_for_signal(result.signal_type),
@@ -1070,11 +1639,49 @@ def _record_intent_score_movement(db: Session, job: AICustomerFinderJob, company
     if is_new_event:
         timeline = [*timeline, event][-20:]
     latest_changes = [event] if is_new_event else []
-    intent_alert = bool(is_new_event and result.verified_status in {"verified", "partially_verified"} and ((previous_score is not None and ((current_score >= 80 and score_delta >= 8) or score_delta >= 15)) or (previous_score is None and current_score >= 85 and result.confidence_score >= 70)))
-    merged_signals = _dedupe_strings([*(metadata.get("buying_signals") if isinstance(metadata.get("buying_signals"), list) else []), result.signal_description])[:10]
-    merged_evidence = [item for item in metadata.get("buying_signal_evidence", []) if isinstance(item, dict)] if isinstance(metadata.get("buying_signal_evidence"), list) else []
-    evidence_entry = {"source_url": result.source_url, "value": result.evidence_summary, "source_field": "ai_customer_finder.source"}
-    if not any(str(item.get("source_url") or "") == result.source_url for item in merged_evidence):
+    intent_alert = bool(
+        is_new_event
+        and result.verified_status in {"verified", "partially_verified"}
+        and (
+            (
+                previous_score is not None
+                and ((current_score >= 80 and score_delta >= 8) or score_delta >= 15)
+            )
+            or (
+                previous_score is None
+                and current_score >= 85
+                and result.confidence_score >= 70
+            )
+        )
+    )
+    merged_signals = _dedupe_strings(
+        [
+            *(
+                metadata.get("buying_signals")
+                if isinstance(metadata.get("buying_signals"), list)
+                else []
+            ),
+            result.signal_description,
+        ]
+    )[:10]
+    merged_evidence = (
+        [
+            item
+            for item in metadata.get("buying_signal_evidence", [])
+            if isinstance(item, dict)
+        ]
+        if isinstance(metadata.get("buying_signal_evidence"), list)
+        else []
+    )
+    evidence_entry = {
+        "source_url": result.source_url,
+        "value": result.evidence_summary,
+        "source_field": "ai_customer_finder.source",
+    }
+    if not any(
+        str(item.get("source_url") or "") == result.source_url
+        for item in merged_evidence
+    ):
         merged_evidence = [*merged_evidence, evidence_entry][-10:]
     live_update = {
         **live,
@@ -1116,11 +1723,22 @@ def _record_intent_score_movement(db: Session, job: AICustomerFinderJob, company
             user_id=job.user_id,
             workspace_id=job.workspace_id,
             action="ai_customer_finder.intent_score_changed",
-            metadata_json={"company_id": str(company.id), "result_id": str(result.id), "previous_score": previous_score, "current_score": current_score, "score_delta": score_delta, "signal_type": result.signal_type},
+            metadata_json={
+                "company_id": str(company.id),
+                "result_id": str(result.id),
+                "previous_score": previous_score,
+                "current_score": current_score,
+                "score_delta": score_delta,
+                "signal_type": result.signal_type,
+            },
         )
     )
-    notification_title = f"{result.company_name} intent score increased to {current_score}"
-    if intent_alert and not _recent_notification_exists(db, workspace_id=job.workspace_id, user_id=job.user_id, title=notification_title):
+    notification_title = (
+        f"{result.company_name} intent score increased to {current_score}"
+    )
+    if intent_alert and not _recent_notification_exists(
+        db, workspace_id=job.workspace_id, user_id=job.user_id, title=notification_title
+    ):
         db.add(
             Notification(
                 user_id=job.user_id,
@@ -1177,26 +1795,58 @@ def _human_signal_type(signal_type: str) -> str:
     return signal_type.replace("_", " ").capitalize()
 
 
-def _scoped_job(db: Session, *, workspace_id: UUID, job_id: UUID) -> AICustomerFinderJob:
-    job = db.scalar(select(AICustomerFinderJob).where(AICustomerFinderJob.id == job_id, AICustomerFinderJob.workspace_id == workspace_id))
+def _scoped_job(
+    db: Session, *, workspace_id: UUID, job_id: UUID
+) -> AICustomerFinderJob:
+    job = db.scalar(
+        select(AICustomerFinderJob).where(
+            AICustomerFinderJob.id == job_id,
+            AICustomerFinderJob.workspace_id == workspace_id,
+        )
+    )
     if job is None:
         raise ValueError("AI Customer Finder job not found.")
     return job
 
 
-def _set_progress(db: Session, job: AICustomerFinderJob, stage: str, message: str, percent: int, *, claim_token: str | None = None, summary: dict[str, Any] | None = None) -> None:
+def _set_progress(
+    db: Session,
+    job: AICustomerFinderJob,
+    stage: str,
+    message: str,
+    percent: int,
+    *,
+    claim_token: str | None = None,
+    summary: dict[str, Any] | None = None,
+) -> None:
     if claim_token and job.locked_by != claim_token:
         return
-    job.status = stage if stage in {"searching", "verifying", "enriching"} else job.status
-    job.progress_json = {"stage": stage, "message": message, "percent": max(0, min(100, percent)), **(summary or {})}
+    job.status = (
+        stage if stage in {"searching", "verifying", "enriching"} else job.status
+    )
+    job.progress_json = {
+        "stage": stage,
+        "message": message,
+        "percent": max(0, min(100, percent)),
+        **(summary or {}),
+    }
     if summary:
-        job.summary_json = {**(job.summary_json if isinstance(job.summary_json, dict) else {}), **summary}
+        job.summary_json = {
+            **(job.summary_json if isinstance(job.summary_json, dict) else {}),
+            **summary,
+        }
     job.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(job)
 
 
-def _mark_cancelled(db: Session, job: AICustomerFinderJob, message: str, *, claim_token: str | None = None) -> None:
+def _mark_cancelled(
+    db: Session,
+    job: AICustomerFinderJob,
+    message: str,
+    *,
+    claim_token: str | None = None,
+) -> None:
     if claim_token and job.locked_by != claim_token:
         return
     job.status = "failed"
@@ -1210,8 +1860,16 @@ def _mark_cancelled(db: Session, job: AICustomerFinderJob, message: str, *, clai
 
 
 def _evidence_excerpt(text: str, criteria: CustomerFinderCriteria) -> str:
-    sentences = [item.strip() for item in text.replace("\n", " ").split(".") if len(item.strip()) > 40]
-    terms = [criteria.target_industry.lower(), *[item.lower() for item in criteria.keywords], *criteria.product_or_service.lower().split()[:6]]
+    sentences = [
+        item.strip()
+        for item in text.replace("\n", " ").split(".")
+        if len(item.strip()) > 40
+    ]
+    terms = [
+        criteria.target_industry.lower(),
+        *[item.lower() for item in criteria.keywords],
+        *criteria.product_or_service.lower().split()[:6],
+    ]
     for sentence in sentences:
         lower = sentence.lower()
         if any(term and term in lower for term in terms):
@@ -1237,7 +1895,12 @@ def _first_line_opener(company_name: str, observed_fact: str) -> str:
     return f"I noticed {company_name}'s public site shows {fact[0].lower() + fact[1:] if fact else 'a current business signal'}."
 
 
-def _draft_email(criteria: CustomerFinderCriteria, company_name: str, first_line: str, model_inference: str) -> str:
+def _draft_email(
+    criteria: CustomerFinderCriteria,
+    company_name: str,
+    first_line: str,
+    model_inference: str,
+) -> str:
     role = ", ".join(criteria.contact_titles[:2]) or "there"
     return (
         f"Hi {role},\n\n"
@@ -1255,9 +1918,28 @@ def _draft_subject(company_name: str, criteria: CustomerFinderCriteria) -> str:
 def _public_business_email(text: str, domain: str) -> str:
     if not text or not domain:
         return ""
-    candidates = re.findall(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, flags=re.IGNORECASE)
-    blocked_prefixes = {"example", "test", "noreply", "no-reply", "donotreply", "privacy", "legal", "abuse"}
-    preferred_prefixes = ("sales", "hello", "contact", "info", "partnerships", "business", "growth")
+    candidates = re.findall(
+        r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, flags=re.IGNORECASE
+    )
+    blocked_prefixes = {
+        "example",
+        "test",
+        "noreply",
+        "no-reply",
+        "donotreply",
+        "privacy",
+        "legal",
+        "abuse",
+    }
+    preferred_prefixes = (
+        "sales",
+        "hello",
+        "contact",
+        "info",
+        "partnerships",
+        "business",
+        "growth",
+    )
     cleaned: list[str] = []
     for item in candidates:
         email = item.strip(".,;:()[]<>").lower()
@@ -1277,7 +1959,9 @@ def _public_business_email(text: str, domain: str) -> str:
     return cleaned[0]
 
 
-def _signal_description(signal_type: str, company_name: str, criteria: CustomerFinderCriteria) -> str:
+def _signal_description(
+    signal_type: str, company_name: str, criteria: CustomerFinderCriteria
+) -> str:
     labels = {
         "explicit_solution_request": "Public source suggests explicit solution-seeking language.",
         "manual_workaround": "Public source contains manual-workflow or workaround language.",
@@ -1290,7 +1974,9 @@ def _signal_description(signal_type: str, company_name: str, criteria: CustomerF
     return f"{company_name}: {labels.get(signal_type, 'Public source matches the requested ICP.')} Target: {criteria.target_industry} in {criteria.target_country}."
 
 
-def _recent_notification_exists(db: Session, *, workspace_id: UUID, user_id: str, title: str, hours: int = 24) -> bool:
+def _recent_notification_exists(
+    db: Session, *, workspace_id: UUID, user_id: str, title: str, hours: int = 24
+) -> bool:
     since = datetime.utcnow() - timedelta(hours=hours)
     existing = db.scalar(
         select(Notification.id)
