@@ -1,6 +1,7 @@
 import * as Sentry from '@sentry/nextjs';
 import { apiProxyUrl } from '@/lib/env';
 import { sanitizeUserMessage } from '@/lib/safe-errors';
+import { actionNotChargedMessage, emailAmbiguitySafeMessage, planLimitExceededMessage } from '@/lib/usage-upgrade';
 
 const isProduction = process.env.NODE_ENV === 'production';
 const debugApiLogging = process.env.NEXT_PUBLIC_DEBUG_API === 'true';
@@ -92,10 +93,30 @@ function safeApiMessage(status: number, detail: string) {
   } catch {
     parsed = null;
   }
-  const backendDetail = parsed && typeof parsed === 'object' && 'detail' in parsed ? String((parsed as { detail?: unknown }).detail || '') : detail;
+  const parsedDetail = parsed && typeof parsed === 'object' && 'detail' in parsed ? (parsed as { detail?: unknown }).detail : null;
+  if (parsedDetail && typeof parsedDetail === 'object') {
+    const record = parsedDetail as { code?: unknown; metric?: unknown; plan?: unknown; limit?: unknown; current?: unknown; requested?: unknown; message?: unknown };
+    const code = String(record.code || '');
+    if (status === 402 && code === 'plan_limit_exceeded') {
+      return planLimitExceededMessage({
+        code,
+        metric: String(record.metric || ''),
+        plan: String(record.plan || ''),
+        limit: typeof record.limit === 'number' ? record.limit : Number(record.limit || 0),
+        current: typeof record.current === 'number' ? record.current : Number(record.current || 0),
+        requested: typeof record.requested === 'number' ? record.requested : Number(record.requested || 0),
+        message: String(record.message || '')
+      });
+    }
+    if (status === 409 && code === 'usage_reservation_state_error') {
+      return actionNotChargedMessage();
+    }
+  }
+  const backendDetail = typeof parsedDetail === 'string' ? parsedDetail : detail;
   const lower = backendDetail.toLowerCase();
   if (status === 401 || lower.includes('invalid token') || lower.includes('missing bearer')) return 'Your session has expired. Please sign in again.';
   if (status === 403 || lower.includes('forbidden') || lower.includes('permission')) return 'Your session has expired. Please sign in again.';
+  if (lower.includes('send_confirmation_pending') || lower.includes('delivery could not be confirmed')) return emailAmbiguitySafeMessage();
   if (status === 402) return 'Your plan needs attention before you can continue.';
   if (status === 429 || lower.includes('rate limit')) return 'This action is temporarily limited. Please try again later.';
   return sanitizeUserMessage(backendDetail, 'Something went wrong while processing your request. Please try again.');
