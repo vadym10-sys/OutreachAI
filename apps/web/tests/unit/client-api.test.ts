@@ -44,6 +44,57 @@ describe("client API errors", () => {
     expect(friendlyErrorMessage(error, "Email could not be sent.")).toBe("Use a real recipient email before sending.");
   });
 
+  it("maps structured plan limits to buyer-friendly upgrade copy", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            code: "plan_limit_exceeded",
+            metric: "leads",
+            plan: "Starter",
+            limit: 500,
+            current: 500,
+            requested: 1
+          }
+        }),
+        { status: 402, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(clientApi("/api/workspace-app/leads/search", "token", { method: "POST" })).rejects.toMatchObject({
+      message: "REQUEST_FAILED:You've used all 500 of 500 leads included in Starter. Upgrade to continue finding and saving new leads.",
+      status: 402
+    });
+  });
+
+  it("maps usage state conflicts to a no-charge message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: { code: "usage_reservation_state_error", message: "Reserved usage cannot be finalized twice." } }),
+        { status: 409, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(clientApi("/api/workspace-app/emails/email_1/send", "token", { method: "POST" })).rejects.toMatchObject({
+      message: "REQUEST_FAILED:This action was not completed, and your usage was not charged. Please try again in a moment.",
+      status: 409
+    });
+  });
+
+  it("uses ambiguity-safe copy for uncertain email delivery", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ detail: "Email delivery could not be confirmed. Check mailbox before retry." }),
+        { status: 503, headers: { "content-type": "application/json" } }
+      )
+    );
+
+    await expect(clientApi("/api/workspace-app/emails/email_1/send", "token", { method: "POST" })).rejects.toMatchObject({
+      message: "REQUEST_FAILED:Email delivery could not be confirmed. Check the mailbox before recovering or sending again.",
+      status: 503
+    });
+  });
+
   it("uses a safe fallback for unknown raw technical failures", () => {
     expect(sanitizeUserMessage("Traceback: SQLAlchemy failed with HTTP 500", "Please try again.")).toBe("Please try again.");
   });
