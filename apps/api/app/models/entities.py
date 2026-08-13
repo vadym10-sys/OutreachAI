@@ -5,7 +5,22 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, Uuid, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -65,7 +80,9 @@ class WorkspaceRole(str, enum.Enum):
 class Workspace(Base):
     __tablename__ = "workspaces"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     owner_user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(180), default="Outreach workspace")
     company: Mapped[str] = mapped_column(String(180), default="")
@@ -80,18 +97,28 @@ class Workspace(Base):
     onboarding_step: Mapped[int] = mapped_column(Integer, default=1)
     onboarding_completed: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class WorkspaceMember(Base):
     __tablename__ = "workspace_members"
-    __table_args__ = (UniqueConstraint("workspace_id", "user_id", name="uq_workspace_member_user"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "user_id", name="uq_workspace_member_user"),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     email: Mapped[str] = mapped_column(String(320), default="")
-    role: Mapped[WorkspaceRole] = mapped_column(Enum(WorkspaceRole), default=WorkspaceRole.member)
+    role: Mapped[WorkspaceRole] = mapped_column(
+        Enum(WorkspaceRole), default=WorkspaceRole.member
+    )
     status: Mapped[str] = mapped_column(String(32), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     workspace: Mapped[Workspace] = relationship()
@@ -99,23 +126,85 @@ class WorkspaceMember(Base):
 
 class UsageCounter(Base):
     __tablename__ = "usage_counters"
-    __table_args__ = (UniqueConstraint("workspace_id", "period", name="uq_workspace_usage_period"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "period", name="uq_workspace_usage_period"),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     period: Mapped[str] = mapped_column(String(7), index=True)
     leads: Mapped[int] = mapped_column(Integer, default=0)
     ai_generations: Mapped[int] = mapped_column(Integer, default=0)
     email_sends: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    workspace: Mapped[Workspace] = relationship()
+
+
+class PlanUsageReservation(Base):
+    __tablename__ = "plan_usage_reservations"
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0", name="ck_plan_usage_reservations_amount_positive"
+        ),
+        CheckConstraint(
+            "status IN ('reserved', 'finalized', 'released', 'expired')",
+            name="ck_plan_usage_reservations_status",
+        ),
+        Index(
+            "idx_plan_usage_reservations_active",
+            "workspace_id",
+            "period",
+            "metric",
+            "status",
+            "expires_at",
+        ),
+        Index(
+            "uq_plan_usage_reservation_idempotency",
+            "workspace_id",
+            "period",
+            "metric",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("status IN ('reserved', 'finalized')"),
+            sqlite_where=text("status IN ('reserved', 'finalized')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    period: Mapped[str] = mapped_column(String(7), index=True)
+    metric: Mapped[str] = mapped_column(String(32), index=True)
+    amount: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(32), default="reserved", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    finalized_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    released_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    release_reason: Mapped[str] = mapped_column(String(240), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
 
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     clerk_user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     email: Mapped[str] = mapped_column(String(320), index=True)
     name: Mapped[Optional[str]] = mapped_column(String(160))
@@ -126,11 +215,19 @@ class User(Base):
 class Subscription(Base):
     __tablename__ = "subscriptions"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
-    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(
+        String(128), index=True
+    )
     plan: Mapped[str] = mapped_column(String(32), default="Starter")
     status: Mapped[str] = mapped_column(String(64), default="trialing")
     trial_end: Mapped[Optional[datetime]] = mapped_column(DateTime)
@@ -138,7 +235,9 @@ class Subscription(Base):
     plan_limits: Mapped[dict] = mapped_column(JSON, default=dict)
     stripe_event_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     last_payment_error: Mapped[Optional[str]] = mapped_column(String(500))
     last_decline_code: Mapped[Optional[str]] = mapped_column(String(120))
     last_failure_message: Mapped[Optional[str]] = mapped_column(Text)
@@ -149,15 +248,36 @@ class Subscription(Base):
 class BillingCheckoutSession(Base):
     __tablename__ = "billing_checkout_sessions"
     __table_args__ = (
-        Index("idx_billing_checkout_sessions_workspace_user", "workspace_id", "user_id"),
+        Index(
+            "idx_billing_checkout_sessions_workspace_user", "workspace_id", "user_id"
+        ),
         Index("idx_billing_checkout_sessions_session", "stripe_session_id"),
-        Index("uq_billing_checkout_open_lifecycle", "workspace_id", "user_id", "plan", "billing_period", unique=True, postgresql_where=text("status = 'open'"), sqlite_where=text("status = 'open'")),
-        Index("uq_billing_checkout_stripe_session_id", "stripe_session_id", unique=True, postgresql_where=text("stripe_session_id <> ''"), sqlite_where=text("stripe_session_id <> ''")),
+        Index(
+            "uq_billing_checkout_open_lifecycle",
+            "workspace_id",
+            "user_id",
+            "plan",
+            "billing_period",
+            unique=True,
+            postgresql_where=text("status = 'open'"),
+            sqlite_where=text("status = 'open'"),
+        ),
+        Index(
+            "uq_billing_checkout_stripe_session_id",
+            "stripe_session_id",
+            unique=True,
+            postgresql_where=text("stripe_session_id <> ''"),
+            sqlite_where=text("stripe_session_id <> ''"),
+        ),
         Index("uq_billing_checkout_idempotency_key", "idempotency_key", unique=True),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     stripe_customer_id: Mapped[str] = mapped_column(String(128), default="")
     stripe_session_id: Mapped[str] = mapped_column(String(128), default="")
@@ -169,21 +289,44 @@ class BillingCheckoutSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
 
 
 class BillingSubscriptionTransition(Base):
     __tablename__ = "billing_subscription_transitions"
     __table_args__ = (
-        Index("idx_billing_subscription_transitions_workspace", "workspace_id", "status"),
-        Index("idx_billing_subscription_transitions_subscription", "stripe_subscription_id", "status"),
-        Index("uq_billing_subscription_transition_open", "workspace_id", "stripe_subscription_id", unique=True, postgresql_where=text("status IN ('pending', 'scheduled')"), sqlite_where=text("status IN ('pending', 'scheduled')")),
-        Index("uq_billing_subscription_transition_idempotency_key", "idempotency_key", unique=True),
+        Index(
+            "idx_billing_subscription_transitions_workspace", "workspace_id", "status"
+        ),
+        Index(
+            "idx_billing_subscription_transitions_subscription",
+            "stripe_subscription_id",
+            "status",
+        ),
+        Index(
+            "uq_billing_subscription_transition_open",
+            "workspace_id",
+            "stripe_subscription_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'scheduled')"),
+            sqlite_where=text("status IN ('pending', 'scheduled')"),
+        ),
+        Index(
+            "uq_billing_subscription_transition_idempotency_key",
+            "idempotency_key",
+            unique=True,
+        ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     stripe_customer_id: Mapped[str] = mapped_column(String(128))
     stripe_subscription_id: Mapped[str] = mapped_column(String(128), index=True)
@@ -199,7 +342,9 @@ class BillingSubscriptionTransition(Base):
     error_message: Mapped[Optional[str]] = mapped_column(Text)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     workspace: Mapped[Workspace] = relationship()
@@ -209,12 +354,29 @@ class TestEntitlement(Base):
     __tablename__ = "test_entitlements"
     __table_args__ = (
         Index("idx_test_entitlements_workspace_user", "workspace_id", "user_id"),
-        Index("idx_test_entitlements_active_lookup", "workspace_id", "user_id", "expires_at", "revoked_at"),
-        Index("uq_test_entitlements_one_unrevoked", "workspace_id", "user_id", unique=True, postgresql_where=text("revoked_at IS NULL"), sqlite_where=text("revoked_at IS NULL")),
+        Index(
+            "idx_test_entitlements_active_lookup",
+            "workspace_id",
+            "user_id",
+            "expires_at",
+            "revoked_at",
+        ),
+        Index(
+            "uq_test_entitlements_one_unrevoked",
+            "workspace_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     user_email: Mapped[str] = mapped_column(String(320), default="")
     plan: Mapped[str] = mapped_column(String(32), default="Starter")
@@ -228,16 +390,22 @@ class TestEntitlement(Base):
     revoked_by_email: Mapped[Optional[str]] = mapped_column(String(320))
     revoke_reason: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
 
 
 class Campaign(Base):
     __tablename__ = "campaigns"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     name: Mapped[str] = mapped_column(String(220))
     industry: Mapped[str] = mapped_column(String(160), default="")
     countries: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -250,45 +418,65 @@ class Campaign(Base):
     cta: Mapped[str] = mapped_column(String(220), default="Book a quick call")
     email_tone: Mapped[str] = mapped_column(String(80), default="Professional")
     signature: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[CampaignStatus] = mapped_column(Enum(CampaignStatus), default=CampaignStatus.draft)
+    status: Mapped[CampaignStatus] = mapped_column(
+        Enum(CampaignStatus), default=CampaignStatus.draft
+    )
     schedule_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     follow_up_days: Mapped[int] = mapped_column(Integer, default=3)
     timezone: Mapped[str] = mapped_column(String(80), default="UTC")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class CampaignSequence(Base):
     __tablename__ = "campaign_sequences"
-    __table_args__ = (UniqueConstraint("campaign_id", "step_order", name="uq_campaign_sequence_step"),)
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "step_order", name="uq_campaign_sequence_step"),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
     step_order: Mapped[int] = mapped_column(Integer)
     name: Mapped[str] = mapped_column(String(120))
     subject: Mapped[str] = mapped_column(String(300), default="")
     body: Mapped[str] = mapped_column(Text, default="")
     delay_days: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     campaign: Mapped[Campaign] = relationship()
 
 
 class AISalesEmployee(Base):
     __tablename__ = "ai_sales_employees"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     name: Mapped[str] = mapped_column(String(160))
-    role: Mapped[str] = mapped_column(String(160), default="AI Sales Development Representative")
+    role: Mapped[str] = mapped_column(
+        String(160), default="AI Sales Development Representative"
+    )
     product_service: Mapped[str] = mapped_column(Text, default="")
     target_customer: Mapped[str] = mapped_column(String(240), default="")
     target_countries: Mapped[list[str]] = mapped_column(JSON, default=list)
     target_industries: Mapped[list[str]] = mapped_column(JSON, default=list)
     offer: Mapped[str] = mapped_column(Text, default="")
     cta: Mapped[str] = mapped_column(String(220), default="Book a quick call")
-    sending_mode: Mapped[SalesEmployeeMode] = mapped_column(Enum(SalesEmployeeMode), default=SalesEmployeeMode.review)
+    sending_mode: Mapped[SalesEmployeeMode] = mapped_column(
+        Enum(SalesEmployeeMode), default=SalesEmployeeMode.review
+    )
     daily_limit: Mapped[int] = mapped_column(Integer, default=25)
     working_hours: Mapped[str] = mapped_column(String(80), default="09:00-17:00")
     tone: Mapped[str] = mapped_column(String(80), default="Professional")
@@ -297,7 +485,9 @@ class AISalesEmployee(Base):
     status: Mapped[str] = mapped_column(String(32), default="active")
     strict_limits: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
 
 
@@ -305,11 +495,19 @@ class Lead(Base):
     __tablename__ = "leads"
     __table_args__ = (UniqueConstraint("user_id", "email", name="uq_user_lead_email"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaigns.id", ondelete="SET NULL"), index=True)
-    sales_employee_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("ai_sales_employees.id", ondelete="SET NULL"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="SET NULL"), index=True
+    )
+    sales_employee_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("ai_sales_employees.id", ondelete="SET NULL"), index=True
+    )
     company: Mapped[str] = mapped_column(String(220))
     website: Mapped[Optional[str]] = mapped_column(String(500))
     industry: Mapped[Optional[str]] = mapped_column(String(160))
@@ -324,7 +522,9 @@ class Lead(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text)
     revenue: Mapped[float] = mapped_column(Numeric, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     campaign: Mapped[Optional[Campaign]] = relationship()
     sales_employee: Mapped[Optional[AISalesEmployee]] = relationship()
 
@@ -332,10 +532,16 @@ class Lead(Base):
 class Company(Base):
     __tablename__ = "companies"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), index=True
+    )
     name: Mapped[str] = mapped_column(String(220), index=True)
     website: Mapped[Optional[str]] = mapped_column(String(500), index=True)
     domain: Mapped[Optional[str]] = mapped_column(String(220), index=True)
@@ -353,22 +559,34 @@ class Company(Base):
     outreach_strategy: Mapped[str] = mapped_column(Text, default="")
     sales_angle: Mapped[str] = mapped_column(Text, default="")
     expected_reply_rate: Mapped[str] = mapped_column(String(80), default="")
-    email_status: Mapped[str] = mapped_column(String(80), default="Not prepared", index=True)
+    email_status: Mapped[str] = mapped_column(
+        String(80), default="Not prepared", index=True
+    )
     crm_stage: Mapped[str] = mapped_column(String(80), default="New Lead", index=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     lead: Mapped[Optional[Lead]] = relationship()
 
 
 class Contact(Base):
     __tablename__ = "contacts"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), index=True
+    )
     name: Mapped[str] = mapped_column(String(180), default="")
     title: Mapped[str] = mapped_column(String(180), default="")
     email: Mapped[Optional[str]] = mapped_column(String(320), index=True)
@@ -379,7 +597,9 @@ class Contact(Base):
     email_status: Mapped[str] = mapped_column(String(80), default="Unknown")
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     company: Mapped[Optional[Company]] = relationship()
     lead: Mapped[Optional[Lead]] = relationship()
 
@@ -387,11 +607,19 @@ class Contact(Base):
 class Deal(Base):
     __tablename__ = "deals"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), index=True
+    )
     name: Mapped[str] = mapped_column(String(220))
     stage: Mapped[str] = mapped_column(String(80), default="New Lead", index=True)
     value: Mapped[float] = mapped_column(Numeric, default=0)
@@ -399,7 +627,9 @@ class Deal(Base):
     source: Mapped[str] = mapped_column(String(80), default="manual", index=True)
     next_step: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     company: Mapped[Optional[Company]] = relationship()
     lead: Mapped[Optional[Lead]] = relationship()
 
@@ -407,11 +637,19 @@ class Deal(Base):
 class Note(Base):
     __tablename__ = "notes"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), index=True
+    )
     body: Mapped[str] = mapped_column(Text, default="")
     kind: Mapped[str] = mapped_column(String(80), default="note")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -421,13 +659,25 @@ class Note(Base):
 
 class SalesEmployeeLeadInsight(Base):
     __tablename__ = "sales_employee_lead_insights"
-    __table_args__ = (UniqueConstraint("sales_employee_id", "lead_id", name="uq_sales_employee_lead_insight"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "sales_employee_id", "lead_id", name="uq_sales_employee_lead_insight"
+        ),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    sales_employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_sales_employees.id", ondelete="CASCADE"), index=True)
-    lead_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    sales_employee_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ai_sales_employees.id", ondelete="CASCADE"), index=True
+    )
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leads.id", ondelete="CASCADE"), index=True
+    )
     industry: Mapped[str] = mapped_column(String(160), default="")
     services: Mapped[list[str]] = mapped_column(JSON, default=list)
     pain_points: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -438,7 +688,9 @@ class SalesEmployeeLeadInsight(Base):
     recommended_plan: Mapped[str] = mapped_column(String(120), default="")
     summary: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     employee: Mapped[AISalesEmployee] = relationship()
     lead: Mapped[Lead] = relationship()
 
@@ -446,10 +698,16 @@ class SalesEmployeeLeadInsight(Base):
 class SalesEmployeeTaskResult(Base):
     __tablename__ = "sales_employee_task_results"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    sales_employee_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_sales_employees.id", ondelete="CASCADE"), index=True)
+    sales_employee_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ai_sales_employees.id", ondelete="CASCADE"), index=True
+    )
     task_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     command: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(40), default="finished")
@@ -463,11 +721,19 @@ class SalesEmployeeTaskResult(Base):
 class EnrichmentJob(Base):
     __tablename__ = "enrichment_jobs"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    lead_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
-    job_type: Mapped[str] = mapped_column(String(80), default="company_enrichment", index=True)
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leads.id", ondelete="CASCADE"), index=True
+    )
+    job_type: Mapped[str] = mapped_column(
+        String(80), default="company_enrichment", index=True
+    )
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -480,11 +746,17 @@ class EnrichmentJob(Base):
     cancel_requested: Mapped[bool] = mapped_column(default=False, index=True)
     locked_by: Mapped[str] = mapped_column(String(120), default="", index=True)
     locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
-    run_after: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    run_after: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
     lead: Mapped[Lead] = relationship()
 
@@ -492,8 +764,12 @@ class EnrichmentJob(Base):
 class AICustomerFinderJob(Base):
     __tablename__ = "ai_customer_finder_jobs"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
@@ -507,24 +783,47 @@ class AICustomerFinderJob(Base):
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     locked_by: Mapped[str] = mapped_column(String(120), default="", index=True)
     locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
-    run_after: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    run_after: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
 
 
 class AICustomerFinderResult(Base):
     __tablename__ = "ai_customer_finder_results"
-    __table_args__ = (UniqueConstraint("workspace_id", "job_id", "signal_fingerprint", name="uq_ai_customer_finder_result_signal"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "job_id",
+            "signal_fingerprint",
+            name="uq_ai_customer_finder_result_signal",
+        ),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_customer_finder_jobs.id", ondelete="CASCADE"), index=True)
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
-    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), index=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ai_customer_finder_jobs.id", ondelete="CASCADE"), index=True
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), index=True
+    )
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("companies.id", ondelete="SET NULL"), index=True
+    )
     company_name: Mapped[str] = mapped_column(String(220), index=True)
     official_website: Mapped[str] = mapped_column(String(500), default="")
     domain: Mapped[str] = mapped_column(String(220), default="", index=True)
@@ -545,14 +844,22 @@ class AICustomerFinderResult(Base):
     fit_explanation: Mapped[str] = mapped_column(Text, default="")
     ai_relevance_score: Mapped[int] = mapped_column(Integer, default=0)
     confidence_score: Mapped[int] = mapped_column(Integer, default=0)
-    verified_status: Mapped[str] = mapped_column(String(40), default="verified", index=True)
-    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    verified_status: Mapped[str] = mapped_column(
+        String(40), default="verified", index=True
+    )
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
     source_provider: Mapped[str] = mapped_column(String(80), default="")
     dedupe_key: Mapped[str] = mapped_column(String(320), default="", index=True)
     signal_fingerprint: Mapped[str] = mapped_column(String(128), index=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     job: Mapped[AICustomerFinderJob] = relationship()
     lead: Mapped[Optional[Lead]] = relationship()
     company: Mapped[Optional[Company]] = relationship()
@@ -561,17 +868,27 @@ class AICustomerFinderResult(Base):
 class AICustomerFinderSource(Base):
     __tablename__ = "ai_customer_finder_sources"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_customer_finder_jobs.id", ondelete="CASCADE"), index=True)
-    result_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ai_customer_finder_results.id", ondelete="CASCADE"), index=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ai_customer_finder_jobs.id", ondelete="CASCADE"), index=True
+    )
+    result_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("ai_customer_finder_results.id", ondelete="CASCADE"), index=True
+    )
     source_url: Mapped[str] = mapped_column(String(1000), index=True)
     canonical_url: Mapped[str] = mapped_column(String(1000), default="", index=True)
     source_title: Mapped[str] = mapped_column(String(500), default="")
     source_type: Mapped[str] = mapped_column(String(80), default="official_website")
     publication_date: Mapped[str] = mapped_column(String(80), default="Unknown")
-    retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
     content_hash: Mapped[str] = mapped_column(String(128), default="", index=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -582,8 +899,12 @@ class AICustomerFinderSource(Base):
 class AICEOBriefing(Base):
     __tablename__ = "ai_ceo_briefings"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     length: Mapped[str] = mapped_column(String(20), default="1 min")
     language: Mapped[str] = mapped_column(String(40), default="English")
@@ -596,12 +917,27 @@ class AICEOBriefing(Base):
 
 class AISalesWorkspaceAnalysis(Base):
     __tablename__ = "ai_sales_workspace_analyses"
-    __table_args__ = (UniqueConstraint("workspace_id", "company_id", "version_number", name="uq_ai_sales_workspace_company_version"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "company_id",
+            "version_number",
+            name="uq_ai_sales_workspace_company_version",
+        ),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     provider: Mapped[str] = mapped_column(String(80), default="openai")
     model: Mapped[str] = mapped_column(String(120), default="")
@@ -610,17 +946,25 @@ class AISalesWorkspaceAnalysis(Base):
     analysis_json: Mapped[dict] = mapped_column(JSON, default=dict)
     evidence_json: Mapped[list[dict]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
     company: Mapped[Company] = relationship()
 
 
 class AIMemorySettings(Base):
     __tablename__ = "ai_memory_settings"
-    __table_args__ = (UniqueConstraint("workspace_id", name="uq_ai_memory_settings_workspace"),)
+    __table_args__ = (
+        UniqueConstraint("workspace_id", name="uq_ai_memory_settings_workspace"),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     max_items: Mapped[int] = mapped_column(Integer, default=12)
@@ -633,32 +977,62 @@ class AIMemorySettings(Base):
     embedding_model: Mapped[str] = mapped_column(String(120), default="")
     last_retrieval_mode: Mapped[str] = mapped_column(String(20), default="none")
     last_error: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
 
 
 class AIMemoryEntry(Base):
     __tablename__ = "ai_memory_entries"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "dedupe_hash", name="uq_ai_memory_workspace_dedupe"),
-        Index("idx_ai_memory_entries_workspace_type_created", "workspace_id", "memory_type", "created_at"),
-        Index("idx_ai_memory_entries_workspace_entity", "workspace_id", "company_id", "lead_id"),
-        Index("idx_ai_memory_entries_active", "workspace_id", "deleted_at", "expires_at"),
+        UniqueConstraint(
+            "workspace_id", "dedupe_hash", name="uq_ai_memory_workspace_dedupe"
+        ),
+        Index(
+            "idx_ai_memory_entries_workspace_type_created",
+            "workspace_id",
+            "memory_type",
+            "created_at",
+        ),
+        Index(
+            "idx_ai_memory_entries_workspace_entity",
+            "workspace_id",
+            "company_id",
+            "lead_id",
+        ),
+        Index(
+            "idx_ai_memory_entries_active", "workspace_id", "deleted_at", "expires_at"
+        ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     memory_type: Mapped[AIMemoryType] = mapped_column(Enum(AIMemoryType), index=True)
     content: Mapped[str] = mapped_column(Text, default="")
     summary: Mapped[str] = mapped_column(String(500), default="")
     source: Mapped[str] = mapped_column(String(120), default="", index=True)
     source_id: Mapped[str] = mapped_column(String(160), default="", index=True)
-    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("companies.id", ondelete="SET NULL"), index=True)
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"), index=True)
-    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("contacts.id", ondelete="SET NULL"), index=True)
-    email_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("email_messages.id", ondelete="SET NULL"), index=True)
+    company_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("companies.id", ondelete="SET NULL"), index=True
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL"), index=True
+    )
+    contact_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("contacts.id", ondelete="SET NULL"), index=True
+    )
+    email_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("email_messages.id", ondelete="SET NULL"), index=True
+    )
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     trust_level: Mapped[str] = mapped_column(String(40), default="untrusted")
     verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -667,34 +1041,61 @@ class AIMemoryEntry(Base):
     dedupe_hash: Mapped[str] = mapped_column(String(128), index=True)
     keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
     embedding_json: Mapped[list[float]] = mapped_column(JSON, default=list)
-    embedding_status: Mapped[str] = mapped_column(String(32), default="not_requested", index=True)
+    embedding_status: Mapped[str] = mapped_column(
+        String(32), default="not_requested", index=True
+    )
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     workspace: Mapped[Workspace] = relationship()
 
 
 class AIMemoryAuditLog(Base):
     __tablename__ = "ai_memory_audit_logs"
-    __table_args__ = (Index("idx_ai_memory_audit_workspace_action", "workspace_id", "action", "created_at"),)
+    __table_args__ = (
+        Index(
+            "idx_ai_memory_audit_workspace_action",
+            "workspace_id",
+            "action",
+            "created_at",
+        ),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    memory_entry_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("ai_memory_entries.id", ondelete="SET NULL"), index=True)
+    memory_entry_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("ai_memory_entries.id", ondelete="SET NULL"), index=True
+    )
     action: Mapped[str] = mapped_column(String(80), index=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
 
 
 class WebsiteAnalysis(Base):
     __tablename__ = "website_analyses"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="CASCADE"), index=True
+    )
     company: Mapped[str] = mapped_column(String(220), default="")
     website: Mapped[str] = mapped_column(String(500), default="")
     description: Mapped[str] = mapped_column(Text, default="")
@@ -713,11 +1114,19 @@ class WebsiteAnalysis(Base):
 class EmailMessage(Base):
     __tablename__ = "email_messages"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("campaigns.id", ondelete="SET NULL"))
-    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("leads.id", ondelete="SET NULL"))
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    campaign_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="SET NULL")
+    )
+    lead_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("leads.id", ondelete="SET NULL")
+    )
     direction: Mapped[str] = mapped_column(String(16), default="outbound")
     subject: Mapped[str] = mapped_column(String(300))
     recipient_email: Mapped[Optional[str]] = mapped_column(String(320), index=True)
@@ -743,9 +1152,13 @@ class EmailMessage(Base):
 class AnalyticsEvent(Base):
     __tablename__ = "analytics_events"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     value: Mapped[Optional[float]] = mapped_column(Numeric)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -755,9 +1168,13 @@ class AnalyticsEvent(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[Optional[str]] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     action: Mapped[str] = mapped_column(String(128), index=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(64))
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -767,10 +1184,16 @@ class AuditLog(Base):
 class Notification(Base):
     __tablename__ = "notifications"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
-    kind: Mapped[NotificationKind] = mapped_column(Enum(NotificationKind), default=NotificationKind.info)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[NotificationKind] = mapped_column(
+        Enum(NotificationKind), default=NotificationKind.info
+    )
     title: Mapped[str] = mapped_column(String(180))
     message: Mapped[str] = mapped_column(Text)
     read_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
@@ -779,9 +1202,13 @@ class Notification(Base):
 
 class QualityIssue(Base):
     __tablename__ = "quality_issues"
-    __table_args__ = (UniqueConstraint("fingerprint", name="uq_quality_issue_fingerprint"),)
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_quality_issue_fingerprint"),
+    )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     fingerprint: Mapped[str] = mapped_column(String(180), index=True)
     title: Mapped[str] = mapped_column(String(240))
     module: Mapped[str] = mapped_column(String(80), index=True)
@@ -793,31 +1220,43 @@ class QualityIssue(Base):
     evidence_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_by: Mapped[str] = mapped_column(String(128), default="quality-system")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class QualityRepairTask(Base):
     __tablename__ = "quality_repair_tasks"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    issue_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("quality_issues.id", ondelete="SET NULL"), index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    issue_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("quality_issues.id", ondelete="SET NULL"), index=True
+    )
     title: Mapped[str] = mapped_column(String(240))
     priority: Mapped[str] = mapped_column(String(24), default="medium", index=True)
-    status: Mapped[str] = mapped_column(String(32), default="needs_approval", index=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default="needs_approval", index=True
+    )
     owner_email: Mapped[str] = mapped_column(String(320), default="")
     diagnosis: Mapped[str] = mapped_column(Text, default="")
     suggested_fix: Mapped[str] = mapped_column(Text, default="")
     required_tests: Mapped[list[str]] = mapped_column(JSON, default=list)
     approval_required: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     issue: Mapped[Optional[QualityIssue]] = relationship()
 
 
 class QualityCheckRun(Base):
     __tablename__ = "quality_check_runs"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     triggered_by: Mapped[str] = mapped_column(String(128), default="")
     health_score: Mapped[int] = mapped_column(Integer, default=100)
     status: Mapped[str] = mapped_column(String(32), default="healthy", index=True)
@@ -829,7 +1268,9 @@ class QualityCheckRun(Base):
 class BackupRun(Base):
     __tablename__ = "backup_runs"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     provider: Mapped[str] = mapped_column(String(64), default="", index=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     object_key: Mapped[str] = mapped_column(String(700), default="")
@@ -840,35 +1281,49 @@ class BackupRun(Base):
     restore_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     triggered_by: Mapped[str] = mapped_column(String(128), default="")
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 
 class WorkspaceProfile(Base):
     __tablename__ = "workspace_profiles"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     workspace: Mapped[str] = mapped_column(String(180), default="Outreach workspace")
     company: Mapped[str] = mapped_column(String(180), default="")
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500))
     timezone: Mapped[str] = mapped_column(String(80), default="UTC")
     language: Mapped[str] = mapped_column(String(80), default="English")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class AppSettings(Base):
     __tablename__ = "app_settings"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
     user_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
-    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
     general: Mapped[dict] = mapped_column(JSON, default=dict)
     ai: Mapped[dict] = mapped_column(JSON, default=dict)
     email: Mapped[dict] = mapped_column(JSON, default=dict)
     billing: Mapped[dict] = mapped_column(JSON, default=dict)
     security: Mapped[dict] = mapped_column(JSON, default=dict)
     api: Mapped[dict] = mapped_column(JSON, default=dict)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

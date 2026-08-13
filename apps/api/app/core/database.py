@@ -30,6 +30,7 @@ REQUIRED_POSTGRES_MIGRATIONS = (
     "018_billing_checkout_idempotency",
     "019_canonical_subscription_resolver",
     "020_billing_subscription_transitions",
+    "021_plan_usage_reservations",
 )
 REQUIRED_AI_MEMORY_TABLES = ("ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs")
 

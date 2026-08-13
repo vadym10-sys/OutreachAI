@@ -106,6 +106,7 @@ from app.models.entities import (
     Lead,
     LeadStatus,
     Note,
+    PlanUsageReservation,
     Subscription,
     TestEntitlement as BillingTestEntitlement,
     UsageCounter,
@@ -134,6 +135,12 @@ from app.services.google_maps import (
     _text_query,
 )  # noqa: E402
 from app.services.hunter import HunterRequestError  # noqa: E402
+from app.services.plan_enforcement import (  # noqa: E402
+    finalize_usage_reservation,
+    month_period,
+    release_usage_reservation,
+    reserve_usage_capacity,
+)
 from app.services.ai import (
     ProviderRequestError,
     ProviderResponseValidationError,
@@ -2876,6 +2883,9 @@ class _FakePostgresConnection:
         if "CREATE TABLE IF NOT EXISTS backup_runs" in sql:
             self.state.tables.add("backup_runs")
             return _FakeScalarResult()
+        if "CREATE TABLE IF NOT EXISTS plan_usage_reservations" in sql:
+            self.state.tables.add("plan_usage_reservations")
+            return _FakeScalarResult()
         if "INSERT INTO schema_migrations" in sql:
             assert params
             self.state.applied_versions.add(params["version"])
@@ -3008,6 +3018,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(
         "018_billing_checkout_idempotency",
         "019_canonical_subscription_resolver",
         "020_billing_subscription_transitions",
+        "021_plan_usage_reservations",
     }
     state.tables.update(
         {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
@@ -3776,6 +3787,34 @@ def test_postgres_schema_assets_include_billing_subscription_transitions() -> No
     assert "uq_billing_subscription_transition_open" in packaged_migration
     assert "uq_billing_subscription_transition_idempotency_key" in packaged_migration
     assert "020_billing_subscription_transitions" in REQUIRED_POSTGRES_MIGRATIONS
+
+
+def test_postgres_schema_assets_include_plan_usage_reservations() -> None:
+    schema = (
+        Path(__file__).resolve().parents[1] / "app" / "db" / "schema.sql"
+    ).read_text(encoding="utf-8")
+    packaged_migration = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "db"
+        / "migrations"
+        / "021_plan_usage_reservations.sql"
+    ).read_text(encoding="utf-8")
+    root_migration = (
+        Path(__file__).resolve().parents[3]
+        / "db"
+        / "migrations"
+        / "021_plan_usage_reservations.sql"
+    ).read_text(encoding="utf-8")
+
+    assert packaged_migration == root_migration
+    assert "CREATE TABLE IF NOT EXISTS plan_usage_reservations" in schema
+    assert "uq_plan_usage_reservation_idempotency" in packaged_migration
+    assert "WHERE status IN ('reserved', 'finalized')" in packaged_migration
+    assert "ck_plan_usage_reservations_status" in packaged_migration
+    assert "idx_plan_usage_reservations_active" in packaged_migration
+    assert "DROP TABLE IF EXISTS plan_usage_reservations" in packaged_migration
+    assert "021_plan_usage_reservations" in REQUIRED_POSTGRES_MIGRATIONS
 
 
 def test_startup_logs_validation_steps_and_fails_fast_on_database_error(
@@ -6077,6 +6116,134 @@ def test_plan_usage_check_then_record_boundaries_and_failed_operation_no_charge(
         }
 
 
+def test_plan_usage_reservation_release_idempotency_and_month_boundary() -> None:
+    user_id = f"usage-reservation-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(
+        workspace["id"], user_id=user_id, plan="Starter", status="active"
+    )
+    limit = int(PLAN_LIMITS["Starter"]["leads"])
+    january = datetime(2026, 1, 31, 23, 59)
+    february = datetime(2026, 2, 1, 0, 1)
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        usage = routes_module._usage_for_workspace(db, workspace_row)
+        usage.leads = limit - 1
+        db.commit()
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        reservation = reserve_usage_capacity(
+            db,
+            user_id,
+            workspace_row,
+            "leads",
+            idempotency_key="manual-create-1",
+        )
+        assert reservation is not None
+        db.commit()
+        release_usage_reservation(db, reservation.id, reason="lead_insert_failed")
+        db.commit()
+        usage = db.scalar(
+            select(UsageCounter).where(
+                UsageCounter.workspace_id == UUID(workspace["id"]),
+                UsageCounter.period == month_period(),
+            )
+        )
+        assert usage is not None
+        assert usage.leads == limit - 1
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        first = reserve_usage_capacity(
+            db,
+            user_id,
+            workspace_row,
+            "leads",
+            idempotency_key="manual-create-2",
+        )
+        second = reserve_usage_capacity(
+            db,
+            user_id,
+            workspace_row,
+            "leads",
+            idempotency_key="manual-create-2",
+        )
+        assert first is not None and second is not None
+        assert first.id == second.id
+        finalize_usage_reservation(db, first.id)
+        finalize_usage_reservation(db, first.id)
+        db.commit()
+
+    with get_sessionmaker()() as db:
+        usage = db.scalar(
+            select(UsageCounter).where(
+                UsageCounter.workspace_id == UUID(workspace["id"]),
+                UsageCounter.period == month_period(),
+            )
+        )
+        assert usage is not None
+        assert usage.leads == limit
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        with pytest.raises(HTTPException) as exc:
+            reserve_usage_capacity(
+                db,
+                user_id,
+                workspace_row,
+                "leads",
+                idempotency_key="manual-create-3",
+            )
+        assert exc.value.status_code == 402
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        january_reservation = reserve_usage_capacity(
+            db,
+            user_id,
+            workspace_row,
+            "leads",
+            idempotency_key="month-boundary-jan",
+            now=january,
+        )
+        assert january_reservation is not None
+        finalize_usage_reservation(db, january_reservation.id, now=january)
+        february_reservation = reserve_usage_capacity(
+            db,
+            user_id,
+            workspace_row,
+            "leads",
+            idempotency_key="month-boundary-feb",
+            now=february,
+        )
+        assert february_reservation is not None
+        finalize_usage_reservation(db, february_reservation.id, now=february)
+        db.commit()
+
+        january_usage = db.scalar(
+            select(UsageCounter).where(
+                UsageCounter.workspace_id == workspace_row.id,
+                UsageCounter.period == "2026-01",
+            )
+        )
+        february_usage = db.scalar(
+            select(UsageCounter).where(
+                UsageCounter.workspace_id == workspace_row.id,
+                UsageCounter.period == "2026-02",
+            )
+        )
+        assert january_usage is not None and january_usage.leads == 1
+        assert february_usage is not None and february_usage.leads == 1
+
+
 def test_plan_usage_concurrent_records_cannot_exceed_limit() -> None:
     user_id = f"usage-concurrent-{uuid4()}@example.com"
     headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
@@ -6120,6 +6287,66 @@ def test_plan_usage_concurrent_records_cannot_exceed_limit() -> None:
         )
         assert usage is not None
         assert usage.email_sends == limit
+
+
+def test_plan_usage_concurrent_reservations_from_separate_sessions_do_not_exceed_limit() -> (
+    None
+):
+    if get_engine().dialect.name != "postgresql":
+        pytest.skip("PostgreSQL row-level reservation concurrency requires PostgreSQL.")
+    user_id = f"usage-reserve-concurrent-{uuid4()}@example.com"
+    headers = {"Authorization": "Bearer dev", "X-Test-User-Email": user_id}
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    _grant_subscription_for_test(
+        workspace["id"], user_id=user_id, plan="Starter", status="active"
+    )
+    limit = int(PLAN_LIMITS["Starter"]["email_sends"])
+
+    with get_sessionmaker()() as db:
+        workspace_row = db.get(Workspace, UUID(workspace["id"]))
+        assert workspace_row is not None
+        usage = routes_module._usage_for_workspace(db, workspace_row)
+        usage.email_sends = limit - 1
+        db.commit()
+
+    def reserve_once(index: int) -> int:
+        with get_sessionmaker()() as db:
+            workspace_row = db.get(Workspace, UUID(workspace["id"]))
+            assert workspace_row is not None
+            try:
+                reservation = reserve_usage_capacity(
+                    db,
+                    user_id,
+                    workspace_row,
+                    "email_sends",
+                    idempotency_key=f"parallel-send-{index}",
+                )
+                finalize_usage_reservation(db, reservation.id if reservation else None)
+                db.commit()
+                return 200
+            except HTTPException as exc:
+                db.rollback()
+                return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        statuses = list(executor.map(reserve_once, range(3)))
+
+    assert statuses.count(200) == 1
+    assert all(status in {200, 402} for status in statuses)
+    with get_sessionmaker()() as db:
+        usage = db.scalar(
+            select(UsageCounter).where(
+                UsageCounter.workspace_id == UUID(workspace["id"])
+            )
+        )
+        reservations = db.scalars(
+            select(PlanUsageReservation).where(
+                PlanUsageReservation.workspace_id == UUID(workspace["id"])
+            )
+        ).all()
+        assert usage is not None
+        assert usage.email_sends == limit
+        assert sum(1 for row in reservations if row.status == "finalized") == 1
 
 
 def test_plan_usage_is_workspace_isolated_and_owner_does_not_bypass_customer_limit() -> (
@@ -10464,6 +10691,23 @@ def test_workspace_app_email_provider_failure_uses_non_200_http_status(
     )
     assert refreshed.status_code == 200
     assert refreshed.json()["generated_emails"][0]["delivery_status"] == "approved"
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        usage = db.scalar(
+            select(UsageCounter).where(
+                UsageCounter.workspace_id == saved_email.workspace_id,
+                UsageCounter.period == month_period(),
+            )
+        )
+        reservations = db.scalars(
+            select(PlanUsageReservation).where(
+                PlanUsageReservation.workspace_id == saved_email.workspace_id,
+                PlanUsageReservation.metric == "email_sends",
+            )
+        ).all()
+        assert usage is None or usage.email_sends == 0
+        assert [row.status for row in reservations] == ["released"]
 
     monkeypatch.setattr(
         "app.api.usage.send_email", lambda **kwargs: {"id": "provider-error-retry-ok"}
@@ -10473,6 +10717,90 @@ def test_workspace_app_email_provider_failure_uses_non_200_http_status(
     )
     assert retry.status_code == 200
     assert retry.json()["email"]["delivery_status"] == "sent"
+    with get_sessionmaker()() as db:
+        saved_email = db.get(EmailMessage, UUID(email["id"]))
+        assert saved_email is not None
+        usage = db.scalar(
+            select(UsageCounter).where(
+                UsageCounter.workspace_id == saved_email.workspace_id,
+                UsageCounter.period == month_period(),
+            )
+        )
+        assert usage is not None
+        assert usage.email_sends == 1
+
+
+def test_workspace_app_non_idempotent_provider_uncertain_failure_consumes_usage(
+    monkeypatch,
+) -> None:
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"usage-uncertain-send-{uuid4()}@example.com",
+    }
+    email = _workspace_app_test_draft(
+        headers, monkeypatch, company_name="Uncertain Send Co"
+    )
+    monkeypatch.setenv("ENCRYPTION_KEY", "test-custom-encryption-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.api.routes.verify_smtp_connection", lambda **kwargs: None)
+    try:
+        sender_setup = client.put(
+            "/api/outreach/sender",
+            headers=headers,
+            json={
+                "provider": "smtp",
+                "sender_name": "Usage Sales",
+                "sender_email": "sales@uncertain-send.example",
+                "reply_to": "reply@uncertain-send.example",
+                "smtp_host": "smtp.uncertain-send.example",
+                "smtp_port": 587,
+                "smtp_username": "smtp-user",
+                "smtp_password": "smtp-pass",
+                "daily_send_limit": 25,
+                "enabled": True,
+            },
+        )
+        assert sender_setup.status_code == 200
+        approved = client.post(
+            f"/api/workspace-app/emails/{email['id']}/approve",
+            headers=headers,
+            json=_exact_email_approval_payload(email, "sales@uncertain-send.example"),
+        )
+        assert approved.status_code == 200
+        monkeypatch.setattr(
+            "app.api.usage.send_email",
+            lambda **kwargs: (_ for _ in ()).throw(
+                EmailProviderRequestError("provider confirmation unknown")
+            ),
+        )
+
+        sent = client.post(
+            f"/api/workspace-app/emails/{email['id']}/send", headers=headers
+        )
+        assert sent.status_code == 502
+        assert "could not be confirmed" in sent.json()["detail"]
+
+        with get_sessionmaker()() as db:
+            saved_email = db.get(EmailMessage, UUID(email["id"]))
+            assert saved_email is not None
+            usage = db.scalar(
+                select(UsageCounter).where(
+                    UsageCounter.workspace_id == saved_email.workspace_id,
+                    UsageCounter.period == month_period(),
+                )
+            )
+            reservations = db.scalars(
+                select(PlanUsageReservation).where(
+                    PlanUsageReservation.workspace_id == saved_email.workspace_id,
+                    PlanUsageReservation.metric == "email_sends",
+                )
+            ).all()
+            assert saved_email.delivery_status == "send_confirmation_pending"
+            assert usage is not None
+            assert usage.email_sends == 1
+            assert [row.status for row in reservations] == ["finalized"]
+    finally:
+        get_settings.cache_clear()
 
 
 def test_workspace_app_email_unexpected_exception_restores_approved_with_audit(
