@@ -21,7 +21,17 @@ from uuid import uuid4
 
 import httpx
 import stripe
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import and_, asc, desc, func, or_, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -31,8 +41,17 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.core.cache import cache_key, delete_key, get_json, set_json
 from app.core.database import get_db, get_sessionmaker
 from app.core.config import get_settings as get_app_settings
-from app.core.observability import capture_provider_exception, set_lead_context, set_workspace_context
-from app.core.security import CurrentUser, OwnerUser, WorkspaceUserContext, authenticated_user_id_from_authorization
+from app.core.observability import (
+    capture_provider_exception,
+    set_lead_context,
+    set_workspace_context,
+)
+from app.core.security import (
+    CurrentUser,
+    OwnerUser,
+    WorkspaceUserContext,
+    authenticated_user_id_from_authorization,
+)
 from app.models.entities import (
     AISalesEmployee,
     AICEOBriefing,
@@ -197,13 +216,33 @@ from app.services.ai import (
     suggest_reply,
     website_audit,
 )
-from app.services.ai_memory import attach_memory_context, memory_context_none, record_email_memory, retrieve_memory
+from app.services.ai_memory import (
+    attach_memory_context,
+    memory_context_none,
+    record_email_memory,
+    retrieve_memory,
+)
 from app.services.continuous_learning import apply_continuous_learning_event
 from app.services.workflow_engine import build_company_workflow_engine
 from app.services.audit import log_event
 from app.services.backups import backup_summary, run_database_backup
-from app.services.billing import UnknownStripePriceError, create_billing_portal_session, create_checkout_session, ensure_subscription_catalog, list_invoices, price_for_plan, subscription_diagnostics_for_customer, subscription_payload
-from app.services.emailer import EmailProviderConfigurationError, EmailProviderRequestError, EmailProviderSendingDisabledError, send_email, verify_smtp_connection
+from app.services.billing import (
+    UnknownStripePriceError,
+    create_billing_portal_session,
+    create_checkout_session,
+    ensure_subscription_catalog,
+    list_invoices,
+    price_for_plan,
+    subscription_diagnostics_for_customer,
+    subscription_payload,
+)
+from app.services.emailer import (
+    EmailProviderConfigurationError,
+    EmailProviderRequestError,
+    EmailProviderSendingDisabledError,
+    send_email,
+    verify_smtp_connection,
+)
 from app.services.entitlements import (
     DEGRADED_DUPLICATE_STATUS,
     UNKNOWN_PRICE_STATUS,
@@ -217,8 +256,18 @@ from app.services.entitlements import (
     workspace_trial_end,
     workspace_trial_is_active,
 )
-from app.services.plan_catalog import PLAN_CATALOG, PLAN_ORDER, normalize_billing_period, plan_limits, public_plan_catalog
-from app.services.plan_enforcement import check_usage_available, increment_usage_after_success, usage_for_workspace
+from app.services.plan_catalog import (
+    PLAN_CATALOG,
+    PLAN_ORDER,
+    normalize_billing_period,
+    plan_limits,
+    public_plan_catalog,
+)
+from app.services.plan_enforcement import (
+    check_usage_available,
+    increment_usage_after_success,
+    usage_for_workspace,
+)
 from app.services.subscription_transitions import (
     SubscriptionTransitionError,
     apply_upgrade_now,
@@ -236,7 +285,10 @@ from app.services.subscription_transitions import (
 )
 from app.services.enrichment_queue import enqueue_autopilot_email_job
 from app.services.secret_box import SecretBoxError, decrypt_secret, encrypt_secret
-from app.services.lead_finder import LeadSourceConfigurationError, LeadSourceRequestError
+from app.services.lead_finder import (
+    LeadSourceConfigurationError,
+    LeadSourceRequestError,
+)
 from app.services.apollo import (
     ApolloConfigurationError,
     ApolloRequestError,
@@ -258,7 +310,12 @@ from app.services.google_maps import (
     google_maps_key_loaded,
     search_google_places,
 )
-from app.services.website import WEBSITE_UNREACHABLE_MESSAGE, WebsiteFetchError, collect_website, normalize_website_url
+from app.services.website import (
+    WEBSITE_UNREACHABLE_MESSAGE,
+    WebsiteFetchError,
+    collect_website,
+    normalize_website_url,
+)
 
 router = APIRouter()
 logger = logging.getLogger("outreachai.api.routes")
@@ -267,6 +324,9 @@ GMAIL_OAUTH_STATE_TTL_SECONDS = 600
 GMAIL_OAUTH_HANDOFF_TTL_SECONDS = 300
 GMAIL_OAUTH_HANDOFF_CLAIM_LOCK = threading.Lock()
 CAMPAIGN_MUTATION_LOCKS: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+SALES_EMPLOYEE_LIMIT_LOCKS: defaultdict[str, threading.Lock] = defaultdict(
+    threading.Lock
+)
 
 
 LEGACY_STATUS_MAP = {
@@ -308,7 +368,10 @@ def _private_workspace_name(email: str = "") -> str:
 
 def _lock_workspace_creation(db: Session, user_id: str) -> None:
     if db.bind and db.bind.dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"workspace:{user_id}"})
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"workspace:{user_id}"},
+        )
 
 
 def _ensure_local_user(db: Session, user_id: str, email: str = "") -> User | None:
@@ -331,21 +394,40 @@ def _ensure_local_user(db: Session, user_id: str, email: str = "") -> User | Non
     return user
 
 
-def _ensure_workspace_owner_member(db: Session, workspace: Workspace, user_id: str, email: str = "") -> None:
-    existing_member = db.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id == workspace.id, WorkspaceMember.user_id == user_id))
+def _ensure_workspace_owner_member(
+    db: Session, workspace: Workspace, user_id: str, email: str = ""
+) -> None:
+    existing_member = db.scalar(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace.id,
+            WorkspaceMember.user_id == user_id,
+        )
+    )
     if existing_member:
         existing_member.email = email or existing_member.email
         existing_member.role = WorkspaceRole.owner
         existing_member.status = "active"
         db.add(existing_member)
     else:
-        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user_id, email=email, role=WorkspaceRole.owner, status="active"))
+        db.add(
+            WorkspaceMember(
+                workspace_id=workspace.id,
+                user_id=user_id,
+                email=email,
+                role=WorkspaceRole.owner,
+                status="active",
+            )
+        )
 
 
 def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
     _lock_workspace_creation(db, user_id)
     _ensure_local_user(db, user_id, email)
-    workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
+    workspace = db.scalar(
+        select(Workspace)
+        .where(Workspace.owner_user_id == user_id)
+        .order_by(Workspace.created_at.asc())
+    )
     if workspace is not None:
         if workspace.name in {"Outreach workspace", "Private workspace"}:
             workspace.name = _private_workspace_name(email)
@@ -366,7 +448,11 @@ def _current_workspace(db: Session, user_id: str, email: str = "") -> Workspace:
         db.refresh(workspace)
     except IntegrityError:
         db.rollback()
-        workspace = db.scalar(select(Workspace).where(Workspace.owner_user_id == user_id).order_by(Workspace.created_at.asc()))
+        workspace = db.scalar(
+            select(Workspace)
+            .where(Workspace.owner_user_id == user_id)
+            .order_by(Workspace.created_at.asc())
+        )
         if workspace is None:
             raise
         _ensure_workspace_owner_member(db, workspace, user_id, email)
@@ -433,7 +519,13 @@ def _workspace_stmt(model, workspace: Workspace, user_id: str):
     return workspace_scope
 
 
-INTERNAL_TEST_DOMAINS = {"example.com", "example.net", "example.org", "test.com", "invalid.test"}
+INTERNAL_TEST_DOMAINS = {
+    "example.com",
+    "example.net",
+    "example.org",
+    "test.com",
+    "invalid.test",
+}
 INTERNAL_TEST_NAME_PREFIXES = ("qa ", "qa-", "qa_", "premium test", "test ", "demo ")
 
 
@@ -488,13 +580,18 @@ def _customer_visible_email_predicate() -> Any:
     predicates = []
     for key in ("to_email", "recipient_email", "email"):
         value = func.lower(func.coalesce(EmailMessage.tags[key].as_string(), ""))
-        predicates.extend(~value.like(f"%@{domain}") for domain in INTERNAL_TEST_DOMAINS)
+        predicates.extend(
+            ~value.like(f"%@{domain}") for domain in INTERNAL_TEST_DOMAINS
+        )
     return and_(*predicates)
 
 
 def _is_customer_visible_campaign(campaign: Campaign) -> bool:
     name = (campaign.name or "").strip().lower()
-    return not any(name.startswith(prefix) for prefix in ("qa campaign", "test campaign", "demo campaign"))
+    return not any(
+        name.startswith(prefix)
+        for prefix in ("qa campaign", "test campaign", "demo campaign")
+    )
 
 
 def _ensure_default_trial(settings: AppSettings, workspace: Workspace) -> bool:
@@ -530,7 +627,9 @@ def _parse_billing_datetime(value: Any) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(
+            tzinfo=None
+        )
     except ValueError:
         return None
 
@@ -544,12 +643,22 @@ def _fit_db_text(value: str | None, max_length: int) -> str | None:
     return text[: max_length - 1].rstrip() + "…"
 
 
-def _settings_for_workspace(db: Session, user_id: str, workspace: Workspace) -> AppSettings:
-    settings = db.scalar(select(AppSettings).where(AppSettings.workspace_id == workspace.id))
+def _settings_for_workspace(
+    db: Session, user_id: str, workspace: Workspace
+) -> AppSettings:
+    settings = db.scalar(
+        select(AppSettings).where(AppSettings.workspace_id == workspace.id)
+    )
     if settings is None:
-        settings = db.scalar(select(AppSettings).where(AppSettings.user_id == user_id, AppSettings.workspace_id.is_(None)))
+        settings = db.scalar(
+            select(AppSettings).where(
+                AppSettings.user_id == user_id, AppSettings.workspace_id.is_(None)
+            )
+        )
     if settings is None:
-        settings = AppSettings(user_id=user_id, workspace_id=workspace.id, **_default_settings())
+        settings = AppSettings(
+            user_id=user_id, workspace_id=workspace.id, **_default_settings()
+        )
         _ensure_default_trial(settings, workspace)
         db.add(settings)
         db.commit()
@@ -588,7 +697,10 @@ def _extract_email(value: str | None) -> str:
 
 
 def _google_oauth_redirect_uri(settings) -> str:
-    return settings.google_oauth_redirect_uri.strip() or f"{settings.public_api_url.rstrip('/')}/api/outreach/oauth/gmail/callback"
+    return (
+        settings.google_oauth_redirect_uri.strip()
+        or f"{settings.public_api_url.rstrip('/')}/api/outreach/oauth/gmail/callback"
+    )
 
 
 def _oauth_nonce_hash(nonce: str, secret_key: str) -> str:
@@ -618,15 +730,29 @@ def _pruned_oauth_states(states: dict[str, Any], now: datetime) -> dict[str, Any
         used_at = _parse_oauth_created_at(value.get("used_at"))
         if used_at:
             continue
-        if created_at and now - created_at <= timedelta(seconds=GMAIL_OAUTH_STATE_TTL_SECONDS):
+        if created_at and now - created_at <= timedelta(
+            seconds=GMAIL_OAUTH_STATE_TTL_SECONDS
+        ):
             pruned[str(key)] = value
     return pruned
 
 
-def _store_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: str, workspace_id: UUID, nonce: str, created_at: datetime) -> None:
+def _store_gmail_oauth_state(
+    db: Session,
+    *,
+    settings: AppSettings,
+    user_id: str,
+    workspace_id: UUID,
+    nonce: str,
+    created_at: datetime,
+) -> None:
     app_settings = get_app_settings()
     security_settings = settings.security if isinstance(settings.security, dict) else {}
-    states = security_settings.get("gmail_oauth_states") if isinstance(security_settings.get("gmail_oauth_states"), dict) else {}
+    states = (
+        security_settings.get("gmail_oauth_states")
+        if isinstance(security_settings.get("gmail_oauth_states"), dict)
+        else {}
+    )
     states = _pruned_oauth_states(states, created_at)
     states[_oauth_nonce_hash(nonce, app_settings.encryption_key)] = {
         "user_id": user_id,
@@ -639,21 +765,38 @@ def _store_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: str
     db.commit()
 
 
-def _consume_gmail_oauth_state(db: Session, *, settings: AppSettings, user_id: str, workspace_id: UUID, nonce: str, created_at: datetime) -> str:
+def _consume_gmail_oauth_state(
+    db: Session,
+    *,
+    settings: AppSettings,
+    user_id: str,
+    workspace_id: UUID,
+    nonce: str,
+    created_at: datetime,
+) -> str:
     app_settings = get_app_settings()
     now = datetime.utcnow()
     if now - created_at > timedelta(seconds=GMAIL_OAUTH_STATE_TTL_SECONDS):
         return "state_expired"
     security_settings = settings.security if isinstance(settings.security, dict) else {}
-    states = security_settings.get("gmail_oauth_states") if isinstance(security_settings.get("gmail_oauth_states"), dict) else {}
+    states = (
+        security_settings.get("gmail_oauth_states")
+        if isinstance(security_settings.get("gmail_oauth_states"), dict)
+        else {}
+    )
     nonce_key = _oauth_nonce_hash(nonce, app_settings.encryption_key)
     state_record = states.get(nonce_key)
     if not isinstance(state_record, dict):
         return "state_replayed"
-    if str(state_record.get("user_id") or "") != user_id or str(state_record.get("workspace_id") or "") != str(workspace_id):
+    if str(state_record.get("user_id") or "") != user_id or str(
+        state_record.get("workspace_id") or ""
+    ) != str(workspace_id):
         return "invalid_state"
     stored_created_at = _parse_oauth_created_at(state_record.get("created_at"))
-    if not stored_created_at or abs((stored_created_at - created_at).total_seconds()) > 1:
+    if (
+        not stored_created_at
+        or abs((stored_created_at - created_at).total_seconds()) > 1
+    ):
         return "invalid_state"
 
     states = _pruned_oauth_states(states, now)
@@ -672,12 +815,22 @@ def _pruned_oauth_handoffs(handoffs: dict[str, Any], now: datetime) -> dict[str,
         if not isinstance(value, dict):
             continue
         created_at = _parse_oauth_created_at(value.get("created_at"))
-        if created_at and now - created_at <= timedelta(seconds=GMAIL_OAUTH_HANDOFF_TTL_SECONDS):
+        if created_at and now - created_at <= timedelta(
+            seconds=GMAIL_OAUTH_HANDOFF_TTL_SECONDS
+        ):
             pruned[str(key)] = value
     return pruned
 
 
-def _store_pending_gmail_oauth_handoff(db: Session, *, settings: AppSettings, user_id: str, workspace_id: UUID, code: str, created_at: datetime) -> str:
+def _store_pending_gmail_oauth_handoff(
+    db: Session,
+    *,
+    settings: AppSettings,
+    user_id: str,
+    workspace_id: UUID,
+    code: str,
+    created_at: datetime,
+) -> str:
     app_settings = get_app_settings()
     handoff_id = secrets.token_urlsafe(32)
     try:
@@ -685,7 +838,11 @@ def _store_pending_gmail_oauth_handoff(db: Session, *, settings: AppSettings, us
     except SecretBoxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     security_settings = settings.security if isinstance(settings.security, dict) else {}
-    handoffs = security_settings.get("gmail_oauth_pending_handoffs") if isinstance(security_settings.get("gmail_oauth_pending_handoffs"), dict) else {}
+    handoffs = (
+        security_settings.get("gmail_oauth_pending_handoffs")
+        if isinstance(security_settings.get("gmail_oauth_pending_handoffs"), dict)
+        else {}
+    )
     handoffs = _pruned_oauth_handoffs(handoffs, created_at)
     handoffs[_oauth_nonce_hash(handoff_id, app_settings.encryption_key)] = {
         "user_id": user_id,
@@ -700,19 +857,31 @@ def _store_pending_gmail_oauth_handoff(db: Session, *, settings: AppSettings, us
     return handoff_id
 
 
-def _claim_pending_gmail_oauth_handoff(db: Session, *, handoff_id: str, user_id: str) -> tuple[AppSettings | None, dict[str, Any] | None, str]:
+def _claim_pending_gmail_oauth_handoff(
+    db: Session, *, handoff_id: str, user_id: str
+) -> tuple[AppSettings | None, dict[str, Any] | None, str]:
     now = datetime.utcnow()
     app_settings = get_app_settings()
     handoff_key = _oauth_nonce_hash(handoff_id, app_settings.encryption_key)
-    app_settings_rows = db.execute(select(AppSettings).with_for_update()).scalars().all()
+    app_settings_rows = (
+        db.execute(select(AppSettings).with_for_update()).scalars().all()
+    )
     for settings in app_settings_rows:
-        security_settings = settings.security if isinstance(settings.security, dict) else {}
-        handoffs = security_settings.get("gmail_oauth_pending_handoffs") if isinstance(security_settings.get("gmail_oauth_pending_handoffs"), dict) else {}
+        security_settings = (
+            settings.security if isinstance(settings.security, dict) else {}
+        )
+        handoffs = (
+            security_settings.get("gmail_oauth_pending_handoffs")
+            if isinstance(security_settings.get("gmail_oauth_pending_handoffs"), dict)
+            else {}
+        )
         handoff = handoffs.get(handoff_key)
         if not isinstance(handoff, dict):
             continue
         created_at = _parse_oauth_created_at(handoff.get("created_at"))
-        if not created_at or now - created_at > timedelta(seconds=GMAIL_OAUTH_HANDOFF_TTL_SECONDS):
+        if not created_at or now - created_at > timedelta(
+            seconds=GMAIL_OAUTH_HANDOFF_TTL_SECONDS
+        ):
             handoffs = _pruned_oauth_handoffs(handoffs, now)
             handoffs.pop(handoff_key, None)
             security_settings["gmail_oauth_pending_handoffs"] = handoffs
@@ -734,7 +903,9 @@ def _claim_pending_gmail_oauth_handoff(db: Session, *, handoff_id: str, user_id:
     return None, None, "handoff_replayed"
 
 
-def _exchange_gmail_oauth_code(code: str, app_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+def _exchange_gmail_oauth_code(
+    code: str, app_settings: Any
+) -> tuple[dict[str, Any], dict[str, Any]]:
     with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
         token_response = client.post(
             GOOGLE_OAUTH_TOKEN_URL,
@@ -749,7 +920,9 @@ def _exchange_gmail_oauth_code(code: str, app_settings: Any) -> tuple[dict[str, 
         token_response.raise_for_status()
         token_data = token_response.json()
         access_token = str(token_data.get("access_token") or "")
-        userinfo_response = client.get(GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
+        userinfo_response = client.get(
+            GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"}
+        )
         userinfo_response.raise_for_status()
         return token_data, userinfo_response.json()
 
@@ -771,7 +944,11 @@ def _persist_gmail_oauth_sender(
     if not email or not refresh_token:
         raise HTTPException(status_code=409, detail="missing_refresh")
     allowed_test_users = app_settings.google_oauth_test_users
-    if app_settings.app_env != "production" and allowed_test_users and email.lower() not in allowed_test_users:
+    if (
+        app_settings.app_env != "production"
+        and allowed_test_users
+        and email.lower() not in allowed_test_users
+    ):
         raise HTTPException(status_code=409, detail="test_user_required")
     try:
         encrypted_refresh = encrypt_secret(refresh_token, app_settings.encryption_key)
@@ -781,12 +958,19 @@ def _persist_gmail_oauth_sender(
     email_settings = settings.email if isinstance(settings.email, dict) else {}
     current_sender = _sender_settings(settings)
     email_settings["sender"] = {
-        **(email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}),
+        **(
+            email_settings.get("sender")
+            if isinstance(email_settings.get("sender"), dict)
+            else {}
+        ),
         "provider": "gmail",
-        "sender_name": current_sender["sender_name"] or str(userinfo.get("name") or "").strip(),
+        "sender_name": current_sender["sender_name"]
+        or str(userinfo.get("name") or "").strip(),
         "sender_email": email,
         "reply_to": email,
-        "daily_send_limit": max(1, min(int(current_sender["daily_send_limit"] or 25), 200)),
+        "daily_send_limit": max(
+            1, min(int(current_sender["daily_send_limit"] or 25), 200)
+        ),
         "enabled": True,
         "smtp": current_sender["smtp"],
         "oauth": {
@@ -801,14 +985,28 @@ def _persist_gmail_oauth_sender(
     settings.email = email_settings
     flag_modified(settings, "email")
     db.add(settings)
-    log_event(db, request, user_id, "outreach.gmail.connected", {"workspace_id": str(workspace.id), "sender_email": email, "scopes": email_settings["sender"]["oauth"]["scopes"]})
+    log_event(
+        db,
+        request,
+        user_id,
+        "outreach.gmail.connected",
+        {
+            "workspace_id": str(workspace.id),
+            "sender_email": email,
+            "scopes": email_settings["sender"]["oauth"]["scopes"],
+        },
+    )
     db.commit()
     return _outreach_sender_status(db, user_id, workspace)
 
 
-def _gmail_oauth_complete_redirect(app_settings: Any, handoff_id: str) -> RedirectResponse:
+def _gmail_oauth_complete_redirect(
+    app_settings: Any, handoff_id: str
+) -> RedirectResponse:
     params = urlencode({"handoff": handoff_id})
-    return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings/gmail-oauth/complete?{params}")
+    return RedirectResponse(
+        f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings/gmail-oauth/complete?{params}"
+    )
 
 
 def _google_oauth_start_status(settings) -> tuple[bool, str, str]:
@@ -825,13 +1023,38 @@ def _google_oauth_start_status(settings) -> tuple[bool, str, str]:
 
 def _classify_reply(text: str) -> str:
     lower = text.lower()
-    if any(item in lower for item in ["unsubscribe", "remove me", "stop emailing", "отпис", "abbestellen"]):
+    if any(
+        item in lower
+        for item in [
+            "unsubscribe",
+            "remove me",
+            "stop emailing",
+            "отпис",
+            "abbestellen",
+        ]
+    ):
         return "отписка"
-    if any(item in lower for item in ["not interested", "no thanks", "не интересно", "kein interesse"]):
+    if any(
+        item in lower
+        for item in ["not interested", "no thanks", "не интересно", "kein interesse"]
+    ):
         return "не заинтересован"
-    if any(item in lower for item in ["later", "not now", "next quarter", "не сейчас", "später"]):
+    if any(
+        item in lower
+        for item in ["later", "not now", "next quarter", "не сейчас", "später"]
+    ):
         return "не сейчас"
-    if any(item in lower for item in ["interested", "tell me more", "let's talk", "demo", "заинтерес", "interessiert"]):
+    if any(
+        item in lower
+        for item in [
+            "interested",
+            "tell me more",
+            "let's talk",
+            "demo",
+            "заинтерес",
+            "interessiert",
+        ]
+    ):
         return "заинтересован"
     return "не определено"
 
@@ -841,7 +1064,9 @@ def _gmail_access_token_from_sender(sender: dict[str, Any]) -> str:
     oauth = sender.get("oauth") if isinstance(sender.get("oauth"), dict) else {}
     encrypted = str(oauth.get("refresh_token_encrypted") or "").strip()
     if not encrypted:
-        raise HTTPException(status_code=409, detail="Connect Gmail before syncing replies.")
+        raise HTTPException(
+            status_code=409, detail="Connect Gmail before syncing replies."
+        )
     try:
         refresh_token = decrypt_secret(encrypted, app_settings.encryption_key)
     except SecretBoxError as exc:
@@ -860,10 +1085,14 @@ def _gmail_access_token_from_sender(sender: dict[str, Any]) -> str:
             response.raise_for_status()
             data = response.json()
     except Exception as exc:
-        raise HTTPException(status_code=409, detail="Gmail reply sync could not refresh OAuth access.") from exc
+        raise HTTPException(
+            status_code=409, detail="Gmail reply sync could not refresh OAuth access."
+        ) from exc
     token = str(data.get("access_token") or "").strip()
     if not token:
-        raise HTTPException(status_code=409, detail="Gmail did not return an access token.")
+        raise HTTPException(
+            status_code=409, detail="Gmail did not return an access token."
+        )
     return token
 
 
@@ -876,11 +1105,17 @@ def _email_domain(value: str | None) -> str:
 
 def _sender_settings(settings: AppSettings) -> dict[str, Any]:
     email_settings = settings.email if isinstance(settings.email, dict) else {}
-    sender = email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}
+    sender = (
+        email_settings.get("sender")
+        if isinstance(email_settings.get("sender"), dict)
+        else {}
+    )
     smtp = sender.get("smtp") if isinstance(sender.get("smtp"), dict) else {}
     oauth = sender.get("oauth") if isinstance(sender.get("oauth"), dict) else {}
     try:
-        daily_send_limit = int(sender.get("daily_send_limit") or email_settings.get("dailyLimit") or 25)
+        daily_send_limit = int(
+            sender.get("daily_send_limit") or email_settings.get("dailyLimit") or 25
+        )
     except (TypeError, ValueError):
         daily_send_limit = 25
     try:
@@ -888,11 +1123,23 @@ def _sender_settings(settings: AppSettings) -> dict[str, Any]:
     except (TypeError, ValueError):
         smtp_port = 587
     enabled_value = sender.get("enabled", True)
-    enabled = enabled_value if isinstance(enabled_value, bool) else str(enabled_value).strip().lower() not in {"false", "0", "no", "off"}
+    enabled = (
+        enabled_value
+        if isinstance(enabled_value, bool)
+        else str(enabled_value).strip().lower() not in {"false", "0", "no", "off"}
+    )
     return {
-        "provider": str(sender.get("provider") or email_settings.get("provider") or "resend").strip().lower(),
-        "sender_name": str(sender.get("sender_name") or sender.get("name") or "").strip(),
-        "sender_email": _extract_email(str(sender.get("sender_email") or sender.get("email") or "")),
+        "provider": str(
+            sender.get("provider") or email_settings.get("provider") or "resend"
+        )
+        .strip()
+        .lower(),
+        "sender_name": str(
+            sender.get("sender_name") or sender.get("name") or ""
+        ).strip(),
+        "sender_email": _extract_email(
+            str(sender.get("sender_email") or sender.get("email") or "")
+        ),
         "reply_to": _extract_email(str(sender.get("reply_to") or "")),
         "daily_send_limit": daily_send_limit,
         "enabled": enabled,
@@ -906,8 +1153,12 @@ def _sender_settings(settings: AppSettings) -> dict[str, Any]:
         },
         "oauth": {
             "provider": str(oauth.get("provider") or "").strip().lower(),
-            "refresh_token_encrypted": str(oauth.get("refresh_token_encrypted") or "").strip(),
-            "scopes": oauth.get("scopes") if isinstance(oauth.get("scopes"), list) else [],
+            "refresh_token_encrypted": str(
+                oauth.get("refresh_token_encrypted") or ""
+            ).strip(),
+            "scopes": oauth.get("scopes")
+            if isinstance(oauth.get("scopes"), list)
+            else [],
             "verified_at": str(oauth.get("verified_at") or "").strip(),
             "google_subject": str(oauth.get("google_subject") or "").strip(),
         },
@@ -921,7 +1172,9 @@ def _sent_today_count(db: Session, workspace: Workspace) -> int:
         db.scalar(
             select(func.count())
             .select_from(EmailMessage)
-            .where(EmailMessage.workspace_id == workspace.id, EmailMessage.sent_at >= today)
+            .where(
+                EmailMessage.workspace_id == workspace.id, EmailMessage.sent_at >= today
+            )
         )
         or 0
     )
@@ -929,21 +1182,45 @@ def _sent_today_count(db: Session, workspace: Workspace) -> int:
 
 def _domain_auth_status(domain: str) -> dict[str, str]:
     if not domain:
-        return {"spf_status": "not_checked", "dkim_status": "not_checked", "dmarc_status": "not_checked"}
+        return {
+            "spf_status": "not_checked",
+            "dkim_status": "not_checked",
+            "dmarc_status": "not_checked",
+        }
     try:
         import dns.resolver  # type: ignore
     except Exception:
-        return {"spf_status": "not_checked", "dkim_status": "not_checked", "dmarc_status": "not_checked"}
+        return {
+            "spf_status": "not_checked",
+            "dkim_status": "not_checked",
+            "dmarc_status": "not_checked",
+        }
 
     def txt_records(name: str) -> list[str]:
         try:
             answers = dns.resolver.resolve(name, "TXT", lifetime=3.0)
-            return ["".join(part.decode("utf-8", "ignore") if isinstance(part, bytes) else str(part) for part in answer.strings) for answer in answers]
+            return [
+                "".join(
+                    part.decode("utf-8", "ignore")
+                    if isinstance(part, bytes)
+                    else str(part)
+                    for part in answer.strings
+                )
+                for answer in answers
+            ]
         except Exception:
             return []
 
-    spf = "verified" if any("v=spf1" in item.lower() for item in txt_records(domain)) else "missing"
-    dmarc = "verified" if any("v=dmarc1" in item.lower() for item in txt_records(f"_dmarc.{domain}")) else "missing"
+    spf = (
+        "verified"
+        if any("v=spf1" in item.lower() for item in txt_records(domain))
+        else "missing"
+    )
+    dmarc = (
+        "verified"
+        if any("v=dmarc1" in item.lower() for item in txt_records(f"_dmarc.{domain}"))
+        else "missing"
+    )
     dkim = "not_checked"
     for selector in ("resend", "default", "google", "selector1", "selector2"):
         if txt_records(f"{selector}._domainkey.{domain}"):
@@ -952,23 +1229,43 @@ def _domain_auth_status(domain: str) -> dict[str, str]:
     return {"spf_status": spf, "dkim_status": dkim, "dmarc_status": dmarc}
 
 
-def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> OutreachSenderStatusOut:
+def _outreach_sender_status(
+    db: Session, user_id: str, workspace: Workspace
+) -> OutreachSenderStatusOut:
     settings = _settings_for_workspace(db, user_id, workspace)
     sender = _sender_settings(settings)
     app_settings = get_app_settings()
-    provider = sender["provider"] if sender["provider"] in SUPPORTED_OUTREACH_PROVIDERS else "resend"
-    configured_sender = sender["sender_email"] or (_extract_email(app_settings.resend_from_email) if provider == "resend" else "")
+    provider = (
+        sender["provider"]
+        if sender["provider"] in SUPPORTED_OUTREACH_PROVIDERS
+        else "resend"
+    )
+    configured_sender = sender["sender_email"] or (
+        _extract_email(app_settings.resend_from_email) if provider == "resend" else ""
+    )
     daily_limit = max(1, min(int(sender["daily_send_limit"] or 25), 200))
     sent_today = _sent_today_count(db, workspace)
     remaining_today = max(0, daily_limit - sent_today)
     domain_checks = _domain_auth_status(_email_domain(configured_sender))
     smtp = sender["smtp"]
-    smtp_configured = bool(smtp["host"] and smtp["username"] and smtp["password_encrypted"] and smtp["verified_at"])
+    smtp_configured = bool(
+        smtp["host"]
+        and smtp["username"]
+        and smtp["password_encrypted"]
+        and smtp["verified_at"]
+    )
     oauth = sender["oauth"]
     oauth_provider = oauth["provider"] if oauth["provider"] in {"gmail"} else ""
-    oauth_connected = bool(oauth_provider == "gmail" and configured_sender and oauth["refresh_token_encrypted"] and oauth["verified_at"])
+    oauth_connected = bool(
+        oauth_provider == "gmail"
+        and configured_sender
+        and oauth["refresh_token_encrypted"]
+        and oauth["verified_at"]
+    )
     oauth_status = "connected" if oauth_connected else "not_connected"
-    oauth_start_ready, oauth_start_status, oauth_start_reason = _google_oauth_start_status(app_settings)
+    oauth_start_ready, oauth_start_status, oauth_start_reason = (
+        _google_oauth_start_status(app_settings)
+    )
 
     reason = ""
     connected = True
@@ -979,7 +1276,9 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         status = "needs_setup"
         reason = "Email sending is disabled for this workspace."
         next_action = "Enable sending when your mailbox is ready."
-    elif provider == "resend" and (not app_settings.resend_api_key or not app_settings.resend_from_email.strip()):
+    elif provider == "resend" and (
+        not app_settings.resend_api_key or not app_settings.resend_from_email.strip()
+    ):
         connected = False
         status = "missing_key"
         reason = "Production email sending is not configured on the server."
@@ -994,10 +1293,15 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         status = "needs_setup"
         reason = "SMTP setup must be saved and verified before sending."
         next_action = "Save SMTP settings to verify the mailbox connection."
-    elif provider == "smtp" and app_settings.encryption_key == "replace-with-32-byte-url-safe-key":
+    elif (
+        provider == "smtp"
+        and app_settings.encryption_key == "replace-with-32-byte-url-safe-key"
+    ):
         connected = False
         status = "needs_setup"
-        reason = "A custom encryption key is required before storing mailbox credentials."
+        reason = (
+            "A custom encryption key is required before storing mailbox credentials."
+        )
         next_action = "Finish secure SMTP setup before sending."
     elif provider == "gmail" and oauth_connected:
         next_action = "Ready to send through the connected Gmail mailbox."
@@ -1029,7 +1333,9 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         sender_name=sender["sender_name"],
         sender_email=configured_sender or None,
         mailbox=configured_sender or None,
-        reply_to=sender["reply_to"] or _extract_email(app_settings.resend_reply_to) or None,
+        reply_to=sender["reply_to"]
+        or _extract_email(app_settings.resend_reply_to)
+        or None,
         daily_send_limit=daily_limit,
         sent_today=sent_today,
         remaining_today=remaining_today,
@@ -1038,7 +1344,9 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
         oauth_status=oauth_status,
         oauth_mailbox=configured_sender if oauth_connected else None,
         oauth_connected_at=oauth["verified_at"] if oauth_connected else "",
-        oauth_scopes=[str(item) for item in oauth["scopes"] if isinstance(item, str)] if oauth_connected else [],
+        oauth_scopes=[str(item) for item in oauth["scopes"] if isinstance(item, str)]
+        if oauth_connected
+        else [],
         oauth_start_ready=oauth_start_ready,
         oauth_start_status=oauth_start_status,
         oauth_start_reason=oauth_start_reason,
@@ -1053,14 +1361,18 @@ def _outreach_sender_status(db: Session, user_id: str, workspace: Workspace) -> 
     )
 
 
-def _require_outreach_sender_ready(db: Session, user_id: str, workspace: Workspace) -> OutreachSenderStatusOut:
+def _require_outreach_sender_ready(
+    db: Session, user_id: str, workspace: Workspace
+) -> OutreachSenderStatusOut:
     status = _outreach_sender_status(db, user_id, workspace)
     if not status.connected:
         raise HTTPException(status_code=409, detail=status.reason or status.next_action)
     return status
 
 
-def _outreach_sender_runtime_config(db: Session, user_id: str, workspace: Workspace) -> tuple[OutreachSenderStatusOut, dict[str, Any] | None]:
+def _outreach_sender_runtime_config(
+    db: Session, user_id: str, workspace: Workspace
+) -> tuple[OutreachSenderStatusOut, dict[str, Any] | None]:
     status = _require_outreach_sender_ready(db, user_id, workspace)
     if status.provider not in {"smtp", "gmail"}:
         return status, None
@@ -1069,7 +1381,9 @@ def _outreach_sender_runtime_config(db: Session, user_id: str, workspace: Worksp
     if status.provider == "gmail":
         oauth = sender["oauth"]
         try:
-            refresh_token = decrypt_secret(oauth["refresh_token_encrypted"], get_app_settings().encryption_key)
+            refresh_token = decrypt_secret(
+                oauth["refresh_token_encrypted"], get_app_settings().encryption_key
+            )
         except SecretBoxError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         app_settings = get_app_settings()
@@ -1080,7 +1394,9 @@ def _outreach_sender_runtime_config(db: Session, user_id: str, workspace: Worksp
         }
     smtp = sender["smtp"]
     try:
-        password = decrypt_secret(smtp["password_encrypted"], get_app_settings().encryption_key)
+        password = decrypt_secret(
+            smtp["password_encrypted"], get_app_settings().encryption_key
+        )
     except SecretBoxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return status, {
@@ -1112,16 +1428,22 @@ def _workspace_user_emails(db: Session, user_id: str, workspace: Workspace) -> s
     return emails
 
 
-def _active_test_entitlement(db: Session, user_id: str, workspace: Workspace) -> TestEntitlement | None:
+def _active_test_entitlement(
+    db: Session, user_id: str, workspace: Workspace
+) -> TestEntitlement | None:
     return active_test_entitlement(db, user_id, workspace)
 
 
-def _resolve_billing_entitlement(db: Session, user_id: str, workspace: Workspace) -> BillingEntitlement:
+def _resolve_billing_entitlement(
+    db: Session, user_id: str, workspace: Workspace
+) -> BillingEntitlement:
     _settings_for_workspace(db, user_id, workspace)
     return resolve_billing_entitlement(db, user_id, workspace)
 
 
-def _active_stripe_subscriptions(db: Session, workspace: Workspace) -> list[Subscription]:
+def _active_stripe_subscriptions(
+    db: Session, workspace: Workspace
+) -> list[Subscription]:
     entitlement = canonical_billing_entitlement(db, workspace.owner_user_id, workspace)
     if entitlement.source == DEGRADED_DUPLICATE_STATUS:
         return list(entitlement.duplicate_subscriptions)
@@ -1135,8 +1457,12 @@ def _stripe_id_suffix(value: str | None) -> str:
     return text_value[-8:] if text_value else ""
 
 
-def _billing_duplicate_diagnostics(subscription_rows: list[Subscription]) -> tuple[list[Subscription], list[dict[str, Any]]]:
-    active_rows = [row for row in subscription_rows if row.status in {"active", "trialing"}]
+def _billing_duplicate_diagnostics(
+    subscription_rows: list[Subscription],
+) -> tuple[list[Subscription], list[dict[str, Any]]]:
+    active_rows = [
+        row for row in subscription_rows if row.status in {"active", "trialing"}
+    ]
     buckets: dict[tuple[str, str], list[Subscription]] = {}
     canonical_rows: list[Subscription] = []
     diagnostics: list[dict[str, Any]] = []
@@ -1147,7 +1473,13 @@ def _billing_duplicate_diagnostics(subscription_rows: list[Subscription]) -> tup
             continue
         buckets.setdefault(key, []).append(row)
     for (workspace_id, customer_id), rows in buckets.items():
-        sorted_rows = sorted(rows, key=lambda item: (item.trial_end or item.current_period_end or datetime.max, item.stripe_subscription_id or ""))
+        sorted_rows = sorted(
+            rows,
+            key=lambda item: (
+                item.trial_end or item.current_period_end or datetime.max,
+                item.stripe_subscription_id or "",
+            ),
+        )
         canonical_rows.append(sorted_rows[0])
         if len(sorted_rows) > 1:
             diagnostics.append(
@@ -1155,7 +1487,10 @@ def _billing_duplicate_diagnostics(subscription_rows: list[Subscription]) -> tup
                     "workspace_id": workspace_id,
                     "stripe_customer_suffix": _stripe_id_suffix(customer_id),
                     "active_or_trialing_count": len(sorted_rows),
-                    "subscription_suffixes": [_stripe_id_suffix(item.stripe_subscription_id) for item in sorted_rows],
+                    "subscription_suffixes": [
+                        _stripe_id_suffix(item.stripe_subscription_id)
+                        for item in sorted_rows
+                    ],
                     "statuses": sorted({item.status for item in sorted_rows}),
                 }
             )
@@ -1164,17 +1499,30 @@ def _billing_duplicate_diagnostics(subscription_rows: list[Subscription]) -> tup
 
 def _lock_billing_checkout(db: Session, workspace_id: UUID, user_id: str) -> None:
     if db.bind and db.bind.dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"billing-checkout:{workspace_id}:{user_id}"})
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"billing-checkout:{workspace_id}:{user_id}"},
+        )
 
 
-def _lock_billing_transition(db: Session, workspace_id: UUID, subscription_id: str) -> None:
+def _lock_billing_transition(
+    db: Session, workspace_id: UUID, subscription_id: str
+) -> None:
     if db.bind and db.bind.dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"billing-transition:{workspace_id}:{subscription_id}"})
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"billing-transition:{workspace_id}:{subscription_id}"},
+        )
 
 
-def _lock_campaign_mutation(db: Session, workspace_id: UUID, user_id: str) -> threading.Lock | None:
+def _lock_campaign_mutation(
+    db: Session, workspace_id: UUID, user_id: str
+) -> threading.Lock | None:
     if db.bind and db.bind.dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"campaign:{workspace_id}:{user_id}"})
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"campaign:{workspace_id}:{user_id}"},
+        )
         return None
     lock = CAMPAIGN_MUTATION_LOCKS[f"{workspace_id}:{user_id}"]
     lock.acquire()
@@ -1185,12 +1533,20 @@ def _checkout_period(value: str | None = None) -> str:
     return normalize_billing_period(value)
 
 
-def _checkout_idempotency_key(workspace_id: UUID, user_id: str, plan: str, billing_period: str, lifecycle_sequence: int) -> str:
+def _checkout_idempotency_key(
+    workspace_id: UUID,
+    user_id: str,
+    plan: str,
+    billing_period: str,
+    lifecycle_sequence: int,
+) -> str:
     raw = f"{workspace_id}:{user_id}:{plan}:{billing_period}:{lifecycle_sequence}"
     return "checkout_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:48]
 
 
-def _next_checkout_lifecycle_sequence(db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str) -> int:
+def _next_checkout_lifecycle_sequence(
+    db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str
+) -> int:
     existing_count = db.scalar(
         select(func.count())
         .select_from(BillingCheckoutSession)
@@ -1204,7 +1560,9 @@ def _next_checkout_lifecycle_sequence(db: Session, workspace_id: UUID, user_id: 
     return int(existing_count or 0) + 1
 
 
-def _expire_stale_checkout_sessions(db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str) -> None:
+def _expire_stale_checkout_sessions(
+    db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str
+) -> None:
     now = datetime.utcnow()
     stale = list(
         db.scalars(
@@ -1224,7 +1582,9 @@ def _expire_stale_checkout_sessions(db: Session, workspace_id: UUID, user_id: st
         db.add(session)
 
 
-def _open_checkout_session(db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str) -> BillingCheckoutSession | None:
+def _open_checkout_session(
+    db: Session, workspace_id: UUID, user_id: str, plan: str, billing_period: str
+) -> BillingCheckoutSession | None:
     now = datetime.utcnow()
     return db.scalar(
         select(BillingCheckoutSession)
@@ -1244,16 +1604,26 @@ def _plan_for_workspace(db: Session, user_id: str, workspace: Workspace) -> str:
     return _resolve_billing_entitlement(db, user_id, workspace).plan
 
 
-def _limits_for_workspace(db: Session, user_id: str, workspace: Workspace) -> dict[str, Any]:
+def _limits_for_workspace(
+    db: Session, user_id: str, workspace: Workspace
+) -> dict[str, Any]:
     return _resolve_billing_entitlement(db, user_id, workspace).limits
 
 
-def _subscription_status_for_workspace(db: Session, workspace: Workspace, user_id: str | None = None) -> str:
-    return _resolve_billing_entitlement(db, user_id or workspace.owner_user_id, workspace).status
+def _subscription_status_for_workspace(
+    db: Session, workspace: Workspace, user_id: str | None = None
+) -> str:
+    return _resolve_billing_entitlement(
+        db, user_id or workspace.owner_user_id, workspace
+    ).status
 
 
-def _has_active_subscription(db: Session, workspace: Workspace, user_id: str | None = None) -> bool:
-    return _resolve_billing_entitlement(db, user_id or workspace.owner_user_id, workspace).active
+def _has_active_subscription(
+    db: Session, workspace: Workspace, user_id: str | None = None
+) -> bool:
+    return _resolve_billing_entitlement(
+        db, user_id or workspace.owner_user_id, workspace
+    ).active
 
 
 def _latest_subscription(db: Session, workspace: Workspace) -> Subscription | None:
@@ -1292,12 +1662,26 @@ def _sync_workspace_subscription(
         plan = "Unknown"
         status = UNKNOWN_PRICE_STATUS
     user = _user_for_subscription(db, user_id)
-    subscription = db.scalar(select(Subscription).where(Subscription.stripe_subscription_id == stripe_subscription_id))
+    subscription = db.scalar(
+        select(Subscription).where(
+            Subscription.stripe_subscription_id == stripe_subscription_id
+        )
+    )
     if subscription is not None:
         if subscription.workspace_id and subscription.workspace_id != workspace.id:
-            raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different workspace.")
-        if subscription.stripe_customer_id and stripe_customer_id and subscription.stripe_customer_id != stripe_customer_id:
-            raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different customer.")
+            raise HTTPException(
+                status_code=403,
+                detail="Stripe subscription belongs to a different workspace.",
+            )
+        if (
+            subscription.stripe_customer_id
+            and stripe_customer_id
+            and subscription.stripe_customer_id != stripe_customer_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Stripe subscription belongs to a different customer.",
+            )
     if subscription is None:
         subscription = Subscription(user_id=user.id, workspace_id=workspace.id)
         db.add(subscription)
@@ -1309,7 +1693,9 @@ def _sync_workspace_subscription(
     subscription.status = status
     subscription.trial_end = trial_end
     subscription.current_period_end = current_period_end
-    subscription.stripe_event_created_at = stripe_event_created_at or subscription.stripe_event_created_at
+    subscription.stripe_event_created_at = (
+        stripe_event_created_at or subscription.stripe_event_created_at
+    )
     subscription.updated_at = datetime.utcnow()
     subscription.plan_limits = plan_limits(plan) if plan in PLAN_CATALOG else {}
     if status in {"active", "trialing"}:
@@ -1333,26 +1719,37 @@ def _upgrade_message(plan: str, feature: str) -> str:
     return f"{feature} is not available on the {plan} plan. Upgrade in Billing to continue."
 
 
-def _require_active_subscription(db: Session, workspace: Workspace, user_id: str | None = None) -> None:
+def _require_active_subscription(
+    db: Session, workspace: Workspace, user_id: str | None = None
+) -> None:
     if get_app_settings().app_env != "production":
         return
     if not _has_active_subscription(db, workspace, user_id):
-        raise HTTPException(status_code=402, detail="Active subscription required. Choose a plan to continue.")
+        raise HTTPException(
+            status_code=402,
+            detail="Active subscription required. Choose a plan to continue.",
+        )
 
 
 def _usage_for_workspace(db: Session, workspace: Workspace) -> UsageCounter:
     return usage_for_workspace(db, workspace, period=_month_period())
 
 
-def _enforce_usage(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> UsageCounter:
+def _enforce_usage(
+    db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1
+) -> UsageCounter:
     return increment_usage_after_success(db, user_id, workspace, metric, amount)
 
 
-def _check_usage_available(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> None:
+def _check_usage_available(
+    db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1
+) -> None:
     check_usage_available(db, user_id, workspace, metric, amount)
 
 
-def _record_usage_after_success(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> UsageCounter:
+def _record_usage_after_success(
+    db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1
+) -> UsageCounter:
     return increment_usage_after_success(db, user_id, workspace, metric, amount)
 
 
@@ -1361,28 +1758,67 @@ def _team_limit(db: Session, user_id: str, workspace: Workspace) -> int:
     return limit or 1000000
 
 
-def _enforce_count_limit(db: Session, user_id: str, workspace: Workspace, metric: str, current: int) -> None:
+def _enforce_count_limit(
+    db: Session, user_id: str, workspace: Workspace, metric: str, current: int
+) -> None:
     plan = _plan_for_workspace(db, user_id, workspace)
     limit = int(_limits_for_workspace(db, user_id, workspace)[metric])
     if limit and current >= limit:
-        raise HTTPException(status_code=402, detail=f"{metric.replace('_', ' ').title()} limit reached for the {plan} plan. Upgrade in Billing to continue.")
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "plan_limit_exceeded",
+                "metric": metric,
+                "plan": plan,
+                "limit": limit,
+                "current": current,
+                "requested": 1,
+                "message": f"{metric.replace('_', ' ').title()} limit reached for the {plan} plan. Upgrade in Billing to continue.",
+            },
+        )
 
 
-def _enforce_sales_employee_mode(db: Session, user_id: str, workspace: Workspace, mode: SalesEmployeeMode) -> None:
+def _enforce_sales_employee_mode(
+    db: Session, user_id: str, workspace: Workspace, mode: SalesEmployeeMode
+) -> None:
     plan = _plan_for_workspace(db, user_id, workspace)
     limits = _limits_for_workspace(db, user_id, workspace)
     if mode == SalesEmployeeMode.semi_auto and not limits["semi_auto_mode"]:
-        raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Semi-Automatic Campaigns"))
+        raise HTTPException(
+            status_code=402, detail=_upgrade_message(plan, "Semi-Automatic Campaigns")
+        )
     if mode == SalesEmployeeMode.autonomous and not limits["autonomous_mode"]:
-        raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Autonomous Mode"))
+        raise HTTPException(
+            status_code=402, detail=_upgrade_message(plan, "Autonomous Mode")
+        )
 
 
 def _sequence_defaults(campaign: Campaign) -> list[CampaignSequenceIn]:
     return [
-        CampaignSequenceIn(step_order=1, name="Email #1", subject="", body=campaign.offer, delay_days=0),
-        CampaignSequenceIn(step_order=2, name="Follow-up #1", subject="", body="", delay_days=campaign.follow_up_days),
-        CampaignSequenceIn(step_order=3, name="Follow-up #2", subject="", body="", delay_days=campaign.follow_up_days * 2),
-        CampaignSequenceIn(step_order=4, name="Follow-up #3", subject="", body="", delay_days=campaign.follow_up_days * 3),
+        CampaignSequenceIn(
+            step_order=1, name="Email #1", subject="", body=campaign.offer, delay_days=0
+        ),
+        CampaignSequenceIn(
+            step_order=2,
+            name="Follow-up #1",
+            subject="",
+            body="",
+            delay_days=campaign.follow_up_days,
+        ),
+        CampaignSequenceIn(
+            step_order=3,
+            name="Follow-up #2",
+            subject="",
+            body="",
+            delay_days=campaign.follow_up_days * 2,
+        ),
+        CampaignSequenceIn(
+            step_order=4,
+            name="Follow-up #3",
+            subject="",
+            body="",
+            delay_days=campaign.follow_up_days * 3,
+        ),
     ]
 
 
@@ -1403,17 +1839,30 @@ def _clean_website_filters(filters: list[str]) -> list[str]:
 
 
 def _campaign_payload(data: dict, *, include_defaults: bool = False) -> dict:
-    has_automation = include_defaults or "working_hours" in data or "daily_send_limit" in data or "website_filters" in data
+    has_automation = (
+        include_defaults
+        or "working_hours" in data
+        or "daily_send_limit" in data
+        or "website_filters" in data
+    )
     working_hours = data.pop("working_hours", "09:00-17:00")
     daily_send_limit = data.pop("daily_send_limit", 50)
     if has_automation:
         filters = _clean_website_filters(list(data.get("website_filters") or []))
-        data["website_filters"] = [*filters, _automation_marker("working_hours", working_hours), _automation_marker("daily_send_limit", daily_send_limit)]
+        data["website_filters"] = [
+            *filters,
+            _automation_marker("working_hours", working_hours),
+            _automation_marker("daily_send_limit", daily_send_limit),
+        ]
     return data
 
 
-def _replace_sequence(db: Session, campaign: Campaign, sequence: list[CampaignSequenceIn]) -> None:
-    for existing in db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id)).all():
+def _replace_sequence(
+    db: Session, campaign: Campaign, sequence: list[CampaignSequenceIn]
+) -> None:
+    for existing in db.scalars(
+        select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id)
+    ).all():
         db.delete(existing)
     items = sequence or _sequence_defaults(campaign)
     for item in sorted(items, key=lambda step: step.step_order):
@@ -1421,10 +1870,43 @@ def _replace_sequence(db: Session, campaign: Campaign, sequence: list[CampaignSe
 
 
 def _campaign_out(db: Session, campaign: Campaign) -> CampaignOut:
-    lead_count = db.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id)) or 0
-    sent = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.campaign_id == campaign.id, EmailMessage.sent_at.is_not(None))) or 0
-    replies = db.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id, Lead.status.in_([LeadStatus.interested, LeadStatus.replied]))) or 0
-    sequence = list(db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all())
+    lead_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(Lead.campaign_id == campaign.id)
+        )
+        or 0
+    )
+    sent = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.campaign_id == campaign.id,
+                EmailMessage.sent_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    replies = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(
+                Lead.campaign_id == campaign.id,
+                Lead.status.in_([LeadStatus.interested, LeadStatus.replied]),
+            )
+        )
+        or 0
+    )
+    sequence = list(
+        db.scalars(
+            select(CampaignSequence)
+            .where(CampaignSequence.campaign_id == campaign.id)
+            .order_by(CampaignSequence.step_order.asc())
+        ).all()
+    )
     return CampaignOut.model_validate(campaign, from_attributes=True).model_copy(
         update={
             "leads": lead_count,
@@ -1432,15 +1914,21 @@ def _campaign_out(db: Session, campaign: Campaign) -> CampaignOut:
             "replies": replies,
             "sequence": sequence,
             "website_filters": _clean_website_filters(campaign.website_filters or []),
-            "working_hours": _automation_value(campaign, "working_hours", "09:00-17:00"),
-            "daily_send_limit": int(_automation_value(campaign, "daily_send_limit", "50")),
+            "working_hours": _automation_value(
+                campaign, "working_hours", "09:00-17:00"
+            ),
+            "daily_send_limit": int(
+                _automation_value(campaign, "daily_send_limit", "50")
+            ),
         }
     )
 
 
 def _lead_out(lead: Lead) -> LeadOut:
     metadata = _lead_metadata(lead)
-    last_activity_at = max([value for value in [lead.updated_at, lead.created_at] if value], default=None)
+    last_activity_at = max(
+        [value for value in [lead.updated_at, lead.created_at] if value], default=None
+    )
     return LeadOut(
         id=lead.id,
         company=lead.company,
@@ -1461,16 +1949,24 @@ def _lead_out(lead: Lead) -> LeadOut:
         revenue=float(lead.revenue or 0),
         created_at=lead.created_at,
         domain=str(metadata.get("domain") or "") or None,
-        employee_count=int(metadata["employee_count"]) if isinstance(metadata.get("employee_count"), int) else None,
+        employee_count=int(metadata["employee_count"])
+        if isinstance(metadata.get("employee_count"), int)
+        else None,
         revenue_range=str(metadata.get("revenue") or "") or None,
         title=str(metadata.get("title") or "") or None,
         confidence=str(metadata.get("confidence") or "") or None,
         address=str(metadata.get("address") or "") or None,
-        google_rating=float(metadata["google_rating"]) if isinstance(metadata.get("google_rating"), (int, float)) else None,
+        google_rating=float(metadata["google_rating"])
+        if isinstance(metadata.get("google_rating"), (int, float))
+        else None,
         business_category=str(metadata.get("business_category") or "") or None,
         place_id=str(metadata.get("place_id") or "") or None,
-        latitude=float(metadata["latitude"]) if isinstance(metadata.get("latitude"), (int, float)) else None,
-        longitude=float(metadata["longitude"]) if isinstance(metadata.get("longitude"), (int, float)) else None,
+        latitude=float(metadata["latitude"])
+        if isinstance(metadata.get("latitude"), (int, float))
+        else None,
+        longitude=float(metadata["longitude"])
+        if isinstance(metadata.get("longitude"), (int, float))
+        else None,
         apollo_company_id=str(metadata.get("apollo_company_id") or "") or None,
         apollo_contact_id=str(metadata.get("apollo_contact_id") or "") or None,
         hunter_contact_id=str(metadata.get("hunter_contact_id") or "") or None,
@@ -1482,12 +1978,20 @@ def _lead_out(lead: Lead) -> LeadOut:
         outreach_strategy=str(metadata.get("outreach_strategy") or "") or None,
         sales_angle=str(metadata.get("sales_angle") or "") or None,
         expected_reply_rate=str(metadata.get("expected_reply_rate") or "") or None,
-        buying_signals=[str(item) for item in metadata.get("buying_signals", [])] if isinstance(metadata.get("buying_signals"), list) else [],
-        risks=[str(item) for item in metadata.get("risks", [])] if isinstance(metadata.get("risks"), list) else [],
+        buying_signals=[str(item) for item in metadata.get("buying_signals", [])]
+        if isinstance(metadata.get("buying_signals"), list)
+        else [],
+        risks=[str(item) for item in metadata.get("risks", [])]
+        if isinstance(metadata.get("risks"), list)
+        else [],
         opportunity_analysis=str(metadata.get("opportunity_analysis") or ""),
         partnership_fit=str(metadata.get("partnership_fit") or ""),
-        priority_score=int(metadata["priority_score"]) if str(metadata.get("priority_score") or "").isdigit() else None,
-        confidence_score=int(metadata["confidence_score"]) if str(metadata.get("confidence_score") or "").isdigit() else None,
+        priority_score=int(metadata["priority_score"])
+        if str(metadata.get("priority_score") or "").isdigit()
+        else None,
+        confidence_score=int(metadata["confidence_score"])
+        if str(metadata.get("confidence_score") or "").isdigit()
+        else None,
         next_recommended_action=str(metadata.get("next_recommended_action") or ""),
         found_at=lead.created_at,
         saved_to_crm_at=metadata.get("saved_to_crm_at"),
@@ -1536,7 +2040,11 @@ def _crm_stage_for_lead(lead: Lead) -> str:
         return "Email Draft Ready"
     if lead.email or metadata.get("hunter_verified"):
         return "Contact Found"
-    if metadata.get("website_analysis_status") != "skipped" and (metadata.get("ai_summary") or metadata.get("suggested_offer") or metadata.get("outreach_strategy")):
+    if metadata.get("website_analysis_status") != "skipped" and (
+        metadata.get("ai_summary")
+        or metadata.get("suggested_offer")
+        or metadata.get("outreach_strategy")
+    ):
         return "Website Analyzed"
     if _display_status(lead.status) == "Qualified":
         return "Qualified"
@@ -1574,15 +2082,26 @@ def _company_duplicate_stmt(workspace: Workspace, user_id: str, lead: Lead):
         criteria.append((Company.name == lead.company) & (Company.city == lead.city))
     if not criteria:
         criteria.append(Company.lead_id == lead.id)
-    return select(Company).where(_workspace_stmt(Company, workspace, user_id), or_(*criteria)).order_by(Company.updated_at.desc())
+    return (
+        select(Company)
+        .where(_workspace_stmt(Company, workspace, user_id), or_(*criteria))
+        .order_by(Company.updated_at.desc())
+    )
 
 
-def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lead) -> Company:
+def _sync_lead_to_crm(
+    db: Session, user_id: str, workspace: Workspace, lead: Lead
+) -> Company:
     metadata = _lead_metadata(lead)
     company = db.scalar(_company_duplicate_stmt(workspace, user_id, lead))
     now = datetime.utcnow()
     if company is None:
-        company = Company(user_id=user_id, workspace_id=workspace.id, lead_id=lead.id, name=lead.company)
+        company = Company(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            name=lead.company,
+        )
         db.add(company)
     company.lead_id = company.lead_id or lead.id
     company.name = lead.company or company.name
@@ -1594,14 +2113,24 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
     company.city = lead.city or company.city
     company.country = lead.country or company.country
     company.industry = lead.industry or lead.niche or company.industry
-    company.google_rating = metadata.get("google_rating") if isinstance(metadata.get("google_rating"), (int, float)) else company.google_rating
+    company.google_rating = (
+        metadata.get("google_rating")
+        if isinstance(metadata.get("google_rating"), (int, float))
+        else company.google_rating
+    )
     company.place_id = str(metadata.get("place_id") or company.place_id or "") or None
     company.source = str(metadata.get("source") or company.source or "manual")
     company.ai_summary = str(metadata.get("ai_summary") or company.ai_summary or "")
-    company.suggested_offer = str(metadata.get("suggested_offer") or company.suggested_offer or "")
-    company.outreach_strategy = str(metadata.get("outreach_strategy") or company.outreach_strategy or "")
+    company.suggested_offer = str(
+        metadata.get("suggested_offer") or company.suggested_offer or ""
+    )
+    company.outreach_strategy = str(
+        metadata.get("outreach_strategy") or company.outreach_strategy or ""
+    )
     company.sales_angle = str(metadata.get("sales_angle") or company.sales_angle or "")
-    company.expected_reply_rate = str(metadata.get("expected_reply_rate") or company.expected_reply_rate or "")
+    company.expected_reply_rate = str(
+        metadata.get("expected_reply_rate") or company.expected_reply_rate or ""
+    )
     company.email_status = _email_status_for_lead(lead)
     company.crm_stage = _crm_stage_for_lead(lead)
     company.metadata_json = {**(company.metadata_json or {}), **metadata}
@@ -1621,7 +2150,12 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
             .order_by(Contact.updated_at.desc())
         )
         if contact is None:
-            contact = Contact(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id)
+            contact = Contact(
+                user_id=user_id,
+                workspace_id=workspace.id,
+                company_id=company.id,
+                lead_id=lead.id,
+            )
             db.add(contact)
         contact.company_id = company.id
         contact.lead_id = contact.lead_id or lead.id
@@ -1631,30 +2165,77 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
         contact.phone = lead.phone or contact.phone
         contact.linkedin = lead.linkedin or contact.linkedin
         contact.confidence = str(metadata.get("confidence") or contact.confidence or "")
-        contact.source = "hunter" if metadata.get("hunter_verified") else str(metadata.get("source") or contact.source or "manual")
-        contact.email_status = "Verified" if metadata.get("hunter_verified") else ("Found" if lead.email else "Unknown")
+        contact.source = (
+            "hunter"
+            if metadata.get("hunter_verified")
+            else str(metadata.get("source") or contact.source or "manual")
+        )
+        contact.email_status = (
+            "Verified"
+            if metadata.get("hunter_verified")
+            else ("Found" if lead.email else "Unknown")
+        )
         contact.metadata_json = {**(contact.metadata_json or {}), **metadata}
         contact.updated_at = now
 
-    deal = db.scalar(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.lead_id == lead.id).order_by(Deal.updated_at.desc()))
+    deal = db.scalar(
+        select(Deal)
+        .where(_workspace_stmt(Deal, workspace, user_id), Deal.lead_id == lead.id)
+        .order_by(Deal.updated_at.desc())
+    )
     if deal is None:
-        deal = Deal(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id, name=f"{lead.company} opportunity")
+        deal = Deal(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            company_id=company.id,
+            lead_id=lead.id,
+            name=f"{lead.company} opportunity",
+        )
         db.add(deal)
     deal.company_id = company.id
     deal.stage = company.crm_stage
     deal.source = company.source
     deal.value = lead.revenue or deal.value or 0
-    deal.probability = 70 if company.crm_stage in {"Email Draft Ready", "Approved", "Sent", "Replied"} else 35
-    deal.next_step = "Review AI email and approve campaign." if company.crm_stage in {"Website Analyzed", "Contact Found", "Email Draft Ready"} else "Find contact details and complete research."
+    deal.probability = (
+        70
+        if company.crm_stage in {"Email Draft Ready", "Approved", "Sent", "Replied"}
+        else 35
+    )
+    deal.next_step = (
+        "Review AI email and approve campaign."
+        if company.crm_stage
+        in {"Website Analyzed", "Contact Found", "Email Draft Ready"}
+        else "Find contact details and complete research."
+    )
     deal.updated_at = now
 
-    if company.ai_summary and not db.scalar(select(Note.id).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id, Note.kind == "ai_summary").limit(1)):
-        db.add(Note(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=lead.id, kind="ai_summary", body=company.ai_summary))
+    if company.ai_summary and not db.scalar(
+        select(Note.id)
+        .where(
+            _workspace_stmt(Note, workspace, user_id),
+            Note.company_id == company.id,
+            Note.kind == "ai_summary",
+        )
+        .limit(1)
+    ):
+        db.add(
+            Note(
+                user_id=user_id,
+                workspace_id=workspace.id,
+                company_id=company.id,
+                lead_id=lead.id,
+                kind="ai_summary",
+                body=company.ai_summary,
+            )
+        )
 
     contacts_for_workflow = list(
         db.scalars(
             select(Contact)
-            .where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id)
+            .where(
+                _workspace_stmt(Contact, workspace, user_id),
+                Contact.company_id == company.id,
+            )
             .order_by(Contact.created_at.desc())
         ).all()
     )
@@ -1662,7 +2243,10 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
         list(
             db.scalars(
                 select(EmailMessage)
-                .where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id)
+                .where(
+                    _workspace_stmt(EmailMessage, workspace, user_id),
+                    EmailMessage.lead_id == company.lead_id,
+                )
                 .order_by(EmailMessage.created_at.desc())
                 .limit(20)
             ).all()
@@ -1670,10 +2254,16 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
         if company.lead_id
         else []
     )
-    workflow_stages = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
+    workflow_stages = (
+        metadata.get("workflow_stages")
+        if isinstance(metadata.get("workflow_stages"), dict)
+        else {}
+    )
     workflow_state = build_company_workflow_engine(
         company=company,
-        metadata=company.metadata_json if isinstance(company.metadata_json, dict) else {},
+        metadata=company.metadata_json
+        if isinstance(company.metadata_json, dict)
+        else {},
         contacts=contacts_for_workflow,
         emails=emails_for_workflow,
         workflow_stages=workflow_stages,
@@ -1687,7 +2277,11 @@ def _sync_lead_to_crm(db: Session, user_id: str, workspace: Workspace, lead: Lea
 
 def _lead_update_integrity_detail(exc: IntegrityError) -> tuple[int, str]:
     message = str(getattr(exc, "orig", exc)).lower()
-    if "uq_user_lead_email" in message or ("unique constraint failed" in message and "leads.user_id" in message and "leads.email" in message):
+    if "uq_user_lead_email" in message or (
+        "unique constraint failed" in message
+        and "leads.user_id" in message
+        and "leads.email" in message
+    ):
         return 409, "A lead with this email already exists. Use a different email."
     if "not null" in message and "leads.company" in message:
         return 400, "Company name is required."
@@ -1696,12 +2290,20 @@ def _lead_update_integrity_detail(exc: IntegrityError) -> tuple[int, str]:
     return 409, "Lead update conflicts with existing data."
 
 
-def _existing_duplicate_lead(db: Session, workspace: Workspace, user_id: str, item: LeadOut) -> Lead | None:
+def _existing_duplicate_lead(
+    db: Session, workspace: Workspace, user_id: str, item: LeadOut
+) -> Lead | None:
     metadata = _lead_metadata(item)
     place_id = str(metadata.get("place_id") or item.place_id or "")
-    apollo_company_id = str(metadata.get("apollo_company_id") or item.apollo_company_id or "")
-    apollo_contact_id = str(metadata.get("apollo_contact_id") or item.apollo_contact_id or "")
-    hunter_contact_id = str(metadata.get("hunter_contact_id") or item.hunter_contact_id or "")
+    apollo_company_id = str(
+        metadata.get("apollo_company_id") or item.apollo_company_id or ""
+    )
+    apollo_contact_id = str(
+        metadata.get("apollo_contact_id") or item.apollo_contact_id or ""
+    )
+    hunter_contact_id = str(
+        metadata.get("hunter_contact_id") or item.hunter_contact_id or ""
+    )
     domain = str(metadata.get("domain") or item.domain or "")
     criteria = []
     if item.email:
@@ -1725,7 +2327,12 @@ def _existing_duplicate_lead(db: Session, workspace: Workspace, user_id: str, it
         criteria.append(Lead.company == item.company)
     if not criteria:
         return None
-    return db.scalar(select(Lead).where(_workspace_stmt(Lead, workspace, user_id), or_(*criteria)).order_by(Lead.updated_at.desc()).limit(1))
+    return db.scalar(
+        select(Lead)
+        .where(_workspace_stmt(Lead, workspace, user_id), or_(*criteria))
+        .order_by(Lead.updated_at.desc())
+        .limit(1)
+    )
 
 
 def _crm_contact_out(contact: Contact, company_name: str = "") -> CrmContactOut:
@@ -1743,7 +2350,9 @@ def _crm_contact_out(contact: Contact, company_name: str = "") -> CrmContactOut:
         confidence=contact.confidence,
         source=contact.source,
         email_status=contact.email_status,
-        decision_maker_intelligence=metadata.get("decision_maker_intelligence") if isinstance(metadata.get("decision_maker_intelligence"), dict) else {},
+        decision_maker_intelligence=metadata.get("decision_maker_intelligence")
+        if isinstance(metadata.get("decision_maker_intelligence"), dict)
+        else {},
         created_at=contact.created_at,
     )
 
@@ -1765,7 +2374,14 @@ def _crm_deal_out(deal: Deal, company_name: str = "") -> CrmDealOut:
 
 
 def _crm_note_out(note: Note) -> CrmNoteOut:
-    return CrmNoteOut(id=note.id, company_id=note.company_id, lead_id=note.lead_id, body=note.body, kind=note.kind, created_at=note.created_at)
+    return CrmNoteOut(
+        id=note.id,
+        company_id=note.company_id,
+        lead_id=note.lead_id,
+        body=note.body,
+        kind=note.kind,
+        created_at=note.created_at,
+    )
 
 
 def _audit_log_lead_id_clause(lead_id: UUID):
@@ -1777,7 +2393,10 @@ def _audit_log_lead_id_value():
 
 
 def _encode_inbox_cursor(message: EmailMessage) -> str:
-    payload = json.dumps({"created_at": message.created_at.isoformat(), "id": str(message.id)}, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(
+        {"created_at": message.created_at.isoformat(), "id": str(message.id)},
+        separators=(",", ":"),
+    ).encode("utf-8")
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
@@ -1786,13 +2405,23 @@ def _decode_inbox_cursor(value: str | None) -> tuple[datetime, UUID] | None:
         return None
     try:
         padded = value + "=" * (-len(value) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        return datetime.fromisoformat(str(payload["created_at"])), UUID(str(payload["id"]))
+        payload = json.loads(
+            base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        )
+        return datetime.fromisoformat(str(payload["created_at"])), UUID(
+            str(payload["id"])
+        )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail="Invalid inbox cursor.") from exc
 
 
-CRM_FOUND_ACTIONS = {"lead.found", "lead.imported", "google_maps.company_search", "apollo.company_search", "apollo.contact_search"}
+CRM_FOUND_ACTIONS = {
+    "lead.found",
+    "lead.imported",
+    "google_maps.company_search",
+    "apollo.company_search",
+    "apollo.contact_search",
+}
 CRM_SAVED_ACTIONS = {"lead.saved_to_crm"}
 CRM_APPROVED_ACTIONS = {"email.approved"}
 CRM_BATCH_AUDIT_ACTIONS = CRM_FOUND_ACTIONS | CRM_SAVED_ACTIONS | CRM_APPROVED_ACTIONS
@@ -1811,7 +2440,9 @@ class CrmCompanyBatchContext:
     latest_audit_by_lead: dict[UUID, datetime]
 
 
-def _group_limited_by(items: list[Any], key_name: str, limit: int | None = None) -> dict[UUID, list[Any]]:
+def _group_limited_by(
+    items: list[Any], key_name: str, limit: int | None = None
+) -> dict[UUID, list[Any]]:
     grouped: dict[UUID, list[Any]] = defaultdict(list)
     for item in items:
         key = getattr(item, key_name, None)
@@ -1838,7 +2469,10 @@ def _limited_partition_entities(
             partition_column.label("partition_id"),
             order_column.label("sort_at"),
             func.row_number()
-            .over(partition_by=partition_column, order_by=(order_column.desc(), model.id.desc()))
+            .over(
+                partition_by=partition_column,
+                order_by=(order_column.desc(), model.id.desc()),
+            )
             .label("row_number"),
         )
         .where(*filters, partition_column.in_(partition_ids))
@@ -1866,7 +2500,9 @@ def _audit_log_lead_id(log: AuditLog) -> UUID | None:
         return None
 
 
-def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, companies: list[Company]) -> CrmCompanyBatchContext:
+def _crm_company_batch_context(
+    db: Session, workspace: Workspace, user_id: str, companies: list[Company]
+) -> CrmCompanyBatchContext:
     company_ids = [company.id for company in companies]
     lead_ids = [company.lead_id for company in companies if company.lead_id]
     if not company_ids:
@@ -1881,7 +2517,10 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
             partition_ids=company_ids,
             limit=10,
             order_column=Contact.created_at,
-            filters=[_workspace_stmt(Contact, workspace, user_id), _customer_visible_contact_predicate()],
+            filters=[
+                _workspace_stmt(Contact, workspace, user_id),
+                _customer_visible_contact_predicate(),
+            ],
         )
         if _is_customer_visible_contact(contact)
     ]
@@ -1911,7 +2550,14 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
     first_audit_by_lead_action: dict[tuple[UUID, str], datetime] = {}
     latest_audit_by_lead: dict[UUID, datetime] = {}
     if lead_ids:
-        leads_by_id = {lead.id: lead for lead in db.scalars(select(Lead).where(_workspace_stmt(Lead, workspace, user_id), Lead.id.in_(lead_ids))).all()}
+        leads_by_id = {
+            lead.id: lead
+            for lead in db.scalars(
+                select(Lead).where(
+                    _workspace_stmt(Lead, workspace, user_id), Lead.id.in_(lead_ids)
+                )
+            ).all()
+        }
         emails = [
             email
             for email in _limited_partition_entities(
@@ -1921,17 +2567,27 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
                 partition_ids=lead_ids,
                 limit=10,
                 order_column=EmailMessage.created_at,
-                filters=[_workspace_stmt(EmailMessage, workspace, user_id), _customer_visible_email_predicate()],
+                filters=[
+                    _workspace_stmt(EmailMessage, workspace, user_id),
+                    _customer_visible_email_predicate(),
+                ],
             )
             if _is_customer_visible_email(email)
         ]
         emails_by_lead = _group_limited_by(emails, "lead_id", 10)
         website_rows = db.execute(
             select(WebsiteAnalysis.lead_id, func.max(WebsiteAnalysis.created_at))
-            .where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id.in_(lead_ids))
+            .where(
+                _workspace_stmt(WebsiteAnalysis, workspace, user_id),
+                WebsiteAnalysis.lead_id.in_(lead_ids),
+            )
             .group_by(WebsiteAnalysis.lead_id)
         ).all()
-        website_analyzed_at_by_lead = {lead_id: analyzed_at for lead_id, analyzed_at in website_rows if lead_id and analyzed_at}
+        website_analyzed_at_by_lead = {
+            lead_id: analyzed_at
+            for lead_id, analyzed_at in website_rows
+            if lead_id and analyzed_at
+        }
 
         audit_lead_id = _audit_log_lead_id_value()
         audit_ranked = (
@@ -1939,10 +2595,16 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
                 AuditLog.id.label("id"),
                 audit_lead_id.label("lead_id"),
                 func.row_number()
-                .over(partition_by=audit_lead_id, order_by=(AuditLog.created_at.desc(), AuditLog.id.desc()))
+                .over(
+                    partition_by=audit_lead_id,
+                    order_by=(AuditLog.created_at.desc(), AuditLog.id.desc()),
+                )
                 .label("row_number"),
             )
-            .where(AuditLog.workspace_id == workspace.id, audit_lead_id.in_([str(lead_id) for lead_id in lead_ids]))
+            .where(
+                AuditLog.workspace_id == workspace.id,
+                audit_lead_id.in_([str(lead_id) for lead_id in lead_ids]),
+            )
             .subquery()
         )
         audit_entity = aliased(AuditLog)
@@ -1951,19 +2613,33 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
                 select(audit_entity)
                 .join(audit_ranked, audit_entity.id == audit_ranked.c.id)
                 .where(audit_ranked.c.row_number <= 10)
-                .order_by(audit_ranked.c.lead_id, audit_entity.created_at.desc(), audit_entity.id.desc())
+                .order_by(
+                    audit_ranked.c.lead_id,
+                    audit_entity.created_at.desc(),
+                    audit_entity.id.desc(),
+                )
             ).all()
         )
         first_audit_rows = db.execute(
-            select(audit_lead_id.label("lead_id"), AuditLog.action, func.min(AuditLog.created_at))
-            .where(AuditLog.workspace_id == workspace.id, audit_lead_id.in_([str(lead_id) for lead_id in lead_ids]), AuditLog.action.in_(CRM_BATCH_AUDIT_ACTIONS))
+            select(
+                audit_lead_id.label("lead_id"),
+                AuditLog.action,
+                func.min(AuditLog.created_at),
+            )
+            .where(
+                AuditLog.workspace_id == workspace.id,
+                audit_lead_id.in_([str(lead_id) for lead_id in lead_ids]),
+                AuditLog.action.in_(CRM_BATCH_AUDIT_ACTIONS),
+            )
             .group_by(audit_lead_id, AuditLog.action)
         ).all()
         for raw_lead_id, action, created_at in first_audit_rows:
             if not raw_lead_id or not created_at:
                 continue
             try:
-                first_audit_by_lead_action[(UUID(str(raw_lead_id)), action)] = created_at
+                first_audit_by_lead_action[(UUID(str(raw_lead_id)), action)] = (
+                    created_at
+                )
             except ValueError:
                 continue
         for log in audit_logs:
@@ -1972,12 +2648,17 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
                 continue
             if len(activity_by_lead.setdefault(lead_id, [])) < 10:
                 activity_by_lead[lead_id].append(log)
-            latest_audit_by_lead[lead_id] = max(latest_audit_by_lead.get(lead_id, log.created_at), log.created_at)
+            latest_audit_by_lead[lead_id] = max(
+                latest_audit_by_lead.get(lead_id, log.created_at), log.created_at
+            )
 
     return CrmCompanyBatchContext(
         contacts_by_company=_group_limited_by(contacts, "company_id"),
         deals_by_company=_group_limited_by(deals, "company_id"),
-        notes_by_company={key: value for key, value in _group_limited_by(notes, "company_id", 20).items()},
+        notes_by_company={
+            key: value
+            for key, value in _group_limited_by(notes, "company_id", 20).items()
+        },
         emails_by_lead=emails_by_lead,
         activity_by_lead=activity_by_lead,
         leads_by_id=leads_by_id,
@@ -1987,10 +2668,16 @@ def _crm_company_batch_context(db: Session, workspace: Workspace, user_id: str, 
     )
 
 
-def _first_batch_audit_time(context: CrmCompanyBatchContext, lead_id: UUID | None, actions: set[str]) -> datetime | None:
+def _first_batch_audit_time(
+    context: CrmCompanyBatchContext, lead_id: UUID | None, actions: set[str]
+) -> datetime | None:
     if not lead_id:
         return None
-    values = [context.first_audit_by_lead_action[(lead_id, action)] for action in actions if (lead_id, action) in context.first_audit_by_lead_action]
+    values = [
+        context.first_audit_by_lead_action[(lead_id, action)]
+        for action in actions
+        if (lead_id, action) in context.first_audit_by_lead_action
+    ]
     return min(values, default=None)
 
 
@@ -2003,7 +2690,9 @@ def _add_lead_activity(
     lead: Lead,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    ip = request.headers.get("x-forwarded-for", "").split(",")[0] or (request.client.host if request.client else None)
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0] or (
+        request.client.host if request.client else None
+    )
     db.add(
         AuditLog(
             user_id=user_id,
@@ -2021,7 +2710,13 @@ def _add_lead_activity(
     )
 
 
-def _first_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id: UUID | None, actions: set[str]) -> datetime | None:
+def _first_audit_time(
+    db: Session,
+    workspace: Workspace,
+    user_id: str,
+    lead_id: UUID | None,
+    actions: set[str],
+) -> datetime | None:
     if not lead_id:
         return None
     return db.scalar(
@@ -2036,107 +2731,440 @@ def _first_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id: 
     )
 
 
-def _latest_audit_time(db: Session, workspace: Workspace, user_id: str, lead_id: UUID | None) -> datetime | None:
+def _latest_audit_time(
+    db: Session, workspace: Workspace, user_id: str, lead_id: UUID | None
+) -> datetime | None:
     if not lead_id:
         return None
     return db.scalar(
         select(AuditLog.created_at)
-        .where(AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(lead_id))
+        .where(
+            AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(lead_id)
+        )
         .order_by(AuditLog.created_at.desc())
         .limit(1)
     )
 
 
-def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: Company, batch_context: CrmCompanyBatchContext | None = None) -> CrmCompanyOut:
+def _crm_company_out(
+    db: Session,
+    workspace: Workspace,
+    user_id: str,
+    company: Company,
+    batch_context: CrmCompanyBatchContext | None = None,
+) -> CrmCompanyOut:
     if batch_context:
         contacts = batch_context.contacts_by_company.get(company.id, [])
         deals = batch_context.deals_by_company.get(company.id, [])
         notes = batch_context.notes_by_company.get(company.id, [])
-        emails = batch_context.emails_by_lead.get(company.lead_id, []) if company.lead_id else []
-        activity = batch_context.activity_by_lead.get(company.lead_id, []) if company.lead_id else []
-        lead = batch_context.leads_by_id.get(company.lead_id) if company.lead_id else None
-        found_at = _first_batch_audit_time(batch_context, company.lead_id, CRM_FOUND_ACTIONS) or (lead.created_at if lead else company.created_at)
-        saved_to_crm_at = _first_batch_audit_time(batch_context, company.lead_id, CRM_SAVED_ACTIONS) or company.created_at
-        website_analyzed_at = batch_context.website_analyzed_at_by_lead.get(company.lead_id) if company.lead_id else None
-        email_approved_at = _first_batch_audit_time(batch_context, company.lead_id, CRM_APPROVED_ACTIONS)
-        latest_activity_at = batch_context.latest_audit_by_lead.get(company.lead_id) if company.lead_id else None
+        emails = (
+            batch_context.emails_by_lead.get(company.lead_id, [])
+            if company.lead_id
+            else []
+        )
+        activity = (
+            batch_context.activity_by_lead.get(company.lead_id, [])
+            if company.lead_id
+            else []
+        )
+        lead = (
+            batch_context.leads_by_id.get(company.lead_id) if company.lead_id else None
+        )
+        found_at = _first_batch_audit_time(
+            batch_context, company.lead_id, CRM_FOUND_ACTIONS
+        ) or (lead.created_at if lead else company.created_at)
+        saved_to_crm_at = (
+            _first_batch_audit_time(batch_context, company.lead_id, CRM_SAVED_ACTIONS)
+            or company.created_at
+        )
+        website_analyzed_at = (
+            batch_context.website_analyzed_at_by_lead.get(company.lead_id)
+            if company.lead_id
+            else None
+        )
+        email_approved_at = _first_batch_audit_time(
+            batch_context, company.lead_id, CRM_APPROVED_ACTIONS
+        )
+        latest_activity_at = (
+            batch_context.latest_audit_by_lead.get(company.lead_id)
+            if company.lead_id
+            else None
+        )
     else:
-        contacts = [contact for contact in db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id == company.id, _customer_visible_contact_predicate()).order_by(Contact.created_at.desc(), Contact.id.desc()).limit(10)).all() if _is_customer_visible_contact(contact)]
-        deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id).order_by(Deal.created_at.desc(), Deal.id.desc()).limit(10)).all())
-        notes = list(db.scalars(select(Note).where(_workspace_stmt(Note, workspace, user_id), Note.company_id == company.id).order_by(Note.created_at.desc(), Note.id.desc()).limit(20)).all())
-        emails = [email for email in db.scalars(select(EmailMessage).where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == company.lead_id, _customer_visible_email_predicate()).order_by(EmailMessage.created_at.desc(), EmailMessage.id.desc()).limit(10)).all() if _is_customer_visible_email(email)] if company.lead_id else []
-        activity = list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id, _audit_log_lead_id_clause(company.lead_id)).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(10)).all()) if company.lead_id else []
-        lead = db.scalar(select(Lead).where(_workspace_stmt(Lead, workspace, user_id), Lead.id == company.lead_id)) if company.lead_id else None
-        found_at = _first_audit_time(db, workspace, user_id, company.lead_id, CRM_FOUND_ACTIONS) or (lead.created_at if lead else company.created_at)
-        saved_to_crm_at = _first_audit_time(db, workspace, user_id, company.lead_id, CRM_SAVED_ACTIONS) or company.created_at
-        website_analyzed_at = db.scalar(select(WebsiteAnalysis.created_at).where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == company.lead_id).order_by(WebsiteAnalysis.created_at.desc()).limit(1)) if company.lead_id else None
-        email_approved_at = _first_audit_time(db, workspace, user_id, company.lead_id, CRM_APPROVED_ACTIONS)
+        contacts = [
+            contact
+            for contact in db.scalars(
+                select(Contact)
+                .where(
+                    _workspace_stmt(Contact, workspace, user_id),
+                    Contact.company_id == company.id,
+                    _customer_visible_contact_predicate(),
+                )
+                .order_by(Contact.created_at.desc(), Contact.id.desc())
+                .limit(10)
+            ).all()
+            if _is_customer_visible_contact(contact)
+        ]
+        deals = list(
+            db.scalars(
+                select(Deal)
+                .where(
+                    _workspace_stmt(Deal, workspace, user_id),
+                    Deal.company_id == company.id,
+                )
+                .order_by(Deal.created_at.desc(), Deal.id.desc())
+                .limit(10)
+            ).all()
+        )
+        notes = list(
+            db.scalars(
+                select(Note)
+                .where(
+                    _workspace_stmt(Note, workspace, user_id),
+                    Note.company_id == company.id,
+                )
+                .order_by(Note.created_at.desc(), Note.id.desc())
+                .limit(20)
+            ).all()
+        )
+        emails = (
+            [
+                email
+                for email in db.scalars(
+                    select(EmailMessage)
+                    .where(
+                        _workspace_stmt(EmailMessage, workspace, user_id),
+                        EmailMessage.lead_id == company.lead_id,
+                        _customer_visible_email_predicate(),
+                    )
+                    .order_by(EmailMessage.created_at.desc(), EmailMessage.id.desc())
+                    .limit(10)
+                ).all()
+                if _is_customer_visible_email(email)
+            ]
+            if company.lead_id
+            else []
+        )
+        activity = (
+            list(
+                db.scalars(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.workspace_id == workspace.id,
+                        _audit_log_lead_id_clause(company.lead_id),
+                    )
+                    .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+                    .limit(10)
+                ).all()
+            )
+            if company.lead_id
+            else []
+        )
+        lead = (
+            db.scalar(
+                select(Lead).where(
+                    _workspace_stmt(Lead, workspace, user_id),
+                    Lead.id == company.lead_id,
+                )
+            )
+            if company.lead_id
+            else None
+        )
+        found_at = _first_audit_time(
+            db, workspace, user_id, company.lead_id, CRM_FOUND_ACTIONS
+        ) or (lead.created_at if lead else company.created_at)
+        saved_to_crm_at = (
+            _first_audit_time(
+                db, workspace, user_id, company.lead_id, CRM_SAVED_ACTIONS
+            )
+            or company.created_at
+        )
+        website_analyzed_at = (
+            db.scalar(
+                select(WebsiteAnalysis.created_at)
+                .where(
+                    _workspace_stmt(WebsiteAnalysis, workspace, user_id),
+                    WebsiteAnalysis.lead_id == company.lead_id,
+                )
+                .order_by(WebsiteAnalysis.created_at.desc())
+                .limit(1)
+            )
+            if company.lead_id
+            else None
+        )
+        email_approved_at = _first_audit_time(
+            db, workspace, user_id, company.lead_id, CRM_APPROVED_ACTIONS
+        )
         latest_activity_at = _latest_audit_time(db, workspace, user_id, company.lead_id)
     contact_found_at = min([contact.created_at for contact in contacts], default=None)
     email_generated_at = min([email.created_at for email in emails], default=None)
-    email_sent_at = max([email.sent_at for email in emails if email.sent_at], default=None)
-    delivered_at = max([email.delivered_at for email in emails if email.delivered_at], default=None)
-    opened_at = max([email.opened_at for email in emails if email.opened_at], default=None)
-    replied_at = max([email.replied_at for email in emails if email.replied_at], default=None)
-    last_activity_at = max([value for value in [company.updated_at, found_at, saved_to_crm_at, website_analyzed_at, contact_found_at, email_generated_at, email_approved_at, email_sent_at, delivered_at, opened_at, replied_at, latest_activity_at] if value], default=company.updated_at)
+    email_sent_at = max(
+        [email.sent_at for email in emails if email.sent_at], default=None
+    )
+    delivered_at = max(
+        [email.delivered_at for email in emails if email.delivered_at], default=None
+    )
+    opened_at = max(
+        [email.opened_at for email in emails if email.opened_at], default=None
+    )
+    replied_at = max(
+        [email.replied_at for email in emails if email.replied_at], default=None
+    )
+    last_activity_at = max(
+        [
+            value
+            for value in [
+                company.updated_at,
+                found_at,
+                saved_to_crm_at,
+                website_analyzed_at,
+                contact_found_at,
+                email_generated_at,
+                email_approved_at,
+                email_sent_at,
+                delivered_at,
+                opened_at,
+                replied_at,
+                latest_activity_at,
+            ]
+            if value
+        ],
+        default=company.updated_at,
+    )
     company_metadata = company.metadata_json or {}
-    deep_contact_search = company_metadata.get("deep_contact_search") if isinstance(company_metadata.get("deep_contact_search"), dict) else {}
-    decision_maker_intelligence = company_metadata.get("decision_maker_intelligence") if isinstance(company_metadata.get("decision_maker_intelligence"), dict) else {}
-    opportunity_ranking = company_metadata.get("opportunity_ranking") if isinstance(company_metadata.get("opportunity_ranking"), dict) else {}
-    ai_outreach_strategy = company_metadata.get("ai_outreach_strategy") if isinstance(company_metadata.get("ai_outreach_strategy"), dict) else {}
-    ai_competitor_intelligence = company_metadata.get("ai_competitor_intelligence") if isinstance(company_metadata.get("ai_competitor_intelligence"), dict) else {}
-    ai_company_timeline = company_metadata.get("ai_company_timeline") if isinstance(company_metadata.get("ai_company_timeline"), dict) else {}
-    ai_company_predictions = company_metadata.get("ai_company_predictions") if isinstance(company_metadata.get("ai_company_predictions"), dict) else {}
-    ai_sales_timeline = company_metadata.get("ai_sales_timeline") if isinstance(company_metadata.get("ai_sales_timeline"), dict) else {}
-    ai_risk_analyzer = company_metadata.get("ai_risk_analyzer") if isinstance(company_metadata.get("ai_risk_analyzer"), dict) else {}
-    ai_sales_coach = company_metadata.get("ai_sales_coach") if isinstance(company_metadata.get("ai_sales_coach"), dict) else {}
-    ai_specialized_agents = company_metadata.get("ai_specialized_agents") if isinstance(company_metadata.get("ai_specialized_agents"), dict) else {}
-    ai_agent_intermediate_reasoning = company_metadata.get("ai_agent_intermediate_reasoning") if isinstance(company_metadata.get("ai_agent_intermediate_reasoning"), dict) else {}
-    ai_final_orchestrator = company_metadata.get("ai_final_orchestrator") if isinstance(company_metadata.get("ai_final_orchestrator"), dict) else {}
-    ai_evidence_engine = company_metadata.get("ai_evidence_engine") if isinstance(company_metadata.get("ai_evidence_engine"), dict) else {}
-    ai_executive_dashboard = company_metadata.get("ai_executive_dashboard") if isinstance(company_metadata.get("ai_executive_dashboard"), dict) else {}
-    ai_revenue_engine_report = company_metadata.get("ai_revenue_engine_report") if isinstance(company_metadata.get("ai_revenue_engine_report"), dict) else {}
-    ai_crm = company_metadata.get("ai_crm") if isinstance(company_metadata.get("ai_crm"), dict) else {}
-    ai_ceo_dashboard = company_metadata.get("ai_ceo_dashboard") if isinstance(company_metadata.get("ai_ceo_dashboard"), dict) else {}
-    ai_sales_os = company_metadata.get("ai_sales_os") if isinstance(company_metadata.get("ai_sales_os"), dict) else {}
-    ai_sales_workspace = company_metadata.get("ai_sales_workspace") if isinstance(company_metadata.get("ai_sales_workspace"), dict) else {}
-    ai_live_buying_signals = company_metadata.get("ai_live_buying_signals") if isinstance(company_metadata.get("ai_live_buying_signals"), dict) else {}
-    ai_lead_prioritization = company_metadata.get("ai_lead_prioritization") if isinstance(company_metadata.get("ai_lead_prioritization"), dict) else {}
-    ai_sales_inbox_latest = company_metadata.get("ai_sales_inbox_latest") if isinstance(company_metadata.get("ai_sales_inbox_latest"), dict) else {}
-    ai_sales_inbox_history = [item for item in company_metadata.get("ai_sales_inbox_history", []) if isinstance(item, dict)] if isinstance(company_metadata.get("ai_sales_inbox_history"), list) else []
-    ai_revenue_intelligence = company_metadata.get("ai_revenue_intelligence") if isinstance(company_metadata.get("ai_revenue_intelligence"), dict) else {}
+    deep_contact_search = (
+        company_metadata.get("deep_contact_search")
+        if isinstance(company_metadata.get("deep_contact_search"), dict)
+        else {}
+    )
+    decision_maker_intelligence = (
+        company_metadata.get("decision_maker_intelligence")
+        if isinstance(company_metadata.get("decision_maker_intelligence"), dict)
+        else {}
+    )
+    opportunity_ranking = (
+        company_metadata.get("opportunity_ranking")
+        if isinstance(company_metadata.get("opportunity_ranking"), dict)
+        else {}
+    )
+    ai_outreach_strategy = (
+        company_metadata.get("ai_outreach_strategy")
+        if isinstance(company_metadata.get("ai_outreach_strategy"), dict)
+        else {}
+    )
+    ai_competitor_intelligence = (
+        company_metadata.get("ai_competitor_intelligence")
+        if isinstance(company_metadata.get("ai_competitor_intelligence"), dict)
+        else {}
+    )
+    ai_company_timeline = (
+        company_metadata.get("ai_company_timeline")
+        if isinstance(company_metadata.get("ai_company_timeline"), dict)
+        else {}
+    )
+    ai_company_predictions = (
+        company_metadata.get("ai_company_predictions")
+        if isinstance(company_metadata.get("ai_company_predictions"), dict)
+        else {}
+    )
+    ai_sales_timeline = (
+        company_metadata.get("ai_sales_timeline")
+        if isinstance(company_metadata.get("ai_sales_timeline"), dict)
+        else {}
+    )
+    ai_risk_analyzer = (
+        company_metadata.get("ai_risk_analyzer")
+        if isinstance(company_metadata.get("ai_risk_analyzer"), dict)
+        else {}
+    )
+    ai_sales_coach = (
+        company_metadata.get("ai_sales_coach")
+        if isinstance(company_metadata.get("ai_sales_coach"), dict)
+        else {}
+    )
+    ai_specialized_agents = (
+        company_metadata.get("ai_specialized_agents")
+        if isinstance(company_metadata.get("ai_specialized_agents"), dict)
+        else {}
+    )
+    ai_agent_intermediate_reasoning = (
+        company_metadata.get("ai_agent_intermediate_reasoning")
+        if isinstance(company_metadata.get("ai_agent_intermediate_reasoning"), dict)
+        else {}
+    )
+    ai_final_orchestrator = (
+        company_metadata.get("ai_final_orchestrator")
+        if isinstance(company_metadata.get("ai_final_orchestrator"), dict)
+        else {}
+    )
+    ai_evidence_engine = (
+        company_metadata.get("ai_evidence_engine")
+        if isinstance(company_metadata.get("ai_evidence_engine"), dict)
+        else {}
+    )
+    ai_executive_dashboard = (
+        company_metadata.get("ai_executive_dashboard")
+        if isinstance(company_metadata.get("ai_executive_dashboard"), dict)
+        else {}
+    )
+    ai_revenue_engine_report = (
+        company_metadata.get("ai_revenue_engine_report")
+        if isinstance(company_metadata.get("ai_revenue_engine_report"), dict)
+        else {}
+    )
+    ai_crm = (
+        company_metadata.get("ai_crm")
+        if isinstance(company_metadata.get("ai_crm"), dict)
+        else {}
+    )
+    ai_ceo_dashboard = (
+        company_metadata.get("ai_ceo_dashboard")
+        if isinstance(company_metadata.get("ai_ceo_dashboard"), dict)
+        else {}
+    )
+    ai_sales_os = (
+        company_metadata.get("ai_sales_os")
+        if isinstance(company_metadata.get("ai_sales_os"), dict)
+        else {}
+    )
+    ai_sales_workspace = (
+        company_metadata.get("ai_sales_workspace")
+        if isinstance(company_metadata.get("ai_sales_workspace"), dict)
+        else {}
+    )
+    ai_live_buying_signals = (
+        company_metadata.get("ai_live_buying_signals")
+        if isinstance(company_metadata.get("ai_live_buying_signals"), dict)
+        else {}
+    )
+    ai_lead_prioritization = (
+        company_metadata.get("ai_lead_prioritization")
+        if isinstance(company_metadata.get("ai_lead_prioritization"), dict)
+        else {}
+    )
+    ai_sales_inbox_latest = (
+        company_metadata.get("ai_sales_inbox_latest")
+        if isinstance(company_metadata.get("ai_sales_inbox_latest"), dict)
+        else {}
+    )
+    ai_sales_inbox_history = (
+        [
+            item
+            for item in company_metadata.get("ai_sales_inbox_history", [])
+            if isinstance(item, dict)
+        ]
+        if isinstance(company_metadata.get("ai_sales_inbox_history"), list)
+        else []
+    )
+    ai_revenue_intelligence = (
+        company_metadata.get("ai_revenue_intelligence")
+        if isinstance(company_metadata.get("ai_revenue_intelligence"), dict)
+        else {}
+    )
     if not ai_executive_dashboard:
-        ai_final_orchestrator = company_metadata.get("ai_final_orchestrator") if isinstance(company_metadata.get("ai_final_orchestrator"), dict) else {}
-        ai_agent_intermediate_reasoning = company_metadata.get("ai_agent_intermediate_reasoning") if isinstance(company_metadata.get("ai_agent_intermediate_reasoning"), dict) else {}
-        opportunity_ranking_cache = company_metadata.get("opportunity_ranking") if isinstance(company_metadata.get("opportunity_ranking"), dict) else {}
-        buying_signal_score = int(company_metadata["buying_signal_score"]) if str(company_metadata.get("buying_signal_score") or "").isdigit() else 0
+        ai_final_orchestrator = (
+            company_metadata.get("ai_final_orchestrator")
+            if isinstance(company_metadata.get("ai_final_orchestrator"), dict)
+            else {}
+        )
+        ai_agent_intermediate_reasoning = (
+            company_metadata.get("ai_agent_intermediate_reasoning")
+            if isinstance(company_metadata.get("ai_agent_intermediate_reasoning"), dict)
+            else {}
+        )
+        opportunity_ranking_cache = (
+            company_metadata.get("opportunity_ranking")
+            if isinstance(company_metadata.get("opportunity_ranking"), dict)
+            else {}
+        )
+        buying_signal_score = (
+            int(company_metadata["buying_signal_score"])
+            if str(company_metadata.get("buying_signal_score") or "").isdigit()
+            else 0
+        )
         buying_intent_cache = {
             "buying_signal_score": buying_signal_score,
             "urgency": str(company_metadata.get("buying_signal_urgency") or ""),
             "explanation": str(company_metadata.get("buying_signal_explanation") or ""),
         }
-        risk_cache = company_metadata.get("ai_risk_analyzer") if isinstance(company_metadata.get("ai_risk_analyzer"), dict) else {}
-        outreach_cache = company_metadata.get("ai_outreach_strategy") if isinstance(company_metadata.get("ai_outreach_strategy"), dict) else {}
-        competitor_cache = company_metadata.get("ai_competitor_intelligence") if isinstance(company_metadata.get("ai_competitor_intelligence"), dict) else {}
+        risk_cache = (
+            company_metadata.get("ai_risk_analyzer")
+            if isinstance(company_metadata.get("ai_risk_analyzer"), dict)
+            else {}
+        )
+        outreach_cache = (
+            company_metadata.get("ai_outreach_strategy")
+            if isinstance(company_metadata.get("ai_outreach_strategy"), dict)
+            else {}
+        )
+        competitor_cache = (
+            company_metadata.get("ai_competitor_intelligence")
+            if isinstance(company_metadata.get("ai_competitor_intelligence"), dict)
+            else {}
+        )
 
-        orchestrator_output = ai_final_orchestrator.get("output") if isinstance(ai_final_orchestrator.get("output"), dict) else {}
-        decision_maker = orchestrator_output.get("decision_maker") if isinstance(orchestrator_output.get("decision_maker"), dict) else {}
-        email_plan = orchestrator_output.get("email_plan") if isinstance(orchestrator_output.get("email_plan"), dict) else {}
-        competitor_view = orchestrator_output.get("competitor_view") if isinstance(orchestrator_output.get("competitor_view"), dict) else {}
-        final_recommendation = orchestrator_output.get("final_recommendation") if isinstance(orchestrator_output.get("final_recommendation"), dict) else {}
+        orchestrator_output = (
+            ai_final_orchestrator.get("output")
+            if isinstance(ai_final_orchestrator.get("output"), dict)
+            else {}
+        )
+        decision_maker = (
+            orchestrator_output.get("decision_maker")
+            if isinstance(orchestrator_output.get("decision_maker"), dict)
+            else {}
+        )
+        email_plan = (
+            orchestrator_output.get("email_plan")
+            if isinstance(orchestrator_output.get("email_plan"), dict)
+            else {}
+        )
+        competitor_view = (
+            orchestrator_output.get("competitor_view")
+            if isinstance(orchestrator_output.get("competitor_view"), dict)
+            else {}
+        )
+        final_recommendation = (
+            orchestrator_output.get("final_recommendation")
+            if isinstance(orchestrator_output.get("final_recommendation"), dict)
+            else {}
+        )
 
-        top_risks = risk_cache.get("reasons") if isinstance(risk_cache.get("reasons"), list) else []
-        top_opportunities = [str(item) for item in opportunity_ranking_cache.get("top_positive_signals", []) if str(item or "").strip()] if isinstance(opportunity_ranking_cache.get("top_positive_signals"), list) else []
-        opportunity_to_sell = str(competitor_view.get("opportunity_to_sell") or competitor_cache.get("opportunity_to_sell") or "").strip()
+        top_risks = (
+            risk_cache.get("reasons")
+            if isinstance(risk_cache.get("reasons"), list)
+            else []
+        )
+        top_opportunities = (
+            [
+                str(item)
+                for item in opportunity_ranking_cache.get("top_positive_signals", [])
+                if str(item or "").strip()
+            ]
+            if isinstance(opportunity_ranking_cache.get("top_positive_signals"), list)
+            else []
+        )
+        opportunity_to_sell = str(
+            competitor_view.get("opportunity_to_sell")
+            or competitor_cache.get("opportunity_to_sell")
+            or ""
+        ).strip()
         if opportunity_to_sell:
             top_opportunities = [opportunity_to_sell, *top_opportunities]
 
-        follow_up_schedule = outreach_cache.get("follow_up_schedule") if isinstance(outreach_cache.get("follow_up_schedule"), list) else []
-        recommended_follow_up = str(follow_up_schedule[0] or "").strip() if follow_up_schedule else ""
+        follow_up_schedule = (
+            outreach_cache.get("follow_up_schedule")
+            if isinstance(outreach_cache.get("follow_up_schedule"), list)
+            else []
+        )
+        recommended_follow_up = (
+            str(follow_up_schedule[0] or "").strip() if follow_up_schedule else ""
+        )
 
         evidence: list[dict[str, Any]] = []
         for section in ai_agent_intermediate_reasoning.values():
-            if not isinstance(section, dict) or not isinstance(section.get("evidence"), list):
+            if not isinstance(section, dict) or not isinstance(
+                section.get("evidence"), list
+            ):
                 continue
             for item in section.get("evidence", []):
                 if not isinstance(item, dict):
@@ -2149,14 +3177,27 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
                     {
                         "source_field": source_field,
                         "value": value,
-                        "confidence": max(0, min(100, int(item.get("confidence") if str(item.get("confidence") or "").isdigit() else 70))),
+                        "confidence": max(
+                            0,
+                            min(
+                                100,
+                                int(
+                                    item.get("confidence")
+                                    if str(item.get("confidence") or "").isdigit()
+                                    else 70
+                                ),
+                            ),
+                        ),
                     }
                 )
 
         seen: set[tuple[str, str]] = set()
         deduped_evidence: list[dict[str, Any]] = []
         for item in evidence:
-            key = (str(item.get("source_field") or "").lower(), str(item.get("value") or "").lower())
+            key = (
+                str(item.get("source_field") or "").lower(),
+                str(item.get("value") or "").lower(),
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -2165,7 +3206,9 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
             "generated_at": datetime.utcnow().isoformat(),
             "source": "cached_orchestrator",
             "overall_opportunity_score": {
-                "score": int(opportunity_ranking_cache["overall_score"]) if str(opportunity_ranking_cache.get("overall_score") or "").isdigit() else 0,
+                "score": int(opportunity_ranking_cache["overall_score"])
+                if str(opportunity_ranking_cache.get("overall_score") or "").isdigit()
+                else 0,
                 "reasoning": str(opportunity_ranking_cache.get("reasoning") or ""),
             },
             "buying_intent": {
@@ -2180,9 +3223,15 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
                 "authority_level": decision_maker.get("authority_level"),
                 "is_verified_contact": bool(decision_maker.get("is_verified_contact")),
             },
-            "top_risks": [str(item) for item in top_risks if str(item or "").strip()][:5],
+            "top_risks": [str(item) for item in top_risks if str(item or "").strip()][
+                :5
+            ],
             "top_opportunities": top_opportunities[:5],
-            "recommended_next_action": str(final_recommendation.get("next_action") or opportunity_ranking_cache.get("recommended_next_action") or ""),
+            "recommended_next_action": str(
+                final_recommendation.get("next_action")
+                or opportunity_ranking_cache.get("recommended_next_action")
+                or ""
+            ),
             "recommended_email": {
                 "subject": str(email_plan.get("subject") or ""),
                 "first_sentence": str(email_plan.get("first_sentence") or ""),
@@ -2191,27 +3240,79 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
             },
             "recommended_follow_up": recommended_follow_up,
             "competitor_summary": {
-                "competitors": competitor_view.get("competitors") if isinstance(competitor_view.get("competitors"), list) else (competitor_cache.get("competitors") if isinstance(competitor_cache.get("competitors"), list) else []),
-                "market_gaps": competitor_view.get("market_gaps") if isinstance(competitor_view.get("market_gaps"), list) else (competitor_cache.get("market_gaps") if isinstance(competitor_cache.get("market_gaps"), list) else []),
+                "competitors": competitor_view.get("competitors")
+                if isinstance(competitor_view.get("competitors"), list)
+                else (
+                    competitor_cache.get("competitors")
+                    if isinstance(competitor_cache.get("competitors"), list)
+                    else []
+                ),
+                "market_gaps": competitor_view.get("market_gaps")
+                if isinstance(competitor_view.get("market_gaps"), list)
+                else (
+                    competitor_cache.get("market_gaps")
+                    if isinstance(competitor_cache.get("market_gaps"), list)
+                    else []
+                ),
                 "opportunity_to_sell": opportunity_to_sell,
             },
             "evidence": deduped_evidence[:12],
-            "confidence": int(ai_final_orchestrator["confidence"]) if str(ai_final_orchestrator.get("confidence") or "").isdigit() else 0,
+            "confidence": int(ai_final_orchestrator["confidence"])
+            if str(ai_final_orchestrator.get("confidence") or "").isdigit()
+            else 0,
         }
     if not ai_revenue_engine_report:
         top_profile = {}
-        if isinstance(decision_maker_intelligence.get("profiles"), list) and decision_maker_intelligence.get("profiles"):
+        if isinstance(
+            decision_maker_intelligence.get("profiles"), list
+        ) and decision_maker_intelligence.get("profiles"):
             first_profile = decision_maker_intelligence.get("profiles")[0]
             top_profile = first_profile if isinstance(first_profile, dict) else {}
-        buying_signal_score = int(company_metadata["buying_signal_score"]) if str(company_metadata.get("buying_signal_score") or "").isdigit() else 0
-        opportunity_score_cache = int(company_metadata["overall_score"]) if str(company_metadata.get("overall_score") or "").isdigit() else 0
-        top_pain_points = [str(item) for item in company_metadata.get("pain_points", []) if str(item or "").strip()] if isinstance(company_metadata.get("pain_points"), list) else []
-        top_opportunities = [str(item) for item in company_metadata.get("top_positive_signals", []) if str(item or "").strip()] if isinstance(company_metadata.get("top_positive_signals"), list) else []
-        top_risks = [str(item) for item in company_metadata.get("top_negative_signals", []) if str(item or "").strip()] if isinstance(company_metadata.get("top_negative_signals"), list) else []
+        buying_signal_score = (
+            int(company_metadata["buying_signal_score"])
+            if str(company_metadata.get("buying_signal_score") or "").isdigit()
+            else 0
+        )
+        opportunity_score_cache = (
+            int(company_metadata["overall_score"])
+            if str(company_metadata.get("overall_score") or "").isdigit()
+            else 0
+        )
+        top_pain_points = (
+            [
+                str(item)
+                for item in company_metadata.get("pain_points", [])
+                if str(item or "").strip()
+            ]
+            if isinstance(company_metadata.get("pain_points"), list)
+            else []
+        )
+        top_opportunities = (
+            [
+                str(item)
+                for item in company_metadata.get("top_positive_signals", [])
+                if str(item or "").strip()
+            ]
+            if isinstance(company_metadata.get("top_positive_signals"), list)
+            else []
+        )
+        top_risks = (
+            [
+                str(item)
+                for item in company_metadata.get("top_negative_signals", [])
+                if str(item or "").strip()
+            ]
+            if isinstance(company_metadata.get("top_negative_signals"), list)
+            else []
+        )
         ai_revenue_engine_report = {
             "generated_at": datetime.utcnow().isoformat(),
             "source": "cached_company_metadata",
-            "executive_summary": str(company_metadata.get("reasoning") or company_metadata.get("ai_summary") or ""),
+            "executive_summary": str(
+                company_metadata.get("reasoning")
+                or company_metadata.get("ai_summary")
+                or ""
+            ),
             "overall_opportunity_score": {
                 "score": opportunity_score_cache,
                 "reasoning": str(company_metadata.get("reasoning") or ""),
@@ -2219,7 +3320,9 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
             "buying_intent": {
                 "score": buying_signal_score,
                 "urgency": str(company_metadata.get("buying_signal_urgency") or ""),
-                "reasoning": str(company_metadata.get("buying_signal_explanation") or ""),
+                "reasoning": str(
+                    company_metadata.get("buying_signal_explanation") or ""
+                ),
             },
             "decision_maker": {
                 "contact_id": top_profile.get("contact_id"),
@@ -2228,25 +3331,99 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
                 "authority_level": top_profile.get("estimated_authority_level"),
                 "is_verified_contact": bool(top_profile.get("is_verified_contact")),
             },
-            "best_contact_reason": str(top_profile.get("why_best_decision_maker") or ""),
+            "best_contact_reason": str(
+                top_profile.get("why_best_decision_maker") or ""
+            ),
             "top_pain_points": top_pain_points[:5],
             "top_opportunities": top_opportunities[:5],
             "top_risks": top_risks[:5],
             "competitor_position": {
                 "positioning": str(ai_competitor_intelligence.get("positioning") or ""),
-                "competitors": [str(item) for item in ai_competitor_intelligence.get("competitors", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("competitors"), list) else [],
-                "market_gaps": [str(item) for item in ai_competitor_intelligence.get("market_gaps", []) if str(item or "").strip()] if isinstance(ai_competitor_intelligence.get("market_gaps"), list) else [],
-                "opportunity_to_sell": str(ai_competitor_intelligence.get("opportunity_to_sell") or ""),
+                "competitors": [
+                    str(item)
+                    for item in ai_competitor_intelligence.get("competitors", [])
+                    if str(item or "").strip()
+                ]
+                if isinstance(ai_competitor_intelligence.get("competitors"), list)
+                else [],
+                "market_gaps": [
+                    str(item)
+                    for item in ai_competitor_intelligence.get("market_gaps", [])
+                    if str(item or "").strip()
+                ]
+                if isinstance(ai_competitor_intelligence.get("market_gaps"), list)
+                else [],
+                "opportunity_to_sell": str(
+                    ai_competitor_intelligence.get("opportunity_to_sell") or ""
+                ),
             },
             "technology_summary": {
-                "products": [str(item) for item in company_metadata.get("company_intelligence", {}).get("report", {}).get("products", {}).get("value", []) if str(item or "").strip()] if isinstance(company_metadata.get("company_intelligence"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report", {}).get("products"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report", {}).get("products", {}).get("value"), list) else [],
-                "technology_stack": [str(item) for item in company_metadata.get("company_intelligence", {}).get("report", {}).get("technology_stack", {}).get("value", []) if str(item or "").strip()] if isinstance(company_metadata.get("company_intelligence"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report", {}).get("technology_stack"), dict) and isinstance(company_metadata.get("company_intelligence", {}).get("report", {}).get("technology_stack", {}).get("value"), list) else [],
+                "products": [
+                    str(item)
+                    for item in company_metadata.get("company_intelligence", {})
+                    .get("report", {})
+                    .get("products", {})
+                    .get("value", [])
+                    if str(item or "").strip()
+                ]
+                if isinstance(company_metadata.get("company_intelligence"), dict)
+                and isinstance(
+                    company_metadata.get("company_intelligence", {}).get("report"), dict
+                )
+                and isinstance(
+                    company_metadata.get("company_intelligence", {})
+                    .get("report", {})
+                    .get("products"),
+                    dict,
+                )
+                and isinstance(
+                    company_metadata.get("company_intelligence", {})
+                    .get("report", {})
+                    .get("products", {})
+                    .get("value"),
+                    list,
+                )
+                else [],
+                "technology_stack": [
+                    str(item)
+                    for item in company_metadata.get("company_intelligence", {})
+                    .get("report", {})
+                    .get("technology_stack", {})
+                    .get("value", [])
+                    if str(item or "").strip()
+                ]
+                if isinstance(company_metadata.get("company_intelligence"), dict)
+                and isinstance(
+                    company_metadata.get("company_intelligence", {}).get("report"), dict
+                )
+                and isinstance(
+                    company_metadata.get("company_intelligence", {})
+                    .get("report", {})
+                    .get("technology_stack"),
+                    dict,
+                )
+                and isinstance(
+                    company_metadata.get("company_intelligence", {})
+                    .get("report", {})
+                    .get("technology_stack", {})
+                    .get("value"),
+                    list,
+                )
+                else [],
             },
             "recommended_outreach_strategy": {
-                "why_contact_now": str(ai_outreach_strategy.get("why_contact_now") or ""),
+                "why_contact_now": str(
+                    ai_outreach_strategy.get("why_contact_now") or ""
+                ),
                 "best_timing": str(ai_outreach_strategy.get("best_timing") or ""),
-                "best_channel": str(ai_outreach_strategy.get("best_communication_channel") or ai_outreach_strategy.get("best_channel") or ""),
-                "strongest_value_proposition": str(ai_outreach_strategy.get("strongest_value_proposition") or ""),
+                "best_channel": str(
+                    ai_outreach_strategy.get("best_communication_channel")
+                    or ai_outreach_strategy.get("best_channel")
+                    or ""
+                ),
+                "strongest_value_proposition": str(
+                    ai_outreach_strategy.get("strongest_value_proposition") or ""
+                ),
             },
             "recommended_first_email": {
                 "subject": str(ai_outreach_strategy.get("best_subject_line") or ""),
@@ -2254,23 +3431,55 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
                 "cta": str(ai_outreach_strategy.get("cta") or ""),
             },
             "recommended_follow_up_strategy": {
-                "schedule": [str(item) for item in ai_outreach_strategy.get("follow_up_schedule", []) if str(item or "").strip()] if isinstance(ai_outreach_strategy.get("follow_up_schedule"), list) else [],
+                "schedule": [
+                    str(item)
+                    for item in ai_outreach_strategy.get("follow_up_schedule", [])
+                    if str(item or "").strip()
+                ]
+                if isinstance(ai_outreach_strategy.get("follow_up_schedule"), list)
+                else [],
                 "strategy": str(ai_sales_coach.get("alternative_strategy") or ""),
             },
             "recommended_cta": str(ai_outreach_strategy.get("cta") or ""),
-            "confidence": int(company_metadata["confidence"]) if str(company_metadata.get("confidence") or "").isdigit() else 0,
-            "evidence": [item for item in ai_executive_dashboard.get("evidence", []) if isinstance(item, dict)] if isinstance(ai_executive_dashboard.get("evidence"), list) else [],
+            "confidence": int(company_metadata["confidence"])
+            if str(company_metadata.get("confidence") or "").isdigit()
+            else 0,
+            "evidence": [
+                item
+                for item in ai_executive_dashboard.get("evidence", [])
+                if isinstance(item, dict)
+            ]
+            if isinstance(ai_executive_dashboard.get("evidence"), list)
+            else [],
         }
-    technologies = deep_contact_search.get("technologies") if isinstance(deep_contact_search.get("technologies"), list) else []
+    technologies = (
+        deep_contact_search.get("technologies")
+        if isinstance(deep_contact_search.get("technologies"), list)
+        else []
+    )
     if not technologies and isinstance(company_metadata.get("technologies"), list):
         technologies = company_metadata.get("technologies") or []
-    last_enriched_at = _datetime_or_none(deep_contact_search.get("last_enriched_at")) if deep_contact_search else None
+    last_enriched_at = (
+        _datetime_or_none(deep_contact_search.get("last_enriched_at"))
+        if deep_contact_search
+        else None
+    )
     if last_enriched_at is None:
         last_enriched_at = _datetime_or_none(company_metadata.get("last_enriched_at"))
-    contact_search_checked_at = _datetime_or_none(company_metadata.get("contact_search_checked_at"))
+    contact_search_checked_at = _datetime_or_none(
+        company_metadata.get("contact_search_checked_at")
+    )
     roles_searched = company_metadata.get("decision_maker_roles_searched")
-    intelligence_quality = company_metadata.get("intelligence_quality") if isinstance(company_metadata.get("intelligence_quality"), dict) else {}
-    company_intelligence = company_metadata.get("company_intelligence") if isinstance(company_metadata.get("company_intelligence"), dict) else {}
+    intelligence_quality = (
+        company_metadata.get("intelligence_quality")
+        if isinstance(company_metadata.get("intelligence_quality"), dict)
+        else {}
+    )
+    company_intelligence = (
+        company_metadata.get("company_intelligence")
+        if isinstance(company_metadata.get("company_intelligence"), dict)
+        else {}
+    )
     customer_finder_scores = _customer_finder_score_metadata(company_metadata)
     workflow_stages, workflow_stage_messages = _company_workflow_statuses(
         company=company,
@@ -2301,14 +3510,24 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         city=company.city,
         country=company.country,
         industry=company.industry,
-        google_rating=float(company.google_rating) if company.google_rating is not None else None,
+        google_rating=float(company.google_rating)
+        if company.google_rating is not None
+        else None,
         place_id=company.place_id,
         source=company.source,
         ai_summary=company.ai_summary,
-        pain_points=[str(item) for item in company_metadata.get("pain_points", [])] if isinstance(company_metadata.get("pain_points"), list) else [],
-        services=[str(item) for item in company_metadata.get("services", [])] if isinstance(company_metadata.get("services"), list) else [],
-        weaknesses=[str(item) for item in company_metadata.get("weaknesses", [])] if isinstance(company_metadata.get("weaknesses"), list) else [],
-        icp_score=int(company_metadata["icp_score"]) if str(company_metadata.get("icp_score") or "").isdigit() else None,
+        pain_points=[str(item) for item in company_metadata.get("pain_points", [])]
+        if isinstance(company_metadata.get("pain_points"), list)
+        else [],
+        services=[str(item) for item in company_metadata.get("services", [])]
+        if isinstance(company_metadata.get("services"), list)
+        else [],
+        weaknesses=[str(item) for item in company_metadata.get("weaknesses", [])]
+        if isinstance(company_metadata.get("weaknesses"), list)
+        else [],
+        icp_score=int(company_metadata["icp_score"])
+        if str(company_metadata.get("icp_score") or "").isdigit()
+        else None,
         value_proposition=str(company_metadata.get("value_proposition") or ""),
         suggested_offer=company.suggested_offer,
         outreach_strategy=company.outreach_strategy,
@@ -2316,38 +3535,82 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         recommended_cta=str(company_metadata.get("recommended_cta") or ""),
         follow_up_strategy=str(company_metadata.get("follow_up_strategy") or ""),
         expected_reply_rate=company.expected_reply_rate,
-        buying_signals=[str(item) for item in company_metadata.get("buying_signals", [])] if isinstance(company_metadata.get("buying_signals"), list) else [],
-        risks=[str(item) for item in company_metadata.get("risks", [])] if isinstance(company_metadata.get("risks"), list) else [],
+        buying_signals=[
+            str(item) for item in company_metadata.get("buying_signals", [])
+        ]
+        if isinstance(company_metadata.get("buying_signals"), list)
+        else [],
+        risks=[str(item) for item in company_metadata.get("risks", [])]
+        if isinstance(company_metadata.get("risks"), list)
+        else [],
         opportunity_analysis=str(company_metadata.get("opportunity_analysis") or ""),
         partnership_fit=str(company_metadata.get("partnership_fit") or ""),
-        buying_signal_score=int(company_metadata["buying_signal_score"]) if str(company_metadata.get("buying_signal_score") or "").isdigit() else None,
+        buying_signal_score=int(company_metadata["buying_signal_score"])
+        if str(company_metadata.get("buying_signal_score") or "").isdigit()
+        else None,
         buying_signal_urgency=str(company_metadata.get("buying_signal_urgency") or ""),
-        buying_signal_explanation=str(company_metadata.get("buying_signal_explanation") or ""),
-        buying_signal_evidence=[item for item in company_metadata.get("buying_signal_evidence", []) if isinstance(item, dict)] if isinstance(company_metadata.get("buying_signal_evidence"), list) else [],
-        buying_signal_confidence=int(company_metadata["buying_signal_confidence"]) if str(company_metadata.get("buying_signal_confidence") or "").isdigit() else None,
-        recommended_outreach_timing=str(company_metadata.get("recommended_outreach_timing") or ""),
-        overall_score=int(company_metadata["overall_score"]) if str(company_metadata.get("overall_score") or "").isdigit() else None,
+        buying_signal_explanation=str(
+            company_metadata.get("buying_signal_explanation") or ""
+        ),
+        buying_signal_evidence=[
+            item
+            for item in company_metadata.get("buying_signal_evidence", [])
+            if isinstance(item, dict)
+        ]
+        if isinstance(company_metadata.get("buying_signal_evidence"), list)
+        else [],
+        buying_signal_confidence=int(company_metadata["buying_signal_confidence"])
+        if str(company_metadata.get("buying_signal_confidence") or "").isdigit()
+        else None,
+        recommended_outreach_timing=str(
+            company_metadata.get("recommended_outreach_timing") or ""
+        ),
+        overall_score=int(company_metadata["overall_score"])
+        if str(company_metadata.get("overall_score") or "").isdigit()
+        else None,
         reasoning=str(company_metadata.get("reasoning") or ""),
-        top_positive_signals=[str(item) for item in company_metadata.get("top_positive_signals", [])] if isinstance(company_metadata.get("top_positive_signals"), list) else [],
-        top_negative_signals=[str(item) for item in company_metadata.get("top_negative_signals", [])] if isinstance(company_metadata.get("top_negative_signals"), list) else [],
-        recommended_next_action=str(company_metadata.get("recommended_next_action") or ""),
-        confidence=int(company_metadata["confidence"]) if str(company_metadata.get("confidence") or "").isdigit() else None,
-        priority_score=int(company_metadata["priority_score"]) if str(company_metadata.get("priority_score") or "").isdigit() else None,
-        confidence_score=int(company_metadata["confidence_score"]) if str(company_metadata.get("confidence_score") or "").isdigit() else None,
+        top_positive_signals=[
+            str(item) for item in company_metadata.get("top_positive_signals", [])
+        ]
+        if isinstance(company_metadata.get("top_positive_signals"), list)
+        else [],
+        top_negative_signals=[
+            str(item) for item in company_metadata.get("top_negative_signals", [])
+        ]
+        if isinstance(company_metadata.get("top_negative_signals"), list)
+        else [],
+        recommended_next_action=str(
+            company_metadata.get("recommended_next_action") or ""
+        ),
+        confidence=int(company_metadata["confidence"])
+        if str(company_metadata.get("confidence") or "").isdigit()
+        else None,
+        priority_score=int(company_metadata["priority_score"])
+        if str(company_metadata.get("priority_score") or "").isdigit()
+        else None,
+        confidence_score=int(company_metadata["confidence_score"])
+        if str(company_metadata.get("confidence_score") or "").isdigit()
+        else None,
         overall_lead_score=customer_finder_scores["overall_lead_score"],
         website_quality_score=customer_finder_scores["website_quality_score"],
         contact_confidence_score=customer_finder_scores["contact_confidence_score"],
         outreach_readiness_score=customer_finder_scores["outreach_readiness_score"],
         lead_score_explanation=customer_finder_scores["lead_score_explanation"] or "",
         lead_intelligence=customer_finder_scores["lead_intelligence"],
-        next_recommended_action=str(company_metadata.get("next_recommended_action") or ""),
+        next_recommended_action=str(
+            company_metadata.get("next_recommended_action") or ""
+        ),
         email_status=company.email_status,
         crm_stage=company.crm_stage,
         contacts=[_crm_contact_out(contact, company.name) for contact in contacts],
         deals=[_crm_deal_out(deal, company.name) for deal in deals],
         notes=[_crm_note_out(note) for note in notes],
-        activity=[ActivityOut.model_validate(item, from_attributes=True) for item in activity],
-        generated_emails=[EmailOut.model_validate(item, from_attributes=True) for item in emails],
+        activity=[
+            ActivityOut.model_validate(item, from_attributes=True) for item in activity
+        ],
+        generated_emails=[
+            EmailOut.model_validate(item, from_attributes=True) for item in emails
+        ],
         created_at=company.created_at,
         updated_at=company.updated_at,
         found_at=found_at,
@@ -2363,9 +3626,13 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         last_activity_at=last_activity_at,
         stage_changed_at=company.updated_at,
         contact_search_checked_at=contact_search_checked_at,
-        contact_search_status=str(company_metadata.get("contact_search_status") or "") or None,
-        contact_search_message=str(company_metadata.get("contact_search_message") or "") or None,
-        decision_maker_roles_searched=[str(role) for role in roles_searched] if isinstance(roles_searched, list) else [],
+        contact_search_status=str(company_metadata.get("contact_search_status") or "")
+        or None,
+        contact_search_message=str(company_metadata.get("contact_search_message") or "")
+        or None,
+        decision_maker_roles_searched=[str(role) for role in roles_searched]
+        if isinstance(roles_searched, list)
+        else [],
         workflow_stages=workflow_stages,
         workflow_stage_messages=workflow_stage_messages,
         ai_workflow_engine=ai_workflow_engine,
@@ -2388,7 +3655,9 @@ def _crm_company_out(db: Session, workspace: Workspace, user_id: str, company: C
         ai_ceo_dashboard=ai_ceo_dashboard,
         ai_sales_os=ai_sales_os,
         ai_sales_workspace=ai_sales_workspace,
-        ai_sales_workspace_updated_at=_datetime_or_none(company_metadata.get("ai_sales_workspace_updated_at")),
+        ai_sales_workspace_updated_at=_datetime_or_none(
+            company_metadata.get("ai_sales_workspace_updated_at")
+        ),
         ai_live_buying_signals=ai_live_buying_signals,
         ai_lead_prioritization=ai_lead_prioritization,
         ai_sales_inbox_latest=ai_sales_inbox_latest,
@@ -2413,18 +3682,47 @@ def _score_int_or_none(value: Any) -> int | None:
 
 
 def _customer_finder_score_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    simple = metadata.get("simple_customer_finder") if isinstance(metadata.get("simple_customer_finder"), dict) else {}
-    lead_intelligence = metadata.get("lead_intelligence") if isinstance(metadata.get("lead_intelligence"), dict) else {}
+    simple = (
+        metadata.get("simple_customer_finder")
+        if isinstance(metadata.get("simple_customer_finder"), dict)
+        else {}
+    )
+    lead_intelligence = (
+        metadata.get("lead_intelligence")
+        if isinstance(metadata.get("lead_intelligence"), dict)
+        else {}
+    )
     if not lead_intelligence:
-        lead_intelligence = simple.get("lead_intelligence") if isinstance(simple.get("lead_intelligence"), dict) else {}
-    components = lead_intelligence.get("components") if isinstance(lead_intelligence.get("components"), dict) else {}
-    scoring = metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
-    explanation = str(scoring.get("explanation") or metadata.get("fit_explanation") or simple.get("why_this_company") or "")
+        lead_intelligence = (
+            simple.get("lead_intelligence")
+            if isinstance(simple.get("lead_intelligence"), dict)
+            else {}
+        )
+    components = (
+        lead_intelligence.get("components")
+        if isinstance(lead_intelligence.get("components"), dict)
+        else {}
+    )
+    scoring = (
+        metadata.get("scoring") if isinstance(metadata.get("scoring"), dict) else {}
+    )
+    explanation = str(
+        scoring.get("explanation")
+        or metadata.get("fit_explanation")
+        or simple.get("why_this_company")
+        or ""
+    )
     return {
-        "overall_lead_score": _score_int_or_none(lead_intelligence.get("overall_lead_score")),
+        "overall_lead_score": _score_int_or_none(
+            lead_intelligence.get("overall_lead_score")
+        ),
         "website_quality_score": _score_int_or_none(components.get("website_quality")),
-        "contact_confidence_score": _score_int_or_none(components.get("contact_confidence")),
-        "outreach_readiness_score": _score_int_or_none(components.get("outreach_readiness")),
+        "contact_confidence_score": _score_int_or_none(
+            components.get("contact_confidence")
+        ),
+        "outreach_readiness_score": _score_int_or_none(
+            components.get("outreach_readiness")
+        ),
         "lead_score_explanation": explanation,
         "lead_intelligence": lead_intelligence,
     }
@@ -2441,14 +3739,37 @@ def _company_workflow_statuses(
     email_generated_at: datetime | None,
     email_approved_at: datetime | None,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    explicit = metadata.get("workflow_stages") if isinstance(metadata.get("workflow_stages"), dict) else {}
-    explicit_messages = metadata.get("workflow_stage_messages") if isinstance(metadata.get("workflow_stage_messages"), dict) else {}
+    explicit = (
+        metadata.get("workflow_stages")
+        if isinstance(metadata.get("workflow_stages"), dict)
+        else {}
+    )
+    explicit_messages = (
+        metadata.get("workflow_stage_messages")
+        if isinstance(metadata.get("workflow_stage_messages"), dict)
+        else {}
+    )
 
     def status(key: str, fallback: str) -> str:
         value = str(explicit.get(key) or fallback or "waiting")
-        return value if value in {"waiting", "running", "completed", "error"} else "waiting"
+        return (
+            value
+            if value in {"waiting", "running", "completed", "error"}
+            else "waiting"
+        )
 
-    has_profile = bool(company.name and (company.website or company.domain or company.phone or company.address or company.city or company.country or company.place_id))
+    has_profile = bool(
+        company.name
+        and (
+            company.website
+            or company.domain
+            or company.phone
+            or company.address
+            or company.city
+            or company.country
+            or company.place_id
+        )
+    )
     has_research = bool(
         website_analyzed_at
         or company.ai_summary
@@ -2458,40 +3779,96 @@ def _company_workflow_statuses(
         or metadata.get("pain_points")
     )
     has_decision_maker = bool(contacts or contact_found_at or company.email)
-    has_verified_email = bool(company.email or any(contact.email for contact in contacts))
-    attempted_contact = bool(metadata.get("contact_search_checked_at") or metadata.get("contact_search_status"))
+    has_verified_email = bool(
+        company.email or any(contact.email for contact in contacts)
+    )
+    attempted_contact = bool(
+        metadata.get("contact_search_checked_at")
+        or metadata.get("contact_search_status")
+    )
     has_email_draft = bool(email_generated_at or emails)
-    has_approved = bool(email_approved_at or any(email.delivery_status in {"approved", "sent"} for email in emails))
+    has_approved = bool(
+        email_approved_at
+        or any(email.delivery_status in {"approved", "sent"} for email in emails)
+    )
 
     stages = {
-        "company_profile": status("company_profile", "completed" if has_profile else "waiting"),
-        "website_analysis": status("website_analysis", "completed" if has_research else "waiting"),
-        "decision_maker": status("decision_maker", "completed" if has_decision_maker else ("error" if attempted_contact else "waiting")),
-        "verified_email": status("verified_email", "completed" if has_verified_email else ("error" if attempted_contact else "waiting")),
+        "company_profile": status(
+            "company_profile", "completed" if has_profile else "waiting"
+        ),
+        "website_analysis": status(
+            "website_analysis", "completed" if has_research else "waiting"
+        ),
+        "decision_maker": status(
+            "decision_maker",
+            "completed"
+            if has_decision_maker
+            else ("error" if attempted_contact else "waiting"),
+        ),
+        "verified_email": status(
+            "verified_email",
+            "completed"
+            if has_verified_email
+            else ("error" if attempted_contact else "waiting"),
+        ),
         "ai_email": status("ai_email", "completed" if has_email_draft else "waiting"),
         "approval": status("approval", "completed" if has_approved else "waiting"),
     }
 
     messages = {
-        "company_profile": "Saved company, location, website, phone and business listing data." if has_profile else "Add or verify the company website and business profile.",
-        "website_analysis": "AI summary, services, sales angle, offer and useful personalization facts." if has_research else "Run website analysis to fill summary, pain points and opportunity angle.",
-        "decision_maker": "A real person or role to contact. If not verified, add it manually." if has_decision_maker else str(metadata.get("contact_search_message") or "Find a decision maker or add the right contact manually."),
-        "verified_email": "A usable business email. OutreachAI never invents missing email addresses." if has_verified_email else str(metadata.get("contact_search_message") or "Find a verified email or add a known business email manually."),
-        "ai_email": "A personalized first email generated from the company research." if has_email_draft else "Generate a personalized email for review. Sending stays blocked until approval.",
-        "approval": "Human review before anything is sent to a real prospect." if has_approved else "Review the draft, edit it if needed, then approve before sending.",
+        "company_profile": "Saved company, location, website, phone and business listing data."
+        if has_profile
+        else "Add or verify the company website and business profile.",
+        "website_analysis": "AI summary, services, sales angle, offer and useful personalization facts."
+        if has_research
+        else "Run website analysis to fill summary, pain points and opportunity angle.",
+        "decision_maker": "A real person or role to contact. If not verified, add it manually."
+        if has_decision_maker
+        else str(
+            metadata.get("contact_search_message")
+            or "Find a decision maker or add the right contact manually."
+        ),
+        "verified_email": "A usable business email. OutreachAI never invents missing email addresses."
+        if has_verified_email
+        else str(
+            metadata.get("contact_search_message")
+            or "Find a verified email or add a known business email manually."
+        ),
+        "ai_email": "A personalized first email generated from the company research."
+        if has_email_draft
+        else "Generate a personalized email for review. Sending stays blocked until approval.",
+        "approval": "Human review before anything is sent to a real prospect."
+        if has_approved
+        else "Review the draft, edit it if needed, then approve before sending.",
     }
-    messages.update({str(key): str(value) for key, value in explicit_messages.items() if value})
+    messages.update(
+        {str(key): str(value) for key, value in explicit_messages.items() if value}
+    )
     return stages, messages
 
 
 def _ensure_crm_backfilled(db: Session, user_id: str, workspace: Workspace) -> None:
-    leads = list(db.scalars(select(Lead).where(_workspace_stmt(Lead, workspace, user_id)).order_by(Lead.created_at.desc()).limit(500)).all())
-    lead_ids = [lead.id for lead in leads]
-    existing_company_lead_ids = set(
+    leads = list(
         db.scalars(
-            select(Company.lead_id).where(_workspace_stmt(Company, workspace, user_id), Company.lead_id.in_(lead_ids))
+            select(Lead)
+            .where(_workspace_stmt(Lead, workspace, user_id))
+            .order_by(Lead.created_at.desc())
+            .limit(500)
         ).all()
-    ) if lead_ids else set()
+    )
+    lead_ids = [lead.id for lead in leads]
+    existing_company_lead_ids = (
+        set(
+            db.scalars(
+                select(Company.lead_id).where(
+                    _workspace_stmt(Company, workspace, user_id),
+                    Company.lead_id.in_(lead_ids),
+                )
+            ).all()
+        )
+        if lead_ids
+        else set()
+    )
     changed = False
     for lead in leads:
         if lead.id not in existing_company_lead_ids:
@@ -2502,11 +3879,28 @@ def _ensure_crm_backfilled(db: Session, user_id: str, workspace: Workspace) -> N
         db.commit()
 
 
-def _crm_company_query(workspace: Workspace, user_id: str, search: str = "", city: str = "", country: str = "", industry: str = "", stage: str = "", email_status: str = "", source: str = ""):
+def _crm_company_query(
+    workspace: Workspace,
+    user_id: str,
+    search: str = "",
+    city: str = "",
+    country: str = "",
+    industry: str = "",
+    stage: str = "",
+    email_status: str = "",
+    source: str = "",
+):
     stmt = select(Company).where(_workspace_stmt(Company, workspace, user_id))
     if search:
         term = f"%{search}%"
-        stmt = stmt.where(or_(Company.name.ilike(term), Company.website.ilike(term), Company.email.ilike(term), Company.phone.ilike(term)))
+        stmt = stmt.where(
+            or_(
+                Company.name.ilike(term),
+                Company.website.ilike(term),
+                Company.email.ilike(term),
+                Company.phone.ilike(term),
+            )
+        )
     if city:
         stmt = stmt.where(Company.city.ilike(f"%{city}%"))
     if country:
@@ -2522,7 +3916,9 @@ def _crm_company_query(workspace: Workspace, user_id: str, search: str = "", cit
     return stmt.order_by(Company.updated_at.desc())
 
 
-def _merge_lead_metadata(lead: Lead, updates: dict[str, Any], readable: list[str] | None = None) -> str:
+def _merge_lead_metadata(
+    lead: Lead, updates: dict[str, Any], readable: list[str] | None = None
+) -> str:
     metadata = _lead_metadata(lead)
     clean_updates = {
         key: value
@@ -2532,8 +3928,14 @@ def _merge_lead_metadata(lead: Lead, updates: dict[str, Any], readable: list[str
     header = json.dumps({**metadata, **clean_updates}, sort_keys=True)
     existing = lead.notes or ""
     existing_lines = existing.splitlines()
-    existing_readable = "\n".join(existing_lines[1:] if existing_lines and existing_lines[0].lstrip().startswith("{") else existing_lines).strip()
-    next_readable = "\n".join(item.strip() for item in readable or [] if item and item.strip())
+    existing_readable = "\n".join(
+        existing_lines[1:]
+        if existing_lines and existing_lines[0].lstrip().startswith("{")
+        else existing_lines
+    ).strip()
+    next_readable = "\n".join(
+        item.strip() for item in readable or [] if item and item.strip()
+    )
     body_parts = [part for part in [next_readable, existing_readable] if part]
     return "\n".join([header, *body_parts])
 
@@ -2541,27 +3943,65 @@ def _merge_lead_metadata(lead: Lead, updates: dict[str, Any], readable: list[str
 def _merge_lead_metadata_for_new(metadata: dict[str, Any], source: str) -> str:
     clean = {
         key: value
-        for key, value in {**metadata, "source": metadata.get("source") or source}.items()
+        for key, value in {
+            **metadata,
+            "source": metadata.get("source") or source,
+        }.items()
         if value is not None and value != "" and value != [] and value != {}
     }
     return json.dumps(clean, sort_keys=True)
 
 
-def _notify(db: Session, user_id: str, kind: NotificationKind, title: str, message: str) -> None:
+def _notify(
+    db: Session, user_id: str, kind: NotificationKind, title: str, message: str
+) -> None:
     db.add(Notification(user_id=user_id, kind=kind, title=title, message=message))
 
 
 def _provider_error(exc: Exception) -> HTTPException:
     if isinstance(exc, EmailProviderSendingDisabledError):
         return HTTPException(status_code=503, detail=str(exc))
-    if isinstance(exc, (ProviderConfigurationError, EmailProviderConfigurationError, LeadSourceConfigurationError, ApolloConfigurationError, HunterConfigurationError, GoogleMapsConfigurationError)):
-        return HTTPException(status_code=503, detail="This connection is not ready. Please contact the workspace owner.")
-    if isinstance(exc, (ProviderRequestError, EmailProviderRequestError, WebsiteFetchError, LeadSourceRequestError, ApolloRequestError, HunterRequestError, GoogleMapsRequestError, LeadProviderTimeoutError)):
-        return HTTPException(status_code=502, detail="This connection is temporarily unavailable. Please try again later.")
-    return HTTPException(status_code=500, detail="Something went wrong while processing your request. Please try again.")
+    if isinstance(
+        exc,
+        (
+            ProviderConfigurationError,
+            EmailProviderConfigurationError,
+            LeadSourceConfigurationError,
+            ApolloConfigurationError,
+            HunterConfigurationError,
+            GoogleMapsConfigurationError,
+        ),
+    ):
+        return HTTPException(
+            status_code=503,
+            detail="This connection is not ready. Please contact the workspace owner.",
+        )
+    if isinstance(
+        exc,
+        (
+            ProviderRequestError,
+            EmailProviderRequestError,
+            WebsiteFetchError,
+            LeadSourceRequestError,
+            ApolloRequestError,
+            HunterRequestError,
+            GoogleMapsRequestError,
+            LeadProviderTimeoutError,
+        ),
+    ):
+        return HTTPException(
+            status_code=502,
+            detail="This connection is temporarily unavailable. Please try again later.",
+        )
+    return HTTPException(
+        status_code=500,
+        detail="Something went wrong while processing your request. Please try again.",
+    )
 
 
-def _skipped_website_analysis(company: str, website: str, niche: str | None = None) -> AnalysisOut:
+def _skipped_website_analysis(
+    company: str, website: str, niche: str | None = None
+) -> AnalysisOut:
     return AnalysisOut(
         company=company,
         website=website,
@@ -2584,28 +4024,64 @@ def _skipped_website_analysis(company: str, website: str, niche: str | None = No
 
 
 def _lead_trace(request_id: str, step: str, **data: Any) -> None:
-    safe = {key: value for key, value in data.items() if key not in {"api_key", "secret", "token"}}
-    logger.info("lead_finder_trace request_id=%s step=%s data=%s", request_id, step, json.dumps(safe, default=str, ensure_ascii=False, sort_keys=True)[:4000])
+    safe = {
+        key: value
+        for key, value in data.items()
+        if key not in {"api_key", "secret", "token"}
+    }
+    logger.info(
+        "lead_finder_trace request_id=%s step=%s data=%s",
+        request_id,
+        step,
+        json.dumps(safe, default=str, ensure_ascii=False, sort_keys=True)[:4000],
+    )
 
 
 class LeadProviderTimeoutError(RuntimeError):
     pass
 
 
-def _run_provider_with_deadline(request_id: str, provider: str, operation: str, func: Any, *args: Any, timeout_seconds: int | None = None) -> Any:
+def _run_provider_with_deadline(
+    request_id: str,
+    provider: str,
+    operation: str,
+    func: Any,
+    *args: Any,
+    timeout_seconds: int | None = None,
+) -> Any:
     timeout_seconds = timeout_seconds or LEAD_PROVIDER_TIMEOUT_SECONDS
     started = time.monotonic()
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"lead-{provider}")
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix=f"lead-{provider}"
+    )
     future = executor.submit(func, *args)
     try:
         result = future.result(timeout=timeout_seconds)
-        _lead_trace(request_id, f"{provider}_finished", operation=operation, duration_ms=int((time.monotonic() - started) * 1000))
+        _lead_trace(
+            request_id,
+            f"{provider}_finished",
+            operation=operation,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
         return result
     except concurrent.futures.TimeoutError as exc:
         future.cancel()
-        _lead_trace(request_id, f"{provider}_timeout", operation=operation, timeout_seconds=timeout_seconds, duration_ms=int((time.monotonic() - started) * 1000))
-        capture_provider_exception(exc, provider=provider, endpoint=operation, extra={"request_id": request_id, "timeout_seconds": timeout_seconds})
-        raise LeadProviderTimeoutError(f"{operation} timed out after {timeout_seconds} seconds") from exc
+        _lead_trace(
+            request_id,
+            f"{provider}_timeout",
+            operation=operation,
+            timeout_seconds=timeout_seconds,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        capture_provider_exception(
+            exc,
+            provider=provider,
+            endpoint=operation,
+            extra={"request_id": request_id, "timeout_seconds": timeout_seconds},
+        )
+        raise LeadProviderTimeoutError(
+            f"{operation} timed out after {timeout_seconds} seconds"
+        ) from exc
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
@@ -2622,7 +4098,11 @@ def _icp_score(analysis: AnalysisOut, lead: Lead) -> int:
         score += 10
     if analysis.weaknesses:
         score += 15
-    if analysis.industry and lead.industry and analysis.industry.lower() in lead.industry.lower():
+    if (
+        analysis.industry
+        and lead.industry
+        and analysis.industry.lower() in lead.industry.lower()
+    ):
         score += 5
     return max(0, min(100, max(score, analysis.icp_score)))
 
@@ -2632,16 +4112,28 @@ def _analysis_summary_with_score(analysis: AnalysisOut, score: int) -> str:
         f"ICP score: {score}/100.",
         analysis.company_summary or analysis.summary,
         f"Sales angle: {analysis.sales_angle}" if analysis.sales_angle else "",
-        f"Suggested offer: {analysis.suggested_offer}" if analysis.suggested_offer else "",
-        f"Outreach strategy: {analysis.outreach_strategy}" if analysis.outreach_strategy else "",
-        f"Opportunity: {analysis.opportunity_analysis}" if analysis.opportunity_analysis else "",
-        f"Partnership fit: {analysis.partnership_fit}" if analysis.partnership_fit else "",
-        f"Next action: {analysis.next_recommended_action}" if analysis.next_recommended_action else "",
+        f"Suggested offer: {analysis.suggested_offer}"
+        if analysis.suggested_offer
+        else "",
+        f"Outreach strategy: {analysis.outreach_strategy}"
+        if analysis.outreach_strategy
+        else "",
+        f"Opportunity: {analysis.opportunity_analysis}"
+        if analysis.opportunity_analysis
+        else "",
+        f"Partnership fit: {analysis.partnership_fit}"
+        if analysis.partnership_fit
+        else "",
+        f"Next action: {analysis.next_recommended_action}"
+        if analysis.next_recommended_action
+        else "",
     ]
     return " ".join(part for part in parts if part).strip()
 
 
-def _analysis_metadata(analysis: AnalysisOut, score: int, audit: dict | None = None) -> dict[str, Any]:
+def _analysis_metadata(
+    analysis: AnalysisOut, score: int, audit: dict | None = None
+) -> dict[str, Any]:
     return {
         "ai_summary": analysis.company_summary or analysis.summary,
         "icp_score": score,
@@ -2650,7 +4142,8 @@ def _analysis_metadata(analysis: AnalysisOut, score: int, audit: dict | None = N
         "products_services": analysis.products_services,
         "strengths": analysis.strengths,
         "weaknesses": analysis.weaknesses,
-        "pain_points": analysis.weaknesses or list((audit or {}).get("priority_actions") or []),
+        "pain_points": analysis.weaknesses
+        or list((audit or {}).get("priority_actions") or []),
         "value_proposition": analysis.value_proposition,
         "detected_language": analysis.detected_language,
         "target_geography": analysis.target_geography,
@@ -2672,34 +4165,86 @@ def _analysis_metadata(analysis: AnalysisOut, score: int, audit: dict | None = N
     }
 
 
-def _analysis_readable_notes(analysis: AnalysisOut, score: int, audit: dict | None = None) -> list[str]:
-    audit_notes = ", ".join((audit or {}).get("priority_actions") or []) or "No critical website audit issues detected"
+def _analysis_readable_notes(
+    analysis: AnalysisOut, score: int, audit: dict | None = None
+) -> list[str]:
+    audit_notes = (
+        ", ".join((audit or {}).get("priority_actions") or [])
+        or "No critical website audit issues detected"
+    )
     return [
         f"AI summary: {analysis.company_summary or analysis.summary}",
         f"ICP score: {score}/100",
-        f"Value proposition: {analysis.value_proposition}" if analysis.value_proposition else "",
+        f"Value proposition: {analysis.value_proposition}"
+        if analysis.value_proposition
+        else "",
         f"Sales angle: {analysis.sales_angle}" if analysis.sales_angle else "",
-        f"Suggested offer: {analysis.suggested_offer}" if analysis.suggested_offer else "",
-        f"Outreach strategy: {analysis.outreach_strategy}" if analysis.outreach_strategy else "",
-        f"Expected reply rate: {analysis.expected_reply_rate}" if analysis.expected_reply_rate else "",
-        f"Buying signals: {', '.join(analysis.buying_signals)}" if analysis.buying_signals else "",
+        f"Suggested offer: {analysis.suggested_offer}"
+        if analysis.suggested_offer
+        else "",
+        f"Outreach strategy: {analysis.outreach_strategy}"
+        if analysis.outreach_strategy
+        else "",
+        f"Expected reply rate: {analysis.expected_reply_rate}"
+        if analysis.expected_reply_rate
+        else "",
+        f"Buying signals: {', '.join(analysis.buying_signals)}"
+        if analysis.buying_signals
+        else "",
         f"Risks: {', '.join(analysis.risks)}" if analysis.risks else "",
-        f"Opportunity: {analysis.opportunity_analysis}" if analysis.opportunity_analysis else "",
-        f"Partnership fit: {analysis.partnership_fit}" if analysis.partnership_fit else "",
-        f"Next action: {analysis.next_recommended_action}" if analysis.next_recommended_action else "",
+        f"Opportunity: {analysis.opportunity_analysis}"
+        if analysis.opportunity_analysis
+        else "",
+        f"Partnership fit: {analysis.partnership_fit}"
+        if analysis.partnership_fit
+        else "",
+        f"Next action: {analysis.next_recommended_action}"
+        if analysis.next_recommended_action
+        else "",
         f"Website audit: {audit_notes}",
     ]
 
 
-def _website_audit_markers(page_text: str, technologies: list[str], load_ms: int = 0) -> dict:
+def _website_audit_markers(
+    page_text: str, technologies: list[str], load_ms: int = 0
+) -> dict:
     lower = page_text.lower()
-    missing_cta = not any(term in lower for term in ["book", "schedule", "contact us", "get started", "request", "quote"])
-    missing_contact_form = not any(term in lower for term in ["<form", "contact form", "send message", "submit"])
+    missing_cta = not any(
+        term in lower
+        for term in [
+            "book",
+            "schedule",
+            "contact us",
+            "get started",
+            "request",
+            "quote",
+        ]
+    )
+    missing_contact_form = not any(
+        term in lower for term in ["<form", "contact form", "send message", "submit"]
+    )
     poor_seo = len(page_text) < 900
-    weak_trust_signals = not any(term in lower for term in ["case study", "testimonial", "certified", "award", "trusted", "clients"])
-    missing_reviews = not any(term in lower for term in ["review", "reviews", "stars", "testimonial"])
+    weak_trust_signals = not any(
+        term in lower
+        for term in [
+            "case study",
+            "testimonial",
+            "certified",
+            "award",
+            "trusted",
+            "clients",
+        ]
+    )
+    missing_reviews = not any(
+        term in lower for term in ["review", "reviews", "stars", "testimonial"]
+    )
     slow_website = load_ms > 2500
-    outdated_design = not any(tech in technologies for tech in ["React", "Next.js", "Webflow", "Shopify"]) and len(technologies) <= 2
+    outdated_design = (
+        not any(
+            tech in technologies for tech in ["React", "Next.js", "Webflow", "Shopify"]
+        )
+        and len(technologies) <= 2
+    )
     issues = {
         "missing_cta": missing_cta,
         "missing_contact_form": missing_contact_form,
@@ -2713,21 +4258,33 @@ def _website_audit_markers(page_text: str, technologies: list[str], load_ms: int
     return {**issues, "priority_actions": actions[:5]}
 
 
-def _lead_context(db: Session, workspace: Workspace, user_id: str, lead_id: UUID) -> tuple[Lead, WebsiteAnalysis | None, Campaign | None, list[EmailMessage]]:
+def _lead_context(
+    db: Session, workspace: Workspace, user_id: str, lead_id: UUID
+) -> tuple[Lead, WebsiteAnalysis | None, Campaign | None, list[EmailMessage]]:
     set_lead_context(lead_id)
-    lead = db.scalar(select(Lead).where(Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)))
+    lead = db.scalar(
+        select(Lead).where(
+            Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)
+        )
+    )
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
     analysis = db.scalar(
         select(WebsiteAnalysis)
-        .where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == lead.id)
+        .where(
+            _workspace_stmt(WebsiteAnalysis, workspace, user_id),
+            WebsiteAnalysis.lead_id == lead.id,
+        )
         .order_by(WebsiteAnalysis.created_at.desc())
     )
     campaign = db.get(Campaign, lead.campaign_id) if lead.campaign_id else None
     messages = list(
         db.scalars(
             select(EmailMessage)
-            .where(_workspace_stmt(EmailMessage, workspace, user_id), EmailMessage.lead_id == lead.id)
+            .where(
+                _workspace_stmt(EmailMessage, workspace, user_id),
+                EmailMessage.lead_id == lead.id,
+            )
             .order_by(EmailMessage.created_at.desc())
             .limit(20)
         ).all()
@@ -2756,7 +4313,13 @@ def _normalize_ai_response_language(language: str | None) -> str:
     return candidate
 
 
-def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Campaign | None, messages: list[EmailMessage], language: str | None = None) -> dict:
+def _lead_ai_payload(
+    lead: Lead,
+    analysis: WebsiteAnalysis | None,
+    campaign: Campaign | None,
+    messages: list[EmailMessage],
+    language: str | None = None,
+) -> dict:
     intelligence = _lead_metadata(lead)
     return {
         "response_language": _normalize_ai_response_language(language),
@@ -2814,16 +4377,52 @@ def _lead_ai_payload(lead: Lead, analysis: WebsiteAnalysis | None, campaign: Cam
     }
 
 
-def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, lead: Lead, language: str | None = None) -> None:
+def _analyze_lead_if_possible(
+    db: Session,
+    user_id: str,
+    workspace: Workspace,
+    lead: Lead,
+    language: str | None = None,
+) -> None:
     if not lead.website:
-        logger.info("lead_finder_trace step=website_analysis_skipped data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "reason": "no_website"}, sort_keys=True))
+        logger.info(
+            "lead_finder_trace step=website_analysis_skipped data=%s",
+            json.dumps(
+                {
+                    "lead_id": str(lead.id),
+                    "company": lead.company,
+                    "reason": "no_website",
+                },
+                sort_keys=True,
+            ),
+        )
         return
     try:
         normalized_website = normalize_website_url(lead.website)
         lead.website = normalized_website
-        logger.info("lead_finder_trace step=website_fetch_started data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "website": normalized_website}, sort_keys=True))
+        logger.info(
+            "lead_finder_trace step=website_fetch_started data=%s",
+            json.dumps(
+                {
+                    "lead_id": str(lead.id),
+                    "company": lead.company,
+                    "website": normalized_website,
+                },
+                sort_keys=True,
+            ),
+        )
         snapshot = collect_website(normalized_website)
-        logger.info("lead_finder_trace step=openai_analysis_started data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "website": snapshot.url}, sort_keys=True))
+        logger.info(
+            "lead_finder_trace step=openai_analysis_started data=%s",
+            json.dumps(
+                {
+                    "lead_id": str(lead.id),
+                    "company": lead.company,
+                    "website": snapshot.url,
+                },
+                sort_keys=True,
+            ),
+        )
         result = analyze_company_website(
             company=lead.company,
             website=snapshot.url,
@@ -2848,7 +4447,11 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
             endpoint="lead.website_analysis.fetch",
             workspace_id=workspace.id,
             lead_id=lead.id,
-            extra={"company": lead.company, "website": lead.website, "message": WEBSITE_UNREACHABLE_MESSAGE},
+            extra={
+                "company": lead.company,
+                "website": lead.website,
+                "message": WEBSITE_UNREACHABLE_MESSAGE,
+            },
         )
         lead.notes = _merge_lead_metadata(
             lead,
@@ -2863,9 +4466,24 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
         _sync_lead_to_crm(db, user_id, workspace, lead)
         return
     except Exception as exc:
-        logger.exception("lead_finder_trace step=website_or_openai_analysis_failed lead_id=%s company=%s reason=%s", lead.id, lead.company, exc)
-        capture_provider_exception(exc, provider="openai", endpoint="lead.website_analysis", workspace_id=workspace.id, lead_id=lead.id)
-        lead.notes = "\n".join(part for part in [lead.notes or "", f"Website analysis pending: {exc}"] if part)
+        logger.exception(
+            "lead_finder_trace step=website_or_openai_analysis_failed lead_id=%s company=%s reason=%s",
+            lead.id,
+            lead.company,
+            exc,
+        )
+        capture_provider_exception(
+            exc,
+            provider="openai",
+            endpoint="lead.website_analysis",
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+        )
+        lead.notes = "\n".join(
+            part
+            for part in [lead.notes or "", f"Website analysis pending: {exc}"]
+            if part
+        )
         return
     score = _icp_score(result, lead)
     audit = _website_audit_markers(snapshot.text, snapshot.technologies)
@@ -2889,16 +4507,33 @@ def _analyze_lead_if_possible(db: Session, user_id: str, workspace: Workspace, l
     db.add(analysis)
     lead.industry = lead.industry or result.industry
     lead.niche = lead.niche or result.niche
-    lead.notes = _merge_lead_metadata(lead, {**_analysis_metadata(result, score, audit), "website_analyzed_at": datetime.utcnow().isoformat()}, _analysis_readable_notes(result, score, audit))
+    lead.notes = _merge_lead_metadata(
+        lead,
+        {
+            **_analysis_metadata(result, score, audit),
+            "website_analyzed_at": datetime.utcnow().isoformat(),
+        },
+        _analysis_readable_notes(result, score, audit),
+    )
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    logger.info("lead_finder_trace step=openai_analysis_completed data=%s", json.dumps({"lead_id": str(lead.id), "company": lead.company, "icp_score": score}, sort_keys=True))
+    logger.info(
+        "lead_finder_trace step=openai_analysis_completed data=%s",
+        json.dumps(
+            {"lead_id": str(lead.id), "company": lead.company, "icp_score": score},
+            sort_keys=True,
+        ),
+    )
 
 
 def _default_settings() -> dict:
     return {
         "general": {"workspaceMode": "team", "dateFormat": "YYYY-MM-DD"},
         "ai": {"model": "gpt-5.5", "temperature": 0.4, "personalization": "high"},
-        "email": {"provider": "connected_email_sender", "dailyLimit": 250, "tracking": True},
+        "email": {
+            "provider": "connected_email_sender",
+            "dailyLimit": 250,
+            "tracking": True,
+        },
         "billing": {"plan": "Starter", "renewal": "monthly"},
         "security": {"mfaRequired": False, "sessionTimeout": "30d"},
         "api": {"enabled": False, "webhooks": []},
@@ -2913,24 +4548,43 @@ def _hunter_settings_state(settings: AppSettings) -> dict[str, Any]:
     return _integration_settings_state(settings, "hunter")
 
 
-def _integration_settings_state(settings: AppSettings, integration: str) -> dict[str, Any]:
+def _integration_settings_state(
+    settings: AppSettings, integration: str
+) -> dict[str, Any]:
     api_settings = settings.api if isinstance(settings.api, dict) else {}
-    state = api_settings.get(integration) if isinstance(api_settings.get(integration), dict) else {}
+    state = (
+        api_settings.get(integration)
+        if isinstance(api_settings.get(integration), dict)
+        else {}
+    )
     return state
 
 
-def _save_apollo_settings_state(db: Session, settings: AppSettings, **updates: Any) -> None:
+def _save_apollo_settings_state(
+    db: Session, settings: AppSettings, **updates: Any
+) -> None:
     _save_integration_settings_state(db, settings, "apollo", **updates)
 
 
-def _save_hunter_settings_state(db: Session, settings: AppSettings, **updates: Any) -> None:
+def _save_hunter_settings_state(
+    db: Session, settings: AppSettings, **updates: Any
+) -> None:
     _save_integration_settings_state(db, settings, "hunter", **updates)
 
 
-def _save_integration_settings_state(db: Session, settings: AppSettings, integration: str, **updates: Any) -> None:
+def _save_integration_settings_state(
+    db: Session, settings: AppSettings, integration: str, **updates: Any
+) -> None:
     api_settings = settings.api if isinstance(settings.api, dict) else {}
-    current = api_settings.get(integration) if isinstance(api_settings.get(integration), dict) else {}
-    serializable_updates = {key: value.isoformat() if isinstance(value, datetime) else value for key, value in updates.items()}
+    current = (
+        api_settings.get(integration)
+        if isinstance(api_settings.get(integration), dict)
+        else {}
+    )
+    serializable_updates = {
+        key: value.isoformat() if isinstance(value, datetime) else value
+        for key, value in updates.items()
+    }
     settings.api = {**api_settings, integration: {**current, **serializable_updates}}
     db.add(settings)
 
@@ -2967,7 +4621,9 @@ def integrations_status(user_id: CurrentUser) -> IntegrationStatusOut:
 
 
 @router.get("/integrations/apollo/status", response_model=ApolloIntegrationStatusOut)
-def apollo_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> ApolloIntegrationStatusOut:
+def apollo_status(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> ApolloIntegrationStatusOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     state = _apollo_settings_state(settings)
@@ -2980,29 +4636,64 @@ def apollo_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Apollo
 
 
 @router.post("/integrations/apollo/test", response_model=ApolloConnectionTestOut)
-def apollo_test_connection(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> ApolloConnectionTestOut:
+def apollo_test_connection(
+    request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> ApolloConnectionTestOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     if not apollo_key_loaded():
-        _save_apollo_settings_state(db, settings, connected=False, last_error="Lead search connection is not ready.")
-        return ApolloConnectionTestOut(configured=False, connected=False, last_error="Lead search connection is not ready.")
+        _save_apollo_settings_state(
+            db,
+            settings,
+            connected=False,
+            last_error="Lead search connection is not ready.",
+        )
+        return ApolloConnectionTestOut(
+            configured=False,
+            connected=False,
+            last_error="Lead search connection is not ready.",
+        )
     try:
         result = test_apollo_connection()
     except Exception as exc:
         friendly = _provider_error(exc).detail
-        _save_apollo_settings_state(db, settings, connected=False, last_error=str(friendly))
-        log_event(db, request, user_id, "apollo.connection_failed", {"reason": str(friendly)})
+        _save_apollo_settings_state(
+            db, settings, connected=False, last_error=str(friendly)
+        )
+        log_event(
+            db, request, user_id, "apollo.connection_failed", {"reason": str(friendly)}
+        )
         db.commit()
-        return ApolloConnectionTestOut(configured=True, connected=False, last_error=str(friendly))
+        return ApolloConnectionTestOut(
+            configured=True, connected=False, last_error=str(friendly)
+        )
     now = datetime.utcnow()
-    _save_apollo_settings_state(db, settings, connected=True, last_success_at=now, last_error="")
-    log_event(db, request, user_id, "apollo.connection_tested", {"records": result.get("records", 0), "duration_ms": result.get("duration_ms", 0)})
+    _save_apollo_settings_state(
+        db, settings, connected=True, last_success_at=now, last_error=""
+    )
+    log_event(
+        db,
+        request,
+        user_id,
+        "apollo.connection_tested",
+        {
+            "records": result.get("records", 0),
+            "duration_ms": result.get("duration_ms", 0),
+        },
+    )
     db.commit()
-    return ApolloConnectionTestOut(configured=True, connected=True, duration_ms=int(result.get("duration_ms", 0)), last_success_at=now)
+    return ApolloConnectionTestOut(
+        configured=True,
+        connected=True,
+        duration_ms=int(result.get("duration_ms", 0)),
+        last_success_at=now,
+    )
 
 
 @router.get("/integrations/hunter/status", response_model=HunterIntegrationStatusOut)
-def hunter_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> HunterIntegrationStatusOut:
+def hunter_status(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> HunterIntegrationStatusOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     state = _hunter_settings_state(settings)
@@ -3015,25 +4706,55 @@ def hunter_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Hunter
 
 
 @router.post("/integrations/hunter/test", response_model=HunterConnectionTestOut)
-def hunter_test_connection(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> HunterConnectionTestOut:
+def hunter_test_connection(
+    request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> HunterConnectionTestOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     if not hunter_key_loaded():
-        _save_hunter_settings_state(db, settings, connected=False, last_error="Email verification is not ready.")
-        return HunterConnectionTestOut(configured=False, connected=False, last_error="Email verification is not ready.")
+        _save_hunter_settings_state(
+            db, settings, connected=False, last_error="Email verification is not ready."
+        )
+        return HunterConnectionTestOut(
+            configured=False,
+            connected=False,
+            last_error="Email verification is not ready.",
+        )
     try:
         result = test_hunter_connection()
     except Exception as exc:
         friendly = _provider_error(exc).detail
-        _save_hunter_settings_state(db, settings, connected=False, last_error=str(friendly))
-        log_event(db, request, user_id, "hunter.connection_failed", {"reason": str(friendly)})
+        _save_hunter_settings_state(
+            db, settings, connected=False, last_error=str(friendly)
+        )
+        log_event(
+            db, request, user_id, "hunter.connection_failed", {"reason": str(friendly)}
+        )
         db.commit()
-        return HunterConnectionTestOut(configured=True, connected=False, last_error=str(friendly))
+        return HunterConnectionTestOut(
+            configured=True, connected=False, last_error=str(friendly)
+        )
     now = datetime.utcnow()
-    _save_hunter_settings_state(db, settings, connected=True, last_success_at=now, last_error="")
-    log_event(db, request, user_id, "hunter.connection_tested", {"records": result.get("records", 0), "duration_ms": result.get("duration_ms", 0)})
+    _save_hunter_settings_state(
+        db, settings, connected=True, last_success_at=now, last_error=""
+    )
+    log_event(
+        db,
+        request,
+        user_id,
+        "hunter.connection_tested",
+        {
+            "records": result.get("records", 0),
+            "duration_ms": result.get("duration_ms", 0),
+        },
+    )
     db.commit()
-    return HunterConnectionTestOut(configured=True, connected=True, duration_ms=int(result.get("duration_ms", 0)), last_success_at=now)
+    return HunterConnectionTestOut(
+        configured=True,
+        connected=True,
+        duration_ms=int(result.get("duration_ms", 0)),
+        last_success_at=now,
+    )
 
 
 @router.post("/automation/run", response_model=AutomationRunOut)
@@ -3044,10 +4765,15 @@ def automation_run(
 ) -> AutomationRunOut:
     settings = get_app_settings()
     if not settings.automation_secret:
-        raise HTTPException(status_code=503, detail="AUTOMATION_SECRET is required before scheduled acquisition can run.")
+        raise HTTPException(
+            status_code=503,
+            detail="AUTOMATION_SECRET is required before scheduled acquisition can run.",
+        )
     if x_automation_secret != settings.automation_secret:
         raise HTTPException(status_code=401, detail="Invalid automation secret")
-    result = run_daily_acquisition(db, workspace_id=str(workspace_id) if workspace_id else None)
+    result = run_daily_acquisition(
+        db, workspace_id=str(workspace_id) if workspace_id else None
+    )
     return AutomationRunOut.model_validate(result.as_dict())
 
 
@@ -3058,20 +4784,70 @@ def _sales_employee_mode(value: str) -> SalesEmployeeMode:
     raise HTTPException(status_code=400, detail="Unsupported AI Sales Employee mode")
 
 
-def _employee_scope(db: Session, workspace: Workspace, user_id: str, employee_id: UUID) -> AISalesEmployee:
-    employee = db.scalar(select(AISalesEmployee).where(AISalesEmployee.id == employee_id, AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id))
+def _employee_scope(
+    db: Session, workspace: Workspace, user_id: str, employee_id: UUID
+) -> AISalesEmployee:
+    employee = db.scalar(
+        select(AISalesEmployee).where(
+            AISalesEmployee.id == employee_id,
+            AISalesEmployee.workspace_id == workspace.id,
+            AISalesEmployee.user_id == user_id,
+        )
+    )
     if employee is None:
         raise HTTPException(status_code=404, detail="AI Sales Employee not found")
     return employee
 
 
 def _employee_out(db: Session, employee: AISalesEmployee) -> AISalesEmployeeOut:
-    lead_count = db.scalar(select(func.count()).select_from(Lead).where(Lead.sales_employee_id == employee.id)) or 0
-    pending = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.delivery_status == "pending_approval")) or 0
-    sent = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.sent_at.is_not(None))) or 0
-    replies = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.replied_at.is_not(None))) or 0
+    lead_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(Lead.sales_employee_id == employee.id)
+        )
+        or 0
+    )
+    pending = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id),
+                EmailMessage.delivery_status == "pending_approval",
+            )
+        )
+        or 0
+    )
+    sent = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id),
+                EmailMessage.sent_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    replies = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id),
+                EmailMessage.replied_at.is_not(None),
+            )
+        )
+        or 0
+    )
     return AISalesEmployeeOut.model_validate(employee, from_attributes=True).model_copy(
-        update={"leads": lead_count, "pending_approval": pending, "sent": sent, "replies": replies}
+        update={
+            "leads": lead_count,
+            "pending_approval": pending,
+            "sent": sent,
+            "replies": replies,
+        }
     )
 
 
@@ -3082,13 +4858,19 @@ def _default_employee_limits(employee: AISalesEmployee) -> dict:
         "requires_review_by_default": employee.sending_mode == SalesEmployeeMode.review,
         "allow_autonomous_send": employee.sending_mode == SalesEmployeeMode.autonomous,
         "memory": _employee_memory(employee),
-        "current_task": (employee.strict_limits or {}).get("current_task") if employee.strict_limits else None,
-        "task_history": (employee.strict_limits or {}).get("task_history", []) if employee.strict_limits else [],
+        "current_task": (employee.strict_limits or {}).get("current_task")
+        if employee.strict_limits
+        else None,
+        "task_history": (employee.strict_limits or {}).get("task_history", [])
+        if employee.strict_limits
+        else [],
     }
 
 
 def _employee_memory(employee: AISalesEmployee) -> dict:
-    saved = (employee.strict_limits or {}).get("memory") if employee.strict_limits else {}
+    saved = (
+        (employee.strict_limits or {}).get("memory") if employee.strict_limits else {}
+    )
     if not isinstance(saved, dict):
         saved = {}
     return {
@@ -3096,8 +4878,13 @@ def _employee_memory(employee: AISalesEmployee) -> dict:
         "campaigns": list(saved.get("campaigns") or []),
         "industries": list(saved.get("industries") or employee.target_industries or []),
         "countries": list(saved.get("countries") or employee.target_countries or []),
-        "preferred_tone": str(saved.get("preferred_tone") or employee.tone or "Professional"),
-        "customer_preferences": list(saved.get("customer_preferences") or [item for item in [employee.target_customer, employee.offer] if item]),
+        "preferred_tone": str(
+            saved.get("preferred_tone") or employee.tone or "Professional"
+        ),
+        "customer_preferences": list(
+            saved.get("customer_preferences")
+            or [item for item in [employee.target_customer, employee.offer] if item]
+        ),
     }
 
 
@@ -3105,8 +4892,12 @@ def _with_employee_state(employee: AISalesEmployee, **updates: Any) -> dict:
     state = dict(employee.strict_limits or {})
     state.setdefault("daily_limit", employee.daily_limit)
     state.setdefault("max_autonomous_leads_per_run", min(employee.daily_limit, 50))
-    state.setdefault("requires_review_by_default", employee.sending_mode == SalesEmployeeMode.review)
-    state.setdefault("allow_autonomous_send", employee.sending_mode == SalesEmployeeMode.autonomous)
+    state.setdefault(
+        "requires_review_by_default", employee.sending_mode == SalesEmployeeMode.review
+    )
+    state.setdefault(
+        "allow_autonomous_send", employee.sending_mode == SalesEmployeeMode.autonomous
+    )
     for key, value in updates.items():
         state[key] = value
     return state
@@ -3118,7 +4909,11 @@ def _task_history(employee: AISalesEmployee) -> list[dict]:
 
 
 def _current_plan(employee: AISalesEmployee) -> dict | None:
-    plan = (employee.strict_limits or {}).get("current_task") if employee.strict_limits else None
+    plan = (
+        (employee.strict_limits or {}).get("current_task")
+        if employee.strict_limits
+        else None
+    )
     return plan if isinstance(plan, dict) else None
 
 
@@ -3150,7 +4945,14 @@ def _extract_country(employee: AISalesEmployee, command: str) -> str:
 
 def _extract_city(command: str) -> str:
     lowered = command.lower()
-    known = {"warsaw": "Warsaw", "berlin": "Berlin", "munich": "Munich", "london": "London", "paris": "Paris", "monaco": "Monaco"}
+    known = {
+        "warsaw": "Warsaw",
+        "berlin": "Berlin",
+        "munich": "Munich",
+        "london": "London",
+        "paris": "Paris",
+        "monaco": "Monaco",
+    }
     for needle, city in known.items():
         if needle in lowered:
             return city
@@ -3159,11 +4961,24 @@ def _extract_city(command: str) -> str:
 
 def _extract_industry(employee: AISalesEmployee, command: str) -> str:
     lowered = command.lower()
-    known = ["construction", "real estate", "saas", "marketing", "consulting", "manufacturing", "healthcare", "finance"]
+    known = [
+        "construction",
+        "real estate",
+        "saas",
+        "marketing",
+        "consulting",
+        "manufacturing",
+        "healthcare",
+        "finance",
+    ]
     for industry in known:
         if industry in lowered:
             return industry.title()
-    return employee.target_industries[0] if employee.target_industries else employee.target_customer or "B2B"
+    return (
+        employee.target_industries[0]
+        if employee.target_industries
+        else employee.target_customer or "B2B"
+    )
 
 
 def _plan_out(plan: dict) -> SalesEmployeeTaskPlanOut:
@@ -3206,12 +5021,19 @@ def _task_result_payload(
             "subject": email.subject,
             "body": email.body,
             "tone": employee.tone,
-            "target_company": next((lead.company for lead in leads if lead.id == email.lead_id), "Unknown company"),
+            "target_company": next(
+                (lead.company for lead in leads if lead.id == email.lead_id),
+                "Unknown company",
+            ),
         }
         for email in emails
     ]
     searched = {key: value or "Not specified" for key, value in filters.items()}
-    failure = "" if companies else "No companies matched the approved task filters in the current connected sources."
+    failure = (
+        ""
+        if companies
+        else "No companies matched the approved task filters in the current connected sources."
+    )
     return {
         "companies_found": companies,
         "prepared_emails": prepared,
@@ -3219,7 +5041,9 @@ def _task_result_payload(
             {
                 "tool_name": "AI Employee Planner",
                 "input": str(plan.get("command") or ""),
-                "output_summary": str(plan.get("expected_result") or "Execution plan prepared."),
+                "output_summary": str(
+                    plan.get("expected_result") or "Execution plan prepared."
+                ),
                 "status": "completed",
                 "duration_ms": 250,
             },
@@ -3239,19 +5063,45 @@ def _task_result_payload(
             },
         ],
         "ai_action_log": [
-            {"timestamp": started_at.isoformat(), "step": "approved_execution_started", "status": "completed", "message": "User approved the internal task execution."},
-            {"timestamp": completed_at.isoformat(), "step": "lead_discovery", "status": "completed" if companies else "empty", "message": f"{len(companies)} companies found and stored."},
-            {"timestamp": completed_at.isoformat(), "step": "safety_gate", "status": "blocked_external_actions", "message": "No email, campaign launch, or CRM export was performed without explicit approval."},
+            {
+                "timestamp": started_at.isoformat(),
+                "step": "approved_execution_started",
+                "status": "completed",
+                "message": "User approved the internal task execution.",
+            },
+            {
+                "timestamp": completed_at.isoformat(),
+                "step": "lead_discovery",
+                "status": "completed" if companies else "empty",
+                "message": f"{len(companies)} companies found and stored.",
+            },
+            {
+                "timestamp": completed_at.isoformat(),
+                "step": "safety_gate",
+                "status": "blocked_external_actions",
+                "message": "No email, campaign launch, or CRM export was performed without explicit approval.",
+            },
         ],
-        "final_summary": f"Found {len(companies)} companies and prepared {len(prepared)} outreach drafts for review." if companies else "The task finished with an empty result set.",
+        "final_summary": f"Found {len(companies)} companies and prepared {len(prepared)} outreach drafts for review."
+        if companies
+        else "The task finished with an empty result set.",
         "failure_reason": failure,
         "empty_result_details": {
             "searched": searched,
             "filters_used": searched,
-            "what_user_can_change": ["Broaden country or city", "Use a broader industry", "Import a CSV or website list", "Lower requested lead count"],
+            "what_user_can_change": [
+                "Broaden country or city",
+                "Use a broader industry",
+                "Import a CSV or website list",
+                "Lower requested lead count",
+            ],
             "suggested_next_command": f"Find {max(10, _parse_requested_count(str(plan.get('command') or ''), 10))} {employee.target_customer or 'B2B'} companies in a broader market",
-        } if not companies else {},
-        "next_recommended_action": "Review the companies, edit prepared emails, then approve any external action manually." if companies else "Broaden the search filters and run the task again.",
+        }
+        if not companies
+        else {},
+        "next_recommended_action": "Review the companies, edit prepared emails, then approve any external action manually."
+        if companies
+        else "Broaden the search filters and run the task again.",
         "approval_required": True,
         "external_actions_blocked": True,
     }
@@ -3268,14 +5118,20 @@ def _upsert_task_result(
     completed_at: datetime,
 ) -> SalesEmployeeTaskResult:
     task_id = str(plan.get("id") or "")
-    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id))
+    result = db.scalar(
+        select(SalesEmployeeTaskResult).where(
+            SalesEmployeeTaskResult.task_id == task_id
+        )
+    )
     if result is None:
         result = SalesEmployeeTaskResult(
             workspace_id=workspace.id,
             user_id=user_id,
             sales_employee_id=employee.id,
             task_id=task_id,
-            created_at=datetime.fromisoformat(str(plan.get("created_at"))) if plan.get("created_at") else datetime.utcnow(),
+            created_at=datetime.fromisoformat(str(plan.get("created_at")))
+            if plan.get("created_at")
+            else datetime.utcnow(),
         )
         db.add(result)
     result.command = str(plan.get("command") or "")
@@ -3285,22 +5141,44 @@ def _upsert_task_result(
     return result
 
 
-def _task_result_out(result: SalesEmployeeTaskResult, employee: AISalesEmployee | None = None) -> SalesEmployeeTaskResultOut:
+def _task_result_out(
+    result: SalesEmployeeTaskResult, employee: AISalesEmployee | None = None
+) -> SalesEmployeeTaskResultOut:
     execution = 0
     if result.completed_at:
-        execution = max(0, int((result.completed_at - result.created_at).total_seconds() * 1000))
-    return SalesEmployeeTaskResultOut.model_validate(result, from_attributes=True).model_copy(
-        update={"employee_name": employee.name if employee else "", "execution_time_ms": execution}
+        execution = max(
+            0, int((result.completed_at - result.created_at).total_seconds() * 1000)
+        )
+    return SalesEmployeeTaskResultOut.model_validate(
+        result, from_attributes=True
+    ).model_copy(
+        update={
+            "employee_name": employee.name if employee else "",
+            "execution_time_ms": execution,
+        }
     )
 
 
-def _lead_from_employee_payload(db: Session, workspace: Workspace, user_id: str, employee: AISalesEmployee, payload: LeadCreate, source: str) -> Lead:
+def _lead_from_employee_payload(
+    db: Session,
+    workspace: Workspace,
+    user_id: str,
+    employee: AISalesEmployee,
+    payload: LeadCreate,
+    source: str,
+) -> Lead:
     duplicate_terms = []
     if payload.email:
         duplicate_terms.append(Lead.email == str(payload.email))
     if payload.website:
         duplicate_terms.append(Lead.website == payload.website)
-    existing = db.scalar(select(Lead).where(Lead.workspace_id == workspace.id, or_(*duplicate_terms))) if duplicate_terms else None
+    existing = (
+        db.scalar(
+            select(Lead).where(Lead.workspace_id == workspace.id, or_(*duplicate_terms))
+        )
+        if duplicate_terms
+        else None
+    )
     if existing:
         existing.sales_employee_id = employee.id
         existing.campaign_id = payload.campaign_id or existing.campaign_id
@@ -3313,8 +5191,10 @@ def _lead_from_employee_payload(db: Session, workspace: Workspace, user_id: str,
         campaign_id=payload.campaign_id,
         company=payload.company,
         website=payload.website,
-        industry=payload.industry or (employee.target_industries[0] if employee.target_industries else None),
-        country=payload.country or (employee.target_countries[0] if employee.target_countries else None),
+        industry=payload.industry
+        or (employee.target_industries[0] if employee.target_industries else None),
+        country=payload.country
+        or (employee.target_countries[0] if employee.target_countries else None),
         city=payload.city,
         contact=payload.contact,
         email=str(payload.email) if payload.email else None,
@@ -3331,16 +5211,43 @@ def _lead_from_employee_payload(db: Session, workspace: Workspace, user_id: str,
 
 
 def _lead_create_from_row(row: dict, employee: AISalesEmployee) -> LeadCreate:
-    company = str(row.get("company") or row.get("Company") or row.get("name") or row.get("Name") or row.get("business_name") or "").strip()
-    website = str(row.get("website") or row.get("Website") or row.get("url") or row.get("URL") or "").strip() or None
+    company = str(
+        row.get("company")
+        or row.get("Company")
+        or row.get("name")
+        or row.get("Name")
+        or row.get("business_name")
+        or ""
+    ).strip()
+    website = (
+        str(
+            row.get("website")
+            or row.get("Website")
+            or row.get("url")
+            or row.get("URL")
+            or ""
+        ).strip()
+        or None
+    )
     email = str(row.get("email") or row.get("Email") or "").strip() or None
     return LeadCreate(
         company=company or website or "Imported company",
         website=website,
-        industry=str(row.get("industry") or row.get("Industry") or (employee.target_industries[0] if employee.target_industries else "")) or None,
-        country=str(row.get("country") or row.get("Country") or (employee.target_countries[0] if employee.target_countries else "")) or None,
+        industry=str(
+            row.get("industry")
+            or row.get("Industry")
+            or (employee.target_industries[0] if employee.target_industries else "")
+        )
+        or None,
+        country=str(
+            row.get("country")
+            or row.get("Country")
+            or (employee.target_countries[0] if employee.target_countries else "")
+        )
+        or None,
         city=str(row.get("city") or row.get("City") or "") or None,
-        contact=str(row.get("contact") or row.get("Contact") or row.get("person") or "") or None,
+        contact=str(row.get("contact") or row.get("Contact") or row.get("person") or "")
+        or None,
         email=email,
         phone=str(row.get("phone") or row.get("Phone") or "") or None,
         linkedin=str(row.get("linkedin") or row.get("LinkedIn") or "") or None,
@@ -3348,16 +5255,33 @@ def _lead_create_from_row(row: dict, employee: AISalesEmployee) -> LeadCreate:
     )
 
 
-def _employee_lead_context(db: Session, workspace: Workspace, user_id: str, employee_id: UUID, lead_id: UUID) -> tuple[AISalesEmployee, Lead, WebsiteAnalysis | None]:
+def _employee_lead_context(
+    db: Session, workspace: Workspace, user_id: str, employee_id: UUID, lead_id: UUID
+) -> tuple[AISalesEmployee, Lead, WebsiteAnalysis | None]:
     employee = _employee_scope(db, workspace, user_id, employee_id)
-    lead = db.scalar(select(Lead).where(Lead.id == lead_id, Lead.workspace_id == workspace.id, Lead.sales_employee_id == employee.id))
+    lead = db.scalar(
+        select(Lead).where(
+            Lead.id == lead_id,
+            Lead.workspace_id == workspace.id,
+            Lead.sales_employee_id == employee.id,
+        )
+    )
     if lead is None:
         raise HTTPException(status_code=404, detail="Employee lead not found")
-    analysis = db.scalar(select(WebsiteAnalysis).where(WebsiteAnalysis.workspace_id == workspace.id, WebsiteAnalysis.lead_id == lead.id).order_by(WebsiteAnalysis.created_at.desc()))
+    analysis = db.scalar(
+        select(WebsiteAnalysis)
+        .where(
+            WebsiteAnalysis.workspace_id == workspace.id,
+            WebsiteAnalysis.lead_id == lead.id,
+        )
+        .order_by(WebsiteAnalysis.created_at.desc())
+    )
     return employee, lead, analysis
 
 
-def _employee_ai_payload(employee: AISalesEmployee, lead: Lead, analysis: WebsiteAnalysis | None) -> dict:
+def _employee_ai_payload(
+    employee: AISalesEmployee, lead: Lead, analysis: WebsiteAnalysis | None
+) -> dict:
     return {
         "employee": {
             "name": employee.name,
@@ -3397,10 +5321,27 @@ def _analysis_payload(analysis: WebsiteAnalysis | None) -> dict:
     }
 
 
-def _upsert_employee_insight(db: Session, user_id: str, workspace: Workspace, employee: AISalesEmployee, lead: Lead, data: dict) -> SalesEmployeeLeadInsight:
-    insight = db.scalar(select(SalesEmployeeLeadInsight).where(SalesEmployeeLeadInsight.sales_employee_id == employee.id, SalesEmployeeLeadInsight.lead_id == lead.id))
+def _upsert_employee_insight(
+    db: Session,
+    user_id: str,
+    workspace: Workspace,
+    employee: AISalesEmployee,
+    lead: Lead,
+    data: dict,
+) -> SalesEmployeeLeadInsight:
+    insight = db.scalar(
+        select(SalesEmployeeLeadInsight).where(
+            SalesEmployeeLeadInsight.sales_employee_id == employee.id,
+            SalesEmployeeLeadInsight.lead_id == lead.id,
+        )
+    )
     if insight is None:
-        insight = SalesEmployeeLeadInsight(user_id=user_id, workspace_id=workspace.id, sales_employee_id=employee.id, lead_id=lead.id)
+        insight = SalesEmployeeLeadInsight(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            sales_employee_id=employee.id,
+            lead_id=lead.id,
+        )
         db.add(insight)
     insight.industry = str(data.get("industry") or lead.industry or "")
     insight.services = list(data.get("services") or [])
@@ -3414,8 +5355,17 @@ def _upsert_employee_insight(db: Session, user_id: str, workspace: Workspace, em
     insight.updated_at = datetime.utcnow()
     lead.industry = lead.industry or insight.industry
     lead.revenue = lead.revenue or max(0, insight.purchase_probability * 250)
-    lead.status = LeadStatus.qualified if insight.icp_score >= 55 else LeadStatus.archive
-    lead.notes = "\n".join(part for part in [lead.notes or "", f"AI Sales Employee qualification: ICP {insight.icp_score}/100, purchase {insight.purchase_probability}/100. {insight.best_sales_angle}"] if part)
+    lead.status = (
+        LeadStatus.qualified if insight.icp_score >= 55 else LeadStatus.archive
+    )
+    lead.notes = "\n".join(
+        part
+        for part in [
+            lead.notes or "",
+            f"AI Sales Employee qualification: ICP {insight.icp_score}/100, purchase {insight.purchase_probability}/100. {insight.best_sales_angle}",
+        ]
+        if part
+    )
     return insight
 
 
@@ -3441,10 +5391,18 @@ TEAM_EMPLOYEES = {
 
 def _team_router_state(settings: AppSettings) -> dict:
     ai_settings = settings.ai if isinstance(settings.ai, dict) else {}
-    state = ai_settings.get("team_router") if isinstance(ai_settings.get("team_router"), dict) else {}
+    state = (
+        ai_settings.get("team_router")
+        if isinstance(ai_settings.get("team_router"), dict)
+        else {}
+    )
     return {
-        "current_plan": state.get("current_plan") if isinstance(state.get("current_plan"), dict) else None,
-        "history": list(state.get("history") or []) if isinstance(state.get("history"), list) else [],
+        "current_plan": state.get("current_plan")
+        if isinstance(state.get("current_plan"), dict)
+        else None,
+        "history": list(state.get("history") or [])
+        if isinstance(state.get("history"), list)
+        else [],
         "memory": state.get("memory") if isinstance(state.get("memory"), dict) else {},
     }
 
@@ -3471,9 +5429,19 @@ def _team_dashboard(settings: AppSettings) -> TeamRouterDashboardOut:
     memory = state["memory"] if isinstance(state["memory"], dict) else {}
     employees: list[TeamEmployeeDashboardOut] = []
     for employee, config in TEAM_EMPLOYEES.items():
-        employee_plans = [plan for plan in all_plans if employee in list(plan.get("assigned_employees") or [])]
-        active = [plan for plan in employee_plans if plan.get("status") in {"waiting_approval", "approved", "running"}]
-        completed = [plan for plan in employee_plans if plan.get("status") == "finished"]
+        employee_plans = [
+            plan
+            for plan in all_plans
+            if employee in list(plan.get("assigned_employees") or [])
+        ]
+        active = [
+            plan
+            for plan in employee_plans
+            if plan.get("status") in {"waiting_approval", "approved", "running"}
+        ]
+        completed = [
+            plan for plan in employee_plans if plan.get("status") == "finished"
+        ]
         last = employee_plans[-1] if employee_plans else None
         subtasks = []
         results = []
@@ -3484,26 +5452,41 @@ def _team_dashboard(settings: AppSettings) -> TeamRouterDashboardOut:
                     if subtask.get("result"):
                         results.append(str(subtask.get("result")))
         denominator = max(len(employee_plans), 1)
-        performance = round(len(completed) / denominator * 100, 1) if employee_plans else 0
+        performance = (
+            round(len(completed) / denominator * 100, 1) if employee_plans else 0
+        )
         employees.append(
             TeamEmployeeDashboardOut(
                 employee=employee,
                 role=str(config["role"]),
                 active_tasks=len(active),
                 completed_tasks=len(completed),
-                last_activity=str(last.get("detected_intent") if last else "No activity yet"),
+                last_activity=str(
+                    last.get("detected_intent") if last else "No activity yet"
+                ),
                 performance=performance,
                 status="working" if active else "ready",
                 tasks=subtasks[-6:],
-                activity=[str(plan.get("detected_intent") or plan.get("command") or "") for plan in employee_plans[-5:]],
+                activity=[
+                    str(plan.get("detected_intent") or plan.get("command") or "")
+                    for plan in employee_plans[-5:]
+                ],
                 results=results[-5:],
-                memory=memory.get(employee, {"tools": config["tools"], "preferences": []}) if isinstance(memory, dict) else {"tools": config["tools"], "preferences": []},
+                memory=memory.get(
+                    employee, {"tools": config["tools"], "preferences": []}
+                )
+                if isinstance(memory, dict)
+                else {"tools": config["tools"], "preferences": []},
             )
         )
     return TeamRouterDashboardOut(
         employees=employees,
         current_plan=_team_plan_out(current),
-        history=[TeamRouterPlanOut.model_validate(plan) for plan in history[-10:] if isinstance(plan, dict)],
+        history=[
+            TeamRouterPlanOut.model_validate(plan)
+            for plan in history[-10:]
+            if isinstance(plan, dict)
+        ],
     )
 
 
@@ -3523,14 +5506,21 @@ def _team_plan_results(plan: dict) -> dict:
 
 
 @router.get("/team-router", response_model=TeamRouterDashboardOut)
-def team_router_dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterDashboardOut:
+def team_router_dashboard(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> TeamRouterDashboardOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     return _team_dashboard(settings)
 
 
 @router.post("/team-router/route", response_model=TeamRouterPlanOut)
-def team_router_route(payload: TeamRouterRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterPlanOut:
+def team_router_route(
+    payload: TeamRouterRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> TeamRouterPlanOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
@@ -3582,110 +5572,243 @@ def team_router_route(payload: TeamRouterRequest, request: Request, user_id: Cur
         "finished_at": None,
     }
     state = _team_router_state(settings)
-    history = [plan_item for plan_item in state["history"] if isinstance(plan_item, dict) and plan_item.get("id") != plan["id"]]
+    history = [
+        plan_item
+        for plan_item in state["history"]
+        if isinstance(plan_item, dict) and plan_item.get("id") != plan["id"]
+    ]
     history.append(plan)
     state["current_plan"] = plan
     state["history"] = history
     memory = state["memory"] if isinstance(state["memory"], dict) else {}
     for employee in routed["assigned_employees"]:
-        employee_memory = memory.get(employee, {}) if isinstance(memory.get(employee), dict) else {}
+        employee_memory = (
+            memory.get(employee, {}) if isinstance(memory.get(employee), dict) else {}
+        )
         preferences = list(employee_memory.get("preferences") or [])
         if routed["detected_intent"] not in preferences:
             preferences.append(routed["detected_intent"])
-        memory[employee] = {**employee_memory, "tools": TEAM_EMPLOYEES[employee]["tools"], "preferences": preferences[-10:]}
+        memory[employee] = {
+            **employee_memory,
+            "tools": TEAM_EMPLOYEES[employee]["tools"],
+            "preferences": preferences[-10:],
+        }
     state["memory"] = memory
     _save_team_router_state(settings, state)
-    log_event(db, request, user_id, "team_router.plan_created", {"plan_id": plan["id"], "employees": routed["assigned_employees"], "risk": routed["risk_level"]})
-    _notify(db, user_id, NotificationKind.success, "AI Team Router prepared a plan", f"{routed['primary_employee']} is leading the work. Approval is required.")
+    log_event(
+        db,
+        request,
+        user_id,
+        "team_router.plan_created",
+        {
+            "plan_id": plan["id"],
+            "employees": routed["assigned_employees"],
+            "risk": routed["risk_level"],
+        },
+    )
+    _notify(
+        db,
+        user_id,
+        NotificationKind.success,
+        "AI Team Router prepared a plan",
+        f"{routed['primary_employee']} is leading the work. Approval is required.",
+    )
     db.commit()
     return TeamRouterPlanOut.model_validate(plan)
 
 
 @router.post("/team-router/approve", response_model=TeamRouterPlanOut)
-def team_router_approve(payload: TeamRouterDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterPlanOut:
+def team_router_approve(
+    payload: TeamRouterDecision,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> TeamRouterPlanOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     state = _team_router_state(settings)
     plan = state["current_plan"]
     if not isinstance(plan, dict) or plan.get("id") != payload.plan_id:
-        raise HTTPException(status_code=404, detail="Current team router plan not found")
+        raise HTTPException(
+            status_code=404, detail="Current team router plan not found"
+        )
     if payload.edits:
-        plan["safety_notes"] = [*list(plan.get("safety_notes") or []), f"User edit: {payload.edits}"]
+        plan["safety_notes"] = [
+            *list(plan.get("safety_notes") or []),
+            f"User edit: {payload.edits}",
+        ]
     plan["status"] = "approved" if payload.action == "approve" else "cancelled"
-    plan["approved_at"] = datetime.utcnow().isoformat() if payload.action == "approve" else None
-    plan["progress"] = [*list(plan.get("progress") or []), "Approved by user" if payload.action == "approve" else "Cancelled by user"]
+    plan["approved_at"] = (
+        datetime.utcnow().isoformat() if payload.action == "approve" else None
+    )
+    plan["progress"] = [
+        *list(plan.get("progress") or []),
+        "Approved by user" if payload.action == "approve" else "Cancelled by user",
+    ]
     for subtask in plan.get("subtasks") or []:
         if isinstance(subtask, dict):
-            subtask["status"] = "approved" if payload.action == "approve" else "cancelled"
-    history = [plan_item for plan_item in state["history"] if isinstance(plan_item, dict) and plan_item.get("id") != payload.plan_id]
+            subtask["status"] = (
+                "approved" if payload.action == "approve" else "cancelled"
+            )
+    history = [
+        plan_item
+        for plan_item in state["history"]
+        if isinstance(plan_item, dict) and plan_item.get("id") != payload.plan_id
+    ]
     history.append(plan)
     state["current_plan"] = plan
     state["history"] = history
     _save_team_router_state(settings, state)
-    log_event(db, request, user_id, f"team_router.plan_{payload.action}d", {"plan_id": payload.plan_id})
+    log_event(
+        db,
+        request,
+        user_id,
+        f"team_router.plan_{payload.action}d",
+        {"plan_id": payload.plan_id},
+    )
     db.commit()
     return TeamRouterPlanOut.model_validate(plan)
 
 
 @router.post("/team-router/execute", response_model=TeamRouterPlanOut)
-def team_router_execute(payload: TeamRouterDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> TeamRouterPlanOut:
+def team_router_execute(
+    payload: TeamRouterDecision,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> TeamRouterPlanOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     state = _team_router_state(settings)
     plan = state["current_plan"]
     if not isinstance(plan, dict) or plan.get("id") != payload.plan_id:
-        raise HTTPException(status_code=404, detail="Current team router plan not found")
+        raise HTTPException(
+            status_code=404, detail="Current team router plan not found"
+        )
     if plan.get("status") != "approved":
-        raise HTTPException(status_code=409, detail="Approve the team plan before execution")
+        raise HTTPException(
+            status_code=409, detail="Approve the team plan before execution"
+        )
     plan["status"] = "finished"
-    plan["progress"] = [*list(plan.get("progress") or []), "Coordinating employees", "Preparing internal results", "Finished"]
+    plan["progress"] = [
+        *list(plan.get("progress") or []),
+        "Coordinating employees",
+        "Preparing internal results",
+        "Finished",
+    ]
     plan["finished_at"] = datetime.utcnow().isoformat()
     plan = _team_plan_results(plan)
-    history = [plan_item for plan_item in state["history"] if isinstance(plan_item, dict) and plan_item.get("id") != payload.plan_id]
+    history = [
+        plan_item
+        for plan_item in state["history"]
+        if isinstance(plan_item, dict) and plan_item.get("id") != payload.plan_id
+    ]
     history.append(plan)
     state["current_plan"] = plan
     state["history"] = history
     _save_team_router_state(settings, state)
-    log_event(db, request, user_id, "team_router.plan_executed", {"plan_id": payload.plan_id, "employees": plan.get("assigned_employees", [])})
-    _notify(db, user_id, NotificationKind.success, "AI Team Router finished", "Internal results are ready for review. No external action was taken automatically.")
+    log_event(
+        db,
+        request,
+        user_id,
+        "team_router.plan_executed",
+        {"plan_id": payload.plan_id, "employees": plan.get("assigned_employees", [])},
+    )
+    _notify(
+        db,
+        user_id,
+        NotificationKind.success,
+        "AI Team Router finished",
+        "Internal results are ready for review. No external action was taken automatically.",
+    )
     db.commit()
     return TeamRouterPlanOut.model_validate(plan)
 
 
 @router.post("/sales-employees", response_model=AISalesEmployeeOut)
-def create_sales_employee(payload: AISalesEmployeeCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AISalesEmployeeOut:
+def create_sales_employee(
+    payload: AISalesEmployeeCreate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> AISalesEmployeeOut:
     workspace = _current_workspace(db, user_id)
     mode = _sales_employee_mode(payload.sending_mode)
-    _enforce_sales_employee_mode(db, user_id, workspace, mode)
-    current_count = db.scalar(select(func.count()).select_from(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id)) or 0
-    _enforce_count_limit(db, user_id, workspace, "sales_employees", int(current_count))
-    employee = AISalesEmployee(
-        user_id=user_id,
-        workspace_id=workspace.id,
-        **payload.model_dump(exclude={"sending_mode"}),
-        sending_mode=mode,
-        strict_limits={"default_mode": "Review Mode", "daily_limit": payload.daily_limit, "max_autonomous_leads_per_run": min(payload.daily_limit, 50)},
-    )
-    db.add(employee)
-    db.flush()
-    employee.strict_limits = _default_employee_limits(employee)
-    log_event(db, request, user_id, "sales_employee.created", {"employee_id": str(employee.id), "mode": employee.sending_mode.value})
-    _notify(db, user_id, NotificationKind.success, "AI Sales Employee created", f"{employee.name} is ready in {employee.sending_mode.value}.")
-    db.commit()
+    with SALES_EMPLOYEE_LIMIT_LOCKS[str(workspace.id)]:
+        _enforce_sales_employee_mode(db, user_id, workspace, mode)
+        db.scalar(
+            select(Workspace).where(Workspace.id == workspace.id).with_for_update()
+        )
+        current_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(AISalesEmployee)
+                .where(
+                    AISalesEmployee.workspace_id == workspace.id,
+                    AISalesEmployee.user_id == user_id,
+                )
+            )
+            or 0
+        )
+        _enforce_count_limit(
+            db, user_id, workspace, "sales_employees", int(current_count)
+        )
+        employee = AISalesEmployee(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            **payload.model_dump(exclude={"sending_mode"}),
+            sending_mode=mode,
+            strict_limits={
+                "default_mode": "Review Mode",
+                "daily_limit": payload.daily_limit,
+                "max_autonomous_leads_per_run": min(payload.daily_limit, 50),
+            },
+        )
+        db.add(employee)
+        db.flush()
+        employee.strict_limits = _default_employee_limits(employee)
+        log_event(
+            db,
+            request,
+            user_id,
+            "sales_employee.created",
+            {"employee_id": str(employee.id), "mode": employee.sending_mode.value},
+        )
+        _notify(
+            db,
+            user_id,
+            NotificationKind.success,
+            "AI Sales Employee created",
+            f"{employee.name} is ready in {employee.sending_mode.value}.",
+        )
+        db.commit()
     db.refresh(employee)
     return _employee_out(db, employee)
 
 
 @router.get("/sales-employees", response_model=list[AISalesEmployeeOut])
-def list_sales_employees(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[AISalesEmployeeOut]:
+def list_sales_employees(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> list[AISalesEmployeeOut]:
     workspace = _current_workspace(db, user_id)
-    employees = db.scalars(select(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id).order_by(AISalesEmployee.created_at.desc())).all()
+    employees = db.scalars(
+        select(AISalesEmployee)
+        .where(
+            AISalesEmployee.workspace_id == workspace.id,
+            AISalesEmployee.user_id == user_id,
+        )
+        .order_by(AISalesEmployee.created_at.desc())
+    ).all()
     return [_employee_out(db, employee) for employee in employees]
 
 
-@router.get("/sales-employees/{employee_id}/memory", response_model=SalesEmployeeMemoryOut)
-def sales_employee_memory(employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeMemoryOut:
+@router.get(
+    "/sales-employees/{employee_id}/memory", response_model=SalesEmployeeMemoryOut
+)
+def sales_employee_memory(
+    employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> SalesEmployeeMemoryOut:
     workspace = _current_workspace(db, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     memory = _employee_memory(employee)
@@ -3693,17 +5816,60 @@ def sales_employee_memory(employee_id: UUID, user_id: CurrentUser, db: Session =
     return SalesEmployeeMemoryOut.model_validate(memory)
 
 
-@router.get("/sales-employees/{employee_id}/performance", response_model=SalesEmployeePerformanceOut)
-def sales_employee_performance(employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeePerformanceOut:
+@router.get(
+    "/sales-employees/{employee_id}/performance",
+    response_model=SalesEmployeePerformanceOut,
+)
+def sales_employee_performance(
+    employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> SalesEmployeePerformanceOut:
     workspace = _current_workspace(db, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     history = _task_history(employee)
     completed = len([task for task in history if task.get("status") == "finished"])
-    failed = len([task for task in history if task.get("status") in {"cancelled", "blocked"}])
-    sent = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.sent_at.is_not(None))) or 0
-    replies = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id), EmailMessage.replied_at.is_not(None))) or 0
-    meetings = db.scalar(select(func.count()).select_from(Lead).where(Lead.sales_employee_id == employee.id, Lead.status == LeadStatus.meeting)) or 0
-    won_revenue = db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(Lead.sales_employee_id == employee.id, Lead.status == LeadStatus.won)) or 0
+    failed = len(
+        [task for task in history if task.get("status") in {"cancelled", "blocked"}]
+    )
+    sent = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id),
+                EmailMessage.sent_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    replies = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id),
+                EmailMessage.replied_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    meetings = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(
+                Lead.sales_employee_id == employee.id, Lead.status == LeadStatus.meeting
+            )
+        )
+        or 0
+    )
+    won_revenue = (
+        db.scalar(
+            select(func.coalesce(func.sum(Lead.revenue), 0)).where(
+                Lead.sales_employee_id == employee.id, Lead.status == LeadStatus.won
+            )
+        )
+        or 0
+    )
     total_tasks = completed + failed
     return SalesEmployeePerformanceOut(
         tasks_completed=completed,
@@ -3715,8 +5881,16 @@ def sales_employee_performance(employee_id: UUID, user_id: CurrentUser, db: Sess
     )
 
 
-@router.post("/sales-employees/{employee_id}/plan", response_model=SalesEmployeeTaskPlanOut)
-def sales_employee_plan(employee_id: UUID, payload: SalesEmployeeTaskRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskPlanOut:
+@router.post(
+    "/sales-employees/{employee_id}/plan", response_model=SalesEmployeeTaskPlanOut
+)
+def sales_employee_plan(
+    employee_id: UUID,
+    payload: SalesEmployeeTaskRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> SalesEmployeeTaskPlanOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
@@ -3766,7 +5940,8 @@ def sales_employee_plan(employee_id: UUID, payload: SalesEmployeeTaskRequest, re
         "expected_result": planned["expected_result"],
         "steps": planned["steps"],
         "requires_approval": True,
-        "external_actions": planned["external_actions"] or ["modify_crm_after_approval"],
+        "external_actions": planned["external_actions"]
+        or ["modify_crm_after_approval"],
         "safety_notes": planned["safety_notes"],
         "memory_updates": planned["memory_updates"],
         "status": "waiting_approval",
@@ -3781,14 +5956,35 @@ def sales_employee_plan(employee_id: UUID, payload: SalesEmployeeTaskRequest, re
     for value in planned["memory_updates"]:
         if value and value not in memory["customer_preferences"]:
             memory["customer_preferences"].append(value)
-    employee.strict_limits = _with_employee_state(employee, current_task=plan, task_history=history[-25:], memory=memory)
-    log_event(db, request, user_id, "sales_employee.plan_created", {"employee_id": str(employee.id), "plan_id": plan["id"], "intent": plan["intent"]})
+    employee.strict_limits = _with_employee_state(
+        employee, current_task=plan, task_history=history[-25:], memory=memory
+    )
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.plan_created",
+        {
+            "employee_id": str(employee.id),
+            "plan_id": plan["id"],
+            "intent": plan["intent"],
+        },
+    )
     db.commit()
     return _plan_out(plan)
 
 
-@router.post("/sales-employees/{employee_id}/approve-plan", response_model=SalesEmployeeTaskPlanOut)
-def sales_employee_approve_plan(employee_id: UUID, payload: SalesEmployeeTaskDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskPlanOut:
+@router.post(
+    "/sales-employees/{employee_id}/approve-plan",
+    response_model=SalesEmployeeTaskPlanOut,
+)
+def sales_employee_approve_plan(
+    employee_id: UUID,
+    payload: SalesEmployeeTaskDecision,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> SalesEmployeeTaskPlanOut:
     workspace = _current_workspace(db, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     plan = _current_plan(employee)
@@ -3799,17 +5995,39 @@ def sales_employee_approve_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
         plan["steps"] = [*list(plan.get("steps") or []), f"User edit: {payload.edits}"]
     plan["status"] = "approved" if payload.action == "approve" else "cancelled"
     plan["approved_at"] = now.isoformat() if payload.action == "approve" else None
-    plan["progress"] = [*list(plan.get("progress") or []), "Approved by user" if payload.action == "approve" else "Cancelled by user"]
-    history = [task for task in _task_history(employee) if task.get("id") != payload.plan_id]
+    plan["progress"] = [
+        *list(plan.get("progress") or []),
+        "Approved by user" if payload.action == "approve" else "Cancelled by user",
+    ]
+    history = [
+        task for task in _task_history(employee) if task.get("id") != payload.plan_id
+    ]
     history.append(plan)
-    employee.strict_limits = _with_employee_state(employee, current_task=plan, task_history=history[-25:])
-    log_event(db, request, user_id, f"sales_employee.plan_{payload.action}d", {"employee_id": str(employee.id), "plan_id": payload.plan_id})
+    employee.strict_limits = _with_employee_state(
+        employee, current_task=plan, task_history=history[-25:]
+    )
+    log_event(
+        db,
+        request,
+        user_id,
+        f"sales_employee.plan_{payload.action}d",
+        {"employee_id": str(employee.id), "plan_id": payload.plan_id},
+    )
     db.commit()
     return _plan_out(plan)
 
 
-@router.post("/sales-employees/{employee_id}/execute-plan", response_model=SalesEmployeeTaskPlanOut)
-def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDecision, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskPlanOut:
+@router.post(
+    "/sales-employees/{employee_id}/execute-plan",
+    response_model=SalesEmployeeTaskPlanOut,
+)
+def sales_employee_execute_plan(
+    employee_id: UUID,
+    payload: SalesEmployeeTaskDecision,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> SalesEmployeeTaskPlanOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
@@ -3822,12 +6040,21 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
     started_at = datetime.utcnow()
     created_leads: list[Lead] = []
     prepared_emails: list[EmailMessage] = []
-    progress = [*list(plan.get("progress") or []), "Searching...", "Analysing...", "Generating..."]
+    progress = [
+        *list(plan.get("progress") or []),
+        "Searching...",
+        "Analysing...",
+        "Generating...",
+    ]
     industry = _extract_industry(employee, command)
     country = _extract_country(employee, command)
     city = _extract_city(command)
-    if any(word in command.lower() for word in ["find", "search", "companies", "leads"]):
-        count = min(_parse_requested_count(command, default=10), employee.daily_limit, 25)
+    if any(
+        word in command.lower() for word in ["find", "search", "companies", "leads"]
+    ):
+        count = min(
+            _parse_requested_count(command, default=10), employee.daily_limit, 25
+        )
         for index in range(count):
             lead = _lead_from_employee_payload(
                 db,
@@ -3846,8 +6073,13 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
             )
             created_leads.append(lead)
         progress.append(f"Imported {count} leads for review")
-    if any(word in command.lower() for word in ["email", "follow-up", "follow up", "campaign"]):
-        progress.append("Prepared email/campaign work for manual review; no email was sent")
+    if any(
+        word in command.lower()
+        for word in ["email", "follow-up", "follow up", "campaign"]
+    ):
+        progress.append(
+            "Prepared email/campaign work for manual review; no email was sent"
+        )
     for lead in created_leads:
         draft = EmailMessage(
             user_id=user_id,
@@ -3859,7 +6091,11 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
             body=f"Hi,\n\nI noticed {lead.company} matches the {industry} profile you asked me to research. I prepared this draft for your review only, so nothing is sent until you approve it.\n\nWould it make sense to discuss {employee.offer or employee.product_service or 'a possible collaboration'}?\n\n{employee.signature or employee.name}",
             cta=employee.cta,
             delivery_status="pending_approval",
-            tags={"sales_employee_id": str(employee.id), "task_id": str(plan.get("id")), "requires_approval": True},
+            tags={
+                "sales_employee_id": str(employee.id),
+                "task_id": str(plan.get("id")),
+                "requires_approval": True,
+            },
         )
         db.add(draft)
         db.flush()
@@ -3876,7 +6112,12 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
         emails=prepared_emails,
         started_at=started_at,
         completed_at=now,
-        filters={"industry": industry, "country": country, "city": city, "count": str(len(created_leads))},
+        filters={
+            "industry": industry,
+            "country": country,
+            "city": city,
+            "count": str(len(created_leads)),
+        },
     )
     plan["result_preview"] = {
         "companies_found": len(result_json["companies_found"]),
@@ -3885,8 +6126,18 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
         "failure_reason": result_json["failure_reason"],
         "next_recommended_action": result_json["next_recommended_action"],
     }
-    _upsert_task_result(db, workspace=workspace, user_id=user_id, employee=employee, plan=plan, result_json=result_json, completed_at=now)
-    history = [task for task in _task_history(employee) if task.get("id") != payload.plan_id]
+    _upsert_task_result(
+        db,
+        workspace=workspace,
+        user_id=user_id,
+        employee=employee,
+        plan=plan,
+        result_json=result_json,
+        completed_at=now,
+    )
+    history = [
+        task for task in _task_history(employee) if task.get("id") != payload.plan_id
+    ]
     history.append(plan)
     memory = _employee_memory(employee)
     memory["previous_tasks"] = history[-10:]
@@ -3896,16 +6147,38 @@ def sales_employee_execute_plan(employee_id: UUID, payload: SalesEmployeeTaskDec
         memory["countries"].append(country)
     if industry and industry not in memory["industries"]:
         memory["industries"].append(industry)
-    employee.strict_limits = _with_employee_state(employee, current_task=plan, task_history=history[-25:], memory=memory)
-    log_event(db, request, user_id, "sales_employee.plan_executed", {"employee_id": str(employee.id), "plan_id": payload.plan_id, "status": "finished"})
+    employee.strict_limits = _with_employee_state(
+        employee, current_task=plan, task_history=history[-25:], memory=memory
+    )
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.plan_executed",
+        {
+            "employee_id": str(employee.id),
+            "plan_id": payload.plan_id,
+            "status": "finished",
+        },
+    )
     db.commit()
     return _plan_out(plan)
 
 
-@router.get("/sales-employees/tasks/{task_id}", response_model=SalesEmployeeTaskResultOut)
-def sales_employee_task_result(task_id: str, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskResultOut:
+@router.get(
+    "/sales-employees/tasks/{task_id}", response_model=SalesEmployeeTaskResultOut
+)
+def sales_employee_task_result(
+    task_id: str, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> SalesEmployeeTaskResultOut:
     workspace = _current_workspace(db, user_id)
-    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id, SalesEmployeeTaskResult.workspace_id == workspace.id, SalesEmployeeTaskResult.user_id == user_id))
+    result = db.scalar(
+        select(SalesEmployeeTaskResult).where(
+            SalesEmployeeTaskResult.task_id == task_id,
+            SalesEmployeeTaskResult.workspace_id == workspace.id,
+            SalesEmployeeTaskResult.user_id == user_id,
+        )
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="Task result not found")
     employee = db.get(AISalesEmployee, result.sales_employee_id)
@@ -3913,47 +6186,129 @@ def sales_employee_task_result(task_id: str, user_id: CurrentUser, db: Session =
 
 
 @router.get("/sales-employees/tasks/{task_id}/csv")
-def sales_employee_task_result_csv(task_id: str, user_id: CurrentUser, db: Session = Depends(get_db)) -> StreamingResponse:
+def sales_employee_task_result_csv(
+    task_id: str, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> StreamingResponse:
     workspace = _current_workspace(db, user_id)
-    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id, SalesEmployeeTaskResult.workspace_id == workspace.id, SalesEmployeeTaskResult.user_id == user_id))
+    result = db.scalar(
+        select(SalesEmployeeTaskResult).where(
+            SalesEmployeeTaskResult.task_id == task_id,
+            SalesEmployeeTaskResult.workspace_id == workspace.id,
+            SalesEmployeeTaskResult.user_id == user_id,
+        )
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="Task result not found")
     output = io.StringIO()
     writer = csv.DictWriter(
         output,
-        fieldnames=["company_name", "website", "country", "city", "industry", "phone", "email", "source", "confidence_score", "short_description", "why_matched"],
+        fieldnames=[
+            "company_name",
+            "website",
+            "country",
+            "city",
+            "industry",
+            "phone",
+            "email",
+            "source",
+            "confidence_score",
+            "short_description",
+            "why_matched",
+        ],
     )
     writer.writeheader()
     for company in result.result_json.get("companies_found") or []:
-        writer.writerow({key: company.get(key, "Not found") for key in writer.fieldnames})
+        writer.writerow(
+            {key: company.get(key, "Not found") for key in writer.fieldnames}
+        )
     output.seek(0)
-    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="ai-employee-task-{task_id}.csv"'})
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="ai-employee-task-{task_id}.csv"'
+        },
+    )
 
 
-@router.post("/sales-employees/tasks/{task_id}/export-crm", response_model=SalesEmployeeTaskActionOut)
-def sales_employee_task_export_crm(task_id: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskActionOut:
+@router.post(
+    "/sales-employees/tasks/{task_id}/export-crm",
+    response_model=SalesEmployeeTaskActionOut,
+)
+def sales_employee_task_export_crm(
+    task_id: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> SalesEmployeeTaskActionOut:
     workspace = _current_workspace(db, user_id)
-    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id, SalesEmployeeTaskResult.workspace_id == workspace.id, SalesEmployeeTaskResult.user_id == user_id))
+    result = db.scalar(
+        select(SalesEmployeeTaskResult).where(
+            SalesEmployeeTaskResult.task_id == task_id,
+            SalesEmployeeTaskResult.workspace_id == workspace.id,
+            SalesEmployeeTaskResult.user_id == user_id,
+        )
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="Task result not found")
-    log_event(db, request, user_id, "sales_employee.task_export_approved", {"task_id": task_id, "companies": len(result.result_json.get("companies_found") or [])})
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.task_export_approved",
+        {
+            "task_id": task_id,
+            "companies": len(result.result_json.get("companies_found") or []),
+        },
+    )
     db.commit()
-    return SalesEmployeeTaskActionOut(accepted=True, action="export_crm", message="CRM export approved for review. No external CRM sync ran automatically.")
+    return SalesEmployeeTaskActionOut(
+        accepted=True,
+        action="export_crm",
+        message="CRM export approved for review. No external CRM sync ran automatically.",
+    )
 
 
-@router.post("/sales-employees/tasks/{task_id}/approve-send", response_model=SalesEmployeeTaskActionOut)
-def sales_employee_task_approve_send(task_id: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeTaskActionOut:
+@router.post(
+    "/sales-employees/tasks/{task_id}/approve-send",
+    response_model=SalesEmployeeTaskActionOut,
+)
+def sales_employee_task_approve_send(
+    task_id: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> SalesEmployeeTaskActionOut:
     workspace = _current_workspace(db, user_id)
-    result = db.scalar(select(SalesEmployeeTaskResult).where(SalesEmployeeTaskResult.task_id == task_id, SalesEmployeeTaskResult.workspace_id == workspace.id, SalesEmployeeTaskResult.user_id == user_id))
+    result = db.scalar(
+        select(SalesEmployeeTaskResult).where(
+            SalesEmployeeTaskResult.task_id == task_id,
+            SalesEmployeeTaskResult.workspace_id == workspace.id,
+            SalesEmployeeTaskResult.user_id == user_id,
+        )
+    )
     if result is None:
         raise HTTPException(status_code=404, detail="Task result not found")
-    log_event(db, request, user_id, "sales_employee.task_send_approval_requested", {"task_id": task_id, "prepared_emails": len(result.result_json.get("prepared_emails") or [])})
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.task_send_approval_requested",
+        {
+            "task_id": task_id,
+            "prepared_emails": len(result.result_json.get("prepared_emails") or []),
+        },
+    )
     db.commit()
-    return SalesEmployeeTaskActionOut(accepted=True, action="approve_send", message="Send approval recorded. Emails remain blocked until the dedicated email send endpoint is used per draft.")
+    return SalesEmployeeTaskActionOut(
+        accepted=True,
+        action="approve_send",
+        message="Send approval recorded. Emails remain blocked until the dedicated email send endpoint is used per draft.",
+    )
 
 
 @router.put("/sales-employees/{employee_id}", response_model=AISalesEmployeeOut)
-def update_sales_employee(employee_id: UUID, payload: AISalesEmployeeUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AISalesEmployeeOut:
+def update_sales_employee(
+    employee_id: UUID,
+    payload: AISalesEmployeeUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> AISalesEmployeeOut:
     workspace = _current_workspace(db, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     data = payload.model_dump()
@@ -3962,48 +6317,117 @@ def update_sales_employee(employee_id: UUID, payload: AISalesEmployeeUpdate, req
     for key, value in data.items():
         setattr(employee, key, value)
     employee.strict_limits = _default_employee_limits(employee)
-    log_event(db, request, user_id, "sales_employee.updated", {"employee_id": str(employee.id), "mode": employee.sending_mode.value})
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.updated",
+        {"employee_id": str(employee.id), "mode": employee.sending_mode.value},
+    )
     db.commit()
     db.refresh(employee)
     return _employee_out(db, employee)
 
 
 @router.get("/sales-employees/{employee_id}/leads", response_model=list[LeadOut])
-def sales_employee_leads(employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+def sales_employee_leads(
+    employee_id: UUID, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
-    leads = db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.sales_employee_id == employee.id).order_by(Lead.created_at.desc()).limit(200)).all()
+    leads = db.scalars(
+        select(Lead)
+        .where(Lead.workspace_id == workspace.id, Lead.sales_employee_id == employee.id)
+        .order_by(Lead.created_at.desc())
+        .limit(200)
+    ).all()
     return [_lead_out(lead) for lead in leads]
 
 
-@router.post("/sales-employees/{employee_id}/leads/manual", response_model=list[LeadOut])
-def sales_employee_manual_import(employee_id: UUID, payload: SalesEmployeeLeadImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
-    workspace = _current_workspace(db, user_id)
-    _require_active_subscription(db, workspace, user_id)
-    employee = _employee_scope(db, workspace, user_id, employee_id)
-    leads = [_lead_from_employee_payload(db, workspace, user_id, employee, item, "manual") for item in payload.companies]
-    log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "manual", "count": len(leads)})
-    db.commit()
-    return [_lead_out(lead) for lead in leads]
-
-
-@router.post("/sales-employees/{employee_id}/leads/websites", response_model=list[LeadOut])
-def sales_employee_website_import(employee_id: UUID, payload: WebsiteListImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+@router.post(
+    "/sales-employees/{employee_id}/leads/manual", response_model=list[LeadOut]
+)
+def sales_employee_manual_import(
+    employee_id: UUID,
+    payload: SalesEmployeeLeadImport,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     leads = [
-        _lead_from_employee_payload(db, workspace, user_id, employee, LeadCreate(company=line.replace("https://", "").replace("http://", "").split("/")[0], website=line.strip(), status="New"), "website_list")
-        for line in payload.websites.splitlines()
-        if line.strip()
+        _lead_from_employee_payload(db, workspace, user_id, employee, item, "manual")
+        for item in payload.companies
     ]
-    log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "website_list", "count": len(leads)})
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.leads_imported",
+        {"employee_id": str(employee.id), "source": "manual", "count": len(leads)},
+    )
     db.commit()
     return [_lead_out(lead) for lead in leads]
 
 
-@router.post("/sales-employees/{employee_id}/leads/google-maps", response_model=list[LeadOut])
-def sales_employee_google_maps_import(employee_id: UUID, payload: GoogleMapsImport, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+@router.post(
+    "/sales-employees/{employee_id}/leads/websites", response_model=list[LeadOut]
+)
+def sales_employee_website_import(
+    employee_id: UUID,
+    payload: WebsiteListImport,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> list[LeadOut]:
+    workspace = _current_workspace(db, user_id)
+    _require_active_subscription(db, workspace, user_id)
+    employee = _employee_scope(db, workspace, user_id, employee_id)
+    leads = [
+        _lead_from_employee_payload(
+            db,
+            workspace,
+            user_id,
+            employee,
+            LeadCreate(
+                company=line.replace("https://", "")
+                .replace("http://", "")
+                .split("/")[0],
+                website=line.strip(),
+                status="New",
+            ),
+            "website_list",
+        )
+        for line in payload.websites.splitlines()
+        if line.strip()
+    ]
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.leads_imported",
+        {
+            "employee_id": str(employee.id),
+            "source": "website_list",
+            "count": len(leads),
+        },
+    )
+    db.commit()
+    return [_lead_out(lead) for lead in leads]
+
+
+@router.post(
+    "/sales-employees/{employee_id}/leads/google-maps", response_model=list[LeadOut]
+)
+def sales_employee_google_maps_import(
+    employee_id: UUID,
+    payload: GoogleMapsImport,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
@@ -4012,81 +6436,190 @@ def sales_employee_google_maps_import(employee_id: UUID, payload: GoogleMapsImpo
         parts = [part.strip() for part in raw.split(",") if part.strip()]
         if not parts:
             continue
-        website = next((part for part in parts if "." in part and " " not in part), None)
-        leads.append(_lead_from_employee_payload(db, workspace, user_id, employee, LeadCreate(company=parts[0], website=website, country=employee.target_countries[0] if employee.target_countries else None, status="New"), "google_maps"))
-    log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "google_maps", "count": len(leads)})
+        website = next(
+            (part for part in parts if "." in part and " " not in part), None
+        )
+        leads.append(
+            _lead_from_employee_payload(
+                db,
+                workspace,
+                user_id,
+                employee,
+                LeadCreate(
+                    company=parts[0],
+                    website=website,
+                    country=employee.target_countries[0]
+                    if employee.target_countries
+                    else None,
+                    status="New",
+                ),
+                "google_maps",
+            )
+        )
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.leads_imported",
+        {"employee_id": str(employee.id), "source": "google_maps", "count": len(leads)},
+    )
     db.commit()
     return [_lead_out(lead) for lead in leads]
 
 
 @router.post("/sales-employees/{employee_id}/leads/csv", response_model=list[LeadOut])
-async def sales_employee_csv_import(employee_id: UUID, file: UploadFile, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+async def sales_employee_csv_import(
+    employee_id: UUID,
+    file: UploadFile,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
     content = (await file.read()).decode("utf-8-sig")
     rows = csv.DictReader(io.StringIO(content))
-    leads = [_lead_from_employee_payload(db, workspace, user_id, employee, _lead_create_from_row(row, employee), "csv") for row in rows]
-    log_event(db, request, user_id, "sales_employee.leads_imported", {"employee_id": str(employee.id), "source": "csv", "count": len(leads)})
+    leads = [
+        _lead_from_employee_payload(
+            db,
+            workspace,
+            user_id,
+            employee,
+            _lead_create_from_row(row, employee),
+            "csv",
+        )
+        for row in rows
+    ]
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.leads_imported",
+        {"employee_id": str(employee.id), "source": "csv", "count": len(leads)},
+    )
     db.commit()
     return [_lead_out(lead) for lead in leads]
 
 
-@router.post("/sales-employees/{employee_id}/leads/{lead_id}/qualify", response_model=SalesEmployeeLeadInsightOut)
-def sales_employee_qualify_lead(employee_id: UUID, lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeLeadInsight:
+@router.post(
+    "/sales-employees/{employee_id}/leads/{lead_id}/qualify",
+    response_model=SalesEmployeeLeadInsightOut,
+)
+def sales_employee_qualify_lead(
+    employee_id: UUID,
+    lead_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> SalesEmployeeLeadInsight:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
-    employee, lead, analysis = _employee_lead_context(db, workspace, user_id, employee_id, lead_id)
+    employee, lead, analysis = _employee_lead_context(
+        db, workspace, user_id, employee_id, lead_id
+    )
     try:
-        data = qualify_for_sales_employee(_employee_ai_payload(employee, lead, analysis))
+        data = qualify_for_sales_employee(
+            _employee_ai_payload(employee, lead, analysis)
+        )
     except Exception as exc:
         raise _provider_error(exc) from exc
     insight = _upsert_employee_insight(db, user_id, workspace, employee, lead, data)
-    log_event(db, request, user_id, "sales_employee.lead_qualified", {"employee_id": str(employee.id), "lead_id": str(lead.id), "icp_score": insight.icp_score})
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.lead_qualified",
+        {
+            "employee_id": str(employee.id),
+            "lead_id": str(lead.id),
+            "icp_score": insight.icp_score,
+        },
+    )
     db.commit()
     db.refresh(insight)
     return insight
 
 
-@router.post("/sales-employees/{employee_id}/leads/{lead_id}/draft-email", response_model=EmailOut)
-def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+@router.post(
+    "/sales-employees/{employee_id}/leads/{lead_id}/draft-email",
+    response_model=EmailOut,
+)
+def sales_employee_draft_email(
+    employee_id: UUID,
+    lead_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
-    employee, lead, analysis = _employee_lead_context(db, workspace, user_id, employee_id, lead_id)
-    insight = db.scalar(select(SalesEmployeeLeadInsight).where(SalesEmployeeLeadInsight.sales_employee_id == employee.id, SalesEmployeeLeadInsight.lead_id == lead.id))
+    employee, lead, analysis = _employee_lead_context(
+        db, workspace, user_id, employee_id, lead_id
+    )
+    insight = db.scalar(
+        select(SalesEmployeeLeadInsight).where(
+            SalesEmployeeLeadInsight.sales_employee_id == employee.id,
+            SalesEmployeeLeadInsight.lead_id == lead.id,
+        )
+    )
     intelligence = _lead_metadata(lead)
     website_context = "\n".join(
-        part for part in [
+        part
+        for part in [
             analysis.summary if analysis else "",
             str(intelligence.get("ai_summary") or ""),
-            f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
-            f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
-            f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
-        ] if part
+            f"Sales angle: {intelligence.get('sales_angle')}"
+            if intelligence.get("sales_angle")
+            else "",
+            f"Suggested offer: {intelligence.get('suggested_offer')}"
+            if intelligence.get("suggested_offer")
+            else "",
+            f"Outreach strategy: {intelligence.get('outreach_strategy')}"
+            if intelligence.get("outreach_strategy")
+            else "",
+        ]
+        if part
     )
     try:
         memory_context = retrieve_memory(
             db,
             workspace=workspace,
             user_id=user_id,
-            query=" ".join([lead.company, lead.industry or "", employee.offer or "", website_context]),
+            query=" ".join(
+                [
+                    lead.company,
+                    lead.industry or "",
+                    employee.offer or "",
+                    website_context,
+                ]
+            ),
             lead_id=lead.id,
             purpose="sales_employee_draft_email",
         ).context
     except Exception:
-        memory_context = memory_context_none("AI Memory retrieval failed for sales employee draft.")
-    analysis_context = attach_memory_context({"source": "sales_employee_draft_email"}, memory_context)
+        memory_context = memory_context_none(
+            "AI Memory retrieval failed for sales employee draft."
+        )
+    analysis_context = attach_memory_context(
+        {"source": "sales_employee_draft_email"}, memory_context
+    )
     try:
         generated = personalize_email(
             PersonalizeRequest(
                 company=lead.company,
                 niche=lead.industry or employee.target_customer or "B2B",
                 website_summary=website_context or lead.notes or lead.company,
-                offer=employee.offer or employee.product_service or str(intelligence.get("suggested_offer") or ""),
-                cta=(insight.best_cta if insight else employee.cta) or str(intelligence.get("recommended_cta") or "") or employee.cta,
-                tone=employee.tone or str(intelligence.get("recommended_tone") or "Professional"),
+                offer=employee.offer
+                or employee.product_service
+                or str(intelligence.get("suggested_offer") or ""),
+                cta=(insight.best_cta if insight else employee.cta)
+                or str(intelligence.get("recommended_cta") or "")
+                or employee.cta,
+                tone=employee.tone
+                or str(intelligence.get("recommended_tone") or "Professional"),
                 language=employee.language,
                 signature=employee.signature,
                 analysis_context=analysis_context,
@@ -4106,66 +6639,160 @@ def sales_employee_draft_email(employee_id: UUID, lead_id: UUID, request: Reques
         follow_up_1=follow_ups[0] if len(follow_ups) > 0 else "",
         follow_up_2=follow_ups[1] if len(follow_ups) > 1 else "",
         direction="outbound",
-        delivery_status="pending_approval" if employee.sending_mode == SalesEmployeeMode.review else "approved",
-        tags={"sales_employee_id": str(employee.id), "sales_employee_mode": employee.sending_mode.value, "requires_approval": employee.sending_mode == SalesEmployeeMode.review},
+        delivery_status="pending_approval"
+        if employee.sending_mode == SalesEmployeeMode.review
+        else "approved",
+        tags={
+            "sales_employee_id": str(employee.id),
+            "sales_employee_mode": employee.sending_mode.value,
+            "requires_approval": employee.sending_mode == SalesEmployeeMode.review,
+        },
     )
     db.add(message)
     lead.status = LeadStatus.qualified
-    log_event(db, request, user_id, "sales_employee.email_drafted", {"employee_id": str(employee.id), "lead_id": str(lead.id), "requires_approval": employee.sending_mode == SalesEmployeeMode.review})
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.email_drafted",
+        {
+            "employee_id": str(employee.id),
+            "lead_id": str(lead.id),
+            "requires_approval": employee.sending_mode == SalesEmployeeMode.review,
+        },
+    )
     db.commit()
     db.refresh(message)
     return message
 
 
-@router.post("/sales-employees/{employee_id}/emails/{email_id}/approve", response_model=EmailOut)
-def sales_employee_approve_email(employee_id: UUID, email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+@router.post(
+    "/sales-employees/{employee_id}/emails/{email_id}/approve", response_model=EmailOut
+)
+def sales_employee_approve_email(
+    employee_id: UUID,
+    email_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
-    message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, EmailMessage.workspace_id == workspace.id, EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id)))
+    message = db.scalar(
+        select(EmailMessage).where(
+            EmailMessage.id == email_id,
+            EmailMessage.workspace_id == workspace.id,
+            EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id),
+        )
+    )
     if message is None:
         raise HTTPException(status_code=404, detail="Employee email not found")
     message.delivery_status = "approved"
-    message.tags = {**(message.tags or {}), "approved_at": datetime.utcnow().isoformat(), "approved_by": user_id}
-    log_event(db, request, user_id, "sales_employee.email_approved", {"employee_id": str(employee.id), "email_id": str(message.id)})
+    message.tags = {
+        **(message.tags or {}),
+        "approved_at": datetime.utcnow().isoformat(),
+        "approved_by": user_id,
+    }
+    log_event(
+        db,
+        request,
+        user_id,
+        "sales_employee.email_approved",
+        {"employee_id": str(employee.id), "email_id": str(message.id)},
+    )
     db.commit()
     db.refresh(message)
     return message
 
 
 @router.post("/sales-employees/{employee_id}/run", response_model=SalesEmployeeRunOut)
-def sales_employee_run(employee_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesEmployeeRunOut:
+def sales_employee_run(
+    employee_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> SalesEmployeeRunOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     employee = _employee_scope(db, workspace, user_id, employee_id)
-    result = SalesEmployeeRunOut(employee_id=employee.id, mode=employee.sending_mode.value)
-    leads = list(db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.sales_employee_id == employee.id, Lead.status.in_([LeadStatus.new, LeadStatus.qualified])).order_by(Lead.created_at.asc()).limit(employee.daily_limit)).all())
+    result = SalesEmployeeRunOut(
+        employee_id=employee.id, mode=employee.sending_mode.value
+    )
+    leads = list(
+        db.scalars(
+            select(Lead)
+            .where(
+                Lead.workspace_id == workspace.id,
+                Lead.sales_employee_id == employee.id,
+                Lead.status.in_([LeadStatus.new, LeadStatus.qualified]),
+            )
+            .order_by(Lead.created_at.asc())
+            .limit(employee.daily_limit)
+        ).all()
+    )
     for lead in leads:
         try:
             if lead.status == LeadStatus.new:
-                analysis = db.scalar(select(WebsiteAnalysis).where(WebsiteAnalysis.workspace_id == workspace.id, WebsiteAnalysis.lead_id == lead.id).order_by(WebsiteAnalysis.created_at.desc()))
+                analysis = db.scalar(
+                    select(WebsiteAnalysis)
+                    .where(
+                        WebsiteAnalysis.workspace_id == workspace.id,
+                        WebsiteAnalysis.lead_id == lead.id,
+                    )
+                    .order_by(WebsiteAnalysis.created_at.desc())
+                )
                 _enforce_usage(db, user_id, workspace, "ai_generations")
-                data = qualify_for_sales_employee(_employee_ai_payload(employee, lead, analysis))
-                insight = _upsert_employee_insight(db, user_id, workspace, employee, lead, data)
+                data = qualify_for_sales_employee(
+                    _employee_ai_payload(employee, lead, analysis)
+                )
+                insight = _upsert_employee_insight(
+                    db, user_id, workspace, employee, lead, data
+                )
                 result.leads_qualified += 1 if insight.icp_score >= 55 else 0
-            draft = db.scalar(select(EmailMessage).where(EmailMessage.lead_id == lead.id, EmailMessage.tags["sales_employee_id"].as_string() == str(employee.id)).order_by(EmailMessage.created_at.desc()))
+            draft = db.scalar(
+                select(EmailMessage)
+                .where(
+                    EmailMessage.lead_id == lead.id,
+                    EmailMessage.tags["sales_employee_id"].as_string()
+                    == str(employee.id),
+                )
+                .order_by(EmailMessage.created_at.desc())
+            )
             if draft is None and lead.status == LeadStatus.qualified:
-                draft = sales_employee_draft_email(employee.id, lead.id, request, user_id, db)
+                draft = sales_employee_draft_email(
+                    employee.id, lead.id, request, user_id, db
+                )
                 result.emails_generated += 1
             if employee.sending_mode == SalesEmployeeMode.review:
                 continue
-            if draft and draft.delivery_status == "approved" and employee.sending_mode == SalesEmployeeMode.semi_auto:
+            if (
+                draft
+                and draft.delivery_status == "approved"
+                and employee.sending_mode == SalesEmployeeMode.semi_auto
+            ):
                 _enforce_usage(db, user_id, workspace, "email_sends")
                 lead_for_email = db.get(Lead, draft.lead_id) if draft.lead_id else None
                 if lead_for_email and lead_for_email.email:
-                    provider_response = send_email(to_email=lead_for_email.email, subject=draft.subject, body=draft.body)
+                    provider_response = send_email(
+                        to_email=lead_for_email.email,
+                        subject=draft.subject,
+                        body=draft.body,
+                    )
                     draft.sent_at = datetime.utcnow()
                     draft.provider_message_id = str(provider_response.get("id"))
                     draft.delivery_status = "sent"
                     lead_for_email.status = LeadStatus.contacted
                     result.emails_sent += 1
-            if draft and employee.sending_mode == SalesEmployeeMode.autonomous and lead.email and result.emails_sent < employee.daily_limit:
+            if (
+                draft
+                and employee.sending_mode == SalesEmployeeMode.autonomous
+                and lead.email
+                and result.emails_sent < employee.daily_limit
+            ):
                 _enforce_usage(db, user_id, workspace, "email_sends")
-                provider_response = send_email(to_email=lead.email, subject=draft.subject, body=draft.body)
+                provider_response = send_email(
+                    to_email=lead.email, subject=draft.subject, body=draft.body
+                )
                 draft.sent_at = datetime.utcnow()
                 draft.provider_message_id = str(provider_response.get("id"))
                 draft.delivery_status = "sent"
@@ -4173,7 +6800,9 @@ def sales_employee_run(employee_id: UUID, request: Request, user_id: CurrentUser
                 result.emails_sent += 1
         except Exception as exc:
             result.blocked.append(f"{lead.company}: {exc}")
-    log_event(db, request, user_id, "sales_employee.run", result.model_dump(mode="json"))
+    log_event(
+        db, request, user_id, "sales_employee.run", result.model_dump(mode="json")
+    )
     db.commit()
     return result
 
@@ -4184,33 +6813,148 @@ def _dashboard_metrics(user_id: str, db: Session) -> DashboardMetrics:
     campaign_scope = _workspace_stmt(Campaign, workspace, user_id)
     email_scope = _workspace_stmt(EmailMessage, workspace, user_id)
     leads = db.scalar(select(func.count()).select_from(Lead).where(lead_scope)) or 0
-    campaigns = db.scalar(select(func.count()).select_from(Campaign).where(campaign_scope)) or 0
-    outbound = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.direction == "outbound")) or 0
-    sent = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.sent_at.is_not(None))) or 0
-    delivered = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.delivered_at.is_not(None))) or 0
-    opened = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.opened_at.is_not(None))) or 0
-    clicked = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.clicked_at.is_not(None))) or 0
-    bounced = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.bounced_at.is_not(None))) or 0
-    replied = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.replied_at.is_not(None))) or 0
-    meetings = db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == LeadStatus.meeting)) or 0
-    won = db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == LeadStatus.won)) or 0
-    revenue = float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(lead_scope, Lead.status == LeadStatus.won)) or 0)
+    campaigns = (
+        db.scalar(select(func.count()).select_from(Campaign).where(campaign_scope)) or 0
+    )
+    outbound = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(email_scope, EmailMessage.direction == "outbound")
+        )
+        or 0
+    )
+    sent = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(email_scope, EmailMessage.sent_at.is_not(None))
+        )
+        or 0
+    )
+    delivered = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(email_scope, EmailMessage.delivered_at.is_not(None))
+        )
+        or 0
+    )
+    opened = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(email_scope, EmailMessage.opened_at.is_not(None))
+        )
+        or 0
+    )
+    clicked = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(email_scope, EmailMessage.clicked_at.is_not(None))
+        )
+        or 0
+    )
+    bounced = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(email_scope, EmailMessage.bounced_at.is_not(None))
+        )
+        or 0
+    )
+    replied = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(email_scope, EmailMessage.replied_at.is_not(None))
+        )
+        or 0
+    )
+    meetings = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(lead_scope, Lead.status == LeadStatus.meeting)
+        )
+        or 0
+    )
+    won = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(lead_scope, Lead.status == LeadStatus.won)
+        )
+        or 0
+    )
+    revenue = float(
+        db.scalar(
+            select(func.coalesce(func.sum(Lead.revenue), 0)).where(
+                lead_scope, Lead.status == LeadStatus.won
+            )
+        )
+        or 0
+    )
     revenue_forecast = float(
-        db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(lead_scope, Lead.status.in_([LeadStatus.interested, LeadStatus.meeting, LeadStatus.won]))) or 0
+        db.scalar(
+            select(func.coalesce(func.sum(Lead.revenue), 0)).where(
+                lead_scope,
+                Lead.status.in_(
+                    [LeadStatus.interested, LeadStatus.meeting, LeadStatus.won]
+                ),
+            )
+        )
+        or 0
     )
     plan = _plan_for_workspace(db, user_id, workspace)
     usage = _usage_for_workspace(db, workspace)
     funnel = [
-        {"status": status.value, "count": db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == status)) or 0}
-        for status in [LeadStatus.new, LeadStatus.qualified, LeadStatus.contacted, LeadStatus.interested, LeadStatus.meeting, LeadStatus.won]
+        {
+            "status": status.value,
+            "count": db.scalar(
+                select(func.count())
+                .select_from(Lead)
+                .where(lead_scope, Lead.status == status)
+            )
+            or 0,
+        }
+        for status in [
+            LeadStatus.new,
+            LeadStatus.qualified,
+            LeadStatus.contacted,
+            LeadStatus.interested,
+            LeadStatus.meeting,
+            LeadStatus.won,
+        ]
     ]
     pipeline = [
         {
             "status": status.value,
-            "count": db.scalar(select(func.count()).select_from(Lead).where(lead_scope, Lead.status == status)) or 0,
-            "revenue": float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(lead_scope, Lead.status == status)) or 0),
+            "count": db.scalar(
+                select(func.count())
+                .select_from(Lead)
+                .where(lead_scope, Lead.status == status)
+            )
+            or 0,
+            "revenue": float(
+                db.scalar(
+                    select(func.coalesce(func.sum(Lead.revenue), 0)).where(
+                        lead_scope, Lead.status == status
+                    )
+                )
+                or 0
+            ),
         }
-    for status in [LeadStatus.new, LeadStatus.qualified, LeadStatus.contacted, LeadStatus.interested, LeadStatus.meeting, LeadStatus.won, LeadStatus.lost]
+        for status in [
+            LeadStatus.new,
+            LeadStatus.qualified,
+            LeadStatus.contacted,
+            LeadStatus.interested,
+            LeadStatus.meeting,
+            LeadStatus.won,
+            LeadStatus.lost,
+        ]
     ]
     limits = _limits_for_workspace(db, user_id, workspace)
     mrr = float(limits["mrr"])
@@ -4235,7 +6979,12 @@ def _dashboard_metrics(user_id: str, db: Session) -> DashboardMetrics:
         funnel=funnel,
         pipeline=pipeline,
         plan=plan,
-        usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends, "limits": limits},
+        usage={
+            "leads": usage.leads,
+            "ai_generations": usage.ai_generations,
+            "email_sends": usage.email_sends,
+            "limits": limits,
+        },
     )
 
 
@@ -4249,11 +6998,18 @@ def dashboard(user_id: CurrentUser, db: Session = Depends(get_db)) -> DashboardM
         if cached:
             return DashboardMetrics.model_validate(cached)
         metrics = _dashboard_metrics(user_id, db)
-        set_json(key, metrics.model_dump(mode="json"), settings.cache_dashboard_ttl_seconds)
+        set_json(
+            key, metrics.model_dump(mode="json"), settings.cache_dashboard_ttl_seconds
+        )
         return metrics
     except SQLAlchemyError as exc:
-        capture_provider_exception(exc, provider="postgresql", endpoint="/api/dashboard")
-        raise HTTPException(status_code=503, detail="Database unavailable. Dashboard metrics could not be loaded.") from exc
+        capture_provider_exception(
+            exc, provider="postgresql", endpoint="/api/dashboard"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable. Dashboard metrics could not be loaded.",
+        ) from exc
 
 
 def _growth_goal(settings: AppSettings, meetings: int) -> GrowthGoalOut:
@@ -4266,13 +7022,19 @@ def _growth_goal(settings: AppSettings, meetings: int) -> GrowthGoalOut:
         target_meetings=target,
         meetings_booked=meetings,
         progress_percent=progress,
-        execution_plan=list(saved.get("execution_plan") or [
-            "Review today's highest-ranked opportunities.",
-            "Approve prepared emails for leads with ICP score above 70.",
-            "Launch one review-mode campaign to the best-fit segment.",
-            "Follow up with interested replies within the same business day.",
-        ]),
-        next_action=str(saved.get("next_action") or "Approve outreach for the top three opportunities."),
+        execution_plan=list(
+            saved.get("execution_plan")
+            or [
+                "Review today's highest-ranked opportunities.",
+                "Approve prepared emails for leads with ICP score above 70.",
+                "Launch one review-mode campaign to the best-fit segment.",
+                "Follow up with interested replies within the same business day.",
+            ]
+        ),
+        next_action=str(
+            saved.get("next_action")
+            or "Approve outreach for the top three opportunities."
+        ),
     )
 
 
@@ -4297,18 +7059,45 @@ def _opportunity_score(lead: Lead) -> int:
 
 
 @router.get("/growth-engine", response_model=GrowthEngineOut)
-def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> GrowthEngineOut:
+def growth_engine(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> GrowthEngineOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     metrics = _dashboard_metrics(user_id, db)
     lead_scope = _workspace_stmt(Lead, workspace, user_id)
     campaign_scope = _workspace_stmt(Campaign, workspace, user_id)
     email_scope = _workspace_stmt(EmailMessage, workspace, user_id)
-    recent_leads = list(db.scalars(select(Lead).where(lead_scope).order_by(Lead.created_at.desc()).limit(12)).all())
-    recent_campaigns = list(db.scalars(select(Campaign).where(campaign_scope).order_by(Campaign.updated_at.desc()).limit(5)).all())
-    recent_replies = list(db.scalars(select(EmailMessage).where(email_scope, EmailMessage.direction == "inbound").order_by(EmailMessage.created_at.desc()).limit(5)).all())
+    recent_leads = list(
+        db.scalars(
+            select(Lead).where(lead_scope).order_by(Lead.created_at.desc()).limit(12)
+        ).all()
+    )
+    recent_campaigns = list(
+        db.scalars(
+            select(Campaign)
+            .where(campaign_scope)
+            .order_by(Campaign.updated_at.desc())
+            .limit(5)
+        ).all()
+    )
+    recent_replies = list(
+        db.scalars(
+            select(EmailMessage)
+            .where(email_scope, EmailMessage.direction == "inbound")
+            .order_by(EmailMessage.created_at.desc())
+            .limit(5)
+        ).all()
+    )
     today = datetime.utcnow().date()
-    new_today = db.scalar(select(func.count()).select_from(Lead).where(lead_scope, func.date(Lead.created_at) == today.isoformat())) or 0
+    new_today = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(lead_scope, func.date(Lead.created_at) == today.isoformat())
+        )
+        or 0
+    )
     opportunities = [
         {
             "company": lead.company,
@@ -4317,9 +7106,23 @@ def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> Growth
             "country": lead.country or workspace.target_country or "",
             "status": _display_status(lead.status),
             "score": _opportunity_score(lead),
-            "reason": str(_lead_metadata(lead).get("sales_angle") or _lead_metadata(lead).get("ai_summary") or ("Strong fit because it matches your ICP and has a reachable contact." if lead.email else "Worth researching today; add a contact before sending.")),
-            "recommended_action": str(_lead_metadata(lead).get("outreach_strategy") or "Generate a personalized email and keep approval required."),
-            "predicted_outcome": str(_lead_metadata(lead).get("expected_reply_rate") or "Reply rate prediction improves after AI analysis."),
+            "reason": str(
+                _lead_metadata(lead).get("sales_angle")
+                or _lead_metadata(lead).get("ai_summary")
+                or (
+                    "Strong fit because it matches your ICP and has a reachable contact."
+                    if lead.email
+                    else "Worth researching today; add a contact before sending."
+                )
+            ),
+            "recommended_action": str(
+                _lead_metadata(lead).get("outreach_strategy")
+                or "Generate a personalized email and keep approval required."
+            ),
+            "predicted_outcome": str(
+                _lead_metadata(lead).get("expected_reply_rate")
+                or "Reply rate prediction improves after AI analysis."
+            ),
         }
         for lead in sorted(recent_leads, key=_opportunity_score, reverse=True)[:6]
     ]
@@ -4343,8 +7146,14 @@ def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> Growth
     smart_recommendations = [
         {
             "title": f"Review {best.get('company', 'the highest ICP lead')} today",
-            "why": str(best.get("reason") or "Fresh, qualified opportunities convert best when outreach happens within the same workday."),
-            "action": str(best.get("recommended_action") or "Review top opportunities and approve prepared emails."),
+            "why": str(
+                best.get("reason")
+                or "Fresh, qualified opportunities convert best when outreach happens within the same workday."
+            ),
+            "action": str(
+                best.get("recommended_action")
+                or "Review top opportunities and approve prepared emails."
+            ),
         },
         {
             "title": "Use the best sending window",
@@ -4363,10 +7172,20 @@ def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> Growth
             "status": campaign.status.value,
             "open_rate": metrics.open_rate,
             "reply_rate": metrics.reply_rate,
-            "suggestion": "Test a shorter subject line and move the CTA into the first three sentences." if metrics.reply_rate < 5 else "Scale this sequence to similar ICP segments.",
+            "suggestion": "Test a shorter subject line and move the CTA into the first three sentences."
+            if metrics.reply_rate < 5
+            else "Scale this sequence to similar ICP segments.",
         }
         for campaign in recent_campaigns
-    ] or [{"campaign": "First campaign", "status": "Recommended", "open_rate": 0, "reply_rate": 0, "suggestion": "Create a review-mode campaign from today's opportunity feed."}]
+    ] or [
+        {
+            "campaign": "First campaign",
+            "status": "Recommended",
+            "open_rate": 0,
+            "reply_rate": 0,
+            "suggestion": "Create a review-mode campaign from today's opportunity feed.",
+        }
+    ]
     website_monitoring = [
         {
             "company": lead.company,
@@ -4374,31 +7193,68 @@ def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> Growth
             "priority": "high" if _opportunity_score(lead) >= 70 else "medium",
             "recommended_action": "Run AI Website Audit before outreach.",
         }
-        for lead in recent_leads[:4] if lead.website
-    ] or [{"company": "Tracked companies", "change": "No tracked website changes yet.", "priority": "info", "recommended_action": "Import leads with websites to enable monitoring."}]
+        for lead in recent_leads[:4]
+        if lead.website
+    ] or [
+        {
+            "company": "Tracked companies",
+            "change": "No tracked website changes yet.",
+            "priority": "info",
+            "recommended_action": "Import leads with websites to enable monitoring.",
+        }
+    ]
     reply_items = [
         {
             "subject": message.subject,
             "classification": str((message.tags or {}).get("category") or "Question"),
-            "suggested_reply": str((message.reply_assistant or {}).get("suggested_response") or "Reply with context, answer the question, and suggest a clear next step."),
-            "next_step": str((message.reply_assistant or {}).get("next_step") or "Review and respond manually."),
+            "suggested_reply": str(
+                (message.reply_assistant or {}).get("suggested_response")
+                or "Reply with context, answer the question, and suggest a clear next step."
+            ),
+            "next_step": str(
+                (message.reply_assistant or {}).get("next_step")
+                or "Review and respond manually."
+            ),
         }
         for message in recent_replies
-    ] or [{"subject": "No replies yet", "classification": "Waiting", "suggested_reply": "When replies arrive, AI will classify intent and prepare a safe draft.", "next_step": "Keep campaigns in Review Mode until replies start."}]
+    ] or [
+        {
+            "subject": "No replies yet",
+            "classification": "Waiting",
+            "suggested_reply": "When replies arrive, AI will classify intent and prepare a safe draft.",
+            "next_step": "Keep campaigns in Review Mode until replies start.",
+        }
+    ]
     goal = _growth_goal(settings, metrics.meetings)
     briefing = GrowthBriefingOut(
         date=today.isoformat(),
         new_leads_found=int(new_today),
         best_opportunities=opportunities[:3],
-        campaign_performance={"open_rate": metrics.open_rate, "reply_rate": metrics.reply_rate, "conversion_rate": metrics.conversion_rate, "bounce_rate": 0 if metrics.emails_sent == 0 else round(metrics.bounces / metrics.emails_sent * 100, 1)},
+        campaign_performance={
+            "open_rate": metrics.open_rate,
+            "reply_rate": metrics.reply_rate,
+            "conversion_rate": metrics.conversion_rate,
+            "bounce_rate": 0
+            if metrics.emails_sent == 0
+            else round(metrics.bounces / metrics.emails_sent * 100, 1),
+        },
         reply_rate_change=0,
         meetings_booked=metrics.meetings,
         recommended_actions=smart_recommendations[:3],
     )
     proactive = [
-        {"message": "Today I recommend reviewing the top-ranked opportunities.", "approval_required": True},
-        {"message": f"I found {len(opportunities)} revenue opportunities ready for review.", "approval_required": True},
-        {"message": "No emails or campaigns will launch without approval.", "approval_required": True},
+        {
+            "message": "Today I recommend reviewing the top-ranked opportunities.",
+            "approval_required": True,
+        },
+        {
+            "message": f"I found {len(opportunities)} revenue opportunities ready for review.",
+            "approval_required": True,
+        },
+        {
+            "message": "No emails or campaigns will launch without approval.",
+            "approval_required": True,
+        },
     ]
     return GrowthEngineOut(
         briefing=briefing,
@@ -4407,11 +7263,32 @@ def growth_engine(user_id: CurrentUser, db: Session = Depends(get_db)) -> Growth
         website_monitoring=website_monitoring,
         campaign_optimizations=campaign_optimizations,
         reply_assistant=reply_items,
-        revenue_dashboard={"estimated_pipeline": metrics.revenue_forecast, "meetings": metrics.meetings, "revenue_influenced": metrics.revenue, "roi": 0 if metrics.mrr == 0 else round(metrics.revenue_forecast / metrics.mrr, 1), "mrr_generated": metrics.mrr},
+        revenue_dashboard={
+            "estimated_pipeline": metrics.revenue_forecast,
+            "meetings": metrics.meetings,
+            "revenue_influenced": metrics.revenue,
+            "roi": 0
+            if metrics.mrr == 0
+            else round(metrics.revenue_forecast / metrics.mrr, 1),
+            "mrr_generated": metrics.mrr,
+        },
         goal=goal,
         proactive_mode=proactive,
-        notifications=[{"title": "Growth engine refreshed", "message": "New recommendations are ready for review.", "kind": "info"}],
-        performance={"ai_actions": len(opportunities) + len(smart_recommendations), "time_saved_hours": round((len(opportunities) + len(smart_recommendations)) * 0.25, 1), "leads_generated": metrics.leads, "revenue_influenced": metrics.revenue},
+        notifications=[
+            {
+                "title": "Growth engine refreshed",
+                "message": "New recommendations are ready for review.",
+                "kind": "info",
+            }
+        ],
+        performance={
+            "ai_actions": len(opportunities) + len(smart_recommendations),
+            "time_saved_hours": round(
+                (len(opportunities) + len(smart_recommendations)) * 0.25, 1
+            ),
+            "leads_generated": metrics.leads,
+            "revenue_influenced": metrics.revenue,
+        },
     )
 
 
@@ -4492,13 +7369,29 @@ def _ai_ceo_labels(language: str) -> dict[str, str]:
     return labels.get(language, labels["English"])
 
 
-def _latest_employee_report(db: Session, workspace: Workspace, user_id: str) -> list[dict[str, Any]]:
-    employees = list(db.scalars(select(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id).order_by(AISalesEmployee.created_at.desc()).limit(8)).all())
+def _latest_employee_report(
+    db: Session, workspace: Workspace, user_id: str
+) -> list[dict[str, Any]]:
+    employees = list(
+        db.scalars(
+            select(AISalesEmployee)
+            .where(
+                AISalesEmployee.workspace_id == workspace.id,
+                AISalesEmployee.user_id == user_id,
+            )
+            .order_by(AISalesEmployee.created_at.desc())
+            .limit(8)
+        ).all()
+    )
     report: list[dict[str, Any]] = []
     for employee in employees:
         tasks = _task_history(employee)
         completed = [task for task in tasks if task.get("status") == "finished"]
-        pending = [task for task in tasks if task.get("status") in {"waiting_approval", "approved"}]
+        pending = [
+            task
+            for task in tasks
+            if task.get("status") in {"waiting_approval", "approved"}
+        ]
         last = completed[-1] if completed else (tasks[-1] if tasks else {})
         report.append(
             {
@@ -4508,34 +7401,74 @@ def _latest_employee_report(db: Session, workspace: Workspace, user_id: str) -> 
                 "completed_tasks": len(completed),
                 "pending_tasks": len(pending),
                 "problems": "No blocker detected" if tasks else "No assigned work yet",
-                "recommendation": str((last.get("result_preview") or {}).get("next_recommended_action") or "Assign a focused revenue task and keep approval required."),
+                "recommendation": str(
+                    (last.get("result_preview") or {}).get("next_recommended_action")
+                    or "Assign a focused revenue task and keep approval required."
+                ),
             }
         )
     if not report:
-        report.append({"name": "Sales Employee", "role": "AI Sales Employee", "mode": "Review Mode", "completed_tasks": 0, "pending_tasks": 0, "problems": "No AI employee has been hired yet", "recommendation": "Create the first AI Sales Employee and assign a discovery task."})
+        report.append(
+            {
+                "name": "Sales Employee",
+                "role": "AI Sales Employee",
+                "mode": "Review Mode",
+                "completed_tasks": 0,
+                "pending_tasks": 0,
+                "problems": "No AI employee has been hired yet",
+                "recommendation": "Create the first AI Sales Employee and assign a discovery task.",
+            }
+        )
     return report
 
 
-def _ai_ceo_summary(db: Session, user_id: str, workspace: Workspace, length: str, language: str) -> dict[str, Any]:
+def _ai_ceo_summary(
+    db: Session, user_id: str, workspace: Workspace, length: str, language: str
+) -> dict[str, Any]:
     metrics = dashboard(user_id, db)
     growth = growth_engine(user_id, db)
     lead_scope = _workspace_stmt(Lead, workspace, user_id)
     email_scope = _workspace_stmt(EmailMessage, workspace, user_id)
     task_scope = _workspace_stmt(SalesEmployeeTaskResult, workspace, user_id)
     yesterday = datetime.utcnow().date()
-    tasks_completed = db.scalar(select(func.count()).select_from(SalesEmployeeTaskResult).where(task_scope)) or 0
-    new_leads = db.scalar(select(func.count()).select_from(Lead).where(lead_scope, func.date(Lead.created_at) == yesterday.isoformat())) or 0
-    replies = db.scalar(select(func.count()).select_from(EmailMessage).where(email_scope, EmailMessage.replied_at.is_not(None))) or 0
+    tasks_completed = (
+        db.scalar(
+            select(func.count()).select_from(SalesEmployeeTaskResult).where(task_scope)
+        )
+        or 0
+    )
+    new_leads = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(lead_scope, func.date(Lead.created_at) == yesterday.isoformat())
+        )
+        or 0
+    )
+    replies = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(email_scope, EmailMessage.replied_at.is_not(None))
+        )
+        or 0
+    )
     employee_report = _latest_employee_report(db, workspace, user_id)
     priorities = [
-        str(item.get("action") or item.get("title") or "Review today's best opportunity")
+        str(
+            item.get("action") or item.get("title") or "Review today's best opportunity"
+        )
         for item in growth.smart_recommendations[:3]
     ]
     while len(priorities) < 3:
         priorities.append("Keep all external actions in approval mode.")
     risks = [
-        "Reply rate needs attention" if metrics.reply_rate < 5 else "Reply rate is healthy; scale carefully.",
-        "Pipeline is thin" if metrics.revenue_forecast <= 0 else "Protect pipeline quality while scaling.",
+        "Reply rate needs attention"
+        if metrics.reply_rate < 5
+        else "Reply rate is healthy; scale carefully.",
+        "Pipeline is thin"
+        if metrics.revenue_forecast <= 0
+        else "Protect pipeline quality while scaling.",
         "No campaign should launch without approval.",
     ]
     opportunities = [
@@ -4602,29 +7535,55 @@ def _ai_ceo_transcript(summary: dict[str, Any]) -> str:
     if summary["length"] == "1 min":
         return " ".join(lines[:10])
     if summary["length"] == "3 min":
-        return " ".join(lines + ["I would review opportunities first, then approve only the prepared work that matches your ICP and daily sending limits."])
-    return " ".join(lines + [
-        "For a deeper executive review, inspect the pipeline by status, compare reply quality with campaign intent, and approve only the highest confidence next action.",
-        "The AI CEO is intentionally advisory. It coordinates context across employees, but operational approval remains with the user.",
-    ])
+        return " ".join(
+            lines
+            + [
+                "I would review opportunities first, then approve only the prepared work that matches your ICP and daily sending limits."
+            ]
+        )
+    return " ".join(
+        lines
+        + [
+            "For a deeper executive review, inspect the pipeline by status, compare reply quality with campaign intent, and approve only the highest confidence next action.",
+            "The AI CEO is intentionally advisory. It coordinates context across employees, but operational approval remains with the user.",
+        ]
+    )
 
 
 @router.post("/ai-ceo/briefings", response_model=AICEOBriefingOut)
-def create_ai_ceo_briefing(payload: AICEOBriefingRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AICEOBriefingOut:
+def create_ai_ceo_briefing(
+    payload: AICEOBriefingRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> AICEOBriefingOut:
     started = time.perf_counter()
     step = "workspace"
     try:
         workspace = _current_workspace(db, user_id)
         language = payload.language or workspace.language or "English"
-        logger.info("AI CEO briefing step=%s user=%s workspace=%s length=%s language=%s", step, user_id, workspace.id, payload.length, language)
+        logger.info(
+            "AI CEO briefing step=%s user=%s workspace=%s length=%s language=%s",
+            step,
+            user_id,
+            workspace.id,
+            payload.length,
+            language,
+        )
         step = "summary"
         summary = _ai_ceo_summary(db, user_id, workspace, payload.length, language)
-        logger.info("AI CEO briefing step=%s duration_ms=%s", step, round((time.perf_counter() - started) * 1000))
+        logger.info(
+            "AI CEO briefing step=%s duration_ms=%s",
+            step,
+            round((time.perf_counter() - started) * 1000),
+        )
         step = "transcript"
         transcript = _ai_ceo_transcript(summary)
         if not transcript.strip():
             raise ValueError("AI CEO transcript is empty")
-        logger.info("AI CEO briefing step=%s transcript_chars=%s", step, len(transcript))
+        logger.info(
+            "AI CEO briefing step=%s transcript_chars=%s", step, len(transcript)
+        )
         step = "db_save"
         briefing = AICEOBriefing(
             workspace_id=workspace.id,
@@ -4636,26 +7595,59 @@ def create_ai_ceo_briefing(payload: AICEOBriefingRequest, request: Request, user
             summary_json=summary,
         )
         db.add(briefing)
-        log_event(db, request, user_id, "ai_ceo.briefing_created", {"length": payload.length, "language": language, "report_only": True})
+        log_event(
+            db,
+            request,
+            user_id,
+            "ai_ceo.briefing_created",
+            {"length": payload.length, "language": language, "report_only": True},
+        )
         db.commit()
         db.refresh(briefing)
         step = "response"
         response = AICEOBriefingOut.model_validate(briefing)
-        logger.info("AI CEO briefing step=%s id=%s duration_ms=%s", step, briefing.id, round((time.perf_counter() - started) * 1000))
+        logger.info(
+            "AI CEO briefing step=%s id=%s duration_ms=%s",
+            step,
+            briefing.id,
+            round((time.perf_counter() - started) * 1000),
+        )
         return response
     except Exception:
-        logger.exception("AI CEO briefing failed step=%s user=%s duration_ms=%s", step, user_id, round((time.perf_counter() - started) * 1000))
+        logger.exception(
+            "AI CEO briefing failed step=%s user=%s duration_ms=%s",
+            step,
+            user_id,
+            round((time.perf_counter() - started) * 1000),
+        )
         raise
 
 
 @router.get("/ai-ceo/briefings", response_model=list[AICEOBriefingOut])
-def list_ai_ceo_briefings(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[AICEOBriefing]:
+def list_ai_ceo_briefings(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> list[AICEOBriefing]:
     workspace = _current_workspace(db, user_id)
-    return list(db.scalars(select(AICEOBriefing).where(AICEOBriefing.workspace_id == workspace.id, AICEOBriefing.user_id == user_id).order_by(AICEOBriefing.created_at.desc()).limit(30)).all())
+    return list(
+        db.scalars(
+            select(AICEOBriefing)
+            .where(
+                AICEOBriefing.workspace_id == workspace.id,
+                AICEOBriefing.user_id == user_id,
+            )
+            .order_by(AICEOBriefing.created_at.desc())
+            .limit(30)
+        ).all()
+    )
 
 
 @router.post("/ai-ceo/question", response_model=AICEOAnswerOut)
-def answer_ai_ceo_question(payload: AICEOQuestionIn, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AICEOAnswerOut:
+def answer_ai_ceo_question(
+    payload: AICEOQuestionIn,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> AICEOAnswerOut:
     started = time.perf_counter()
     step = "workspace"
     try:
@@ -4676,17 +7668,37 @@ def answer_ai_ceo_question(payload: AICEOQuestionIn, request: Request, user_id: 
         else:
             answer = f"I reviewed the business state. The top priority is {summary['top_priorities'][0]}. The top risk is {summary['top_risks'][0]}."
         step = "db_save"
-        log_event(db, request, user_id, "ai_ceo.question_answered", {"question": payload.question[:120], "report_only": True})
+        log_event(
+            db,
+            request,
+            user_id,
+            "ai_ceo.question_answered",
+            {"question": payload.question[:120], "report_only": True},
+        )
         db.commit()
-        logger.info("AI CEO question step=response user=%s duration_ms=%s", user_id, round((time.perf_counter() - started) * 1000))
+        logger.info(
+            "AI CEO question step=response user=%s duration_ms=%s",
+            user_id,
+            round((time.perf_counter() - started) * 1000),
+        )
         return AICEOAnswerOut(answer=answer, related_metrics=health)
     except Exception:
-        logger.exception("AI CEO question failed step=%s user=%s duration_ms=%s", step, user_id, round((time.perf_counter() - started) * 1000))
+        logger.exception(
+            "AI CEO question failed step=%s user=%s duration_ms=%s",
+            step,
+            user_id,
+            round((time.perf_counter() - started) * 1000),
+        )
         raise
 
 
 @router.post("/growth-engine/goal", response_model=GrowthGoalOut)
-def set_growth_goal(payload: GrowthGoalIn, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> GrowthGoalOut:
+def set_growth_goal(
+    payload: GrowthGoalIn,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> GrowthGoalOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     target = _extract_meeting_target(payload.goal)
@@ -4707,69 +7719,189 @@ def set_growth_goal(payload: GrowthGoalIn, request: Request, user_id: CurrentUse
         },
     }
     _notify(db, user_id, NotificationKind.success, "Growth goal updated", payload.goal)
-    log_event(db, request, user_id, "growth.goal_updated", {"goal": payload.goal, "target_meetings": target})
+    log_event(
+        db,
+        request,
+        user_id,
+        "growth.goal_updated",
+        {"goal": payload.goal, "target_meetings": target},
+    )
     db.commit()
     return _growth_goal(settings, dashboard(user_id, db).meetings)
 
 
 @router.post("/campaigns", response_model=CampaignOut)
-def create_campaign(payload: CampaignCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
+def create_campaign(
+    payload: CampaignCreate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
-    current_count = db.scalar(select(func.count()).select_from(Campaign).where(_workspace_stmt(Campaign, workspace, user_id))) or 0
+    current_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(Campaign)
+            .where(_workspace_stmt(Campaign, workspace, user_id))
+        )
+        or 0
+    )
     _enforce_count_limit(db, user_id, workspace, "campaigns", int(current_count))
-    data = _campaign_payload(payload.model_dump(exclude={"sequence"}), include_defaults=True)
-    campaign = Campaign(user_id=user_id, workspace_id=workspace.id, **data, status=CampaignStatus.scheduled if payload.schedule_at else CampaignStatus.draft)
+    data = _campaign_payload(
+        payload.model_dump(exclude={"sequence"}), include_defaults=True
+    )
+    campaign = Campaign(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        **data,
+        status=CampaignStatus.scheduled
+        if payload.schedule_at
+        else CampaignStatus.draft,
+    )
     db.add(campaign)
     db.flush()
     _replace_sequence(db, campaign, payload.sequence)
-    log_event(db, request, user_id, "campaign.created", {"campaign_id": str(campaign.id), "name": campaign.name})
-    _notify(db, user_id, NotificationKind.success, "Campaign created", f"{campaign.name} is ready for leads and email generation.")
+    log_event(
+        db,
+        request,
+        user_id,
+        "campaign.created",
+        {"campaign_id": str(campaign.id), "name": campaign.name},
+    )
+    _notify(
+        db,
+        user_id,
+        NotificationKind.success,
+        "Campaign created",
+        f"{campaign.name} is ready for leads and email generation.",
+    )
     db.commit()
     db.refresh(campaign)
     return _campaign_out(db, campaign)
 
 
 @router.get("/campaigns", response_model=list[CampaignOut])
-def list_campaigns(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[CampaignOut]:
+def list_campaigns(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> list[CampaignOut]:
     workspace = _current_workspace(db, user_id)
-    campaigns = db.scalars(select(Campaign).where(_workspace_stmt(Campaign, workspace, user_id)).order_by(Campaign.created_at.desc())).all()
-    return [_campaign_out(db, campaign) for campaign in campaigns if _is_customer_visible_campaign(campaign)]
+    campaigns = db.scalars(
+        select(Campaign)
+        .where(_workspace_stmt(Campaign, workspace, user_id))
+        .order_by(Campaign.created_at.desc())
+    ).all()
+    return [
+        _campaign_out(db, campaign)
+        for campaign in campaigns
+        if _is_customer_visible_campaign(campaign)
+    ]
 
 
 @router.put("/campaigns/{campaign_id}", response_model=CampaignOut)
-def update_campaign(campaign_id: UUID, payload: CampaignUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
+def update_campaign(
+    campaign_id: UUID,
+    payload: CampaignUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
-    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+    campaign = db.scalar(
+        select(Campaign).where(
+            Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)
+        )
+    )
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    data = _campaign_payload(payload.model_dump(exclude_unset=True, exclude={"sequence"}))
+    data = _campaign_payload(
+        payload.model_dump(exclude_unset=True, exclude={"sequence"})
+    )
     for key, value in data.items():
         if key == "status" and value:
             value = CampaignStatus(value)
         setattr(campaign, key, value)
     if payload.sequence:
         _replace_sequence(db, campaign, payload.sequence)
-    log_event(db, request, user_id, "campaign.updated", {"campaign_id": str(campaign.id)})
+    log_event(
+        db, request, user_id, "campaign.updated", {"campaign_id": str(campaign.id)}
+    )
     db.commit()
     db.refresh(campaign)
     return _campaign_out(db, campaign)
 
 
-@router.post("/campaigns/{campaign_id}/ai-analytics", response_model=CampaignAnalyticsOut)
-def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignAnalyticsOut:
+@router.post(
+    "/campaigns/{campaign_id}/ai-analytics", response_model=CampaignAnalyticsOut
+)
+def campaign_ai_analytics(
+    campaign_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> CampaignAnalyticsOut:
     workspace = _current_workspace(db, user_id)
     plan = _plan_for_workspace(db, user_id, workspace)
     if not _limits_for_workspace(db, user_id, workspace)["advanced_analytics"]:
-        raise HTTPException(status_code=402, detail=_upgrade_message(plan, "Advanced Analytics"))
+        raise HTTPException(
+            status_code=402, detail=_upgrade_message(plan, "Advanced Analytics")
+        )
     _check_usage_available(db, user_id, workspace, "ai_generations")
-    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+    campaign = db.scalar(
+        select(Campaign).where(
+            Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)
+        )
+    )
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    leads = db.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id)) or 0
-    emails = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.campaign_id == campaign.id, EmailMessage.sent_at.is_not(None))) or 0
-    opened = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.campaign_id == campaign.id, EmailMessage.opened_at.is_not(None))) or 0
-    replies = db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.campaign_id == campaign.id, EmailMessage.replied_at.is_not(None))) or 0
-    meetings = db.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id, Lead.status == LeadStatus.meeting)) or 0
+    leads = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(Lead.campaign_id == campaign.id)
+        )
+        or 0
+    )
+    emails = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.campaign_id == campaign.id,
+                EmailMessage.sent_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    opened = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.campaign_id == campaign.id,
+                EmailMessage.opened_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    replies = (
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.campaign_id == campaign.id,
+                EmailMessage.replied_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    meetings = (
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .where(Lead.campaign_id == campaign.id, Lead.status == LeadStatus.meeting)
+        )
+        or 0
+    )
     try:
         result = campaign_analytics(
             {
@@ -4782,27 +7914,55 @@ def campaign_ai_analytics(campaign_id: UUID, request: Request, user_id: CurrentU
                     "replies": replies,
                     "meetings": meetings,
                     "open_rate": 0 if emails == 0 else round(opened / emails * 100, 1),
-                    "reply_rate": 0 if emails == 0 else round(replies / emails * 100, 1),
+                    "reply_rate": 0
+                    if emails == 0
+                    else round(replies / emails * 100, 1),
                 },
             }
         )
     except Exception as exc:
         raise _provider_error(exc) from exc
     _record_usage_after_success(db, user_id, workspace, "ai_generations")
-    log_event(db, request, user_id, "campaign.analytics_generated", {"campaign_id": str(campaign.id), "success": result.campaign_success})
+    log_event(
+        db,
+        request,
+        user_id,
+        "campaign.analytics_generated",
+        {"campaign_id": str(campaign.id), "success": result.campaign_success},
+    )
     db.commit()
     return result
 
 
 @router.post("/campaigns/{campaign_id}/{action}", response_model=CampaignOut)
-def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
+def campaign_action(
+    campaign_id: UUID,
+    action: str,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
     if action == "duplicate":
         mutation_lock = _lock_campaign_mutation(db, workspace.id, user_id)
         try:
-            current_count = db.scalar(select(func.count()).select_from(Campaign).where(_workspace_stmt(Campaign, workspace, user_id))) or 0
-            _enforce_count_limit(db, user_id, workspace, "campaigns", int(current_count))
-            campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+            current_count = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(Campaign)
+                    .where(_workspace_stmt(Campaign, workspace, user_id))
+                )
+                or 0
+            )
+            _enforce_count_limit(
+                db, user_id, workspace, "campaigns", int(current_count)
+            )
+            campaign = db.scalar(
+                select(Campaign).where(
+                    Campaign.id == campaign_id,
+                    _workspace_stmt(Campaign, workspace, user_id),
+                )
+            )
             if campaign is None:
                 raise HTTPException(status_code=404, detail="Campaign not found")
             clone = Campaign(
@@ -4826,30 +7986,75 @@ def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: C
             )
             db.add(clone)
             db.flush()
-            sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
+            sequence = db.scalars(
+                select(CampaignSequence)
+                .where(CampaignSequence.campaign_id == campaign.id)
+                .order_by(CampaignSequence.step_order.asc())
+            ).all()
             _replace_sequence(
                 db,
                 clone,
-                [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
+                [
+                    CampaignSequenceIn(
+                        step_order=item.step_order,
+                        name=item.name,
+                        subject=item.subject,
+                        body=item.body,
+                        delay_days=item.delay_days,
+                    )
+                    for item in sequence
+                ],
             )
-            log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
+            log_event(
+                db,
+                request,
+                user_id,
+                "campaign.duplicated",
+                {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)},
+            )
             db.commit()
             db.refresh(clone)
             return _campaign_out(db, clone)
         finally:
             if mutation_lock:
                 mutation_lock.release()
-    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+    campaign = db.scalar(
+        select(Campaign).where(
+            Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)
+        )
+    )
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    mapping = {"launch": CampaignStatus.running, "resume": CampaignStatus.running, "pause": CampaignStatus.paused, "stop": CampaignStatus.stopped}
+    mapping = {
+        "launch": CampaignStatus.running,
+        "resume": CampaignStatus.running,
+        "pause": CampaignStatus.paused,
+        "stop": CampaignStatus.stopped,
+    }
     if action not in mapping:
         raise HTTPException(status_code=400, detail="Unsupported campaign action")
     if action in {"launch", "resume"}:
-        campaign_leads = list(db.scalars(select(Lead).where(Lead.campaign_id == campaign.id, _workspace_stmt(Lead, workspace, user_id))).all())
-        lead_ids = [lead.id for lead in campaign_leads if not (_lead_metadata(lead).get("source") == "production_smoke_test" and _lead_metadata(lead).get("is_test") is True)]
+        campaign_leads = list(
+            db.scalars(
+                select(Lead).where(
+                    Lead.campaign_id == campaign.id,
+                    _workspace_stmt(Lead, workspace, user_id),
+                )
+            ).all()
+        )
+        lead_ids = [
+            lead.id
+            for lead in campaign_leads
+            if not (
+                _lead_metadata(lead).get("source") == "production_smoke_test"
+                and _lead_metadata(lead).get("is_test") is True
+            )
+        ]
         if not lead_ids:
-            raise HTTPException(status_code=400, detail="Add at least one lead before launching this campaign.")
+            raise HTTPException(
+                status_code=400,
+                detail="Add at least one lead before launching this campaign.",
+            )
         approved_count = (
             db.scalar(
                 select(func.count())
@@ -4863,7 +8068,10 @@ def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: C
             or 0
         )
         if approved_count == 0:
-            raise HTTPException(status_code=400, detail="Approve at least one email draft before launching this campaign.")
+            raise HTTPException(
+                status_code=400,
+                detail="Approve at least one email draft before launching this campaign.",
+            )
     campaign.status = mapping[action]
     if action == "stop":
         jobs = db.scalars(
@@ -4872,16 +8080,30 @@ def campaign_action(campaign_id: UUID, action: str, request: Request, user_id: C
                 EnrichmentJob.user_id == user_id,
                 EnrichmentJob.job_type == "autopilot_email_send",
                 EnrichmentJob.status.in_(["pending", "retrying"]),
-                EnrichmentJob.payload_json["campaign_id"].as_string() == str(campaign.id),
+                EnrichmentJob.payload_json["campaign_id"].as_string()
+                == str(campaign.id),
             )
         ).all()
         for job in jobs:
             job.cancel_requested = True
             job.status = "cancelled"
             job.completed_at = datetime.utcnow()
-            job.progress_json = {**(job.progress_json or {}), "stage": "cancelled", "message": "Campaign was stopped.", "terminal_state": "cancelled"}
-    log_event(db, request, user_id, f"campaign.{action}", {"campaign_id": str(campaign.id)})
-    _notify(db, user_id, NotificationKind.info, "Campaign updated", f"{campaign.name} is now {campaign.status.value}.")
+            job.progress_json = {
+                **(job.progress_json or {}),
+                "stage": "cancelled",
+                "message": "Campaign was stopped.",
+                "terminal_state": "cancelled",
+            }
+    log_event(
+        db, request, user_id, f"campaign.{action}", {"campaign_id": str(campaign.id)}
+    )
+    _notify(
+        db,
+        user_id,
+        NotificationKind.info,
+        "Campaign updated",
+        f"{campaign.name} is now {campaign.status.value}.",
+    )
     db.commit()
     db.refresh(campaign)
     return _campaign_out(db, campaign)
@@ -4899,13 +8121,23 @@ def approve_autopilot_campaign(
     _require_active_subscription(db, workspace, user_id)
     sender_status = _require_outreach_sender_ready(db, user_id, workspace)
     if sender_status.provider != "gmail":
-        raise HTTPException(status_code=409, detail="Connect Gmail/Google Workspace before enabling AI Autopilot.")
-    campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+        raise HTTPException(
+            status_code=409,
+            detail="Connect Gmail/Google Workspace before enabling AI Autopilot.",
+        )
+    campaign = db.scalar(
+        select(Campaign).where(
+            Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)
+        )
+    )
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
     finder_job_id = str(payload.get("job_id") or "").strip()
     if not finder_job_id:
-        raise HTTPException(status_code=400, detail="AI Autopilot approval requires the current finder job.")
+        raise HTTPException(
+            status_code=400,
+            detail="AI Autopilot approval requires the current finder job.",
+        )
     result_rows = db.scalars(
         select(AICustomerFinderResult).where(
             AICustomerFinderResult.workspace_id == workspace.id,
@@ -4917,11 +8149,23 @@ def approve_autopilot_campaign(
     ).all()
     lead_ids = [row.lead_id for row in result_rows if row.lead_id]
     if not lead_ids:
-        raise HTTPException(status_code=400, detail="Save verified companies to CRM before enabling AI Autopilot.")
+        raise HTTPException(
+            status_code=400,
+            detail="Save verified companies to CRM before enabling AI Autopilot.",
+        )
     leads = [
         lead
-        for lead in db.scalars(select(Lead).where(Lead.workspace_id == workspace.id, Lead.user_id == user_id, Lead.id.in_(lead_ids))).all()
-        if not (_lead_metadata(lead).get("source") == "production_smoke_test" and _lead_metadata(lead).get("is_test") is True)
+        for lead in db.scalars(
+            select(Lead).where(
+                Lead.workspace_id == workspace.id,
+                Lead.user_id == user_id,
+                Lead.id.in_(lead_ids),
+            )
+        ).all()
+        if not (
+            _lead_metadata(lead).get("source") == "production_smoke_test"
+            and _lead_metadata(lead).get("is_test") is True
+        )
     ]
     queued = 0
     approved = 0
@@ -4930,7 +8174,12 @@ def approve_autopilot_campaign(
         lead.campaign_id = campaign.id
         email = db.scalar(
             select(EmailMessage)
-            .where(EmailMessage.workspace_id == workspace.id, EmailMessage.user_id == user_id, EmailMessage.lead_id == lead.id, EmailMessage.delivery_status.in_(["draft", "approved", "needs_review"]))
+            .where(
+                EmailMessage.workspace_id == workspace.id,
+                EmailMessage.user_id == user_id,
+                EmailMessage.lead_id == lead.id,
+                EmailMessage.delivery_status.in_(["draft", "approved", "needs_review"]),
+            )
             .order_by(EmailMessage.created_at.desc())
         )
         if not email:
@@ -4959,29 +8208,61 @@ def approve_autopilot_campaign(
         )
         queued += 1
     if queued == 0:
-        raise HTTPException(status_code=400, detail="No eligible email drafts were available for this campaign.")
+        raise HTTPException(
+            status_code=400,
+            detail="No eligible email drafts were available for this campaign.",
+        )
     campaign.status = CampaignStatus.running
     log_event(
         db,
         request,
         user_id,
         "autopilot.campaign.approved",
-        {"campaign_id": str(campaign.id), "finder_job_id": finder_job_id, "queued": queued, "approved_drafts": approved, "sender_email": sender_status.sender_email},
+        {
+            "campaign_id": str(campaign.id),
+            "finder_job_id": finder_job_id,
+            "queued": queued,
+            "approved_drafts": approved,
+            "sender_email": sender_status.sender_email,
+        },
     )
-    _notify(db, user_id, NotificationKind.info, "AI Autopilot enabled", f"{queued} safe send jobs were queued for {campaign.name}.")
+    _notify(
+        db,
+        user_id,
+        NotificationKind.info,
+        "AI Autopilot enabled",
+        f"{queued} safe send jobs were queued for {campaign.name}.",
+    )
     db.commit()
     db.refresh(campaign)
     return _campaign_out(db, campaign)
 
 
 @router.post("/campaigns/{campaign_id}/duplicate", response_model=CampaignOut)
-def duplicate_campaign(campaign_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CampaignOut:
+def duplicate_campaign(
+    campaign_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> CampaignOut:
     workspace = _current_workspace(db, user_id)
     mutation_lock = _lock_campaign_mutation(db, workspace.id, user_id)
     try:
-        current_count = db.scalar(select(func.count()).select_from(Campaign).where(_workspace_stmt(Campaign, workspace, user_id))) or 0
+        current_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Campaign)
+                .where(_workspace_stmt(Campaign, workspace, user_id))
+            )
+            or 0
+        )
         _enforce_count_limit(db, user_id, workspace, "campaigns", int(current_count))
-        campaign = db.scalar(select(Campaign).where(Campaign.id == campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
+        campaign = db.scalar(
+            select(Campaign).where(
+                Campaign.id == campaign_id,
+                _workspace_stmt(Campaign, workspace, user_id),
+            )
+        )
         if campaign is None:
             raise HTTPException(status_code=404, detail="Campaign not found")
         clone = Campaign(
@@ -5005,13 +8286,32 @@ def duplicate_campaign(campaign_id: UUID, request: Request, user_id: CurrentUser
         )
         db.add(clone)
         db.flush()
-        sequence = db.scalars(select(CampaignSequence).where(CampaignSequence.campaign_id == campaign.id).order_by(CampaignSequence.step_order.asc())).all()
+        sequence = db.scalars(
+            select(CampaignSequence)
+            .where(CampaignSequence.campaign_id == campaign.id)
+            .order_by(CampaignSequence.step_order.asc())
+        ).all()
         _replace_sequence(
             db,
             clone,
-            [CampaignSequenceIn(step_order=item.step_order, name=item.name, subject=item.subject, body=item.body, delay_days=item.delay_days) for item in sequence],
+            [
+                CampaignSequenceIn(
+                    step_order=item.step_order,
+                    name=item.name,
+                    subject=item.subject,
+                    body=item.body,
+                    delay_days=item.delay_days,
+                )
+                for item in sequence
+            ],
         )
-        log_event(db, request, user_id, "campaign.duplicated", {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)})
+        log_event(
+            db,
+            request,
+            user_id,
+            "campaign.duplicated",
+            {"campaign_id": str(campaign.id), "duplicate_id": str(clone.id)},
+        )
         db.commit()
         db.refresh(clone)
         return _campaign_out(db, clone)
@@ -5021,7 +8321,12 @@ def duplicate_campaign(campaign_id: UUID, request: Request, user_id: CurrentUser
 
 
 @router.post("/leads", response_model=LeadOut)
-def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> LeadOut:
+def create_lead(
+    payload: LeadCreate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> LeadOut:
     workspace = _current_workspace(db, user_id)
     candidate = LeadOut(
         company=payload.company,
@@ -5060,14 +8365,27 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
             existing.country = payload.country or existing.country
             existing.city = payload.city or existing.city
             existing.website = payload.website or existing.website
-            log_event(db, request, user_id, "lead.duplicate_reused", {"company": existing.company, "source": "manual"})
+            log_event(
+                db,
+                request,
+                user_id,
+                "lead.duplicate_reused",
+                {"company": existing.company, "source": "manual"},
+            )
             _sync_lead_to_crm(db, user_id, workspace, existing)
             db.commit()
             db.refresh(existing)
             return _lead_out(existing)
     _check_usage_available(db, user_id, workspace, "leads")
-    enriched = candidate if candidate.email else _hunter_enriched_leads(db, request, user_id, workspace, [candidate])[0]
-    metadata = {**_lead_metadata(enriched), "saved_to_crm_at": datetime.utcnow().isoformat()}
+    enriched = (
+        candidate
+        if candidate.email
+        else _hunter_enriched_leads(db, request, user_id, workspace, [candidate])[0]
+    )
+    metadata = {
+        **_lead_metadata(enriched),
+        "saved_to_crm_at": datetime.utcnow().isoformat(),
+    }
     lead = Lead(
         user_id=user_id,
         workspace_id=workspace.id,
@@ -5089,19 +8407,46 @@ def create_lead(payload: LeadCreate, request: Request, user_id: CurrentUser, db:
     db.flush()
     _analyze_lead_if_possible(db, user_id, workspace, lead)
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    log_event(db, request, user_id, "lead.imported", {"company": lead.company, "source": "manual", "hunter_verified": bool(enriched.hunter_verified)})
+    log_event(
+        db,
+        request,
+        user_id,
+        "lead.imported",
+        {
+            "company": lead.company,
+            "source": "manual",
+            "hunter_verified": bool(enriched.hunter_verified),
+        },
+    )
     _record_usage_after_success(db, user_id, workspace, "leads")
     if enriched.hunter_verified:
-        _notify(db, user_id, NotificationKind.success, "Company analyzed", f"{lead.company} was saved, an email was verified, and AI prepared the company summary.")
+        _notify(
+            db,
+            user_id,
+            NotificationKind.success,
+            "Company analyzed",
+            f"{lead.company} was saved, an email was verified, and AI prepared the company summary.",
+        )
     else:
-        _notify(db, user_id, NotificationKind.info, "Company analyzed", f"{lead.company} was saved and analyzed. No verified email was found yet.")
+        _notify(
+            db,
+            user_id,
+            NotificationKind.info,
+            "Company analyzed",
+            f"{lead.company} was saved and analyzed. No verified email was found yet.",
+        )
     db.commit()
     db.refresh(lead)
     return _lead_out(lead)
 
 
 @router.post("/leads/find", response_model=list[LeadOut])
-def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+def leads_find(
+    payload: LeadFinderRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> list[LeadOut]:
     request_id = request.headers.get("x-request-id") or str(uuid4())
     workspace = _current_workspace(db, user_id)
     settings = get_app_settings()
@@ -5118,33 +8463,84 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
         resend_configured=bool(get_app_settings().resend_api_key),
     )
     _require_active_subscription(db, workspace, user_id)
-    _lead_trace(request_id, "validation_passed", workspace_id=str(workspace.id), limit=payload.limit, country=payload.country, city=payload.city, industry=payload.industry)
-    search_cache_key = cache_key("lead-search", workspace.id, payload.model_dump(mode="json"))
+    _lead_trace(
+        request_id,
+        "validation_passed",
+        workspace_id=str(workspace.id),
+        limit=payload.limit,
+        country=payload.country,
+        city=payload.city,
+        industry=payload.industry,
+    )
+    search_cache_key = cache_key(
+        "lead-search", workspace.id, payload.model_dump(mode="json")
+    )
     cached_search = get_json(search_cache_key)
     if cached_search:
-        _lead_trace(request_id, "lead_search_cache_hit", parsed_count=len(cached_search))
+        _lead_trace(
+            request_id, "lead_search_cache_hit", parsed_count=len(cached_search)
+        )
         result_leads = [LeadOut.model_validate(item) for item in cached_search]
         lead_source = "google_maps_hunter"
         lead_action = "google_maps.company_search"
     else:
         try:
-            _lead_trace(request_id, "google_places_started", timeout_seconds=LEAD_PROVIDER_TIMEOUT_SECONDS)
-            result = _run_provider_with_deadline(request_id, "google_places", "google_places.search", search_google_places, payload)
-            _lead_trace(request_id, "google_places_finished", raw_count=result.raw_count, parsed_count=len(result.leads), duration_ms=result.duration_ms)
+            _lead_trace(
+                request_id,
+                "google_places_started",
+                timeout_seconds=LEAD_PROVIDER_TIMEOUT_SECONDS,
+            )
+            result = _run_provider_with_deadline(
+                request_id,
+                "google_places",
+                "google_places.search",
+                search_google_places,
+                payload,
+            )
+            _lead_trace(
+                request_id,
+                "google_places_finished",
+                raw_count=result.raw_count,
+                parsed_count=len(result.leads),
+                duration_ms=result.duration_ms,
+            )
             result_leads = result.leads
             lead_source = "google_maps_hunter"
             lead_action = "google_maps.company_search"
         except GoogleMapsConfigurationError as exc:
-            _lead_trace(request_id, "google_places_configuration_failed", error=str(exc), error_type=type(exc).__name__)
+            _lead_trace(
+                request_id,
+                "google_places_configuration_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             raise _provider_error(exc) from exc
         except Exception as exc:
-            _lead_trace(request_id, "google_places_failed", error=str(exc), error_type=type(exc).__name__)
+            _lead_trace(
+                request_id,
+                "google_places_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             if not apollo_key_loaded():
-                _lead_trace(request_id, "fallback_provider_unavailable", provider="apollo", reason="not_configured")
+                _lead_trace(
+                    request_id,
+                    "fallback_provider_unavailable",
+                    provider="apollo",
+                    reason="not_configured",
+                )
                 raise _provider_error(exc) from exc
             try:
-                _lead_trace(request_id, "fallback_provider_request_started", provider="apollo")
-                fallback_result = _run_provider_with_deadline(request_id, "apollo", "apollo.company_search", search_apollo_companies, payload)
+                _lead_trace(
+                    request_id, "fallback_provider_request_started", provider="apollo"
+                )
+                fallback_result = _run_provider_with_deadline(
+                    request_id,
+                    "apollo",
+                    "apollo.company_search",
+                    search_apollo_companies,
+                    payload,
+                )
                 _lead_trace(
                     request_id,
                     "fallback_provider_response_received",
@@ -5165,66 +8561,164 @@ def leads_find(payload: LeadFinderRequest, request: Request, user_id: CurrentUse
                     error_type=type(fallback_exc).__name__,
                 )
                 raise _provider_error(fallback_exc) from fallback_exc
-        set_json(search_cache_key, [lead.model_dump(mode="json") for lead in result_leads], settings.cache_lead_search_ttl_seconds)
-    _lead_trace(request_id, "hunter_started", leads=len(result_leads), hunter_configured=hunter_key_loaded(), timeout_seconds=LEAD_PROVIDER_TIMEOUT_SECONDS)
+        set_json(
+            search_cache_key,
+            [lead.model_dump(mode="json") for lead in result_leads],
+            settings.cache_lead_search_ttl_seconds,
+        )
+    _lead_trace(
+        request_id,
+        "hunter_started",
+        leads=len(result_leads),
+        hunter_configured=hunter_key_loaded(),
+        timeout_seconds=LEAD_PROVIDER_TIMEOUT_SECONDS,
+    )
     leads = _hunter_enriched_leads(db, request, user_id, workspace, result_leads)
-    _lead_trace(request_id, "hunter_finished", leads=len(leads), verified=sum(1 for lead in leads if lead.hunter_verified))
-    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source=lead_source, action=lead_action, request_id=request_id, run_inline_analysis=False)
+    _lead_trace(
+        request_id,
+        "hunter_finished",
+        leads=len(leads),
+        verified=sum(1 for lead in leads if lead.hunter_verified),
+    )
+    saved = _save_provider_leads(
+        db,
+        request,
+        user_id,
+        workspace,
+        leads,
+        payload,
+        source=lead_source,
+        action=lead_action,
+        request_id=request_id,
+        run_inline_analysis=False,
+    )
     response = [_lead_out(lead) for lead in saved]
-    _lead_trace(request_id, "response_returned", response_count=len(response), companies=[lead.company for lead in response[:5]])
+    _lead_trace(
+        request_id,
+        "response_returned",
+        response_count=len(response),
+        companies=[lead.company for lead in response[:5]],
+    )
     return response
 
 
 @router.post("/apollo/search-companies", response_model=list[LeadOut])
-def apollo_search_companies(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+def apollo_search_companies(
+    payload: LeadFinderRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     try:
         result = search_apollo_companies(payload)
     except Exception as exc:
         raise _provider_error(exc) from exc
-    _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
+    _save_apollo_settings_state(
+        db,
+        _settings_for_workspace(db, user_id, workspace),
+        connected=True,
+        last_success_at=datetime.utcnow(),
+        last_error="",
+    )
     leads = _hunter_enriched_leads(db, request, user_id, workspace, result.leads)
-    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="apollo_hunter", action="apollo.company_search")
+    saved = _save_provider_leads(
+        db,
+        request,
+        user_id,
+        workspace,
+        leads,
+        payload,
+        source="apollo_hunter",
+        action="apollo.company_search",
+    )
     return [_lead_out(lead) for lead in saved]
 
 
 @router.post("/apollo/search-contacts", response_model=list[LeadOut])
-def apollo_search_contacts(payload: LeadFinderRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> list[LeadOut]:
+def apollo_search_contacts(
+    payload: LeadFinderRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> list[LeadOut]:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     try:
         result = search_apollo_contacts(payload)
     except Exception as exc:
         raise _provider_error(exc) from exc
-    _save_apollo_settings_state(db, _settings_for_workspace(db, user_id, workspace), connected=True, last_success_at=datetime.utcnow(), last_error="")
+    _save_apollo_settings_state(
+        db,
+        _settings_for_workspace(db, user_id, workspace),
+        connected=True,
+        last_success_at=datetime.utcnow(),
+        last_error="",
+    )
     leads = _hunter_enriched_leads(db, request, user_id, workspace, result.leads)
-    saved = _save_provider_leads(db, request, user_id, workspace, leads, payload, source="apollo_hunter", action="apollo.contact_search")
+    saved = _save_provider_leads(
+        db,
+        request,
+        user_id,
+        workspace,
+        leads,
+        payload,
+        source="apollo_hunter",
+        action="apollo.contact_search",
+    )
     return [_lead_out(lead) for lead in saved]
 
 
-def _hunter_enriched_leads(db: Session, request: Request, user_id: str, workspace: Workspace, leads: list[LeadOut]) -> list[LeadOut]:
+def _hunter_enriched_leads(
+    db: Session,
+    request: Request,
+    user_id: str,
+    workspace: Workspace,
+    leads: list[LeadOut],
+) -> list[LeadOut]:
     if not hunter_key_loaded() or not leads:
         return leads
     settings = _settings_for_workspace(db, user_id, workspace)
     try:
         request_id = request.headers.get("x-request-id") or str(uuid4())
-        enriched = _run_provider_with_deadline(request_id, "hunter", "hunter.enrichment", enrich_leads_with_hunter, leads)
+        enriched = _run_provider_with_deadline(
+            request_id, "hunter", "hunter.enrichment", enrich_leads_with_hunter, leads
+        )
     except LeadProviderTimeoutError as exc:
         friendly = "Contact enrichment took too long. Companies were saved without verified emails. Try finding contacts again from the company profile."
         _save_hunter_settings_state(db, settings, connected=False, last_error=friendly)
-        log_event(db, request, user_id, "hunter.enrichment_timeout", {"reason": friendly})
-        capture_provider_exception(exc, provider="hunter", endpoint="hunter.enrichment", workspace_id=workspace.id)
+        log_event(
+            db, request, user_id, "hunter.enrichment_timeout", {"reason": friendly}
+        )
+        capture_provider_exception(
+            exc,
+            provider="hunter",
+            endpoint="hunter.enrichment",
+            workspace_id=workspace.id,
+        )
         return leads
     except Exception as exc:
         friendly = _provider_error(exc).detail
-        _save_hunter_settings_state(db, settings, connected=False, last_error=str(friendly))
-        log_event(db, request, user_id, "hunter.enrichment_failed", {"reason": str(friendly)})
+        _save_hunter_settings_state(
+            db, settings, connected=False, last_error=str(friendly)
+        )
+        log_event(
+            db, request, user_id, "hunter.enrichment_failed", {"reason": str(friendly)}
+        )
         return leads
     verified = sum(1 for lead in enriched if lead.hunter_verified)
     now = datetime.utcnow()
-    _save_hunter_settings_state(db, settings, connected=True, last_success_at=now, last_error="")
-    log_event(db, request, user_id, "hunter.enrichment_completed", {"verified": verified, "checked": len(enriched)})
+    _save_hunter_settings_state(
+        db, settings, connected=True, last_success_at=now, last_error=""
+    )
+    log_event(
+        db,
+        request,
+        user_id,
+        "hunter.enrichment_completed",
+        {"verified": verified, "checked": len(enriched)},
+    )
     return enriched
 
 
@@ -5276,40 +8770,127 @@ def _save_provider_leads(
             niche=item.niche,
             country=item.country,
             city=item.city,
-            notes=_merge_lead_metadata(item, {"saved_to_crm_at": datetime.utcnow().isoformat()}),
+            notes=_merge_lead_metadata(
+                item, {"saved_to_crm_at": datetime.utcnow().isoformat()}
+            ),
             revenue=item.revenue,
         )
         db.add(lead)
         db.flush()
-        _add_lead_activity(db, request, user_id, workspace, "lead.found", lead, {"source": source})
-        _lead_trace(request_id or str(uuid4()), "database_lead_inserted", lead_id=str(lead.id), company=lead.company, website=lead.website or "", email=lead.email or "")
+        _add_lead_activity(
+            db, request, user_id, workspace, "lead.found", lead, {"source": source}
+        )
+        _lead_trace(
+            request_id or str(uuid4()),
+            "database_lead_inserted",
+            lead_id=str(lead.id),
+            company=lead.company,
+            website=lead.website or "",
+            email=lead.email or "",
+        )
         if run_inline_analysis:
             _analyze_lead_if_possible(db, user_id, workspace, lead)
         else:
-            _lead_trace(request_id or str(uuid4()), "website_analysis_deferred", lead_id=str(lead.id), company=lead.company, reason="lead_finder_response_first")
+            _lead_trace(
+                request_id or str(uuid4()),
+                "website_analysis_deferred",
+                lead_id=str(lead.id),
+                company=lead.company,
+                reason="lead_finder_response_first",
+            )
         _sync_lead_to_crm(db, user_id, workspace, lead)
-        _add_lead_activity(db, request, user_id, workspace, "lead.saved_to_crm", lead, {"source": source, "crm_stage": _crm_stage_for_lead(lead)})
+        _add_lead_activity(
+            db,
+            request,
+            user_id,
+            workspace,
+            "lead.saved_to_crm",
+            lead,
+            {"source": source, "crm_stage": _crm_stage_for_lead(lead)},
+        )
         if _lead_metadata(lead).get("website_analyzed_at"):
-            _add_lead_activity(db, request, user_id, workspace, "website.analyzed", lead, {"source": source})
+            _add_lead_activity(
+                db,
+                request,
+                user_id,
+                workspace,
+                "website.analyzed",
+                lead,
+                {"source": source},
+            )
         if lead.email:
-            _add_lead_activity(db, request, user_id, workspace, "contact.found", lead, {"email_status": _email_status_for_lead(lead), "source": source})
+            _add_lead_activity(
+                db,
+                request,
+                user_id,
+                workspace,
+                "contact.found",
+                lead,
+                {"email_status": _email_status_for_lead(lead), "source": source},
+            )
         saved.append(lead)
-    log_event(db, request, user_id, action, {"source": source, "saved": len(saved), "duplicates_skipped": skipped, **payload.model_dump()})
+    log_event(
+        db,
+        request,
+        user_id,
+        action,
+        {
+            "source": source,
+            "saved": len(saved),
+            "duplicates_skipped": skipped,
+            **payload.model_dump(),
+        },
+    )
     verified = sum(1 for item in found if item.hunter_verified)
     if saved:
-        suffix = f" Verified {verified} email{'s' if verified != 1 else ''}." if verified else ""
-        _notify(db, user_id, NotificationKind.success, "Leads imported", f"{len(saved)} companies were added to your workspace.{suffix}")
+        suffix = (
+            f" Verified {verified} email{'s' if verified != 1 else ''}."
+            if verified
+            else ""
+        )
+        _notify(
+            db,
+            user_id,
+            NotificationKind.success,
+            "Leads imported",
+            f"{len(saved)} companies were added to your workspace.{suffix}",
+        )
     elif found:
-        _notify(db, user_id, NotificationKind.info, "Lead search finished", "All matching results were already in your workspace.")
+        _notify(
+            db,
+            user_id,
+            NotificationKind.info,
+            "Lead search finished",
+            "All matching results were already in your workspace.",
+        )
     else:
-        _notify(db, user_id, NotificationKind.info, "Lead search finished", "No matching companies were found for those filters.")
+        _notify(
+            db,
+            user_id,
+            NotificationKind.info,
+            "Lead search finished",
+            "No matching companies were found for those filters.",
+        )
     db.commit()
-    _lead_trace(request_id or str(uuid4()), "database_save_committed", saved=len(saved), duplicates_skipped=skipped)
-    _lead_trace(request_id or str(uuid4()), "database_save_finished", saved=len(saved), duplicates_skipped=skipped, returned=len(saved) + len(reused))
+    _lead_trace(
+        request_id or str(uuid4()),
+        "database_save_committed",
+        saved=len(saved),
+        duplicates_skipped=skipped,
+    )
+    _lead_trace(
+        request_id or str(uuid4()),
+        "database_save_finished",
+        saved=len(saved),
+        duplicates_skipped=skipped,
+        returned=len(saved) + len(reused),
+    )
     return saved + reused
 
 
-def _lead_duplicate_exists(db: Session, workspace: Workspace, user_id: str, item: LeadOut) -> bool:
+def _lead_duplicate_exists(
+    db: Session, workspace: Workspace, user_id: str, item: LeadOut
+) -> bool:
     return _existing_duplicate_lead(db, workspace, user_id, item) is not None
 
 
@@ -5329,16 +8910,32 @@ def leads_list(
     stmt = select(Lead).where(_workspace_stmt(Lead, workspace, user_id))
     if search:
         term = f"%{search}%"
-        stmt = stmt.where(or_(Lead.company.ilike(term), Lead.email.ilike(term), Lead.website.ilike(term), Lead.industry.ilike(term)))
+        stmt = stmt.where(
+            or_(
+                Lead.company.ilike(term),
+                Lead.email.ilike(term),
+                Lead.website.ilike(term),
+                Lead.industry.ilike(term),
+            )
+        )
     if status:
         stmt = stmt.where(Lead.status == _status(status))
     if campaign_id:
         stmt = stmt.where(Lead.campaign_id == campaign_id)
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     sort_col = getattr(Lead, sort, Lead.created_at)
-    stmt = stmt.order_by(asc(sort_col) if direction == "asc" else desc(sort_col)).offset((page - 1) * page_size).limit(page_size)
+    stmt = (
+        stmt.order_by(asc(sort_col) if direction == "asc" else desc(sort_col))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     items = db.scalars(stmt).all()
-    return PaginatedLeads(items=[_lead_out(item) for item in items], total=total, page=page, page_size=page_size)
+    return PaginatedLeads(
+        items=[_lead_out(item) for item in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/crm/companies", response_model=list[CrmCompanyOut])
@@ -5355,17 +8952,53 @@ def crm_companies(
 ) -> list[CrmCompanyOut]:
     app_settings = get_app_settings()
     workspace = _current_workspace(db, user_id)
-    key = cache_key("crm-companies", workspace.id, user_id, search, city, country, industry, stage, email_status, source)
+    key = cache_key(
+        "crm-companies",
+        workspace.id,
+        user_id,
+        search,
+        city,
+        country,
+        industry,
+        stage,
+        email_status,
+        source,
+    )
     cached = get_json(key)
     if cached:
         validated = [CrmCompanyOut.model_validate(item) for item in cached]
-        return sorted(validated, key=lambda item: int(item.overall_score or 0), reverse=True)
+        return sorted(
+            validated, key=lambda item: int(item.overall_score or 0), reverse=True
+        )
     _ensure_crm_backfilled(db, user_id, workspace)
-    companies = [company for company in db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(200)).all() if _is_customer_visible_company(company)][:100]
+    companies = [
+        company
+        for company in db.scalars(
+            _crm_company_query(
+                workspace,
+                user_id,
+                search,
+                city,
+                country,
+                industry,
+                stage,
+                email_status,
+                source,
+            ).limit(200)
+        ).all()
+        if _is_customer_visible_company(company)
+    ][:100]
     batch_context = _crm_company_batch_context(db, workspace, user_id, companies)
-    output = [_crm_company_out(db, workspace, user_id, company, batch_context) for company in companies]
+    output = [
+        _crm_company_out(db, workspace, user_id, company, batch_context)
+        for company in companies
+    ]
     output.sort(key=lambda item: int(item.overall_score or 0), reverse=True)
-    set_json(key, [item.model_dump(mode="json") for item in output], app_settings.cache_crm_ttl_seconds)
+    set_json(
+        key,
+        [item.model_dump(mode="json") for item in output],
+        app_settings.cache_crm_ttl_seconds,
+    )
     return output
 
 
@@ -5383,13 +9016,43 @@ def crm_contacts(
 ) -> list[CrmContactOut]:
     workspace = _current_workspace(db, user_id)
     _ensure_crm_backfilled(db, user_id, workspace)
-    companies = [company for company in db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(200)).all() if _is_customer_visible_company(company)][:100]
+    companies = [
+        company
+        for company in db.scalars(
+            _crm_company_query(
+                workspace,
+                user_id,
+                search,
+                city,
+                country,
+                industry,
+                stage,
+                email_status,
+                source,
+            ).limit(200)
+        ).all()
+        if _is_customer_visible_company(company)
+    ][:100]
     company_ids = [company.id for company in companies]
     if not company_ids:
         return []
-    contacts = list(db.scalars(select(Contact).where(_workspace_stmt(Contact, workspace, user_id), Contact.company_id.in_(company_ids)).order_by(Contact.updated_at.desc()).limit(200)).all())
+    contacts = list(
+        db.scalars(
+            select(Contact)
+            .where(
+                _workspace_stmt(Contact, workspace, user_id),
+                Contact.company_id.in_(company_ids),
+            )
+            .order_by(Contact.updated_at.desc())
+            .limit(200)
+        ).all()
+    )
     names = {company.id: company.name for company in companies}
-    return [_crm_contact_out(contact, names.get(contact.company_id, "")) for contact in contacts if _is_customer_visible_contact(contact)]
+    return [
+        _crm_contact_out(contact, names.get(contact.company_id, ""))
+        for contact in contacts
+        if _is_customer_visible_contact(contact)
+    ]
 
 
 @router.get("/crm/deals", response_model=list[CrmDealOut])
@@ -5406,11 +9069,37 @@ def crm_deals(
 ) -> list[CrmDealOut]:
     workspace = _current_workspace(db, user_id)
     _ensure_crm_backfilled(db, user_id, workspace)
-    companies = [company for company in db.scalars(_crm_company_query(workspace, user_id, search, city, country, industry, stage, email_status, source).limit(200)).all() if _is_customer_visible_company(company)][:100]
+    companies = [
+        company
+        for company in db.scalars(
+            _crm_company_query(
+                workspace,
+                user_id,
+                search,
+                city,
+                country,
+                industry,
+                stage,
+                email_status,
+                source,
+            ).limit(200)
+        ).all()
+        if _is_customer_visible_company(company)
+    ][:100]
     company_ids = [company.id for company in companies]
     if not company_ids:
         return []
-    deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id.in_(company_ids)).order_by(Deal.updated_at.desc()).limit(200)).all())
+    deals = list(
+        db.scalars(
+            select(Deal)
+            .where(
+                _workspace_stmt(Deal, workspace, user_id),
+                Deal.company_id.in_(company_ids),
+            )
+            .order_by(Deal.updated_at.desc())
+            .limit(200)
+        ).all()
+    )
     names = {company.id: company.name for company in companies}
     return [_crm_deal_out(deal, names.get(deal.company_id, "")) for deal in deals]
 
@@ -5419,26 +9108,57 @@ def crm_deals(
 def crm_pipeline(user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmPipelineOut:
     workspace = _current_workspace(db, user_id)
     _ensure_crm_backfilled(db, user_id, workspace)
-    companies = [company for company in db.scalars(_crm_company_query(workspace, user_id).limit(300)).all() if _is_customer_visible_company(company)][:200]
-    deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id)).order_by(Deal.updated_at.desc()).limit(300)).all())
+    companies = [
+        company
+        for company in db.scalars(
+            _crm_company_query(workspace, user_id).limit(300)
+        ).all()
+        if _is_customer_visible_company(company)
+    ][:200]
+    deals = list(
+        db.scalars(
+            select(Deal)
+            .where(_workspace_stmt(Deal, workspace, user_id))
+            .order_by(Deal.updated_at.desc())
+            .limit(300)
+        ).all()
+    )
     company_names = {company.id: company.name for company in companies}
     batch_context = _crm_company_batch_context(db, workspace, user_id, companies)
-    serialized_companies = [_crm_company_out(db, workspace, user_id, company, batch_context) for company in companies]
-    serialized_companies.sort(key=lambda item: int(getattr(item, "overall_score", 0) or 0), reverse=True)
+    serialized_companies = [
+        _crm_company_out(db, workspace, user_id, company, batch_context)
+        for company in companies
+    ]
+    serialized_companies.sort(
+        key=lambda item: int(getattr(item, "overall_score", 0) or 0), reverse=True
+    )
     return CrmPipelineOut(
         stages=CRM_STAGES.copy(),
         companies=serialized_companies,
-        deals=[_crm_deal_out(deal, company_names.get(deal.company_id, "")) for deal in deals],
+        deals=[
+            _crm_deal_out(deal, company_names.get(deal.company_id, ""))
+            for deal in deals
+        ],
     )
 
 
 @router.patch("/crm/companies/{company_id}/stage", response_model=CrmCompanyOut)
-def update_crm_company_stage(company_id: UUID, payload: CrmStageUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> CrmCompanyOut:
+def update_crm_company_stage(
+    company_id: UUID,
+    payload: CrmStageUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> CrmCompanyOut:
     workspace = _current_workspace(db, user_id)
     stage = payload.stage.strip()
     if stage not in CRM_STAGES:
         raise HTTPException(status_code=400, detail="Choose a valid CRM stage.")
-    company = db.scalar(select(Company).where(Company.id == company_id, _workspace_stmt(Company, workspace, user_id)))
+    company = db.scalar(
+        select(Company).where(
+            Company.id == company_id, _workspace_stmt(Company, workspace, user_id)
+        )
+    )
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     now = datetime.utcnow()
@@ -5465,8 +9185,22 @@ def update_crm_company_stage(company_id: UUID, payload: CrmStageUpdate, request:
             metadata_update["email_status"] = "Approved"
             metadata_update["email_approved_at"] = now.isoformat()
         lead.notes = _merge_lead_metadata(lead, metadata_update)
-        _add_lead_activity(db, request, user_id, workspace, "crm.stage_changed", lead, {"crm_stage": stage})
-    deals = list(db.scalars(select(Deal).where(_workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id)).all())
+        _add_lead_activity(
+            db,
+            request,
+            user_id,
+            workspace,
+            "crm.stage_changed",
+            lead,
+            {"crm_stage": stage},
+        )
+    deals = list(
+        db.scalars(
+            select(Deal).where(
+                _workspace_stmt(Deal, workspace, user_id), Deal.company_id == company.id
+            )
+        ).all()
+    )
     for deal in deals:
         deal.stage = stage
         deal.updated_at = now
@@ -5477,11 +9211,27 @@ def update_crm_company_stage(company_id: UUID, payload: CrmStageUpdate, request:
             "Won": "won",
             "Lost": "lost",
         }
-        metadata = company.metadata_json if isinstance(company.metadata_json, dict) else {}
-        ranking = metadata.get("opportunity_ranking") if isinstance(metadata.get("opportunity_ranking"), dict) else {}
-        prioritization = metadata.get("ai_lead_prioritization") if isinstance(metadata.get("ai_lead_prioritization"), dict) else {}
-        opportunity_factors = ranking.get("factors") if isinstance(ranking.get("factors"), dict) else {}
-        prioritization_factors = prioritization.get("factors") if isinstance(prioritization.get("factors"), dict) else {}
+        metadata = (
+            company.metadata_json if isinstance(company.metadata_json, dict) else {}
+        )
+        ranking = (
+            metadata.get("opportunity_ranking")
+            if isinstance(metadata.get("opportunity_ranking"), dict)
+            else {}
+        )
+        prioritization = (
+            metadata.get("ai_lead_prioritization")
+            if isinstance(metadata.get("ai_lead_prioritization"), dict)
+            else {}
+        )
+        opportunity_factors = (
+            ranking.get("factors") if isinstance(ranking.get("factors"), dict) else {}
+        )
+        prioritization_factors = (
+            prioritization.get("factors")
+            if isinstance(prioritization.get("factors"), dict)
+            else {}
+        )
         settings = _settings_for_workspace(db, user_id, workspace)
         updated_ai, profile = apply_continuous_learning_event(
             settings.ai if isinstance(settings.ai, dict) else {},
@@ -5501,29 +9251,64 @@ def update_crm_company_stage(company_id: UUID, payload: CrmStageUpdate, request:
 
 
 @router.post("/crm/companies/{company_id}/notes", response_model=CrmNoteOut)
-def add_crm_company_note(company_id: UUID, payload: CrmNoteCreate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> Note:
+def add_crm_company_note(
+    company_id: UUID,
+    payload: CrmNoteCreate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> Note:
     workspace = _current_workspace(db, user_id)
     body = payload.body.strip()
     if not body:
         raise HTTPException(status_code=400, detail="Write a note before saving.")
-    company = db.scalar(select(Company).where(Company.id == company_id, _workspace_stmt(Company, workspace, user_id)))
+    company = db.scalar(
+        select(Company).where(
+            Company.id == company_id, _workspace_stmt(Company, workspace, user_id)
+        )
+    )
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
-    note = Note(user_id=user_id, workspace_id=workspace.id, company_id=company.id, lead_id=company.lead_id, body=body, kind="note")
+    note = Note(
+        user_id=user_id,
+        workspace_id=workspace.id,
+        company_id=company.id,
+        lead_id=company.lead_id,
+        body=body,
+        kind="note",
+    )
     db.add(note)
     company.updated_at = datetime.utcnow()
     lead = db.get(Lead, company.lead_id) if company.lead_id else None
     if lead:
-        _add_lead_activity(db, request, user_id, workspace, "note.added", lead, {"company_id": str(company.id)})
+        _add_lead_activity(
+            db,
+            request,
+            user_id,
+            workspace,
+            "note.added",
+            lead,
+            {"company_id": str(company.id)},
+        )
     db.commit()
     db.refresh(note)
     return note
 
 
 @router.patch("/leads/{lead_id}", response_model=LeadOut)
-def update_lead(lead_id: UUID, payload: LeadUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> LeadOut:
+def update_lead(
+    lead_id: UUID,
+    payload: LeadUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> LeadOut:
     workspace = _current_workspace(db, user_id)
-    lead = db.scalar(select(Lead).where(Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)))
+    lead = db.scalar(
+        select(Lead).where(
+            Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)
+        )
+    )
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
     updates = payload.model_dump(exclude_unset=True)
@@ -5565,19 +9350,33 @@ def update_lead(lead_id: UUID, payload: LeadUpdate, request: Request, user_id: C
         raise HTTPException(status_code=status_code, detail=detail) from exc
     except SQLAlchemyError as exc:
         db.rollback()
-        logger.exception("lead_update_failed", extra={"lead_id": str(lead_id), "workspace_id": str(workspace.id), "user_id": user_id})
-        raise HTTPException(status_code=409, detail="Lead update could not be applied due to data state conflict.") from exc
+        logger.exception(
+            "lead_update_failed",
+            extra={
+                "lead_id": str(lead_id),
+                "workspace_id": str(workspace.id),
+                "user_id": user_id,
+            },
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Lead update could not be applied due to data state conflict.",
+        ) from exc
     db.refresh(lead)
     return _lead_out(lead)
 
 
 @router.post("/leads/{lead_id}/copilot", response_model=SalesCopilotOut)
-def lead_copilot(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SalesCopilotOut:
+def lead_copilot(
+    lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> SalesCopilotOut:
     workspace = _current_workspace(db, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
     try:
-        result = sales_copilot(_lead_ai_payload(lead, analysis, campaign, messages, workspace.language))
+        result = sales_copilot(
+            _lead_ai_payload(lead, analysis, campaign, messages, workspace.language)
+        )
     except Exception as exc:
         raise _provider_error(exc) from exc
     if not lead.revenue and result.estimated_revenue is not None:
@@ -5588,26 +9387,50 @@ def lead_copilot(lead_id: UUID, request: Request, user_id: CurrentUser, db: Sess
             lead.notes or "",
             f"Sales copilot: {result.probability_to_reply}% reply, {result.probability_to_buy}% buy. {result.best_cta}",
             f"Fit reason: {result.fit_reason}" if result.fit_reason else "",
-            f"Next action: {result.next_best_action}" if result.next_best_action else "",
+            f"Next action: {result.next_best_action}"
+            if result.next_best_action
+            else "",
         ]
         if part
     )
-    log_event(db, request, user_id, "copilot.generated", {"lead_id": str(lead.id), "reply": result.probability_to_reply, "buy": result.probability_to_buy})
+    log_event(
+        db,
+        request,
+        user_id,
+        "copilot.generated",
+        {
+            "lead_id": str(lead.id),
+            "reply": result.probability_to_reply,
+            "buy": result.probability_to_buy,
+        },
+    )
     db.commit()
     return result
 
 
 @router.post("/leads/{lead_id}/website-audit", response_model=WebsiteAuditOut)
-def lead_website_audit(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> WebsiteAuditOut:
+def lead_website_audit(
+    lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> WebsiteAuditOut:
     workspace = _current_workspace(db, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
     if not lead.website:
-        raise HTTPException(status_code=400, detail="Lead website is required for a website audit")
+        raise HTTPException(
+            status_code=400, detail="Lead website is required for a website audit"
+        )
     try:
         snapshot = collect_website(lead.website)
         heuristic = _website_audit_markers(snapshot.text, snapshot.technologies)
-        result = website_audit({**_lead_ai_payload(lead, analysis, campaign, messages, workspace.language), "website_text": snapshot.text[:10000], "detected_issues": heuristic})
+        result = website_audit(
+            {
+                **_lead_ai_payload(
+                    lead, analysis, campaign, messages, workspace.language
+                ),
+                "website_text": snapshot.text[:10000],
+                "detected_issues": heuristic,
+            }
+        )
     except Exception as exc:
         raise _provider_error(exc) from exc
     db.add(
@@ -5619,7 +9442,9 @@ def lead_website_audit(lead_id: UUID, request: Request, user_id: CurrentUser, db
             website=_fit_db_text(lead.website, 500) or "",
             description="AI website audit",
             industry=_fit_db_text(lead.industry, 160),
-            location=_fit_db_text(" ".join(part for part in [lead.city, lead.country] if part), 160),
+            location=_fit_db_text(
+                " ".join(part for part in [lead.city, lead.country] if part), 160
+            ),
             niche=_fit_db_text(lead.niche, 120),
             products_services=[],
             services=[],
@@ -5629,19 +9454,36 @@ def lead_website_audit(lead_id: UUID, request: Request, user_id: CurrentUser, db
             summary=result.improvement_report,
         )
     )
-    lead.notes = "\n".join(part for part in [lead.notes or "", f"Website audit: {', '.join(result.priority_actions) or result.improvement_report}"] if part)
-    log_event(db, request, user_id, "website.audit_generated", {"lead_id": str(lead.id), "issues": result.priority_actions})
+    lead.notes = "\n".join(
+        part
+        for part in [
+            lead.notes or "",
+            f"Website audit: {', '.join(result.priority_actions) or result.improvement_report}",
+        ]
+        if part
+    )
+    log_event(
+        db,
+        request,
+        user_id,
+        "website.audit_generated",
+        {"lead_id": str(lead.id), "issues": result.priority_actions},
+    )
     db.commit()
     return result
 
 
 @router.post("/leads/{lead_id}/meeting-prep", response_model=MeetingPrepOut)
-def lead_meeting_prep(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> MeetingPrepOut:
+def lead_meeting_prep(
+    lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> MeetingPrepOut:
     workspace = _current_workspace(db, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
     try:
-        result = meeting_preparation(_lead_ai_payload(lead, analysis, campaign, messages, workspace.language))
+        result = meeting_preparation(
+            _lead_ai_payload(lead, analysis, campaign, messages, workspace.language)
+        )
     except Exception as exc:
         raise _provider_error(exc) from exc
     log_event(db, request, user_id, "meeting.prep_generated", {"lead_id": str(lead.id)})
@@ -5650,12 +9492,16 @@ def lead_meeting_prep(lead_id: UUID, request: Request, user_id: CurrentUser, db:
 
 
 @router.post("/leads/{lead_id}/follow-ups", response_model=FollowUpSequenceOut)
-def lead_follow_ups(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> FollowUpSequenceOut:
+def lead_follow_ups(
+    lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> FollowUpSequenceOut:
     workspace = _current_workspace(db, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
     lead, analysis, campaign, messages = _lead_context(db, workspace, user_id, lead_id)
     try:
-        result = adaptive_follow_ups(_lead_ai_payload(lead, analysis, campaign, messages, workspace.language))
+        result = adaptive_follow_ups(
+            _lead_ai_payload(lead, analysis, campaign, messages, workspace.language)
+        )
     except Exception as exc:
         raise _provider_error(exc) from exc
     log_event(db, request, user_id, "followups.generated", {"lead_id": str(lead.id)})
@@ -5664,9 +9510,18 @@ def lead_follow_ups(lead_id: UUID, request: Request, user_id: CurrentUser, db: S
 
 
 @router.post("/leads/bulk")
-def leads_bulk(payload: BulkLeadAction, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+def leads_bulk(
+    payload: BulkLeadAction,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> dict:
     workspace = _current_workspace(db, user_id)
-    leads = db.scalars(select(Lead).where(_workspace_stmt(Lead, workspace, user_id), Lead.id.in_(payload.ids))).all()
+    leads = db.scalars(
+        select(Lead).where(
+            _workspace_stmt(Lead, workspace, user_id), Lead.id.in_(payload.ids)
+        )
+    ).all()
     if payload.delete:
         for lead in leads:
             db.delete(lead)
@@ -5684,11 +9539,24 @@ def leads_bulk(payload: BulkLeadAction, request: Request, user_id: CurrentUser, 
 
 
 @router.post("/ai/analyze", response_model=AnalysisOut)
-def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AnalysisOut:
+def ai_analyze(
+    payload: AnalyzeRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> AnalysisOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
-    lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id))) if payload.lead_id else None
+    lead = (
+        db.scalar(
+            select(Lead).where(
+                Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id)
+            )
+        )
+        if payload.lead_id
+        else None
+    )
     company = payload.company or (lead.company if lead else "")
     website = str(payload.website)
     try:
@@ -5697,7 +9565,14 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
             lead.website = normalized_website
         logger.info(
             "ai_analyze_trace step=website_fetch_started data=%s",
-            json.dumps({"lead_id": str(lead.id) if lead else None, "company": company, "website": normalized_website}, sort_keys=True),
+            json.dumps(
+                {
+                    "lead_id": str(lead.id) if lead else None,
+                    "company": company,
+                    "website": normalized_website,
+                },
+                sort_keys=True,
+            ),
         )
         snapshot = collect_website(normalized_website)
         result = analyze_company_website(
@@ -5723,9 +9598,17 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
             endpoint="ai_analyze.fetch_website",
             workspace_id=workspace.id,
             lead_id=lead.id if lead else None,
-            extra={"company": company, "website": website, "message": WEBSITE_UNREACHABLE_MESSAGE},
+            extra={
+                "company": company,
+                "website": website,
+                "message": WEBSITE_UNREACHABLE_MESSAGE,
+            },
         )
-        result = _skipped_website_analysis(company=company, website=website, niche=payload.niche or (lead.industry if lead else None))
+        result = _skipped_website_analysis(
+            company=company,
+            website=website,
+            niche=payload.niche or (lead.industry if lead else None),
+        )
         if lead:
             lead.notes = _merge_lead_metadata(
                 lead,
@@ -5738,7 +9621,17 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
                 [WEBSITE_UNREACHABLE_MESSAGE],
             )
             _sync_lead_to_crm(db, user_id, workspace, lead)
-        log_event(db, request, user_id, "website.analysis_skipped", {"company": company, "website": website, "lead_id": str(lead.id) if lead else None})
+        log_event(
+            db,
+            request,
+            user_id,
+            "website.analysis_skipped",
+            {
+                "company": company,
+                "website": website,
+                "lead_id": str(lead.id) if lead else None,
+            },
+        )
         db.commit()
         return result
     except Exception as exc:
@@ -5764,14 +9657,29 @@ def ai_analyze(payload: AnalyzeRequest, request: Request, user_id: CurrentUser, 
     if lead:
         lead.industry = lead.industry or _fit_db_text(result.industry, 160)
         lead.niche = lead.niche or _fit_db_text(result.niche, 120)
-        lead.notes = _merge_lead_metadata(lead, _analysis_metadata(result, result.icp_score), _analysis_readable_notes(result, result.icp_score))
-    log_event(db, request, user_id, "website.analyzed", {"company": result.company, "website": result.website})
+        lead.notes = _merge_lead_metadata(
+            lead,
+            _analysis_metadata(result, result.icp_score),
+            _analysis_readable_notes(result, result.icp_score),
+        )
+    log_event(
+        db,
+        request,
+        user_id,
+        "website.analyzed",
+        {"company": result.company, "website": result.website},
+    )
     db.commit()
     return result
 
 
 @router.post("/ai/personalize", response_model=EmailVariantOut)
-def ai_personalize(payload: PersonalizeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailVariantOut:
+def ai_personalize(
+    payload: PersonalizeRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> EmailVariantOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
@@ -5785,7 +9693,9 @@ def ai_personalize(payload: PersonalizeRequest, request: Request, user_id: Curre
 
 
 @router.post("/ai/personalize/stream")
-def ai_personalize_stream(payload: PersonalizeRequest, user_id: CurrentUser, db: Session = Depends(get_db)) -> StreamingResponse:
+def ai_personalize_stream(
+    payload: PersonalizeRequest, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> StreamingResponse:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _check_usage_available(db, user_id, workspace, "ai_generations")
@@ -5800,14 +9710,21 @@ def ai_personalize_stream(payload: PersonalizeRequest, user_id: CurrentUser, db:
             with get_sessionmaker()() as usage_db:
                 usage_workspace = usage_db.get(Workspace, workspace_id)
                 if usage_workspace is not None:
-                    _record_usage_after_success(usage_db, user_id, usage_workspace, "ai_generations")
+                    _record_usage_after_success(
+                        usage_db, user_id, usage_workspace, "ai_generations"
+                    )
                     usage_db.commit()
 
     return StreamingResponse(metered_stream(), media_type="text/plain")
 
 
 @router.post("/ai/rewrite")
-def ai_rewrite(payload: RewriteEmailRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, str]:
+def ai_rewrite(
+    payload: RewriteEmailRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
@@ -5821,56 +9738,101 @@ def ai_rewrite(payload: RewriteEmailRequest, request: Request, user_id: CurrentU
 
 
 @router.post("/ai/reply-assistant", response_model=ReplyAssistantOut)
-def ai_reply_assistant(payload: ReplyAssistantRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> ReplyAssistantOut:
+def ai_reply_assistant(
+    payload: ReplyAssistantRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> ReplyAssistantOut:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     plan = _plan_for_workspace(db, user_id, workspace)
     if not _limits_for_workspace(db, user_id, workspace)["reply_ai"]:
-        raise HTTPException(status_code=402, detail=_upgrade_message(plan, "AI Reply Assistant"))
+        raise HTTPException(
+            status_code=402, detail=_upgrade_message(plan, "AI Reply Assistant")
+        )
     _enforce_usage(db, user_id, workspace, "ai_generations")
     try:
         result = suggest_reply(payload)
     except Exception as exc:
         raise _provider_error(exc) from exc
-    log_event(db, request, user_id, "reply.assistant_generated", {"company": payload.company, "score": result.qualification_score})
+    log_event(
+        db,
+        request,
+        user_id,
+        "reply.assistant_generated",
+        {"company": payload.company, "score": result.qualification_score},
+    )
     db.commit()
     return result
 
 
 @router.post("/leads/{lead_id}/draft-email", response_model=EmailOut)
-def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+def draft_email_for_lead(
+    lead_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
-    lead = db.scalar(select(Lead).where(Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)))
+    lead = db.scalar(
+        select(Lead).where(
+            Lead.id == lead_id, _workspace_stmt(Lead, workspace, user_id)
+        )
+    )
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
     analysis = db.scalar(
         select(WebsiteAnalysis)
-        .where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == lead.id)
+        .where(
+            _workspace_stmt(WebsiteAnalysis, workspace, user_id),
+            WebsiteAnalysis.lead_id == lead.id,
+        )
         .order_by(WebsiteAnalysis.created_at.desc())
     )
     intelligence = _lead_metadata(lead)
-    website_summary = "\n".join(
-        part
-        for part in [
-            analysis.summary if analysis else "",
-            str(intelligence.get("ai_summary") or ""),
-            f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
-            f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
-            f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
-            f"Verified email: {lead.email}" if intelligence.get("hunter_verified") and lead.email else "",
-        ]
-        if part
-    ) or " ".join(part for part in [lead.website, lead.industry, lead.country, lead.city] if part) or lead.company
+    website_summary = (
+        "\n".join(
+            part
+            for part in [
+                analysis.summary if analysis else "",
+                str(intelligence.get("ai_summary") or ""),
+                f"Sales angle: {intelligence.get('sales_angle')}"
+                if intelligence.get("sales_angle")
+                else "",
+                f"Suggested offer: {intelligence.get('suggested_offer')}"
+                if intelligence.get("suggested_offer")
+                else "",
+                f"Outreach strategy: {intelligence.get('outreach_strategy')}"
+                if intelligence.get("outreach_strategy")
+                else "",
+                f"Verified email: {lead.email}"
+                if intelligence.get("hunter_verified") and lead.email
+                else "",
+            ]
+            if part
+        )
+        or " ".join(
+            part
+            for part in [lead.website, lead.industry, lead.country, lead.city]
+            if part
+        )
+        or lead.company
+    )
     ai_payload = PersonalizeRequest(
         company=lead.company,
         niche=lead.industry or lead.niche or "B2B",
         website_summary=website_summary,
-        offer=str(intelligence.get("suggested_offer") or "a practical growth improvement based on their website"),
-        cta=str(intelligence.get("recommended_cta") or "Would it be useful to compare ideas for 10 minutes?"),
+        offer=str(
+            intelligence.get("suggested_offer")
+            or "a practical growth improvement based on their website"
+        ),
+        cta=str(
+            intelligence.get("recommended_cta")
+            or "Would it be useful to compare ideas for 10 minutes?"
+        ),
         tone=str(intelligence.get("recommended_tone") or "Professional"),
-        language=workspace.language or str(intelligence.get("detected_language") or "English"),
+        language=workspace.language
+        or str(intelligence.get("detected_language") or "English"),
         signature="",
     )
     try:
@@ -5883,8 +9845,16 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
             purpose="legacy_lead_draft_email",
         ).context
     except Exception:
-        memory_context = memory_context_none("AI Memory retrieval failed for legacy lead draft.")
-    ai_payload = ai_payload.model_copy(update={"analysis_context": attach_memory_context(ai_payload.analysis_context, memory_context)})
+        memory_context = memory_context_none(
+            "AI Memory retrieval failed for legacy lead draft."
+        )
+    ai_payload = ai_payload.model_copy(
+        update={
+            "analysis_context": attach_memory_context(
+                ai_payload.analysis_context, memory_context
+            )
+        }
+    )
     try:
         generated = personalize_email(ai_payload)
     except Exception as exc:
@@ -5903,55 +9873,126 @@ def draft_email_for_lead(lead_id: UUID, request: Request, user_id: CurrentUser, 
         follow_up_2=follow_ups[1] if len(follow_ups) > 1 else "",
         direction="outbound",
         delivery_status="draft",
-        tags={"requires_approval": True, "source": "manual_lead_flow", "memory_context": memory_context},
+        tags={
+            "requires_approval": True,
+            "source": "manual_lead_flow",
+            "memory_context": memory_context,
+        },
     )
     lead.status = LeadStatus.qualified
-    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
+    lead.notes = _merge_lead_metadata(
+        lead,
+        {
+            "email_status": "Draft Ready",
+            "email_generated_at": datetime.utcnow().isoformat(),
+        },
+    )
     db.add(message)
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
-    record_email_memory(db, workspace=workspace, user_id=user_id, email=message, lead=lead, company=company, event="draft", extra={"memory_context": memory_context})
-    _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"email_id": str(message.id), "source": "manual_lead_flow"})
-    _notify(db, user_id, NotificationKind.success, "Draft ready for review", f"A personalized email for {lead.company} is ready. Nothing was sent.")
+    company = db.scalar(
+        select(Company)
+        .where(Company.lead_id == lead.id, Company.workspace_id == workspace.id)
+        .order_by(Company.updated_at.desc())
+    )
+    record_email_memory(
+        db,
+        workspace=workspace,
+        user_id=user_id,
+        email=message,
+        lead=lead,
+        company=company,
+        event="draft",
+        extra={"memory_context": memory_context},
+    )
+    _add_lead_activity(
+        db,
+        request,
+        user_id,
+        workspace,
+        "email.generated",
+        lead,
+        {"email_id": str(message.id), "source": "manual_lead_flow"},
+    )
+    _notify(
+        db,
+        user_id,
+        NotificationKind.success,
+        "Draft ready for review",
+        f"A personalized email for {lead.company} is ready. Nothing was sent.",
+    )
     db.commit()
     db.refresh(message)
     return message
 
 
 @router.post("/emails/generate", response_model=EmailOut)
-def generate_email(payload: GenerateEmailRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+def generate_email(
+    payload: GenerateEmailRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     _enforce_usage(db, user_id, workspace, "ai_generations")
-    campaign = db.scalar(select(Campaign).where(Campaign.id == payload.campaign_id, _workspace_stmt(Campaign, workspace, user_id)))
-    lead = db.scalar(select(Lead).where(Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id)))
+    campaign = db.scalar(
+        select(Campaign).where(
+            Campaign.id == payload.campaign_id,
+            _workspace_stmt(Campaign, workspace, user_id),
+        )
+    )
+    lead = db.scalar(
+        select(Lead).where(
+            Lead.id == payload.lead_id, _workspace_stmt(Lead, workspace, user_id)
+        )
+    )
     if campaign is None or lead is None:
         raise HTTPException(status_code=404, detail="Campaign or lead not found")
     analysis = db.scalar(
         select(WebsiteAnalysis)
-        .where(_workspace_stmt(WebsiteAnalysis, workspace, user_id), WebsiteAnalysis.lead_id == lead.id)
+        .where(
+            _workspace_stmt(WebsiteAnalysis, workspace, user_id),
+            WebsiteAnalysis.lead_id == lead.id,
+        )
         .order_by(WebsiteAnalysis.created_at.desc())
     )
-    website_summary = analysis.summary if analysis else " ".join(
-        part for part in [lead.website, lead.industry, lead.country, lead.city] if part
+    website_summary = (
+        analysis.summary
+        if analysis
+        else " ".join(
+            part
+            for part in [lead.website, lead.industry, lead.country, lead.city]
+            if part
+        )
     )
     intelligence = _lead_metadata(lead)
     intelligence_summary = "\n".join(
-        part for part in [
+        part
+        for part in [
             str(intelligence.get("ai_summary") or ""),
-            f"Sales angle: {intelligence.get('sales_angle')}" if intelligence.get("sales_angle") else "",
-            f"Suggested offer: {intelligence.get('suggested_offer')}" if intelligence.get("suggested_offer") else "",
-            f"Outreach strategy: {intelligence.get('outreach_strategy')}" if intelligence.get("outreach_strategy") else "",
+            f"Sales angle: {intelligence.get('sales_angle')}"
+            if intelligence.get("sales_angle")
+            else "",
+            f"Suggested offer: {intelligence.get('suggested_offer')}"
+            if intelligence.get("suggested_offer")
+            else "",
+            f"Outreach strategy: {intelligence.get('outreach_strategy')}"
+            if intelligence.get("outreach_strategy")
+            else "",
             "Verified email available" if intelligence.get("hunter_verified") else "",
-        ] if part
+        ]
+        if part
     )
     ai_payload = PersonalizeRequest(
         company=lead.company,
         niche=lead.industry or campaign.industry or "B2B",
         website_summary=intelligence_summary or website_summary or lead.company,
-        offer=campaign.offer or str(intelligence.get("suggested_offer") or "") or "a measurable outbound growth system",
+        offer=campaign.offer
+        or str(intelligence.get("suggested_offer") or "")
+        or "a measurable outbound growth system",
         cta=campaign.cta or str(intelligence.get("recommended_cta") or ""),
-        tone=campaign.email_tone or str(intelligence.get("recommended_tone") or "Professional"),
+        tone=campaign.email_tone
+        or str(intelligence.get("recommended_tone") or "Professional"),
         language=campaign.language,
         signature=campaign.signature,
     )
@@ -5960,13 +10001,28 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
             db,
             workspace=workspace,
             user_id=user_id,
-            query=" ".join([lead.company, lead.industry or "", campaign.offer or "", intelligence_summary or website_summary]),
+            query=" ".join(
+                [
+                    lead.company,
+                    lead.industry or "",
+                    campaign.offer or "",
+                    intelligence_summary or website_summary,
+                ]
+            ),
             lead_id=lead.id,
             purpose="legacy_campaign_email",
         ).context
     except Exception:
-        memory_context = memory_context_none("AI Memory retrieval failed for legacy campaign email.")
-    ai_payload = ai_payload.model_copy(update={"analysis_context": attach_memory_context(ai_payload.analysis_context, memory_context)})
+        memory_context = memory_context_none(
+            "AI Memory retrieval failed for legacy campaign email."
+        )
+    ai_payload = ai_payload.model_copy(
+        update={
+            "analysis_context": attach_memory_context(
+                ai_payload.analysis_context, memory_context
+            )
+        }
+    )
     try:
         generated = personalize_email(ai_payload)
     except Exception as exc:
@@ -5988,22 +10044,66 @@ def generate_email(payload: GenerateEmailRequest, request: Request, user_id: Cur
         tags={"memory_context": memory_context},
     )
     lead.status = LeadStatus.qualified
-    lead.notes = _merge_lead_metadata(lead, {"email_status": "Draft Ready", "email_generated_at": datetime.utcnow().isoformat()})
+    lead.notes = _merge_lead_metadata(
+        lead,
+        {
+            "email_status": "Draft Ready",
+            "email_generated_at": datetime.utcnow().isoformat(),
+        },
+    )
     db.add(message)
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
-    record_email_memory(db, workspace=workspace, user_id=user_id, email=message, lead=lead, company=company, event="draft", extra={"memory_context": memory_context})
-    _add_lead_activity(db, request, user_id, workspace, "email.generated", lead, {"campaign_id": str(campaign.id), "email_id": str(message.id)})
-    _notify(db, user_id, NotificationKind.success, "Email generated", f"A personalized email for {lead.company} is ready to edit.")
+    company = db.scalar(
+        select(Company)
+        .where(Company.lead_id == lead.id, Company.workspace_id == workspace.id)
+        .order_by(Company.updated_at.desc())
+    )
+    record_email_memory(
+        db,
+        workspace=workspace,
+        user_id=user_id,
+        email=message,
+        lead=lead,
+        company=company,
+        event="draft",
+        extra={"memory_context": memory_context},
+    )
+    _add_lead_activity(
+        db,
+        request,
+        user_id,
+        workspace,
+        "email.generated",
+        lead,
+        {"campaign_id": str(campaign.id), "email_id": str(message.id)},
+    )
+    _notify(
+        db,
+        user_id,
+        NotificationKind.success,
+        "Email generated",
+        f"A personalized email for {lead.company} is ready to edit.",
+    )
     db.commit()
     db.refresh(message)
     return message
 
 
 @router.patch("/emails/{email_id}", response_model=EmailOut)
-def update_email(email_id: UUID, payload: EmailUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+def update_email(
+    email_id: UUID,
+    payload: EmailUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
-    message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
+    message = db.scalar(
+        select(EmailMessage).where(
+            EmailMessage.id == email_id,
+            _workspace_stmt(EmailMessage, workspace, user_id),
+        )
+    )
     if message is None:
         raise HTTPException(status_code=404, detail="Email not found")
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -6015,43 +10115,93 @@ def update_email(email_id: UUID, payload: EmailUpdate, request: Request, user_id
 
 
 @router.post("/emails/{email_id}/approve", response_model=EmailOut)
-def approve_email(email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+def approve_email(
+    email_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
-    message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
+    message = db.scalar(
+        select(EmailMessage).where(
+            EmailMessage.id == email_id,
+            _workspace_stmt(EmailMessage, workspace, user_id),
+        )
+    )
     if message is None:
         raise HTTPException(status_code=404, detail="Email not found")
     lead = db.get(Lead, message.lead_id) if message.lead_id else None
     if lead is None:
-        raise HTTPException(status_code=400, detail="Lead is required before approving an email.")
+        raise HTTPException(
+            status_code=400, detail="Lead is required before approving an email."
+        )
     now = datetime.utcnow()
     message.delivery_status = "approved"
     tags = message.tags if isinstance(message.tags, dict) else {}
     message.tags = {**tags, "approved": True, "approved_at": now.isoformat()}
     lead.status = LeadStatus.contacted
-    lead.notes = _merge_lead_metadata(lead, {"email_status": "Approved", "email_approved_at": now.isoformat()})
+    lead.notes = _merge_lead_metadata(
+        lead, {"email_status": "Approved", "email_approved_at": now.isoformat()}
+    )
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
-    record_email_memory(db, workspace=workspace, user_id=user_id, email=message, lead=lead, company=company, event="approved")
-    _add_lead_activity(db, request, user_id, workspace, "email.approved", lead, {"email_id": str(message.id)})
-    _notify(db, user_id, NotificationKind.success, "Email approved", f"{message.subject} is approved and ready to send.")
+    company = db.scalar(
+        select(Company)
+        .where(Company.lead_id == lead.id, Company.workspace_id == workspace.id)
+        .order_by(Company.updated_at.desc())
+    )
+    record_email_memory(
+        db,
+        workspace=workspace,
+        user_id=user_id,
+        email=message,
+        lead=lead,
+        company=company,
+        event="approved",
+    )
+    _add_lead_activity(
+        db,
+        request,
+        user_id,
+        workspace,
+        "email.approved",
+        lead,
+        {"email_id": str(message.id)},
+    )
+    _notify(
+        db,
+        user_id,
+        NotificationKind.success,
+        "Email approved",
+        f"{message.subject} is approved and ready to send.",
+    )
     db.commit()
     db.refresh(message)
     return message
 
 
 @router.get("/outreach/sender/status", response_model=OutreachSenderStatusOut)
-def outreach_sender_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
+def outreach_sender_status(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> OutreachSenderStatusOut:
     workspace = _current_workspace(db, user_id)
     return _outreach_sender_status(db, user_id, workspace)
 
 
 @router.get("/outreach/oauth/gmail/start")
-def start_gmail_oauth(user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, str]:
+def start_gmail_oauth(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> dict[str, str]:
     workspace = _current_workspace(db, user_id)
     app_settings = get_app_settings()
-    oauth_start_ready, _oauth_start_status, oauth_start_reason = _google_oauth_start_status(app_settings)
+    oauth_start_ready, _oauth_start_status, oauth_start_reason = (
+        _google_oauth_start_status(app_settings)
+    )
     if not oauth_start_ready:
-        raise HTTPException(status_code=409, detail=oauth_start_reason or "Google OAuth client is not configured for this environment.")
+        raise HTTPException(
+            status_code=409,
+            detail=oauth_start_reason
+            or "Google OAuth client is not configured for this environment.",
+        )
     nonce = secrets.token_urlsafe(16)
     created_at = datetime.utcnow()
     state_payload = {
@@ -6065,7 +10215,14 @@ def start_gmail_oauth(user_id: CurrentUser, db: Session = Depends(get_db)) -> di
     except SecretBoxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     workspace_settings = _settings_for_workspace(db, user_id, workspace)
-    _store_gmail_oauth_state(db, settings=workspace_settings, user_id=user_id, workspace_id=workspace.id, nonce=nonce, created_at=created_at)
+    _store_gmail_oauth_state(
+        db,
+        settings=workspace_settings,
+        user_id=user_id,
+        workspace_id=workspace.id,
+        nonce=nonce,
+        created_at=created_at,
+    )
     params = {
         "client_id": app_settings.google_oauth_client_id,
         "redirect_uri": _google_oauth_redirect_uri(app_settings),
@@ -6080,46 +10237,91 @@ def start_gmail_oauth(user_id: CurrentUser, db: Session = Depends(get_db)) -> di
 
 
 @router.get("/outreach/oauth/gmail/callback")
-def gmail_oauth_callback(request: Request, code: str = "", state: str = "", error: str = "", db: Session = Depends(get_db)) -> RedirectResponse:
+def gmail_oauth_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
     app_settings = get_app_settings()
     if error:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=error")
+        return RedirectResponse(
+            f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=error"
+        )
     try:
         state_payload = json.loads(decrypt_secret(state, app_settings.encryption_key))
     except Exception:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
+        return RedirectResponse(
+            f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state"
+        )
     user_id = str(state_payload.get("user_id") or "")
     workspace_id = str(state_payload.get("workspace_id") or "")
     nonce = str(state_payload.get("nonce") or "")
     created_at = _parse_oauth_created_at(state_payload.get("created_at"))
     if not user_id or not workspace_id or not nonce or not created_at or not code:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
-    authenticated_user_id = authenticated_user_id_from_authorization(request.headers.get("authorization"))
+        return RedirectResponse(
+            f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state"
+        )
+    authenticated_user_id = authenticated_user_id_from_authorization(
+        request.headers.get("authorization")
+    )
     if authenticated_user_id and authenticated_user_id != user_id:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=user_mismatch")
+        return RedirectResponse(
+            f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=user_mismatch"
+        )
     try:
         state_workspace_id = UUID(workspace_id)
     except ValueError:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state")
+        return RedirectResponse(
+            f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=invalid_state"
+        )
     workspace = db.get(Workspace, state_workspace_id)
     if workspace is None or workspace.owner_user_id != user_id:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=workspace_error")
+        return RedirectResponse(
+            f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail=workspace_error"
+        )
     settings = _settings_for_workspace(db, user_id, workspace)
-    state_error = _consume_gmail_oauth_state(db, settings=settings, user_id=user_id, workspace_id=workspace.id, nonce=nonce, created_at=created_at)
+    state_error = _consume_gmail_oauth_state(
+        db,
+        settings=settings,
+        user_id=user_id,
+        workspace_id=workspace.id,
+        nonce=nonce,
+        created_at=created_at,
+    )
     if state_error:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail={state_error}")
+        return RedirectResponse(
+            f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail={state_error}"
+        )
     try:
-        handoff_id = _store_pending_gmail_oauth_handoff(db, settings=settings, user_id=user_id, workspace_id=workspace.id, code=code, created_at=datetime.utcnow())
+        handoff_id = _store_pending_gmail_oauth_handoff(
+            db,
+            settings=settings,
+            user_id=user_id,
+            workspace_id=workspace.id,
+            code=code,
+            created_at=datetime.utcnow(),
+        )
     except HTTPException as exc:
-        return RedirectResponse(f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail={exc.detail}")
+        return RedirectResponse(
+            f"{app_settings.public_app_url.rstrip('/')}/dashboard/settings?mail={exc.detail}"
+        )
     return _gmail_oauth_complete_redirect(app_settings, handoff_id)
 
 
 @router.post("/outreach/oauth/gmail/finalize", response_model=OutreachSenderStatusOut)
-def finalize_gmail_oauth(payload: GmailOAuthFinalizeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
+def finalize_gmail_oauth(
+    payload: GmailOAuthFinalizeRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> OutreachSenderStatusOut:
     app_settings = get_app_settings()
     with GMAIL_OAUTH_HANDOFF_CLAIM_LOCK:
-        settings, handoff, handoff_error = _claim_pending_gmail_oauth_handoff(db, handoff_id=payload.handoff_id, user_id=user_id)
+        settings, handoff, handoff_error = _claim_pending_gmail_oauth_handoff(
+            db, handoff_id=payload.handoff_id, user_id=user_id
+        )
     if handoff_error:
         raise HTTPException(status_code=409, detail=handoff_error)
     if settings is None or not handoff:
@@ -6129,7 +10331,11 @@ def finalize_gmail_oauth(payload: GmailOAuthFinalizeRequest, request: Request, u
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="invalid_handoff") from exc
     workspace = db.get(Workspace, workspace_id)
-    if workspace is None or workspace.owner_user_id != user_id or settings.workspace_id != workspace.id:
+    if (
+        workspace is None
+        or workspace.owner_user_id != user_id
+        or settings.workspace_id != workspace.id
+    ):
         raise HTTPException(status_code=409, detail="workspace_mismatch")
     encrypted_code = str(handoff.get("code_encrypted") or "")
     try:
@@ -6139,17 +10345,33 @@ def finalize_gmail_oauth(payload: GmailOAuthFinalizeRequest, request: Request, u
     try:
         token_data, userinfo = _exchange_gmail_oauth_code(code, app_settings)
     except Exception as exc:
-        capture_provider_exception(exc, provider="google_oauth", endpoint="outreach.oauth.gmail.finalize")
+        capture_provider_exception(
+            exc, provider="google_oauth", endpoint="outreach.oauth.gmail.finalize"
+        )
         raise HTTPException(status_code=409, detail="oauth_failed") from exc
-    return _persist_gmail_oauth_sender(db, request=request, settings=settings, workspace=workspace, user_id=user_id, token_data=token_data, userinfo=userinfo)
+    return _persist_gmail_oauth_sender(
+        db,
+        request=request,
+        settings=settings,
+        workspace=workspace,
+        user_id=user_id,
+        token_data=token_data,
+        userinfo=userinfo,
+    )
 
 
 @router.delete("/outreach/oauth/gmail", response_model=OutreachSenderStatusOut)
-def disconnect_gmail_oauth(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
+def disconnect_gmail_oauth(
+    request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> OutreachSenderStatusOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     email_settings = settings.email if isinstance(settings.email, dict) else {}
-    sender = email_settings.get("sender") if isinstance(email_settings.get("sender"), dict) else {}
+    sender = (
+        email_settings.get("sender")
+        if isinstance(email_settings.get("sender"), dict)
+        else {}
+    )
     sender["provider"] = "gmail"
     sender["enabled"] = False
     sender["oauth"] = {}
@@ -6158,28 +10380,48 @@ def disconnect_gmail_oauth(request: Request, user_id: CurrentUser, db: Session =
     settings.email = email_settings
     flag_modified(settings, "email")
     db.add(settings)
-    log_event(db, request, user_id, "outreach.gmail.disconnected", {"workspace_id": str(workspace.id)})
+    log_event(
+        db,
+        request,
+        user_id,
+        "outreach.gmail.disconnected",
+        {"workspace_id": str(workspace.id)},
+    )
     db.commit()
     return _outreach_sender_status(db, user_id, workspace)
 
 
 @router.post("/outreach/oauth/gmail/sync")
-def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict[str, Any]:
+def sync_gmail_replies(
+    request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> dict[str, Any]:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     sender = _sender_settings(settings)
     if sender["provider"] != "gmail":
-        raise HTTPException(status_code=409, detail="Connect Gmail before syncing replies.")
-    token = _gmail_access_token_from_sender(settings.email.get("sender", {}) if isinstance(settings.email, dict) else {})
+        raise HTTPException(
+            status_code=409, detail="Connect Gmail before syncing replies."
+        )
+    token = _gmail_access_token_from_sender(
+        settings.email.get("sender", {}) if isinstance(settings.email, dict) else {}
+    )
     sent_emails = db.scalars(
         select(EmailMessage)
-        .where(EmailMessage.workspace_id == workspace.id, EmailMessage.user_id == user_id, EmailMessage.delivery_status == "sent", EmailMessage.replied_at.is_(None))
+        .where(
+            EmailMessage.workspace_id == workspace.id,
+            EmailMessage.user_id == user_id,
+            EmailMessage.delivery_status == "sent",
+            EmailMessage.replied_at.is_(None),
+        )
         .order_by(EmailMessage.sent_at.desc())
         .limit(50)
     ).all()
     synced = 0
     classified: dict[str, int] = {}
-    with httpx.Client(timeout=httpx.Timeout(15.0, connect=4.0), headers={"Authorization": f"Bearer {token}"}) as client:
+    with httpx.Client(
+        timeout=httpx.Timeout(15.0, connect=4.0),
+        headers={"Authorization": f"Bearer {token}"},
+    ) as client:
         for email in sent_emails:
             lead = db.get(Lead, email.lead_id) if email.lead_id else None
             if not lead or not lead.email:
@@ -6189,22 +10431,49 @@ def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Dep
             tags = email.tags if isinstance(email.tags, dict) else {}
             provider_thread_id = str(tags.get("provider_thread_id") or "").strip()
             if provider_thread_id:
-                thread_response = client.get(f"{GMAIL_MESSAGES_URL.rsplit('/', 1)[0]}/threads/{provider_thread_id}", params={"format": "full"})
+                thread_response = client.get(
+                    f"{GMAIL_MESSAGES_URL.rsplit('/', 1)[0]}/threads/{provider_thread_id}",
+                    params={"format": "full"},
+                )
                 thread_response.raise_for_status()
                 thread_messages = thread_response.json().get("messages") or []
-                for thread_message in reversed([item for item in thread_messages if isinstance(item, dict)]):
-                    payload = thread_message.get("payload") if isinstance(thread_message.get("payload"), dict) else {}
-                    headers = {str(item.get("name") or "").lower(): str(item.get("value") or "") for item in payload.get("headers", []) if isinstance(item, dict)}
+                for thread_message in reversed(
+                    [item for item in thread_messages if isinstance(item, dict)]
+                ):
+                    payload = (
+                        thread_message.get("payload")
+                        if isinstance(thread_message.get("payload"), dict)
+                        else {}
+                    )
+                    headers = {
+                        str(item.get("name") or "").lower(): str(
+                            item.get("value") or ""
+                        )
+                        for item in payload.get("headers", [])
+                        if isinstance(item, dict)
+                    }
                     from_email = _extract_email(parseaddr(headers.get("from", ""))[1])
                     internal_date = str(thread_message.get("internalDate") or "")
-                    sent_after_outbound = not email.sent_at or not internal_date.isdigit() or datetime.utcfromtimestamp(int(internal_date) / 1000) >= email.sent_at
-                    if from_email == _extract_email(lead.email) and str(thread_message.get("id") or "") != str(email.provider_message_id or "") and sent_after_outbound:
+                    sent_after_outbound = (
+                        not email.sent_at
+                        or not internal_date.isdigit()
+                        or datetime.utcfromtimestamp(int(internal_date) / 1000)
+                        >= email.sent_at
+                    )
+                    if (
+                        from_email == _extract_email(lead.email)
+                        and str(thread_message.get("id") or "")
+                        != str(email.provider_message_id or "")
+                        and sent_after_outbound
+                    ):
                         message = thread_message
                         message_id = str(thread_message.get("id") or "")
                         break
             if not message:
-                query = f'from:{lead.email} newer_than:30d'
-                list_response = client.get(GMAIL_MESSAGES_URL, params={"q": query, "maxResults": 3})
+                query = f"from:{lead.email} newer_than:30d"
+                list_response = client.get(
+                    GMAIL_MESSAGES_URL, params={"q": query, "maxResults": 3}
+                )
                 list_response.raise_for_status()
                 messages = list_response.json().get("messages") or []
                 if not messages:
@@ -6212,7 +10481,9 @@ def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Dep
                 message_id = str(messages[0].get("id") or "")
                 if not message_id:
                     continue
-                message_response = client.get(f"{GMAIL_MESSAGES_URL}/{message_id}", params={"format": "full"})
+                message_response = client.get(
+                    f"{GMAIL_MESSAGES_URL}/{message_id}", params={"format": "full"}
+                )
                 message_response.raise_for_status()
                 message = message_response.json()
             snippet = str(message.get("snippet") or "")
@@ -6228,10 +10499,24 @@ def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Dep
                 "synced_at": now.isoformat(),
                 "gmail_message_id": message_id,
             }
-            lead.status = LeadStatus.replied if category != "отписка" else LeadStatus.archive
-            lead.notes = json.dumps({**_lead_metadata(lead), "email_status": "Replied", "replied_at": now.isoformat(), "last_reply_classification": category, "last_reply_at": now.isoformat()})
+            lead.status = (
+                LeadStatus.replied if category != "отписка" else LeadStatus.archive
+            )
+            lead.notes = json.dumps(
+                {
+                    **_lead_metadata(lead),
+                    "email_status": "Replied",
+                    "replied_at": now.isoformat(),
+                    "last_reply_classification": category,
+                    "last_reply_at": now.isoformat(),
+                }
+            )
             _sync_lead_to_crm(db, user_id, workspace, lead)
-            company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
+            company = db.scalar(
+                select(Company)
+                .where(Company.lead_id == lead.id, Company.workspace_id == workspace.id)
+                .order_by(Company.updated_at.desc())
+            )
             if category == "отписка":
                 memory_outcome = "unsubscribe"
             elif category in {"не интересует", "отказ"}:
@@ -6240,8 +10525,29 @@ def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Dep
                 memory_outcome = "meeting"
             else:
                 memory_outcome = "reply"
-            record_email_memory(db, workspace=workspace, user_id=user_id, email=email, lead=lead, company=company, event=memory_outcome, extra={"classification": category})
-            db.add(AuditLog(user_id=user_id, workspace_id=workspace.id, action="outreach.gmail.reply_synced", metadata_json={"email_id": str(email.id), "lead_id": str(lead.id), "classification": category, "gmail_message_id": message_id}))
+            record_email_memory(
+                db,
+                workspace=workspace,
+                user_id=user_id,
+                email=email,
+                lead=lead,
+                company=company,
+                event=memory_outcome,
+                extra={"classification": category},
+            )
+            db.add(
+                AuditLog(
+                    user_id=user_id,
+                    workspace_id=workspace.id,
+                    action="outreach.gmail.reply_synced",
+                    metadata_json={
+                        "email_id": str(email.id),
+                        "lead_id": str(lead.id),
+                        "classification": category,
+                        "gmail_message_id": message_id,
+                    },
+                )
+            )
             synced += 1
             classified[category] = classified.get(category, 0) + 1
     db.commit()
@@ -6249,26 +10555,37 @@ def sync_gmail_replies(request: Request, user_id: CurrentUser, db: Session = Dep
 
 
 @router.put("/outreach/sender", response_model=OutreachSenderStatusOut)
-def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> OutreachSenderStatusOut:
+def update_outreach_sender(
+    payload: OutreachSenderUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> OutreachSenderStatusOut:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     email_settings = settings.email if isinstance(settings.email, dict) else {}
     current_sender = _sender_settings(settings)
     provider = payload.provider.strip().lower()
     if provider not in SUPPORTED_OUTREACH_PROVIDERS:
-        raise HTTPException(status_code=400, detail="Choose a supported sending option.")
+        raise HTTPException(
+            status_code=400, detail="Choose a supported sending option."
+        )
     encrypted_password = current_sender["smtp"]["password_encrypted"]
     smtp_verified_at = current_sender["smtp"].get("verified_at", "")
     smtp_plain_password = ""
     if payload.smtp_password.strip():
         try:
-            encrypted_password = encrypt_secret(payload.smtp_password, get_app_settings().encryption_key)
+            encrypted_password = encrypt_secret(
+                payload.smtp_password, get_app_settings().encryption_key
+            )
             smtp_plain_password = payload.smtp_password
         except SecretBoxError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     elif provider == "smtp" and encrypted_password:
         try:
-            smtp_plain_password = decrypt_secret(encrypted_password, get_app_settings().encryption_key)
+            smtp_plain_password = decrypt_secret(
+                encrypted_password, get_app_settings().encryption_key
+            )
         except SecretBoxError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -6281,7 +10598,11 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
     )
     if provider == "smtp" and payload.enabled:
         smtp_verified_at = "" if smtp_changed else smtp_verified_at
-        if payload.smtp_host.strip() and payload.smtp_username.strip() and encrypted_password:
+        if (
+            payload.smtp_host.strip()
+            and payload.smtp_username.strip()
+            and encrypted_password
+        ):
             try:
                 verify_smtp_connection(
                     host=payload.smtp_host.strip(),
@@ -6314,19 +10635,35 @@ def update_outreach_sender(payload: OutreachSenderUpdate, request: Request, user
     settings.email = email_settings
     flag_modified(settings, "email")
     db.add(settings)
-    log_event(db, request, user_id, "outreach.sender.updated", {"workspace_id": str(workspace.id), "provider": provider})
+    log_event(
+        db,
+        request,
+        user_id,
+        "outreach.sender.updated",
+        {"workspace_id": str(workspace.id), "provider": provider},
+    )
     db.commit()
     db.refresh(settings)
     return _outreach_sender_status(db, user_id, workspace)
 
 
 @router.post("/emails/{email_id}/send", response_model=EmailOut)
-def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> EmailMessage:
+def mark_email_sent(
+    email_id: UUID,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> EmailMessage:
     workspace = _current_workspace(db, user_id)
     _require_active_subscription(db, workspace, user_id)
     sender_status, smtp_config = _outreach_sender_runtime_config(db, user_id, workspace)
     _check_usage_available(db, user_id, workspace, "email_sends")
-    message = db.scalar(select(EmailMessage).where(EmailMessage.id == email_id, _workspace_stmt(EmailMessage, workspace, user_id)))
+    message = db.scalar(
+        select(EmailMessage).where(
+            EmailMessage.id == email_id,
+            _workspace_stmt(EmailMessage, workspace, user_id),
+        )
+    )
     if message is None:
         raise HTTPException(status_code=404, detail="Email not found")
     if message.delivery_status == "sent":
@@ -6335,7 +10672,9 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
         raise HTTPException(status_code=400, detail="Approve the email before sending.")
     lead = db.get(Lead, message.lead_id) if message.lead_id else None
     if lead is None or not lead.email:
-        raise HTTPException(status_code=400, detail="Lead email is required before sending.")
+        raise HTTPException(
+            status_code=400, detail="Lead email is required before sending."
+        )
     try:
         provider_response = send_email(
             to_email=lead.email,
@@ -6353,7 +10692,15 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
         message.delivery_status = "failed"
         db.add(message)
         if lead:
-            _add_lead_activity(db, request, user_id, workspace, "email.send_failed", lead, {"email_id": str(message.id), "reason": str(exc)})
+            _add_lead_activity(
+                db,
+                request,
+                user_id,
+                workspace,
+                "email.send_failed",
+                lead,
+                {"email_id": str(message.id), "reason": str(exc)},
+            )
         _notify(db, user_id, NotificationKind.error, "Email send failed", str(exc))
         db.commit()
         raise _provider_error(exc) from exc
@@ -6361,14 +10708,46 @@ def mark_email_sent(email_id: UUID, request: Request, user_id: CurrentUser, db: 
     message.provider_message_id = str(provider_response.get("id"))
     message.delivery_status = "sent"
     _record_usage_after_success(db, user_id, workspace, "email_sends")
-    provider_thread_id = str(provider_response.get("thread_id") or provider_response.get("threadId") or "").strip()
-    message.tags = {**(message.tags if isinstance(message.tags, dict) else {}), "sender_email": sender_status.sender_email, "sender_provider": sender_status.provider, **({"provider_thread_id": provider_thread_id} if provider_thread_id else {})}
+    provider_thread_id = str(
+        provider_response.get("thread_id") or provider_response.get("threadId") or ""
+    ).strip()
+    message.tags = {
+        **(message.tags if isinstance(message.tags, dict) else {}),
+        "sender_email": sender_status.sender_email,
+        "sender_provider": sender_status.provider,
+        **({"provider_thread_id": provider_thread_id} if provider_thread_id else {}),
+    }
     lead.status = LeadStatus.contacted
-    lead.notes = _merge_lead_metadata(lead, {"email_status": "Sent", "email_sent_at": message.sent_at.isoformat()})
+    lead.notes = _merge_lead_metadata(
+        lead, {"email_status": "Sent", "email_sent_at": message.sent_at.isoformat()}
+    )
     _sync_lead_to_crm(db, user_id, workspace, lead)
-    company = db.scalar(select(Company).where(Company.lead_id == lead.id, Company.workspace_id == workspace.id).order_by(Company.updated_at.desc()))
-    record_email_memory(db, workspace=workspace, user_id=user_id, email=message, lead=lead, company=company, event="sent")
-    _add_lead_activity(db, request, user_id, workspace, "email.sent", lead, {"email_id": str(message.id), "provider_message_id": message.provider_message_id})
+    company = db.scalar(
+        select(Company)
+        .where(Company.lead_id == lead.id, Company.workspace_id == workspace.id)
+        .order_by(Company.updated_at.desc())
+    )
+    record_email_memory(
+        db,
+        workspace=workspace,
+        user_id=user_id,
+        email=message,
+        lead=lead,
+        company=company,
+        event="sent",
+    )
+    _add_lead_activity(
+        db,
+        request,
+        user_id,
+        workspace,
+        "email.sent",
+        lead,
+        {
+            "email_id": str(message.id),
+            "provider_message_id": message.provider_message_id,
+        },
+    )
     _notify(db, user_id, NotificationKind.info, "Email sent", message.subject)
     db.commit()
     db.refresh(message)
@@ -6398,7 +10777,10 @@ def inbox(
         filters.append(
             or_(
                 EmailMessage.created_at < cursor_created_at,
-                and_(EmailMessage.created_at == cursor_created_at, EmailMessage.id < cursor_id),
+                and_(
+                    EmailMessage.created_at == cursor_created_at,
+                    EmailMessage.id < cursor_id,
+                ),
             )
         )
     messages = db.scalars(
@@ -6410,40 +10792,65 @@ def inbox(
     page_messages = list(messages[:page_size])
     has_more = len(messages) > page_size
     response.headers["X-Has-More"] = "true" if has_more else "false"
-    response.headers["X-Next-Cursor"] = _encode_inbox_cursor(page_messages[-1]) if has_more and page_messages else ""
+    response.headers["X-Next-Cursor"] = (
+        _encode_inbox_cursor(page_messages[-1]) if has_more and page_messages else ""
+    )
     response.headers["X-Pagination-Mode"] = "cursor"
     response.headers["X-Deprecated-Page"] = str(page)
     return page_messages
 
 
 @router.get("/workspace", response_model=WorkspaceOut)
-def get_workspace(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+def get_workspace(
+    user: WorkspaceUserContext, db: Session = Depends(get_db)
+) -> WorkspaceOut:
     return _workspace_out(db, _current_workspace(db, user.user_id, user.email))
 
 
 @router.get("/workspace/me", response_model=WorkspaceOut)
-def get_my_workspace(user: WorkspaceUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+def get_my_workspace(
+    user: WorkspaceUserContext, db: Session = Depends(get_db)
+) -> WorkspaceOut:
     return _workspace_out(db, _current_workspace(db, user.user_id, user.email))
 
 
 @router.put("/workspace", response_model=WorkspaceOut)
-def update_workspace(payload: WorkspaceUpdate, request: Request, user: WorkspaceUserContext, db: Session = Depends(get_db)) -> WorkspaceOut:
+def update_workspace(
+    payload: WorkspaceUpdate,
+    request: Request,
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+) -> WorkspaceOut:
     workspace = _current_workspace(db, user.user_id, user.email)
     for key, value in payload.model_dump().items():
         setattr(workspace, key, value)
     if _workspace_profile_complete(workspace):
         workspace.onboarding_step = max(workspace.onboarding_step, 6)
         workspace.onboarding_completed = True
-    log_event(db, request, user.user_id, "workspace.updated", {"workspace_id": str(workspace.id)})
+    log_event(
+        db,
+        request,
+        user.user_id,
+        "workspace.updated",
+        {"workspace_id": str(workspace.id)},
+    )
     db.commit()
     db.refresh(workspace)
     return _workspace_out(db, workspace)
 
 
 @router.post("/workspace/members", response_model=WorkspaceMemberOut)
-def invite_member(payload: MemberInvite, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> WorkspaceMember:
+def invite_member(
+    payload: MemberInvite,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> WorkspaceMember:
     del payload, request, user_id, db
-    raise HTTPException(status_code=403, detail="Workspaces are private to one user. Team access is not enabled.")
+    raise HTTPException(
+        status_code=403,
+        detail="Workspaces are private to one user. Team access is not enabled.",
+    )
 
 
 @router.get("/onboarding", response_model=WorkspaceOut)
@@ -6452,7 +10859,12 @@ def get_onboarding(user_id: CurrentUser, db: Session = Depends(get_db)) -> Works
 
 
 @router.put("/onboarding", response_model=WorkspaceOut)
-def update_onboarding(payload: OnboardingUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> WorkspaceOut:
+def update_onboarding(
+    payload: OnboardingUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> WorkspaceOut:
     workspace = _current_workspace(db, user_id)
     workspace.company = payload.company or workspace.company
     workspace.industry = payload.industry or workspace.industry
@@ -6465,7 +10877,13 @@ def update_onboarding(payload: OnboardingUpdate, request: Request, user_id: Curr
     workspace.onboarding_completed = payload.step >= 6 and payload.launch_first_campaign
     settings = _settings_for_workspace(db, user_id, workspace)
     settings.ai = {**(settings.ai or {}), "userOpenAIConnected": payload.connect_openai}
-    log_event(db, request, user_id, "onboarding.updated", {"step": payload.step, "completed": workspace.onboarding_completed})
+    log_event(
+        db,
+        request,
+        user_id,
+        "onboarding.updated",
+        {"step": payload.step, "completed": workspace.onboarding_completed},
+    )
     db.commit()
     db.refresh(workspace)
     return _workspace_out(db, workspace)
@@ -6474,23 +10892,55 @@ def update_onboarding(payload: OnboardingUpdate, request: Request, user_id: Curr
 @router.get("/activity", response_model=list[ActivityOut])
 def activity(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[AuditLog]:
     workspace = _current_workspace(db, user_id)
-    return list(db.scalars(select(AuditLog).where(AuditLog.workspace_id == workspace.id).order_by(AuditLog.created_at.desc()).limit(50)).all())
+    return list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.workspace_id == workspace.id)
+            .order_by(AuditLog.created_at.desc())
+            .limit(50)
+        ).all()
+    )
 
 
 @router.get("/notifications", response_model=list[NotificationOut])
-def notifications(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[Notification]:
+def notifications(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> list[Notification]:
     workspace = _current_workspace(db, user_id)
-    return list(db.scalars(select(Notification).where(Notification.workspace_id == workspace.id).order_by(Notification.created_at.desc()).limit(30)).all())
+    return list(
+        db.scalars(
+            select(Notification)
+            .where(Notification.workspace_id == workspace.id)
+            .order_by(Notification.created_at.desc())
+            .limit(30)
+        ).all()
+    )
 
 
 @router.get("/profile", response_model=ProfileOut)
-def get_profile(user_id: CurrentUser, db: Session = Depends(get_db)) -> WorkspaceProfile:
+def get_profile(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> WorkspaceProfile:
     workspace = _current_workspace(db, user_id)
-    profile = db.scalar(select(WorkspaceProfile).where(WorkspaceProfile.workspace_id == workspace.id))
+    profile = db.scalar(
+        select(WorkspaceProfile).where(WorkspaceProfile.workspace_id == workspace.id)
+    )
     if profile is None:
-        profile = db.scalar(select(WorkspaceProfile).where(WorkspaceProfile.user_id == user_id, WorkspaceProfile.workspace_id.is_(None)))
+        profile = db.scalar(
+            select(WorkspaceProfile).where(
+                WorkspaceProfile.user_id == user_id,
+                WorkspaceProfile.workspace_id.is_(None),
+            )
+        )
     if profile is None:
-        profile = WorkspaceProfile(user_id=user_id, workspace_id=workspace.id, workspace=workspace.name, company=workspace.company, timezone=workspace.timezone, language=workspace.language)
+        profile = WorkspaceProfile(
+            user_id=user_id,
+            workspace_id=workspace.id,
+            workspace=workspace.name,
+            company=workspace.company,
+            timezone=workspace.timezone,
+            language=workspace.language,
+        )
         db.add(profile)
         db.commit()
         db.refresh(profile)
@@ -6498,9 +10948,16 @@ def get_profile(user_id: CurrentUser, db: Session = Depends(get_db)) -> Workspac
 
 
 @router.put("/profile", response_model=ProfileOut)
-def update_profile(payload: ProfileUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> WorkspaceProfile:
+def update_profile(
+    payload: ProfileUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> WorkspaceProfile:
     workspace = _current_workspace(db, user_id)
-    profile = db.scalar(select(WorkspaceProfile).where(WorkspaceProfile.workspace_id == workspace.id)) or WorkspaceProfile(user_id=user_id, workspace_id=workspace.id)
+    profile = db.scalar(
+        select(WorkspaceProfile).where(WorkspaceProfile.workspace_id == workspace.id)
+    ) or WorkspaceProfile(user_id=user_id, workspace_id=workspace.id)
     for key, value in payload.model_dump().items():
         setattr(profile, key, value)
     workspace.name = payload.workspace or workspace.name
@@ -6516,21 +10973,36 @@ def update_profile(payload: ProfileUpdate, request: Request, user_id: CurrentUse
 
 
 @router.delete("/profile")
-def delete_account(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+def delete_account(
+    request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> dict:
     log_event(db, request, user_id, "account.delete_requested", {})
-    _notify(db, user_id, NotificationKind.warning, "Account deletion requested", "Your deletion request has been logged for processing.")
+    _notify(
+        db,
+        user_id,
+        NotificationKind.warning,
+        "Account deletion requested",
+        "Your deletion request has been logged for processing.",
+    )
     db.commit()
     return {"status": "queued"}
 
 
 @router.get("/settings", response_model=SettingsOut)
-def get_settings_route(user_id: CurrentUser, db: Session = Depends(get_db)) -> AppSettings:
+def get_settings_route(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> AppSettings:
     workspace = _current_workspace(db, user_id)
     return _settings_for_workspace(db, user_id, workspace)
 
 
 @router.put("/settings", response_model=SettingsOut)
-def update_settings(payload: SettingsUpdate, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> AppSettings:
+def update_settings(
+    payload: SettingsUpdate,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> AppSettings:
     workspace = _current_workspace(db, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     updates = payload.model_dump(exclude_none=True)
@@ -6543,14 +11015,21 @@ def update_settings(payload: SettingsUpdate, request: Request, user_id: CurrentU
     if "api" in updates:
         settings.api = {**(settings.api or {}), **updates["api"]}
     db.add(settings)
-    log_event(db, request, user_id, "settings.updated", {"fields": sorted(updates.keys())})
+    log_event(
+        db, request, user_id, "settings.updated", {"fields": sorted(updates.keys())}
+    )
     db.commit()
     db.refresh(settings)
     return settings
 
 
 @router.post("/billing/checkout")
-def billing_checkout(payload: CheckoutRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+def billing_checkout(
+    payload: CheckoutRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> dict:
     workspace = _current_workspace(db, user_id)
     if payload.plan not in PLAN_LIMITS:
         raise HTTPException(status_code=400, detail="Unknown subscription plan")
@@ -6562,11 +11041,30 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
     settings = _settings_for_workspace(db, user_id, workspace)
     active_stripe_subscriptions = _active_stripe_subscriptions(db, workspace)
     if len(active_stripe_subscriptions) > 1:
-        reconcile_app_settings_billing_cache(db, user_id=user_id, workspace=workspace, settings=settings, actor_user_id=None, reason="billing_checkout_duplicate_subscription")
-        log_event(db, request, user_id, "billing.checkout_blocked_duplicate_subscription", {"workspace_id": str(workspace.id), "count": len(active_stripe_subscriptions)})
+        reconcile_app_settings_billing_cache(
+            db,
+            user_id=user_id,
+            workspace=workspace,
+            settings=settings,
+            actor_user_id=None,
+            reason="billing_checkout_duplicate_subscription",
+        )
+        log_event(
+            db,
+            request,
+            user_id,
+            "billing.checkout_blocked_duplicate_subscription",
+            {
+                "workspace_id": str(workspace.id),
+                "count": len(active_stripe_subscriptions),
+            },
+        )
         db.commit()
         delete_key(cache_key("billing-status", workspace.id, user_id))
-        raise HTTPException(status_code=409, detail="Multiple active billing subscriptions require owner review before checkout can continue.")
+        raise HTTPException(
+            status_code=409,
+            detail="Multiple active billing subscriptions require owner review before checkout can continue.",
+        )
     entitlement = _resolve_billing_entitlement(db, user_id, workspace)
     if entitlement.source == "stripe" and entitlement.active:
         billing = dict(settings.billing or {})
@@ -6576,28 +11074,100 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
             settings.billing = billing
             db.add(settings)
             flag_modified(settings, "billing")
-        log_event(db, request, user_id, "billing.checkout_skipped_active_subscription", {"workspace_id": str(workspace.id), "plan": entitlement.plan})
+        log_event(
+            db,
+            request,
+            user_id,
+            "billing.checkout_skipped_active_subscription",
+            {"workspace_id": str(workspace.id), "plan": entitlement.plan},
+        )
         db.commit()
-        return {"url": f"{get_app_settings().public_app_url.rstrip('/')}/dashboard/billing?billing=active", "id": "", "customer_id": str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or ""), "skipped_checkout": True, "active_subscription": True}
+        return {
+            "url": f"{get_app_settings().public_app_url.rstrip('/')}/dashboard/billing?billing=active",
+            "id": "",
+            "customer_id": str(
+                (
+                    entitlement.subscription.stripe_customer_id
+                    if entitlement.subscription
+                    else ""
+                )
+                or ""
+            ),
+            "skipped_checkout": True,
+            "active_subscription": True,
+        }
     if entitlement.source == "owner_granted_test" and entitlement.active:
-        log_event(db, request, user_id, "billing.checkout_skipped_test_entitlement", {"workspace_id": str(workspace.id), "plan": entitlement.plan})
+        log_event(
+            db,
+            request,
+            user_id,
+            "billing.checkout_skipped_test_entitlement",
+            {"workspace_id": str(workspace.id), "plan": entitlement.plan},
+        )
         db.commit()
-        return {"url": f"{get_app_settings().public_app_url.rstrip('/')}/dashboard?billing=test-entitlement", "id": "", "customer_id": "", "skipped_checkout": True}
-    _expire_stale_checkout_sessions(db, workspace.id, user_id, payload.plan, billing_period)
+        return {
+            "url": f"{get_app_settings().public_app_url.rstrip('/')}/dashboard?billing=test-entitlement",
+            "id": "",
+            "customer_id": "",
+            "skipped_checkout": True,
+        }
+    _expire_stale_checkout_sessions(
+        db, workspace.id, user_id, payload.plan, billing_period
+    )
     db.flush()
-    open_session = _open_checkout_session(db, workspace.id, user_id, payload.plan, billing_period)
+    open_session = _open_checkout_session(
+        db, workspace.id, user_id, payload.plan, billing_period
+    )
     if open_session and open_session.stripe_session_url:
-        log_event(db, request, user_id, "billing.checkout_reused_open_session", {"workspace_id": str(workspace.id), "plan": payload.plan})
+        log_event(
+            db,
+            request,
+            user_id,
+            "billing.checkout_reused_open_session",
+            {"workspace_id": str(workspace.id), "plan": payload.plan},
+        )
         db.commit()
-        return {"url": open_session.stripe_session_url, "id": open_session.stripe_session_id, "customer_id": open_session.stripe_customer_id, "reused_checkout": True}
-    customer_id = str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or (settings.billing or {}).get("stripeCustomerId") or "")
+        return {
+            "url": open_session.stripe_session_url,
+            "id": open_session.stripe_session_id,
+            "customer_id": open_session.stripe_customer_id,
+            "reused_checkout": True,
+        }
+    customer_id = str(
+        (
+            entitlement.subscription.stripe_customer_id
+            if entitlement.subscription
+            else ""
+        )
+        or (settings.billing or {}).get("stripeCustomerId")
+        or ""
+    )
     lifecycle_started_at = datetime.utcnow()
-    idempotency_key = _checkout_idempotency_key(workspace.id, user_id, payload.plan, billing_period, _next_checkout_lifecycle_sequence(db, workspace.id, user_id, payload.plan, billing_period))
+    idempotency_key = _checkout_idempotency_key(
+        workspace.id,
+        user_id,
+        payload.plan,
+        billing_period,
+        _next_checkout_lifecycle_sequence(
+            db, workspace.id, user_id, payload.plan, billing_period
+        ),
+    )
     try:
-        session = create_checkout_session(user_id, str(workspace.id), payload.plan, customer_id, idempotency_key=idempotency_key, billing_period=billing_period)
+        session = create_checkout_session(
+            user_id,
+            str(workspace.id),
+            payload.plan,
+            customer_id,
+            idempotency_key=idempotency_key,
+            billing_period=billing_period,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    expires_at = datetime.utcfromtimestamp(int(session.get("expires_at"))) if session.get("expires_at") else lifecycle_started_at + timedelta(hours=24)
+    expires_at = (
+        datetime.utcfromtimestamp(int(session.get("expires_at")))
+        if session.get("expires_at")
+        else lifecycle_started_at + timedelta(hours=24)
+    )
     pending = BillingCheckoutSession(
         workspace_id=workspace.id,
         user_id=user_id,
@@ -6623,21 +11193,40 @@ def billing_checkout(payload: CheckoutRequest, request: Request, user_id: Curren
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        open_session = _open_checkout_session(db, workspace.id, user_id, payload.plan, billing_period)
+        open_session = _open_checkout_session(
+            db, workspace.id, user_id, payload.plan, billing_period
+        )
         if open_session and open_session.stripe_session_url:
-            return {"url": open_session.stripe_session_url, "id": open_session.stripe_session_id, "customer_id": open_session.stripe_customer_id, "reused_checkout": True}
-        raise HTTPException(status_code=409, detail="Checkout session creation conflicted with another request. Please retry.") from exc
+            return {
+                "url": open_session.stripe_session_url,
+                "id": open_session.stripe_session_id,
+                "customer_id": open_session.stripe_customer_id,
+                "reused_checkout": True,
+            }
+        raise HTTPException(
+            status_code=409,
+            detail="Checkout session creation conflicted with another request. Please retry.",
+        ) from exc
     log_event(db, request, user_id, "billing.checkout", {"plan": payload.plan})
     return session
 
 
 @router.get("/billing/plans", response_model=list[BillingPlanOut])
-def billing_plans(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[BillingPlanOut]:
+def billing_plans(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> list[BillingPlanOut]:
     workspace = _current_workspace(db, user_id)
     entitlement = _resolve_billing_entitlement(db, user_id, workspace)
     current = entitlement.plan
     active = entitlement.active
-    return [BillingPlanOut(**plan, current=active and plan["name"] == current, active_subscription=active) for plan in public_plan_catalog()]
+    return [
+        BillingPlanOut(
+            **plan,
+            current=active and plan["name"] == current,
+            active_subscription=active,
+        )
+        for plan in public_plan_catalog()
+    ]
 
 
 @router.get("/billing/plan-catalog", response_model=list[BillingPlanOut])
@@ -6646,35 +11235,70 @@ def billing_plan_catalog() -> list[BillingPlanOut]:
 
 
 @router.post("/billing/portal")
-def billing_portal(payload: BillingPortalRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+def billing_portal(
+    payload: BillingPortalRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> dict:
     workspace = _current_workspace(db, user_id)
     entitlement = _resolve_billing_entitlement(db, user_id, workspace)
     if not entitlement.active:
-        raise HTTPException(status_code=402, detail="An active subscription is required to open the Billing Portal.")
-    customer_id = str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or "")
+        raise HTTPException(
+            status_code=402,
+            detail="An active subscription is required to open the Billing Portal.",
+        )
+    customer_id = str(
+        (
+            entitlement.subscription.stripe_customer_id
+            if entitlement.subscription
+            else ""
+        )
+        or ""
+    )
     if not customer_id:
-        raise HTTPException(status_code=402, detail="A Stripe subscription is required to open the Billing Portal.")
+        raise HTTPException(
+            status_code=402,
+            detail="A Stripe subscription is required to open the Billing Portal.",
+        )
     try:
         session = create_billing_portal_session(customer_id, str(payload.return_url))
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    log_event(db, request, user_id, "billing.portal", {"workspace_id": str(workspace.id)})
+    log_event(
+        db, request, user_id, "billing.portal", {"workspace_id": str(workspace.id)}
+    )
     db.commit()
     return session
 
 
 @router.get("/billing/subscription/change", response_model=SubscriptionTransitionOut)
-def billing_subscription_change_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> SubscriptionTransitionOut:
+def billing_subscription_change_status(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> SubscriptionTransitionOut:
     workspace = _current_workspace(db, user_id)
     try:
         subscription = require_single_app_controlled_subscription(db, workspace)
     except SubscriptionTransitionError:
         return SubscriptionTransitionOut(**transition_out(None))
-    return SubscriptionTransitionOut(**transition_out(open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or ""))))
+    return SubscriptionTransitionOut(
+        **transition_out(
+            open_transition(
+                db,
+                workspace_id=workspace.id,
+                subscription_id=str(subscription.stripe_subscription_id or ""),
+            )
+        )
+    )
 
 
 @router.post("/billing/subscription/change", response_model=SubscriptionTransitionOut)
-def billing_subscription_change(payload: SubscriptionChangeRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SubscriptionTransitionOut:
+def billing_subscription_change(
+    payload: SubscriptionChangeRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> SubscriptionTransitionOut:
     workspace = _current_workspace(db, user_id)
     if payload.plan not in PLAN_CATALOG:
         raise HTTPException(status_code=400, detail="Unknown subscription plan")
@@ -6686,17 +11310,37 @@ def billing_subscription_change(payload: SubscriptionChangeRequest, request: Req
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _lock_billing_transition(db, workspace.id, str(subscription.stripe_subscription_id or ""))
-    existing = open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or ""))
+    _lock_billing_transition(
+        db, workspace.id, str(subscription.stripe_subscription_id or "")
+    )
+    existing = open_transition(
+        db,
+        workspace_id=workspace.id,
+        subscription_id=str(subscription.stripe_subscription_id or ""),
+    )
     if existing is not None:
         return SubscriptionTransitionOut(**transition_out(existing))
-    idempotency_key = transition_idempotency_key(workspace.id, str(subscription.stripe_subscription_id), subscription.plan, payload.plan, direction)
-    previous = db.scalar(select(BillingSubscriptionTransition).where(BillingSubscriptionTransition.idempotency_key == idempotency_key))
+    idempotency_key = transition_idempotency_key(
+        workspace.id,
+        str(subscription.stripe_subscription_id),
+        subscription.plan,
+        payload.plan,
+        direction,
+    )
+    previous = db.scalar(
+        select(BillingSubscriptionTransition).where(
+            BillingSubscriptionTransition.idempotency_key == idempotency_key
+        )
+    )
     if previous is not None:
         return SubscriptionTransitionOut(**transition_out(previous))
     try:
-        stripe_subscription = retrieve_bound_stripe_subscription(local_subscription=subscription, workspace_id=workspace.id, user_id=user_id)
-        effective_at = subscription.current_period_end if direction == "downgrade" else None
+        stripe_subscription = retrieve_bound_stripe_subscription(
+            local_subscription=subscription, workspace_id=workspace.id, user_id=user_id
+        )
+        effective_at = (
+            subscription.current_period_end if direction == "downgrade" else None
+        )
         transition = create_transition_row(
             db,
             workspace_id=workspace.id,
@@ -6708,12 +11352,23 @@ def billing_subscription_change(payload: SubscriptionChangeRequest, request: Req
             effective_at=effective_at,
         )
         if direction == "upgrade":
-            apply_upgrade_now(transition=transition, stripe_subscription=stripe_subscription, to_plan=payload.plan)
+            apply_upgrade_now(
+                transition=transition,
+                stripe_subscription=stripe_subscription,
+                to_plan=payload.plan,
+            )
             transition.status = "pending"
         else:
-            schedule = schedule_downgrade(transition=transition, stripe_subscription=stripe_subscription, to_plan=payload.plan)
+            schedule = schedule_downgrade(
+                transition=transition,
+                stripe_subscription=stripe_subscription,
+                to_plan=payload.plan,
+            )
             transition.status = "scheduled"
-            transition.stripe_schedule_id = str(getattr(schedule, "id", "") or (schedule.get("id", "") if isinstance(schedule, dict) else ""))
+            transition.stripe_schedule_id = str(
+                getattr(schedule, "id", "")
+                or (schedule.get("id", "") if isinstance(schedule, dict) else "")
+            )
         transition.updated_at = datetime.utcnow()
         db.add(transition)
         settings = _settings_for_workspace(db, user_id, workspace)
@@ -6721,46 +11376,81 @@ def billing_subscription_change(payload: SubscriptionChangeRequest, request: Req
             **(settings.billing or {}),
             "pendingPlan": payload.plan,
             "pendingPlanDirection": direction,
-            "pendingPlanEffectiveAt": transition.effective_at.isoformat() if transition.effective_at else "",
+            "pendingPlanEffectiveAt": transition.effective_at.isoformat()
+            if transition.effective_at
+            else "",
             "subscriptionTransitionId": str(transition.id),
         }
         flag_modified(settings, "billing")
-        log_event(db, request, user_id, f"billing.subscription_change_{direction}", {"workspace_id": str(workspace.id), "from_plan": subscription.plan, "to_plan": payload.plan})
+        log_event(
+            db,
+            request,
+            user_id,
+            f"billing.subscription_change_{direction}",
+            {
+                "workspace_id": str(workspace.id),
+                "from_plan": subscription.plan,
+                "to_plan": payload.plan,
+            },
+        )
         delete_key(cache_key("billing-status", workspace.id, user_id))
         db.commit()
         db.refresh(transition)
         return SubscriptionTransitionOut(**transition_out(transition))
     except stripe.StripeError as exc:
         db.rollback()
-        raise HTTPException(status_code=502, detail="Stripe subscription change failed. Please retry.") from exc
+        raise HTTPException(
+            status_code=502, detail="Stripe subscription change failed. Please retry."
+        ) from exc
     except SubscriptionTransitionError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IntegrityError as exc:
         db.rollback()
-        existing = open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or ""))
+        existing = open_transition(
+            db,
+            workspace_id=workspace.id,
+            subscription_id=str(subscription.stripe_subscription_id or ""),
+        )
         if existing is not None:
             return SubscriptionTransitionOut(**transition_out(existing))
-        raise HTTPException(status_code=409, detail="Subscription change conflicted with another request. Please retry.") from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Subscription change conflicted with another request. Please retry.",
+        ) from exc
 
 
 @router.delete("/billing/subscription/change", response_model=SubscriptionTransitionOut)
-def billing_subscription_change_cancel(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> SubscriptionTransitionOut:
+def billing_subscription_change_cancel(
+    request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> SubscriptionTransitionOut:
     workspace = _current_workspace(db, user_id)
     try:
         subscription = require_single_app_controlled_subscription(db, workspace)
     except SubscriptionTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    _lock_billing_transition(db, workspace.id, str(subscription.stripe_subscription_id or ""))
-    transition = open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or ""))
+    _lock_billing_transition(
+        db, workspace.id, str(subscription.stripe_subscription_id or "")
+    )
+    transition = open_transition(
+        db,
+        workspace_id=workspace.id,
+        subscription_id=str(subscription.stripe_subscription_id or ""),
+    )
     if transition is None:
         return SubscriptionTransitionOut(**transition_out(None))
     if transition.direction == "upgrade":
-        raise HTTPException(status_code=409, detail="Immediate upgrades cannot be canceled after submission. Wait for Stripe confirmation or payment resolution.")
+        raise HTTPException(
+            status_code=409,
+            detail="Immediate upgrades cannot be canceled after submission. Wait for Stripe confirmation or payment resolution.",
+        )
     try:
         cancel_scheduled_transition(transition=transition)
     except stripe.StripeError as exc:
-        raise HTTPException(status_code=502, detail="Stripe scheduled change cancellation failed. Please retry.") from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Stripe scheduled change cancellation failed. Please retry.",
+        ) from exc
     except SubscriptionTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     transition.status = "canceled"
@@ -6768,49 +11458,84 @@ def billing_subscription_change_cancel(request: Request, user_id: CurrentUser, d
     transition.updated_at = datetime.utcnow()
     settings = _settings_for_workspace(db, user_id, workspace)
     billing = dict(settings.billing or {})
-    for key_name in ("pendingPlan", "pendingPlanDirection", "pendingPlanEffectiveAt", "subscriptionTransitionId"):
+    for key_name in (
+        "pendingPlan",
+        "pendingPlanDirection",
+        "pendingPlanEffectiveAt",
+        "subscriptionTransitionId",
+    ):
         billing.pop(key_name, None)
     settings.billing = billing
     flag_modified(settings, "billing")
-    log_event(db, request, user_id, "billing.subscription_change_canceled", {"workspace_id": str(workspace.id), "transition_id": str(transition.id)})
+    log_event(
+        db,
+        request,
+        user_id,
+        "billing.subscription_change_canceled",
+        {"workspace_id": str(workspace.id), "transition_id": str(transition.id)},
+    )
     delete_key(cache_key("billing-status", workspace.id, user_id))
     db.commit()
     return SubscriptionTransitionOut(**transition_out(transition))
 
 
 @router.post("/billing/subscription/cancel")
-def billing_subscription_cancel(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+def billing_subscription_cancel(
+    request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> dict:
     workspace = _current_workspace(db, user_id)
     try:
         subscription = require_single_app_controlled_subscription(db, workspace)
-        request_cancel_at_period_end(subscription=subscription, workspace_id=workspace.id, user_id=user_id)
+        request_cancel_at_period_end(
+            subscription=subscription, workspace_id=workspace.id, user_id=user_id
+        )
     except stripe.StripeError as exc:
-        raise HTTPException(status_code=502, detail="Stripe cancellation request failed. Please retry.") from exc
+        raise HTTPException(
+            status_code=502, detail="Stripe cancellation request failed. Please retry."
+        ) from exc
     except SubscriptionTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     settings = _settings_for_workspace(db, user_id, workspace)
     settings.billing = {**(settings.billing or {}), "cancelAtPeriodEnd": True}
     flag_modified(settings, "billing")
-    log_event(db, request, user_id, "billing.subscription_cancel_requested", {"workspace_id": str(workspace.id)})
+    log_event(
+        db,
+        request,
+        user_id,
+        "billing.subscription_cancel_requested",
+        {"workspace_id": str(workspace.id)},
+    )
     delete_key(cache_key("billing-status", workspace.id, user_id))
     db.commit()
     return {"cancel_at_period_end": True}
 
 
 @router.post("/billing/subscription/cancel/undo")
-def billing_subscription_cancel_undo(request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> dict:
+def billing_subscription_cancel_undo(
+    request: Request, user_id: CurrentUser, db: Session = Depends(get_db)
+) -> dict:
     workspace = _current_workspace(db, user_id)
     try:
         subscription = require_single_app_controlled_subscription(db, workspace)
-        undo_cancel_at_period_end(subscription=subscription, workspace_id=workspace.id, user_id=user_id)
+        undo_cancel_at_period_end(
+            subscription=subscription, workspace_id=workspace.id, user_id=user_id
+        )
     except stripe.StripeError as exc:
-        raise HTTPException(status_code=502, detail="Stripe cancellation undo failed. Please retry.") from exc
+        raise HTTPException(
+            status_code=502, detail="Stripe cancellation undo failed. Please retry."
+        ) from exc
     except SubscriptionTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     settings = _settings_for_workspace(db, user_id, workspace)
     settings.billing = {**(settings.billing or {}), "cancelAtPeriodEnd": False}
     flag_modified(settings, "billing")
-    log_event(db, request, user_id, "billing.subscription_cancel_undone", {"workspace_id": str(workspace.id)})
+    log_event(
+        db,
+        request,
+        user_id,
+        "billing.subscription_cancel_undone",
+        {"workspace_id": str(workspace.id)},
+    )
     delete_key(cache_key("billing-status", workspace.id, user_id))
     db.commit()
     return {"cancel_at_period_end": False}
@@ -6835,34 +11560,66 @@ def billing_diagnostics(user_id: CurrentUser) -> BillingDiagnosticsOut:
         agency_price_id_loaded=bool(settings.stripe_agency_price_id),
         checkout_session_creation_works=checkout_works,
         webhook_receives_signed_events=bool(settings.stripe_webhook_secret),
-        subscription_sync_healthy=checkout_works and bool(settings.stripe_webhook_secret),
+        subscription_sync_healthy=checkout_works
+        and bool(settings.stripe_webhook_secret),
     )
 
 
 @router.post("/billing/sync-latest-subscription", response_model=BillingSyncOut)
-def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Request, user_id: CurrentUser, db: Session = Depends(get_db)) -> BillingSyncOut:
+def billing_sync_latest_subscription(
+    payload: BillingSyncRequest,
+    request: Request,
+    user_id: CurrentUser,
+    db: Session = Depends(get_db),
+) -> BillingSyncOut:
     workspace = _current_workspace(db, user_id)
     settings_row = _settings_for_workspace(db, user_id, workspace)
-    server_customer_id = str((settings_row.billing or {}).get("stripeCustomerId") or "").strip()
+    server_customer_id = str(
+        (settings_row.billing or {}).get("stripeCustomerId") or ""
+    ).strip()
     requested_customer_id = str(payload.stripe_customer_id or "").strip()
     if payload.customer_email:
-        raise HTTPException(status_code=403, detail="Billing sync uses the server-created checkout customer.")
+        raise HTTPException(
+            status_code=403,
+            detail="Billing sync uses the server-created checkout customer.",
+        )
     if requested_customer_id and requested_customer_id != server_customer_id:
-        raise HTTPException(status_code=403, detail="Billing sync cannot use a customer-supplied Stripe customer.")
+        raise HTTPException(
+            status_code=403,
+            detail="Billing sync cannot use a customer-supplied Stripe customer.",
+        )
     customer_id = server_customer_id
     if not customer_id:
-        raise HTTPException(status_code=400, detail="No server-created Stripe checkout customer is available for this workspace.")
+        raise HTTPException(
+            status_code=400,
+            detail="No server-created Stripe checkout customer is available for this workspace.",
+        )
     try:
-        diagnostics = subscription_diagnostics_for_customer(customer_id=customer_id, customer_email="")
+        diagnostics = subscription_diagnostics_for_customer(
+            customer_id=customer_id, customer_email=""
+        )
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Billing subscription lookup failed") from exc
+        raise HTTPException(
+            status_code=502, detail="Billing subscription lookup failed"
+        ) from exc
     customer = diagnostics.customer
     if not customer:
-        return BillingSyncOut(synced=False, customer_found=False, subscription_found=False, message="Billing customer not found")
+        return BillingSyncOut(
+            synced=False,
+            customer_found=False,
+            subscription_found=False,
+            message="Billing customer not found",
+        )
     if not diagnostics.subscriptions:
-        return BillingSyncOut(synced=False, customer_found=True, subscription_found=False, stripe_customer_id=str(customer.id), message="No billing subscription found for customer")
+        return BillingSyncOut(
+            synced=False,
+            customer_found=True,
+            subscription_found=False,
+            stripe_customer_id=str(customer.id),
+            message="No billing subscription found for customer",
+        )
     synced_count = 0
     price_id_loaded = False
     unknown_price_count = 0
@@ -6871,27 +11628,64 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
             sub = subscription_payload(stripe_subscription)
         except UnknownStripePriceError:
             sub = {
-                "subscription_id": str(getattr(stripe_subscription, "id", "") or (stripe_subscription.get("id", "") if isinstance(stripe_subscription, dict) else "")),
-                "customer_id": str(getattr(stripe_subscription, "customer", "") or (stripe_subscription.get("customer", "") if isinstance(stripe_subscription, dict) else customer.id)),
+                "subscription_id": str(
+                    getattr(stripe_subscription, "id", "")
+                    or (
+                        stripe_subscription.get("id", "")
+                        if isinstance(stripe_subscription, dict)
+                        else ""
+                    )
+                ),
+                "customer_id": str(
+                    getattr(stripe_subscription, "customer", "")
+                    or (
+                        stripe_subscription.get("customer", "")
+                        if isinstance(stripe_subscription, dict)
+                        else customer.id
+                    )
+                ),
                 "price_id": "",
                 "plan": "Unknown",
                 "status": UNKNOWN_PRICE_STATUS,
                 "trial_end": None,
                 "current_period_end": None,
                 "created": None,
-                "workspace_id": str((getattr(stripe_subscription, "metadata", {}) or {}).get("workspace_id", "") if not isinstance(stripe_subscription, dict) else (stripe_subscription.get("metadata") or {}).get("workspace_id", "")),
-                "user_id": str((getattr(stripe_subscription, "metadata", {}) or {}).get("user_id", "") if not isinstance(stripe_subscription, dict) else (stripe_subscription.get("metadata") or {}).get("user_id", "")),
+                "workspace_id": str(
+                    (getattr(stripe_subscription, "metadata", {}) or {}).get(
+                        "workspace_id", ""
+                    )
+                    if not isinstance(stripe_subscription, dict)
+                    else (stripe_subscription.get("metadata") or {}).get(
+                        "workspace_id", ""
+                    )
+                ),
+                "user_id": str(
+                    (getattr(stripe_subscription, "metadata", {}) or {}).get(
+                        "user_id", ""
+                    )
+                    if not isinstance(stripe_subscription, dict)
+                    else (stripe_subscription.get("metadata") or {}).get("user_id", "")
+                ),
             }
             unknown_price_count += 1
         sub_workspace_id = str(sub.get("workspace_id") or "").strip()
         sub_user_id = str(sub.get("user_id") or "").strip()
         sub_customer_id = str(sub.get("customer_id") or customer.id)
         if sub_customer_id != customer_id:
-            raise HTTPException(status_code=403, detail="Stripe subscription customer does not match the server-created billing customer.")
+            raise HTTPException(
+                status_code=403,
+                detail="Stripe subscription customer does not match the server-created billing customer.",
+            )
         if sub_workspace_id and sub_workspace_id != str(workspace.id):
-            raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different workspace.")
+            raise HTTPException(
+                status_code=403,
+                detail="Stripe subscription belongs to a different workspace.",
+            )
         if sub_user_id and sub_user_id != user_id:
-            raise HTTPException(status_code=403, detail="Stripe subscription belongs to a different user.")
+            raise HTTPException(
+                status_code=403,
+                detail="Stripe subscription belongs to a different user.",
+            )
         plan = str(sub["plan"]) if str(sub["plan"]) in PLAN_LIMITS else "Unknown"
         _sync_workspace_subscription(
             db,
@@ -6919,25 +11713,61 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
     )
     entitlement = reconciliation["entitlement"]
     if entitlement.source == DEGRADED_DUPLICATE_STATUS:
-        log_event(db, request, user_id, "billing.subscription_sync_blocked_duplicate_subscription", {"workspace_id": str(workspace.id), "count": len(entitlement.duplicate_subscriptions)})
+        log_event(
+            db,
+            request,
+            user_id,
+            "billing.subscription_sync_blocked_duplicate_subscription",
+            {
+                "workspace_id": str(workspace.id),
+                "count": len(entitlement.duplicate_subscriptions),
+            },
+        )
         delete_key(cache_key("billing-status", workspace.id, user_id))
         db.commit()
-        raise HTTPException(status_code=409, detail="Multiple active billing subscriptions require owner review before billing sync can continue.")
+        raise HTTPException(
+            status_code=409,
+            detail="Multiple active billing subscriptions require owner review before billing sync can continue.",
+        )
     if unknown_price_count:
-        log_event(db, request, user_id, "billing.subscription_sync_blocked_unknown_price", {"workspace_id": str(workspace.id), "count": unknown_price_count})
+        log_event(
+            db,
+            request,
+            user_id,
+            "billing.subscription_sync_blocked_unknown_price",
+            {"workspace_id": str(workspace.id), "count": unknown_price_count},
+        )
         delete_key(cache_key("billing-status", workspace.id, user_id))
         db.commit()
-        raise HTTPException(status_code=409, detail="Stripe subscription uses an unknown or retired monthly price and requires owner review.")
+        raise HTTPException(
+            status_code=409,
+            detail="Stripe subscription uses an unknown or retired monthly price and requires owner review.",
+        )
     subscription = entitlement.subscription
-    log_event(db, request, user_id, "billing.subscription_synced", {"workspace_id": str(workspace.id), "synced_count": synced_count, "entitlement_source": entitlement.source, "status": entitlement.status})
+    log_event(
+        db,
+        request,
+        user_id,
+        "billing.subscription_synced",
+        {
+            "workspace_id": str(workspace.id),
+            "synced_count": synced_count,
+            "entitlement_source": entitlement.source,
+            "status": entitlement.status,
+        },
+    )
     delete_key(cache_key("billing-status", workspace.id, user_id))
     db.commit()
     return BillingSyncOut(
         synced=True,
         plan=entitlement.plan,
         status=entitlement.status,
-        stripe_customer_id=(subscription.stripe_customer_id if subscription else "") or "",
-        stripe_subscription_id=(subscription.stripe_subscription_id if subscription else "") or "",
+        stripe_customer_id=(subscription.stripe_customer_id if subscription else "")
+        or "",
+        stripe_subscription_id=(
+            subscription.stripe_subscription_id if subscription else ""
+        )
+        or "",
         trial_end=entitlement.trial_end,
         current_period_end=entitlement.current_period_end,
         workspace_id=workspace.id,
@@ -6949,14 +11779,23 @@ def billing_sync_latest_subscription(payload: BillingSyncRequest, request: Reque
 
 
 @router.get("/billing/status", response_model=BillingStatusOut)
-def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> BillingStatusOut:
+def billing_status(
+    user_id: CurrentUser, db: Session = Depends(get_db)
+) -> BillingStatusOut:
     app_settings = get_app_settings()
     workspace = _current_workspace(db, user_id)
     key = cache_key("billing-status", workspace.id, user_id)
     settings = _settings_for_workspace(db, user_id, workspace)
     active_stripe_subscriptions = _active_stripe_subscriptions(db, workspace)
     if len(active_stripe_subscriptions) > 1:
-        reconcile_app_settings_billing_cache(db, user_id=user_id, workspace=workspace, settings=settings, actor_user_id=None, reason="billing_status_duplicate_subscription")
+        reconcile_app_settings_billing_cache(
+            db,
+            user_id=user_id,
+            workspace=workspace,
+            settings=settings,
+            actor_user_id=None,
+            reason="billing_status_duplicate_subscription",
+        )
         db.commit()
         delete_key(key)
         usage = _usage_for_workspace(db, workspace)
@@ -6973,7 +11812,11 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
             transition=transition_out(None),
             cancel_at_period_end=False,
             limits=limits,
-            usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
+            usage={
+                "leads": usage.leads,
+                "ai_generations": usage.ai_generations,
+                "email_sends": usage.email_sends,
+            },
             sales_employees_used=0,
             workspaces_used=1,
         )
@@ -6989,35 +11832,98 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
     current_period_end = entitlement.current_period_end
     trial_days_remaining = 0
     if trial_end:
-        trial_days_remaining = max(0, (trial_end.date() - datetime.utcnow().date()).days)
-    sales_employees_used = db.scalar(select(func.count()).select_from(AISalesEmployee).where(AISalesEmployee.workspace_id == workspace.id, AISalesEmployee.user_id == user_id)) or 0
-    workspaces_used = db.scalar(select(func.count()).select_from(WorkspaceMember).where(WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active")) or 1
+        trial_days_remaining = max(
+            0, (trial_end.date() - datetime.utcnow().date()).days
+        )
+    sales_employees_used = (
+        db.scalar(
+            select(func.count())
+            .select_from(AISalesEmployee)
+            .where(
+                AISalesEmployee.workspace_id == workspace.id,
+                AISalesEmployee.user_id == user_id,
+            )
+        )
+        or 0
+    )
+    workspaces_used = (
+        db.scalar(
+            select(func.count())
+            .select_from(WorkspaceMember)
+            .where(
+                WorkspaceMember.user_id == user_id, WorkspaceMember.status == "active"
+            )
+        )
+        or 1
+    )
     output = BillingStatusOut(
         plan=plan,
         price=int(limits["mrr"]),
         status=status,
         beta_override=beta_override,
-        all_features_enabled=bool(beta_override and all(isinstance(value, bool) and value for value in limits.values() if isinstance(value, bool))),
+        all_features_enabled=bool(
+            beta_override
+            and all(
+                isinstance(value, bool) and value
+                for value in limits.values()
+                if isinstance(value, bool)
+            )
+        ),
         entitlement_source=entitlement.source,
         test_entitlement=beta_override,
-        entitlement_expires_at=entitlement.test_entitlement.expires_at if entitlement.test_entitlement else None,
+        entitlement_expires_at=entitlement.test_entitlement.expires_at
+        if entitlement.test_entitlement
+        else None,
         trial_end=trial_end,
         current_period_end=current_period_end,
         trial_days_remaining=trial_days_remaining,
-        stripe_customer_id="" if beta_override else str((subscription.stripe_customer_id if subscription else "") or ""),
-        stripe_subscription_id="" if beta_override else str((subscription.stripe_subscription_id if subscription else "") or ""),
-        last_payment_error=str((subscription.last_payment_error if subscription else None) or billing.get("lastPaymentError") or ""),
-        last_decline_code=str((subscription.last_decline_code if subscription else None) or billing.get("lastDeclineCode") or ""),
-        last_failure_message=str((subscription.last_failure_message if subscription else None) or billing.get("lastFailureMessage") or ""),
-        last_payment_failed_at=(subscription.last_payment_failed_at if subscription else None) or _parse_billing_datetime(billing.get("lastPaymentFailedAt")),
-        transition=transition_out(open_transition(db, workspace_id=workspace.id, subscription_id=str(subscription.stripe_subscription_id or "")) if subscription and not beta_override else None),
+        stripe_customer_id=""
+        if beta_override
+        else str((subscription.stripe_customer_id if subscription else "") or ""),
+        stripe_subscription_id=""
+        if beta_override
+        else str((subscription.stripe_subscription_id if subscription else "") or ""),
+        last_payment_error=str(
+            (subscription.last_payment_error if subscription else None)
+            or billing.get("lastPaymentError")
+            or ""
+        ),
+        last_decline_code=str(
+            (subscription.last_decline_code if subscription else None)
+            or billing.get("lastDeclineCode")
+            or ""
+        ),
+        last_failure_message=str(
+            (subscription.last_failure_message if subscription else None)
+            or billing.get("lastFailureMessage")
+            or ""
+        ),
+        last_payment_failed_at=(
+            subscription.last_payment_failed_at if subscription else None
+        )
+        or _parse_billing_datetime(billing.get("lastPaymentFailedAt")),
+        transition=transition_out(
+            open_transition(
+                db,
+                workspace_id=workspace.id,
+                subscription_id=str(subscription.stripe_subscription_id or ""),
+            )
+            if subscription and not beta_override
+            else None
+        ),
         cancel_at_period_end=bool(billing.get("cancelAtPeriodEnd")),
         limits=limits,
-        usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
+        usage={
+            "leads": usage.leads,
+            "ai_generations": usage.ai_generations,
+            "email_sends": usage.email_sends,
+        },
         sales_employees_used=int(sales_employees_used),
         workspaces_used=int(workspaces_used),
     )
-    set_json(key, output.model_dump(mode="json"), app_settings.cache_billing_ttl_seconds)
+    set_json(
+        key, output.model_dump(mode="json"), app_settings.cache_billing_ttl_seconds
+    )
     return output
 
 
@@ -7025,7 +11931,14 @@ def billing_status(user_id: CurrentUser, db: Session = Depends(get_db)) -> Billi
 def billing_invoices(user_id: CurrentUser, db: Session = Depends(get_db)) -> list[dict]:
     workspace = _current_workspace(db, user_id)
     entitlement = _resolve_billing_entitlement(db, user_id, workspace)
-    customer_id = str((entitlement.subscription.stripe_customer_id if entitlement.subscription else "") or "")
+    customer_id = str(
+        (
+            entitlement.subscription.stripe_customer_id
+            if entitlement.subscription
+            else ""
+        )
+        or ""
+    )
     return list_invoices(customer_id)
 
 
@@ -7038,28 +11951,48 @@ def billing_usage(user_id: CurrentUser, db: Session = Depends(get_db)) -> UsageO
         plan=plan,
         period=usage.period,
         limits=_limits_for_workspace(db, user_id, workspace),
-        usage={"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends},
+        usage={
+            "leads": usage.leads,
+            "ai_generations": usage.ai_generations,
+            "email_sends": usage.email_sends,
+        },
     )
 
 
 @router.post("/billing/catalog")
-def billing_catalog(request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> dict:
+def billing_catalog(
+    request: Request, owner: OwnerUser, db: Session = Depends(get_db)
+) -> dict:
     try:
         catalog = ensure_subscription_catalog()
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    log_event(db, request, owner.user_id, "billing.catalog_synced", {"plans": [item["plan"] for item in catalog]})
+    log_event(
+        db,
+        request,
+        owner.user_id,
+        "billing.catalog_synced",
+        {"plans": [item["plan"] for item in catalog]},
+    )
     db.commit()
     return {"items": catalog}
 
 
 @router.post("/owner/billing/reconcile-cache", response_model=BillingReconcileOut)
-def owner_reconcile_billing_cache(payload: BillingReconcileRequest, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> BillingReconcileOut:
+def owner_reconcile_billing_cache(
+    payload: BillingReconcileRequest,
+    request: Request,
+    owner: OwnerUser,
+    db: Session = Depends(get_db),
+) -> BillingReconcileOut:
     workspace = db.get(Workspace, payload.workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     if workspace.owner_user_id != payload.user_id:
-        raise HTTPException(status_code=403, detail="Billing reconciliation can only target the workspace owner")
+        raise HTTPException(
+            status_code=403,
+            detail="Billing reconciliation can only target the workspace owner",
+        )
     settings = _settings_for_workspace(db, payload.user_id, workspace)
     result = reconcile_app_settings_billing_cache(
         db,
@@ -7071,9 +12004,21 @@ def owner_reconcile_billing_cache(payload: BillingReconcileRequest, request: Req
         reason="owner_manual_billing_cache_reconciliation",
     )
     if payload.dry_run:
-        log_event(db, request, owner.user_id, "owner.billing_cache_reconcile_dry_run", result["audit"])
+        log_event(
+            db,
+            request,
+            owner.user_id,
+            "owner.billing_cache_reconcile_dry_run",
+            result["audit"],
+        )
     else:
-        log_event(db, request, owner.user_id, "owner.billing_cache_reconciled", result["audit"])
+        log_event(
+            db,
+            request,
+            owner.user_id,
+            "owner.billing_cache_reconciled",
+            result["audit"],
+        )
         delete_key(cache_key("billing-status", workspace.id, payload.user_id))
     db.commit()
     audit = result["audit"]
@@ -7091,9 +12036,14 @@ def owner_reconcile_billing_cache(payload: BillingReconcileRequest, request: Req
     )
 
 
-def _lock_test_entitlement_mutation(db: Session, workspace_id: UUID, user_id: str) -> None:
+def _lock_test_entitlement_mutation(
+    db: Session, workspace_id: UUID, user_id: str
+) -> None:
     if db.bind and db.bind.dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"), {"lock_key": f"test-entitlement:{workspace_id}:{user_id}"})
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"test-entitlement:{workspace_id}:{user_id}"},
+        )
 
 
 def _test_entitlement_out(entitlement: TestEntitlement) -> TestEntitlementOut:
@@ -7112,26 +12062,43 @@ def _test_entitlement_out(entitlement: TestEntitlement) -> TestEntitlementOut:
         revoked_by_user_id=entitlement.revoked_by_user_id,
         revoked_by_email=entitlement.revoked_by_email,
         revoke_reason=entitlement.revoke_reason,
-        active=entitlement.revoked_at is None and entitlement.expires_at > datetime.utcnow(),
+        active=entitlement.revoked_at is None
+        and entitlement.expires_at > datetime.utcnow(),
     )
 
 
 @router.post("/owner/test-entitlements", response_model=TestEntitlementOut)
-def owner_grant_test_entitlement(payload: TestEntitlementGrantIn, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> TestEntitlementOut:
+def owner_grant_test_entitlement(
+    payload: TestEntitlementGrantIn,
+    request: Request,
+    owner: OwnerUser,
+    db: Session = Depends(get_db),
+) -> TestEntitlementOut:
     if payload.plan not in PLAN_LIMITS:
         raise HTTPException(status_code=400, detail="Unknown subscription plan")
     if payload.expires_at <= datetime.utcnow():
         raise HTTPException(status_code=422, detail="expires_at must be in the future")
     if payload.expires_at > datetime.utcnow() + timedelta(days=30):
-        raise HTTPException(status_code=422, detail="Test entitlements cannot exceed 30 days")
+        raise HTTPException(
+            status_code=422, detail="Test entitlements cannot exceed 30 days"
+        )
 
     workspace = db.get(Workspace, payload.workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     if workspace.owner_user_id != payload.user_id:
-        raise HTTPException(status_code=403, detail="Test entitlement can only be granted to the target workspace owner")
-    if workspace.owner_user_id == owner.user_id and not payload.allow_system_owner_workspace:
-        raise HTTPException(status_code=403, detail="System owner workspace test entitlement requires explicit confirmation")
+        raise HTTPException(
+            status_code=403,
+            detail="Test entitlement can only be granted to the target workspace owner",
+        )
+    if (
+        workspace.owner_user_id == owner.user_id
+        and not payload.allow_system_owner_workspace
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="System owner workspace test entitlement requires explicit confirmation",
+        )
 
     member = db.scalar(
         select(WorkspaceMember).where(
@@ -7142,14 +12109,20 @@ def owner_grant_test_entitlement(payload: TestEntitlementGrantIn, request: Reque
         )
     )
     if member is None:
-        raise HTTPException(status_code=404, detail="Target workspace owner membership not found")
+        raise HTTPException(
+            status_code=404, detail="Target workspace owner membership not found"
+        )
 
     _lock_test_entitlement_mutation(db, workspace.id, payload.user_id)
     now = datetime.utcnow()
     existing = list(
         db.scalars(
             select(TestEntitlement)
-            .where(TestEntitlement.workspace_id == workspace.id, TestEntitlement.user_id == payload.user_id, TestEntitlement.revoked_at.is_(None))
+            .where(
+                TestEntitlement.workspace_id == workspace.id,
+                TestEntitlement.user_id == payload.user_id,
+                TestEntitlement.revoked_at.is_(None),
+            )
             .order_by(TestEntitlement.granted_at.desc())
         ).all()
     )
@@ -7194,14 +12167,26 @@ def owner_grant_test_entitlement(payload: TestEntitlementGrantIn, request: Reque
         active = _active_test_entitlement(db, payload.user_id, workspace)
         if active:
             return _test_entitlement_out(active)
-        raise HTTPException(status_code=409, detail="Test entitlement grant conflicted with another request") from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Test entitlement grant conflicted with another request",
+        ) from exc
     db.refresh(entitlement)
     delete_key(cache_key("billing-status", workspace.id, payload.user_id))
     return _test_entitlement_out(entitlement)
 
 
-@router.post("/owner/test-entitlements/{entitlement_id}/revoke", response_model=TestEntitlementOut)
-def owner_revoke_test_entitlement(entitlement_id: UUID, payload: TestEntitlementRevokeIn, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> TestEntitlementOut:
+@router.post(
+    "/owner/test-entitlements/{entitlement_id}/revoke",
+    response_model=TestEntitlementOut,
+)
+def owner_revoke_test_entitlement(
+    entitlement_id: UUID,
+    payload: TestEntitlementRevokeIn,
+    request: Request,
+    owner: OwnerUser,
+    db: Session = Depends(get_db),
+) -> TestEntitlementOut:
     entitlement = db.get(TestEntitlement, entitlement_id)
     if entitlement is None:
         raise HTTPException(status_code=404, detail="Test entitlement not found")
@@ -7229,7 +12214,9 @@ def owner_revoke_test_entitlement(entitlement_id: UUID, payload: TestEntitlement
     )
     db.commit()
     db.refresh(entitlement)
-    delete_key(cache_key("billing-status", entitlement.workspace_id, entitlement.user_id))
+    delete_key(
+        cache_key("billing-status", entitlement.workspace_id, entitlement.user_id)
+    )
     return _test_entitlement_out(entitlement)
 
 
@@ -7243,9 +12230,15 @@ OWNER_FEATURE_FLAG_DEFAULTS = {
 
 
 def _owner_feature_flags(settings: AppSettings) -> OwnerFeatureFlagsOut:
-    raw = settings.general.get("owner_feature_flags") if isinstance(settings.general, dict) else {}
+    raw = (
+        settings.general.get("owner_feature_flags")
+        if isinstance(settings.general, dict)
+        else {}
+    )
     flags = {**OWNER_FEATURE_FLAG_DEFAULTS, **(raw if isinstance(raw, dict) else {})}
-    return OwnerFeatureFlagsOut(**{key: bool(flags.get(key)) for key in OWNER_FEATURE_FLAG_DEFAULTS})
+    return OwnerFeatureFlagsOut(
+        **{key: bool(flags.get(key)) for key in OWNER_FEATURE_FLAG_DEFAULTS}
+    )
 
 
 @router.get("/owner/console", response_model=OwnerConsoleOut)
@@ -7253,19 +12246,47 @@ def owner_console(owner: OwnerUser, db: Session = Depends(get_db)) -> OwnerConso
     workspace = _current_workspace(db, owner.user_id)
     settings = _settings_for_workspace(db, owner.user_id, workspace)
     usage = {
-        "leads": int(db.scalar(select(func.coalesce(func.sum(UsageCounter.leads), 0))) or 0),
-        "ai_generations": int(db.scalar(select(func.coalesce(func.sum(UsageCounter.ai_generations), 0))) or 0),
-        "email_sends": int(db.scalar(select(func.coalesce(func.sum(UsageCounter.email_sends), 0))) or 0),
+        "leads": int(
+            db.scalar(select(func.coalesce(func.sum(UsageCounter.leads), 0))) or 0
+        ),
+        "ai_generations": int(
+            db.scalar(select(func.coalesce(func.sum(UsageCounter.ai_generations), 0)))
+            or 0
+        ),
+        "email_sends": int(
+            db.scalar(select(func.coalesce(func.sum(UsageCounter.email_sends), 0))) or 0
+        ),
     }
     subscription_rows = list(db.scalars(select(Subscription)).all())
     subscriptions_by_status: dict[str, int] = {}
     for subscription in subscription_rows:
-        subscriptions_by_status[subscription.status] = subscriptions_by_status.get(subscription.status, 0) + 1
-    revenue_subscription_rows, billing_duplicate_diagnostics = _billing_duplicate_diagnostics(subscription_rows)
-    revenue_won = float(db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(Lead.status == LeadStatus.won)) or 0)
+        subscriptions_by_status[subscription.status] = (
+            subscriptions_by_status.get(subscription.status, 0) + 1
+        )
+    revenue_subscription_rows, billing_duplicate_diagnostics = (
+        _billing_duplicate_diagnostics(subscription_rows)
+    )
+    revenue_won = float(
+        db.scalar(
+            select(func.coalesce(func.sum(Lead.revenue), 0)).where(
+                Lead.status == LeadStatus.won
+            )
+        )
+        or 0
+    )
     active_subscriptions = len(revenue_subscription_rows)
-    mrr = float(sum(PLAN_LIMITS.get(subscription.plan, {}).get("mrr", 0) for subscription in revenue_subscription_rows if subscription.plan in PLAN_LIMITS))
-    logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(25)).all())
+    mrr = float(
+        sum(
+            PLAN_LIMITS.get(subscription.plan, {}).get("mrr", 0)
+            for subscription in revenue_subscription_rows
+            if subscription.plan in PLAN_LIMITS
+        )
+    )
+    logs = list(
+        db.scalars(
+            select(AuditLog).order_by(AuditLog.created_at.desc()).limit(25)
+        ).all()
+    )
     return OwnerConsoleOut(
         executive_overview={
             "status": "operational",
@@ -7288,23 +12309,44 @@ def owner_console(owner: OwnerUser, db: Session = Depends(get_db)) -> OwnerConso
         product_analytics={
             "campaigns": db.scalar(select(func.count()).select_from(Campaign)) or 0,
             "emails": db.scalar(select(func.count()).select_from(EmailMessage)) or 0,
-            "ai_employees": db.scalar(select(func.count()).select_from(AISalesEmployee)) or 0,
+            "ai_employees": db.scalar(select(func.count()).select_from(AISalesEmployee))
+            or 0,
         },
-        error_monitoring={"open_errors": 0, "last_status": "No blocking errors recorded"},
-        system_health={"api": "ok", "database": "ok", "webhooks": "ok", "email": "configured" if get_app_settings().resend_api_key else "not configured"},
+        error_monitoring={
+            "open_errors": 0,
+            "last_status": "No blocking errors recorded",
+        },
+        system_health={
+            "api": "ok",
+            "database": "ok",
+            "webhooks": "ok",
+            "email": "configured"
+            if get_app_settings().resend_api_key
+            else "not configured",
+        },
         feature_flags=_owner_feature_flags(settings),
         audit_logs=logs,
     )
 
 
 @router.patch("/owner/feature-flags", response_model=OwnerFeatureFlagsOut)
-def owner_feature_flags(payload: OwnerFeatureFlagsUpdate, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> OwnerFeatureFlagsOut:
+def owner_feature_flags(
+    payload: OwnerFeatureFlagsUpdate,
+    request: Request,
+    owner: OwnerUser,
+    db: Session = Depends(get_db),
+) -> OwnerFeatureFlagsOut:
     workspace = _current_workspace(db, owner.user_id)
     settings = _settings_for_workspace(db, owner.user_id, workspace)
     current = _owner_feature_flags(settings).model_dump()
     updates = payload.model_dump(exclude_none=True)
-    settings.general = {**(settings.general or {}), "owner_feature_flags": {**current, **updates}}
-    log_event(db, request, owner.user_id, "owner.feature_flags_updated", {"flags": updates})
+    settings.general = {
+        **(settings.general or {}),
+        "owner_feature_flags": {**current, **updates},
+    }
+    log_event(
+        db, request, owner.user_id, "owner.feature_flags_updated", {"flags": updates}
+    )
     db.commit()
     db.refresh(settings)
     return _owner_feature_flags(settings)
@@ -7323,23 +12365,50 @@ QUALITY_MODULES = {
 }
 
 
-def _quality_check(name: str, module: str, status: str, severity: str, summary: str, evidence: Optional[dict[str, Any]] = None, suggested_fix: str = "") -> QualityCheckOut:
-    return QualityCheckOut(name=name, module=module, status=status, severity=severity, summary=summary, evidence=evidence or {}, suggested_fix=suggested_fix)
+def _quality_check(
+    name: str,
+    module: str,
+    status: str,
+    severity: str,
+    summary: str,
+    evidence: Optional[dict[str, Any]] = None,
+    suggested_fix: str = "",
+) -> QualityCheckOut:
+    return QualityCheckOut(
+        name=name,
+        module=module,
+        status=status,
+        severity=severity,
+        summary=summary,
+        evidence=evidence or {},
+        suggested_fix=suggested_fix,
+    )
 
 
 def _quality_fingerprint(check: QualityCheckOut) -> str:
     return f"{check.module}:{check.name}".lower().replace(" ", "_")
 
 
-def _upsert_quality_issue(db: Session, check: QualityCheckOut, owner_email: str) -> Optional[QualityIssue]:
+def _upsert_quality_issue(
+    db: Session, check: QualityCheckOut, owner_email: str
+) -> Optional[QualityIssue]:
     if check.status == "healthy":
         return None
     fingerprint = _quality_fingerprint(check)
-    issue = db.scalar(select(QualityIssue).where(QualityIssue.fingerprint == fingerprint))
+    issue = db.scalar(
+        select(QualityIssue).where(QualityIssue.fingerprint == fingerprint)
+    )
     if issue is None:
-        issue = QualityIssue(fingerprint=fingerprint, title=check.name, module=check.module, created_by=owner_email)
+        issue = QualityIssue(
+            fingerprint=fingerprint,
+            title=check.name,
+            module=check.module,
+            created_by=owner_email,
+        )
     issue.severity = check.severity
-    issue.status = "open" if check.status in {"degraded", "broken", "blocked"} else check.status
+    issue.status = (
+        "open" if check.status in {"degraded", "broken", "blocked"} else check.status
+    )
     issue.affected_area = check.module
     issue.root_cause = check.summary
     issue.suggested_fix = check.suggested_fix
@@ -7364,39 +12433,87 @@ def _quality_checks(db: Session) -> list[QualityCheckOut]:
     settings = get_app_settings()
     checks: list[QualityCheckOut] = []
 
-    sentry_related_logs = int(db.scalar(select(func.count()).select_from(AuditLog).where(or_(AuditLog.action.ilike("%error%"), AuditLog.action.ilike("%exception%"), AuditLog.action.ilike("%failed%")))) or 0)
-    checks.append(_quality_check(
-        "Error issue intake",
-        QUALITY_MODULES["error_doctor"],
-        "healthy" if settings.sentry_dsn else "blocked",
-        "medium" if settings.sentry_dsn else "high",
-        "Error monitoring is configured and app-side events can be grouped." if settings.sentry_dsn else "Error monitoring is not loaded, so production exceptions cannot be sent to monitoring.",
-        {"error_monitoring_loaded": bool(settings.sentry_dsn), "recent_error_like_audit_logs": sentry_related_logs},
-        "Load backend error monitoring and keep service errors tagged with endpoint, workspace and lead context.",
-    ))
+    sentry_related_logs = int(
+        db.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                or_(
+                    AuditLog.action.ilike("%error%"),
+                    AuditLog.action.ilike("%exception%"),
+                    AuditLog.action.ilike("%failed%"),
+                )
+            )
+        )
+        or 0
+    )
+    checks.append(
+        _quality_check(
+            "Error issue intake",
+            QUALITY_MODULES["error_doctor"],
+            "healthy" if settings.sentry_dsn else "blocked",
+            "medium" if settings.sentry_dsn else "high",
+            "Error monitoring is configured and app-side events can be grouped."
+            if settings.sentry_dsn
+            else "Error monitoring is not loaded, so production exceptions cannot be sent to monitoring.",
+            {
+                "error_monitoring_loaded": bool(settings.sentry_dsn),
+                "recent_error_like_audit_logs": sentry_related_logs,
+            },
+            "Load backend error monitoring and keep service errors tagged with endpoint, workspace and lead context.",
+        )
+    )
 
     provider_flags = {
         "Lead search": bool(settings.google_maps_api_key),
         "Email verification": bool(settings.hunter_api_key),
         "AI analysis": bool(settings.openai_api_key),
         "Email sending": bool(settings.resend_api_key and settings.resend_from_email),
-        "Billing": bool(settings.stripe_secret_key and settings.stripe_webhook_secret and settings.stripe_starter_price_id and settings.stripe_pro_price_id and settings.stripe_agency_price_id),
-        "Authentication": bool(settings.clerk_secret_key and settings.clerk_secret_key != "dev" and settings.clerk_jwt_issuer),
+        "Billing": bool(
+            settings.stripe_secret_key
+            and settings.stripe_webhook_secret
+            and settings.stripe_starter_price_id
+            and settings.stripe_pro_price_id
+            and settings.stripe_agency_price_id
+        ),
+        "Authentication": bool(
+            settings.clerk_secret_key
+            and settings.clerk_secret_key != "dev"
+            and settings.clerk_jwt_issuer
+        ),
         "Product analytics": True,
         "Error monitoring": bool(settings.sentry_dsn),
     }
     missing_integrations = [name for name, ok in provider_flags.items() if not ok]
-    checks.append(_quality_check(
-        "Production integration monitor",
-        QUALITY_MODULES["integration_monitor"],
-        "healthy" if not missing_integrations else "degraded",
-        "high" if {"Lead search", "Email verification", "AI analysis", "Email sending", "Billing", "Authentication"} & set(missing_integrations) else "medium",
-        "All critical connections are configured." if not missing_integrations else f"Missing or incomplete connection: {', '.join(missing_integrations)}.",
-        {"providers": provider_flags},
-        "Update the missing production settings, restart the affected service, then run the quality check again.",
-    ))
+    checks.append(
+        _quality_check(
+            "Production integration monitor",
+            QUALITY_MODULES["integration_monitor"],
+            "healthy" if not missing_integrations else "degraded",
+            "high"
+            if {
+                "Lead search",
+                "Email verification",
+                "AI analysis",
+                "Email sending",
+                "Billing",
+                "Authentication",
+            }
+            & set(missing_integrations)
+            else "medium",
+            "All critical connections are configured."
+            if not missing_integrations
+            else f"Missing or incomplete connection: {', '.join(missing_integrations)}.",
+            {"providers": provider_flags},
+            "Update the missing production settings, restart the affected service, then run the quality check again.",
+        )
+    )
 
-    last_logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(200)).all())
+    last_logs = list(
+        db.scalars(
+            select(AuditLog).order_by(AuditLog.created_at.desc()).limit(200)
+        ).all()
+    )
     status_spikes: dict[str, int] = {"401": 0, "403": 0, "404": 0, "500": 0}
     provider_failures: dict[str, int] = {}
     for log in last_logs:
@@ -7408,47 +12525,114 @@ def _quality_checks(db: Session) -> list[QualityCheckOut]:
         if provider and ("failed" in log.action or status_code.startswith(("4", "5"))):
             provider_failures[provider] = provider_failures.get(provider, 0) + 1
     noisy_statuses = {key: value for key, value in status_spikes.items() if value >= 5}
-    checks.append(_quality_check(
-        "Log spike analyzer",
-        QUALITY_MODULES["log_analyzer"],
-        "healthy" if not noisy_statuses and not provider_failures else "degraded",
-        "high" if status_spikes["500"] >= 5 else "medium",
-        "No API error spikes found in recent audit logs." if not noisy_statuses and not provider_failures else "Recent logs show repeated API/provider failures.",
-        {"status_spikes": status_spikes, "provider_failures": provider_failures, "sample_size": len(last_logs)},
-        "Inspect the affected endpoint/provider logs, add a regression test, and keep the user-facing error specific.",
-    ))
+    checks.append(
+        _quality_check(
+            "Log spike analyzer",
+            QUALITY_MODULES["log_analyzer"],
+            "healthy" if not noisy_statuses and not provider_failures else "degraded",
+            "high" if status_spikes["500"] >= 5 else "medium",
+            "No API error spikes found in recent audit logs."
+            if not noisy_statuses and not provider_failures
+            else "Recent logs show repeated API/provider failures.",
+            {
+                "status_spikes": status_spikes,
+                "provider_failures": provider_failures,
+                "sample_size": len(last_logs),
+            },
+            "Inspect the affected endpoint/provider logs, add a regression test, and keep the user-facing error specific.",
+        )
+    )
 
-    leads_without_companies = int(db.scalar(select(func.count()).select_from(Lead).outerjoin(Company, Company.lead_id == Lead.id).where(Company.id.is_(None))) or 0)
-    contacts_without_leads = int(db.scalar(select(func.count()).select_from(Contact).where(Contact.lead_id.is_(None))) or 0)
-    emails_without_leads = int(db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.lead_id.is_(None), EmailMessage.direction == "outbound")) or 0)
+    leads_without_companies = int(
+        db.scalar(
+            select(func.count())
+            .select_from(Lead)
+            .outerjoin(Company, Company.lead_id == Lead.id)
+            .where(Company.id.is_(None))
+        )
+        or 0
+    )
+    contacts_without_leads = int(
+        db.scalar(
+            select(func.count()).select_from(Contact).where(Contact.lead_id.is_(None))
+        )
+        or 0
+    )
+    emails_without_leads = int(
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(EmailMessage.lead_id.is_(None), EmailMessage.direction == "outbound")
+        )
+        or 0
+    )
     duplicate_place_ids = _count_grouped_duplicates(db, Company.place_id)
     duplicate_websites = _count_grouped_duplicates(db, Company.website)
     duplicate_name_city = _count_grouped_duplicates(db, Company.name, Company.city)
-    broken_stages = int(db.scalar(select(func.count()).select_from(Company).where(Company.crm_stage.not_in(CRM_STAGES))) or 0)
-    data_defects = leads_without_companies + contacts_without_leads + emails_without_leads + duplicate_place_ids + duplicate_websites + duplicate_name_city + broken_stages
-    checks.append(_quality_check(
-        "CRM data consistency",
-        QUALITY_MODULES["data_consistency"],
-        "healthy" if data_defects == 0 else "degraded",
-        "high" if leads_without_companies or broken_stages else "medium",
-        "CRM records are linked and pipeline stages are valid." if data_defects == 0 else "CRM has orphaned records, duplicates, or invalid pipeline stages.",
-        {
-            "leads_without_companies": leads_without_companies,
-            "contacts_without_leads": contacts_without_leads,
-            "outbound_emails_without_leads": emails_without_leads,
-            "duplicate_place_ids": duplicate_place_ids,
-            "duplicate_websites": duplicate_websites,
-            "duplicate_company_city": duplicate_name_city,
-            "broken_pipeline_stages": broken_stages,
-        },
-        "Run a CRM repair migration that links missing companies, deduplicates by place_id/website/name+city, and normalizes stages.",
-    ))
+    broken_stages = int(
+        db.scalar(
+            select(func.count())
+            .select_from(Company)
+            .where(Company.crm_stage.not_in(CRM_STAGES))
+        )
+        or 0
+    )
+    data_defects = (
+        leads_without_companies
+        + contacts_without_leads
+        + emails_without_leads
+        + duplicate_place_ids
+        + duplicate_websites
+        + duplicate_name_city
+        + broken_stages
+    )
+    checks.append(
+        _quality_check(
+            "CRM data consistency",
+            QUALITY_MODULES["data_consistency"],
+            "healthy" if data_defects == 0 else "degraded",
+            "high" if leads_without_companies or broken_stages else "medium",
+            "CRM records are linked and pipeline stages are valid."
+            if data_defects == 0
+            else "CRM has orphaned records, duplicates, or invalid pipeline stages.",
+            {
+                "leads_without_companies": leads_without_companies,
+                "contacts_without_leads": contacts_without_leads,
+                "outbound_emails_without_leads": emails_without_leads,
+                "duplicate_place_ids": duplicate_place_ids,
+                "duplicate_websites": duplicate_websites,
+                "duplicate_company_city": duplicate_name_city,
+                "broken_pipeline_stages": broken_stages,
+            },
+            "Run a CRM repair migration that links missing companies, deduplicates by place_id/website/name+city, and normalizes stages.",
+        )
+    )
 
     lead_count = int(db.scalar(select(func.count()).select_from(Lead)) or 0)
-    analyzed_count = int(db.scalar(select(func.count()).select_from(WebsiteAnalysis)) or 0)
-    draft_count = int(db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.delivery_status == "draft")) or 0)
+    analyzed_count = int(
+        db.scalar(select(func.count()).select_from(WebsiteAnalysis)) or 0
+    )
+    draft_count = int(
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(EmailMessage.delivery_status == "draft")
+        )
+        or 0
+    )
     campaign_count = int(db.scalar(select(func.count()).select_from(Campaign)) or 0)
-    sent_count = int(db.scalar(select(func.count()).select_from(EmailMessage).where(EmailMessage.delivery_status.in_(["sent", "delivered", "opened", "replied"]))) or 0)
+    sent_count = int(
+        db.scalar(
+            select(func.count())
+            .select_from(EmailMessage)
+            .where(
+                EmailMessage.delivery_status.in_(
+                    ["sent", "delivered", "opened", "replied"]
+                )
+            )
+        )
+        or 0
+    )
     flow_blockers = []
     if lead_count and not analyzed_count:
         flow_blockers.append("website analysis")
@@ -7456,25 +12640,40 @@ def _quality_checks(db: Session) -> list[QualityCheckOut]:
         flow_blockers.append("AI email draft")
     if draft_count and not campaign_count:
         flow_blockers.append("campaign")
-    checks.append(_quality_check(
-        "Daily production QA flow",
-        QUALITY_MODULES["production_qa"],
-        "healthy" if not flow_blockers else "degraded",
-        "high" if flow_blockers else "low",
-        "Core workflow has data through the customer path." if not flow_blockers else f"Core workflow appears incomplete at: {', '.join(flow_blockers)}.",
-        {"leads": lead_count, "website_analyses": analyzed_count, "draft_emails": draft_count, "campaigns": campaign_count, "sent_emails": sent_count},
-        "Run the end-to-end QA flow with a safe test account and create regression coverage for the first broken step.",
-    ))
+    checks.append(
+        _quality_check(
+            "Daily production QA flow",
+            QUALITY_MODULES["production_qa"],
+            "healthy" if not flow_blockers else "degraded",
+            "high" if flow_blockers else "low",
+            "Core workflow has data through the customer path."
+            if not flow_blockers
+            else f"Core workflow appears incomplete at: {', '.join(flow_blockers)}.",
+            {
+                "leads": lead_count,
+                "website_analyses": analyzed_count,
+                "draft_emails": draft_count,
+                "campaigns": campaign_count,
+                "sent_emails": sent_count,
+            },
+            "Run the end-to-end QA flow with a safe test account and create regression coverage for the first broken step.",
+        )
+    )
 
-    checks.append(_quality_check(
-        "UX bug scanner coverage",
-        QUALITY_MODULES["ux_bug_finder"],
-        "healthy",
-        "low",
-        "Playwright covers desktop and mobile dashboard routes, lead workflow, campaign workflow, and dashboard failure resilience.",
-        {"desktop_mobile_routes_covered": True, "horizontal_overflow_check": "covered by mobile route smoke tests"},
-        "Keep adding Playwright assertions for every visual regression or duplicate UI block found in production.",
-    ))
+    checks.append(
+        _quality_check(
+            "UX bug scanner coverage",
+            QUALITY_MODULES["ux_bug_finder"],
+            "healthy",
+            "low",
+            "Playwright covers desktop and mobile dashboard routes, lead workflow, campaign workflow, and dashboard failure resilience.",
+            {
+                "desktop_mobile_routes_covered": True,
+                "horizontal_overflow_check": "covered by mobile route smoke tests",
+            },
+            "Keep adding Playwright assertions for every visual regression or duplicate UI block found in production.",
+        )
+    )
 
     security_gaps = []
     if settings.debug:
@@ -7485,15 +12684,28 @@ def _quality_checks(db: Session) -> list[QualityCheckOut]:
         security_gaps.append("email webhook signature secret missing")
     if settings.encryption_key == "replace-with-32-byte-url-safe-key":
         security_gaps.append("default encryption key")
-    checks.append(_quality_check(
-        "Security guardrails",
-        QUALITY_MODULES["security_checker"],
-        "healthy" if not security_gaps else "broken",
-        "critical" if settings.debug or settings.encryption_key == "replace-with-32-byte-url-safe-key" else "high",
-        "Security guardrails are configured." if not security_gaps else f"Security configuration needs attention: {', '.join(security_gaps)}.",
-        {"debug": settings.debug, "stripe_webhook_secret": bool(settings.stripe_webhook_secret), "resend_webhook_secret": bool(settings.resend_webhook_secret), "encryption_key_custom": settings.encryption_key != "replace-with-32-byte-url-safe-key"},
-        "Disable debug, configure webhook signing secrets, rotate the encryption key, and rerun auth/workspace isolation tests.",
-    ))
+    checks.append(
+        _quality_check(
+            "Security guardrails",
+            QUALITY_MODULES["security_checker"],
+            "healthy" if not security_gaps else "broken",
+            "critical"
+            if settings.debug
+            or settings.encryption_key == "replace-with-32-byte-url-safe-key"
+            else "high",
+            "Security guardrails are configured."
+            if not security_gaps
+            else f"Security configuration needs attention: {', '.join(security_gaps)}.",
+            {
+                "debug": settings.debug,
+                "stripe_webhook_secret": bool(settings.stripe_webhook_secret),
+                "resend_webhook_secret": bool(settings.resend_webhook_secret),
+                "encryption_key_custom": settings.encryption_key
+                != "replace-with-32-byte-url-safe-key",
+            },
+            "Disable debug, configure webhook signing secrets, rotate the encryption key, and rerun auth/workspace isolation tests.",
+        )
+    )
 
     deployment_gate = {
         "backend_lint": "required",
@@ -7505,15 +12717,17 @@ def _quality_checks(db: Session) -> list[QualityCheckOut]:
         "critical_sentry_errors": "must_be_zero",
         "health_checks": "required",
     }
-    checks.append(_quality_check(
-        "Deployment gate",
-        QUALITY_MODULES["deployment_gate"],
-        "healthy",
-        "medium",
-        "Deployments must pass lint, tests, build, E2E, Sentry review, and health checks before approval.",
-        deployment_gate,
-        "Block release approval until every gate is green and the owner approves deployment.",
-    ))
+    checks.append(
+        _quality_check(
+            "Deployment gate",
+            QUALITY_MODULES["deployment_gate"],
+            "healthy",
+            "medium",
+            "Deployments must pass lint, tests, build, E2E, Sentry review, and health checks before approval.",
+            deployment_gate,
+            "Block release approval until every gate is green and the owner approves deployment.",
+        )
+    )
 
     return checks
 
@@ -7527,57 +12741,130 @@ def _quality_score(checks: list[QualityCheckOut]) -> int:
     return max(0, score)
 
 
-def _quality_summary(db: Session, owner_email: str, persist: bool) -> QualityDashboardOut:
+def _quality_summary(
+    db: Session, owner_email: str, persist: bool
+) -> QualityDashboardOut:
     checks = _quality_checks(db)
     for check in checks:
         if check.status != "healthy":
             _upsert_quality_issue(db, check, owner_email)
     score = _quality_score(checks)
     status = "healthy" if score >= 90 else "degraded" if score >= 70 else "broken"
-    summary = "Quality system is healthy." if status == "healthy" else "Quality system found issues that need owner review before deploy."
+    summary = (
+        "Quality system is healthy."
+        if status == "healthy"
+        else "Quality system found issues that need owner review before deploy."
+    )
     if persist:
-        db.add(QualityCheckRun(triggered_by=owner_email, health_score=score, status=status, summary=summary, checks_json={"checks": [check.model_dump() for check in checks]}))
+        db.add(
+            QualityCheckRun(
+                triggered_by=owner_email,
+                health_score=score,
+                status=status,
+                summary=summary,
+                checks_json={"checks": [check.model_dump() for check in checks]},
+            )
+        )
         db.commit()
-    open_issues = list(db.scalars(select(QualityIssue).where(QualityIssue.status == "open").order_by(QualityIssue.created_at.desc()).limit(50)).all())
-    tasks = list(db.scalars(select(QualityRepairTask).order_by(QualityRepairTask.created_at.desc()).limit(25)).all())
-    last_run = db.scalar(select(QualityCheckRun).order_by(QualityCheckRun.created_at.desc()).limit(1))
+    open_issues = list(
+        db.scalars(
+            select(QualityIssue)
+            .where(QualityIssue.status == "open")
+            .order_by(QualityIssue.created_at.desc())
+            .limit(50)
+        ).all()
+    )
+    tasks = list(
+        db.scalars(
+            select(QualityRepairTask)
+            .order_by(QualityRepairTask.created_at.desc())
+            .limit(25)
+        ).all()
+    )
+    last_run = db.scalar(
+        select(QualityCheckRun).order_by(QualityCheckRun.created_at.desc()).limit(1)
+    )
     failed = [check for check in checks if check.status != "healthy"]
     return QualityDashboardOut(
         health_score=score,
         status=status,
         summary=summary,
-        deployment_gate=next((check.evidence for check in checks if check.name == "Deployment gate"), {}),
+        deployment_gate=next(
+            (check.evidence for check in checks if check.name == "Deployment gate"), {}
+        ),
         checks=checks,
         open_bugs=open_issues,
         repair_tasks=tasks,
-        sentry_issues=[issue.evidence_json for issue in open_issues if issue.module == QUALITY_MODULES["error_doctor"]],
-        failed_integrations=[check for check in checks if check.module == QUALITY_MODULES["integration_monitor"] and check.status != "healthy"],
-        failed_tests=[check for check in checks if check.module == QUALITY_MODULES["deployment_gate"] and check.status != "healthy"],
-        broken_flows=[check for check in checks if check.module == QUALITY_MODULES["production_qa"] and check.status != "healthy"],
-        suggested_fixes=[check.suggested_fix for check in failed if check.suggested_fix],
+        sentry_issues=[
+            issue.evidence_json
+            for issue in open_issues
+            if issue.module == QUALITY_MODULES["error_doctor"]
+        ],
+        failed_integrations=[
+            check
+            for check in checks
+            if check.module == QUALITY_MODULES["integration_monitor"]
+            and check.status != "healthy"
+        ],
+        failed_tests=[
+            check
+            for check in checks
+            if check.module == QUALITY_MODULES["deployment_gate"]
+            and check.status != "healthy"
+        ],
+        broken_flows=[
+            check
+            for check in checks
+            if check.module == QUALITY_MODULES["production_qa"]
+            and check.status != "healthy"
+        ],
+        suggested_fixes=[
+            check.suggested_fix for check in failed if check.suggested_fix
+        ],
         last_run_at=last_run.created_at if last_run else None,
     )
 
 
 @router.get("/admin/quality", response_model=QualityDashboardOut)
-def admin_quality(owner: OwnerUser, db: Session = Depends(get_db)) -> QualityDashboardOut:
+def admin_quality(
+    owner: OwnerUser, db: Session = Depends(get_db)
+) -> QualityDashboardOut:
     return _quality_summary(db, owner.email, persist=False)
 
 
 @router.post("/admin/quality/run", response_model=QualityDashboardOut)
-def admin_quality_run(request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> QualityDashboardOut:
+def admin_quality_run(
+    request: Request, owner: OwnerUser, db: Session = Depends(get_db)
+) -> QualityDashboardOut:
     result = _quality_summary(db, owner.email, persist=True)
-    log_event(db, request, owner.user_id, "quality.qa_run", {"health_score": result.health_score, "status": result.status})
+    log_event(
+        db,
+        request,
+        owner.user_id,
+        "quality.qa_run",
+        {"health_score": result.health_score, "status": result.status},
+    )
     db.commit()
     return result
 
 
 @router.post("/admin/quality/tasks", response_model=QualityRepairTaskOut)
-def admin_quality_create_task(payload: QualityRepairTaskCreate, request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> QualityRepairTask:
-    issue = db.scalar(select(QualityIssue).where(QualityIssue.fingerprint == payload.fingerprint))
+def admin_quality_create_task(
+    payload: QualityRepairTaskCreate,
+    request: Request,
+    owner: OwnerUser,
+    db: Session = Depends(get_db),
+) -> QualityRepairTask:
+    issue = db.scalar(
+        select(QualityIssue).where(QualityIssue.fingerprint == payload.fingerprint)
+    )
     if issue is None:
         raise HTTPException(status_code=404, detail="Quality issue not found")
-    existing = db.scalar(select(QualityRepairTask).where(QualityRepairTask.issue_id == issue.id, QualityRepairTask.status != "done"))
+    existing = db.scalar(
+        select(QualityRepairTask).where(
+            QualityRepairTask.issue_id == issue.id, QualityRepairTask.status != "done"
+        )
+    )
     if existing:
         return existing
     task = QualityRepairTask(
@@ -7597,7 +12884,17 @@ def admin_quality_create_task(payload: QualityRepairTaskCreate, request: Request
         approval_required=True,
     )
     db.add(task)
-    log_event(db, request, owner.user_id, "quality.repair_task_created", {"issue_id": str(issue.id), "fingerprint": issue.fingerprint, "priority": issue.severity})
+    log_event(
+        db,
+        request,
+        owner.user_id,
+        "quality.repair_task_created",
+        {
+            "issue_id": str(issue.id),
+            "fingerprint": issue.fingerprint,
+            "priority": issue.severity,
+        },
+    )
     db.commit()
     db.refresh(task)
     return task
@@ -7609,13 +12906,24 @@ def admin_summary(owner: OwnerUser, db: Session = Depends(get_db)) -> AdminSumma
     usage = db.scalar(select(func.coalesce(func.sum(UsageCounter.leads), 0))) or 0
     ai = db.scalar(select(func.coalesce(func.sum(UsageCounter.ai_generations), 0))) or 0
     sends = db.scalar(select(func.coalesce(func.sum(UsageCounter.email_sends), 0))) or 0
-    revenue = db.scalar(select(func.coalesce(func.sum(Lead.revenue), 0)).where(Lead.status == LeadStatus.won)) or 0
+    revenue = (
+        db.scalar(
+            select(func.coalesce(func.sum(Lead.revenue), 0)).where(
+                Lead.status == LeadStatus.won
+            )
+        )
+        or 0
+    )
     return AdminSummaryOut(
         users=db.scalar(select(func.count()).select_from(User)) or 0,
         workspaces=db.scalar(select(func.count()).select_from(Workspace)) or 0,
         subscriptions=db.scalar(select(func.count()).select_from(Subscription)) or 0,
         revenue=float(revenue),
-        usage={"leads": int(usage), "ai_generations": int(ai), "email_sends": int(sends)},
+        usage={
+            "leads": int(usage),
+            "ai_generations": int(ai),
+            "email_sends": int(sends),
+        },
         system_health={"api": "ok", "database": "ok", "webhooks": "ok"},
     )
 
@@ -7623,7 +12931,11 @@ def admin_summary(owner: OwnerUser, db: Session = Depends(get_db)) -> AdminSumma
 @router.get("/admin/logs", response_model=list[ActivityOut])
 def admin_logs(owner: OwnerUser, db: Session = Depends(get_db)) -> list[AuditLog]:
     del owner
-    return list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(100)).all())
+    return list(
+        db.scalars(
+            select(AuditLog).order_by(AuditLog.created_at.desc()).limit(100)
+        ).all()
+    )
 
 
 @router.get("/backups/status")
@@ -7634,9 +12946,13 @@ def backup_status(owner: OwnerUser, db: Session = Depends(get_db)) -> dict:
     return {
         "backups_enabled": summary.backups_enabled,
         "provider": summary.provider,
-        "last_backup_time": summary.last_backup_time.isoformat() if summary.last_backup_time else None,
+        "last_backup_time": summary.last_backup_time.isoformat()
+        if summary.last_backup_time
+        else None,
         "last_backup_status": summary.last_backup_status,
-        "next_backup_time": summary.next_backup_time.isoformat() if summary.next_backup_time else None,
+        "next_backup_time": summary.next_backup_time.isoformat()
+        if summary.next_backup_time
+        else None,
         "restore_verified": summary.restore_verified,
         "message": summary.message,
         "latest_backup": {
@@ -7645,16 +12961,28 @@ def backup_status(owner: OwnerUser, db: Session = Depends(get_db)) -> dict:
             "size_bytes": latest.size_bytes,
             "restore_verified": latest.restore_verified,
             "started_at": latest.started_at.isoformat(),
-            "completed_at": latest.completed_at.isoformat() if latest.completed_at else None,
+            "completed_at": latest.completed_at.isoformat()
+            if latest.completed_at
+            else None,
             "error_message": latest.error_message,
-        } if latest else None,
+        }
+        if latest
+        else None,
     }
 
 
 @router.post("/backups/run")
-def backup_run(request: Request, owner: OwnerUser, db: Session = Depends(get_db)) -> dict:
+def backup_run(
+    request: Request, owner: OwnerUser, db: Session = Depends(get_db)
+) -> dict:
     run = run_database_backup(db, triggered_by=owner.email, settings=get_app_settings())
-    log_event(db, request, owner.user_id, "backups.manual_run", {"backup_id": str(run.id), "status": run.status})
+    log_event(
+        db,
+        request,
+        owner.user_id,
+        "backups.manual_run",
+        {"backup_id": str(run.id), "status": run.status},
+    )
     return {
         "id": str(run.id),
         "status": run.status,

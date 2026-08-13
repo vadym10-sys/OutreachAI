@@ -21,7 +21,9 @@ def month_period(now: datetime | None = None) -> str:
     return (now or datetime.utcnow()).strftime("%Y-%m")
 
 
-def plan_limit_error(*, plan: str, metric: str, limit: int, current: int, requested: int) -> HTTPException:
+def plan_limit_error(
+    *, plan: str, metric: str, limit: int, current: int, requested: int
+) -> HTTPException:
     return HTTPException(
         status_code=402,
         detail={
@@ -42,9 +44,17 @@ def _metric_limit(entitlement: BillingEntitlement, metric: str) -> int:
     return int(entitlement.limits[metric])
 
 
-def usage_for_workspace(db: Session, workspace: Workspace, *, period: str | None = None, for_update: bool = False) -> UsageCounter:
+def usage_for_workspace(
+    db: Session,
+    workspace: Workspace,
+    *,
+    period: str | None = None,
+    for_update: bool = False,
+) -> UsageCounter:
     target_period = period or month_period()
-    stmt = select(UsageCounter).where(UsageCounter.workspace_id == workspace.id, UsageCounter.period == target_period)
+    stmt = select(UsageCounter).where(
+        UsageCounter.workspace_id == workspace.id, UsageCounter.period == target_period
+    )
     if for_update:
         stmt = stmt.with_for_update()
     usage = db.scalar(stmt)
@@ -56,7 +66,10 @@ def usage_for_workspace(db: Session, workspace: Workspace, *, period: str | None
         db.flush()
     except IntegrityError:
         db.rollback()
-        stmt = select(UsageCounter).where(UsageCounter.workspace_id == workspace.id, UsageCounter.period == target_period)
+        stmt = select(UsageCounter).where(
+            UsageCounter.workspace_id == workspace.id,
+            UsageCounter.period == target_period,
+        )
         if for_update:
             stmt = stmt.with_for_update()
         usage = db.scalar(stmt)
@@ -65,7 +78,9 @@ def usage_for_workspace(db: Session, workspace: Workspace, *, period: str | None
     return usage
 
 
-def check_usage_available(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> BillingEntitlement:
+def check_usage_available(
+    db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1
+) -> BillingEntitlement:
     entitlement = resolve_billing_entitlement(db, user_id, workspace)
     limit = _metric_limit(entitlement, metric)
     if limit <= 0:
@@ -73,11 +88,19 @@ def check_usage_available(db: Session, user_id: str, workspace: Workspace, metri
     usage = usage_for_workspace(db, workspace)
     current = int(getattr(usage, metric) or 0)
     if current + amount > limit:
-        raise plan_limit_error(plan=entitlement.plan, metric=metric, limit=limit, current=current, requested=amount)
+        raise plan_limit_error(
+            plan=entitlement.plan,
+            metric=metric,
+            limit=limit,
+            current=current,
+            requested=amount,
+        )
     return entitlement
 
 
-def increment_usage_after_success(db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1) -> UsageCounter:
+def increment_usage_after_success(
+    db: Session, user_id: str, workspace: Workspace, metric: str, amount: int = 1
+) -> UsageCounter:
     lock_key = f"{workspace.id}:{month_period()}:{metric}"
     with _usage_locks[lock_key]:
         entitlement = resolve_billing_entitlement(db, user_id, workspace)
@@ -85,7 +108,13 @@ def increment_usage_after_success(db: Session, user_id: str, workspace: Workspac
         usage = usage_for_workspace(db, workspace, for_update=True)
         current = int(getattr(usage, metric) or 0)
         if limit > 0 and current + amount > limit:
-            raise plan_limit_error(plan=entitlement.plan, metric=metric, limit=limit, current=current, requested=amount)
+            raise plan_limit_error(
+                plan=entitlement.plan,
+                metric=metric,
+                limit=limit,
+                current=current,
+                requested=amount,
+            )
         setattr(usage, metric, current + amount)
         usage.updated_at = datetime.utcnow()
         db.add(usage)
@@ -94,4 +123,8 @@ def increment_usage_after_success(db: Session, user_id: str, workspace: Workspac
 
 
 def usage_payload(usage: UsageCounter) -> dict[str, Any]:
-    return {"leads": usage.leads, "ai_generations": usage.ai_generations, "email_sends": usage.email_sends}
+    return {
+        "leads": usage.leads,
+        "ai_generations": usage.ai_generations,
+        "email_sends": usage.email_sends,
+    }
