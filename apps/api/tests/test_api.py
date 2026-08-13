@@ -6703,6 +6703,7 @@ def test_workspace_app_internal_smoke_send_confirmation_audit_is_single_on_uncer
                 AuditLog.action == "email.send_confirmation_pending",
                 AuditLog.workspace_id == saved_email.workspace_id,
                 AuditLog.metadata_json["email_id"].as_string() == email["id"],
+                AuditLog.metadata_json["lead_id"].as_string().is_(None),
             )
         ) == 1
 
