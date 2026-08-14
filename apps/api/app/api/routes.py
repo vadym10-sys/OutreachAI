@@ -1099,6 +1099,153 @@ def _gmail_access_token_from_sender(sender: dict[str, Any]) -> str:
     return token
 
 
+def _gmail_reply_sync_recipient(email: EmailMessage, lead: Lead) -> str:
+    lead_email = _extract_email(lead.email)
+    if lead_email:
+        return lead_email
+    return _extract_email(email.recipient_email)
+
+
+def _gmail_message_headers(message: dict[str, Any]) -> dict[str, str]:
+    payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+    return {
+        str(item.get("name") or "").lower(): str(item.get("value") or "")
+        for item in payload.get("headers", [])
+        if isinstance(item, dict)
+    }
+
+
+def _gmail_message_is_outbound(
+    message: dict[str, Any],
+    *,
+    outbound_message_id: str,
+    sender_email: str,
+    reply_to: str,
+) -> bool:
+    message_id = str(message.get("id") or "").strip()
+    if outbound_message_id and message_id == outbound_message_id:
+        return True
+    labels = {
+        str(label or "").strip().upper()
+        for label in message.get("labelIds", [])
+        if str(label or "").strip()
+    }
+    if labels.intersection({"SENT", "DRAFT"}):
+        return True
+    from_email = _extract_email(parseaddr(_gmail_message_headers(message).get("from", ""))[1])
+    return bool(from_email and from_email in {sender_email, reply_to})
+
+
+def _gmail_message_sent_after_outbound(
+    message: dict[str, Any], sent_at: datetime | None
+) -> bool:
+    if sent_at is None:
+        return True
+    internal_date = str(message.get("internalDate") or "")
+    if not internal_date.isdigit():
+        return True
+    return datetime.utcfromtimestamp(int(internal_date) / 1000) >= sent_at
+
+
+def _gmail_reply_from_thread(
+    thread_messages: list[Any],
+    *,
+    provider_thread_id: str,
+    outbound_message_id: str,
+    sent_at: datetime | None,
+    recipient_email: str,
+    sender_email: str,
+    reply_to: str,
+) -> tuple[dict[str, Any], str]:
+    for thread_message in reversed(
+        [item for item in thread_messages if isinstance(item, dict)]
+    ):
+        gmail_message_id = str(thread_message.get("id") or "").strip()
+        if not gmail_message_id:
+            continue
+        message_thread_id = str(thread_message.get("threadId") or "").strip()
+        if (
+            provider_thread_id
+            and message_thread_id
+            and message_thread_id != provider_thread_id
+        ):
+            continue
+        if _gmail_message_is_outbound(
+            thread_message,
+            outbound_message_id=outbound_message_id,
+            sender_email=sender_email,
+            reply_to=reply_to,
+        ):
+            continue
+        if not _gmail_message_sent_after_outbound(thread_message, sent_at):
+            continue
+        headers = _gmail_message_headers(thread_message)
+        from_email = _extract_email(parseaddr(headers.get("from", ""))[1])
+        if from_email != recipient_email:
+            continue
+        return thread_message, gmail_message_id
+    return {}, ""
+
+
+def _gmail_inbound_reply_exists(
+    db: Session, workspace: Workspace, message_id: str
+) -> bool:
+    if not message_id:
+        return False
+    return (
+        db.scalar(
+            select(EmailMessage.id).where(
+                EmailMessage.workspace_id == workspace.id,
+                EmailMessage.direction == "inbound",
+                EmailMessage.provider_message_id == message_id,
+            )
+        )
+        is not None
+    )
+
+
+def _record_gmail_inbound_reply(
+    db: Session,
+    *,
+    workspace: Workspace,
+    email: EmailMessage,
+    lead: Lead,
+    message_id: str,
+    provider_thread_id: str,
+    snippet: str,
+    category: str,
+) -> None:
+    if _gmail_inbound_reply_exists(db, workspace, message_id):
+        return
+    db.add(
+        EmailMessage(
+            user_id=email.user_id,
+            workspace_id=workspace.id,
+            campaign_id=email.campaign_id,
+            lead_id=lead.id,
+            direction="inbound",
+            subject=f"Re: {email.subject}",
+            recipient_email=_gmail_reply_sync_recipient(email, lead) or None,
+            preview=snippet[:240],
+            body=snippet,
+            provider_message_id=message_id,
+            delivery_status="received",
+            reply_assistant={
+                "classification": category,
+                "source": "gmail_sync",
+                "gmail_message_id": message_id,
+            },
+            tags={
+                "category": category,
+                "source": "gmail_sync",
+                "provider_thread_id": provider_thread_id,
+                "gmail_message_id": message_id,
+                "outbound_email_id": str(email.id),
+            },
+        )
+    )
+
+
 def _email_domain(value: str | None) -> str:
     email = _extract_email(value)
     if "@" not in email:
@@ -10443,69 +10590,45 @@ def sync_gmail_replies(
         headers={"Authorization": f"Bearer {token}"},
     ) as client:
         for email in sent_emails:
-            lead = db.get(Lead, email.lead_id) if email.lead_id else None
-            if not lead or not lead.email:
+            lead = (
+                db.scalar(
+                    select(Lead).where(
+                        Lead.id == email.lead_id,
+                        Lead.workspace_id == workspace.id,
+                        Lead.user_id == user_id,
+                    )
+                )
+                if email.lead_id
+                else None
+            )
+            if not lead:
                 continue
-            message: dict[str, Any] = {}
+            recipient_email = _gmail_reply_sync_recipient(email, lead)
+            if not recipient_email:
+                continue
             message_id = ""
             tags = email.tags if isinstance(email.tags, dict) else {}
             provider_thread_id = str(tags.get("provider_thread_id") or "").strip()
-            if provider_thread_id:
-                thread_response = client.get(
-                    f"{GMAIL_MESSAGES_URL.rsplit('/', 1)[0]}/threads/{provider_thread_id}",
-                    params={"format": "full"},
-                )
-                thread_response.raise_for_status()
-                thread_messages = thread_response.json().get("messages") or []
-                for thread_message in reversed(
-                    [item for item in thread_messages if isinstance(item, dict)]
-                ):
-                    payload = (
-                        thread_message.get("payload")
-                        if isinstance(thread_message.get("payload"), dict)
-                        else {}
-                    )
-                    headers = {
-                        str(item.get("name") or "").lower(): str(
-                            item.get("value") or ""
-                        )
-                        for item in payload.get("headers", [])
-                        if isinstance(item, dict)
-                    }
-                    from_email = _extract_email(parseaddr(headers.get("from", ""))[1])
-                    internal_date = str(thread_message.get("internalDate") or "")
-                    sent_after_outbound = (
-                        not email.sent_at
-                        or not internal_date.isdigit()
-                        or datetime.utcfromtimestamp(int(internal_date) / 1000)
-                        >= email.sent_at
-                    )
-                    if (
-                        from_email == _extract_email(lead.email)
-                        and str(thread_message.get("id") or "")
-                        != str(email.provider_message_id or "")
-                        and sent_after_outbound
-                    ):
-                        message = thread_message
-                        message_id = str(thread_message.get("id") or "")
-                        break
-            if not message:
-                query = f"from:{lead.email} newer_than:30d"
-                list_response = client.get(
-                    GMAIL_MESSAGES_URL, params={"q": query, "maxResults": 3}
-                )
-                list_response.raise_for_status()
-                messages = list_response.json().get("messages") or []
-                if not messages:
-                    continue
-                message_id = str(messages[0].get("id") or "")
-                if not message_id:
-                    continue
-                message_response = client.get(
-                    f"{GMAIL_MESSAGES_URL}/{message_id}", params={"format": "full"}
-                )
-                message_response.raise_for_status()
-                message = message_response.json()
+            if not provider_thread_id:
+                continue
+            thread_response = client.get(
+                f"{GMAIL_MESSAGES_URL.rsplit('/', 1)[0]}/threads/{provider_thread_id}",
+                params={"format": "full"},
+            )
+            thread_response.raise_for_status()
+            message, message_id = _gmail_reply_from_thread(
+                thread_response.json().get("messages") or [],
+                provider_thread_id=provider_thread_id,
+                outbound_message_id=str(email.provider_message_id or ""),
+                sent_at=email.sent_at,
+                recipient_email=recipient_email,
+                sender_email=sender["sender_email"],
+                reply_to=sender["reply_to"],
+            )
+            if not message or not message_id:
+                continue
+            if _gmail_inbound_reply_exists(db, workspace, message_id):
+                continue
             snippet = str(message.get("snippet") or "")
             category = _classify_reply(snippet)
             now = datetime.utcnow()
@@ -10554,6 +10677,16 @@ def sync_gmail_replies(
                 company=company,
                 event=memory_outcome,
                 extra={"classification": category},
+            )
+            _record_gmail_inbound_reply(
+                db,
+                workspace=workspace,
+                email=email,
+                lead=lead,
+                message_id=message_id,
+                provider_thread_id=provider_thread_id,
+                snippet=snippet,
+                category=category,
             )
             db.add(
                 AuditLog(
