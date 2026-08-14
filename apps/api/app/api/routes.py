@@ -690,6 +690,7 @@ GMAIL_OAUTH_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
 ]
 GMAIL_OAUTH_LOOKUP_KEY_ITERATIONS = 210_000
+GMAIL_PLUS_ALIAS_DOMAINS = {"gmail.com", "googlemail.com"}
 
 
 def _extract_email(value: str | None) -> str:
@@ -697,6 +698,35 @@ def _extract_email(value: str | None) -> str:
         return ""
     parsed = parseaddr(str(value))[1] or str(value).strip()
     return parsed.strip().lower()
+
+
+def _gmail_plus_alias_key(value: str | None) -> str:
+    email = _extract_email(value)
+    if "@" not in email:
+        return ""
+    local_part, domain = email.rsplit("@", 1)
+    if domain not in GMAIL_PLUS_ALIAS_DOMAINS:
+        return ""
+    local_part = local_part.split("+", 1)[0]
+    if not local_part:
+        return ""
+    return f"{local_part}@gmail.com"
+
+
+def _gmail_address_matches_reply_recipient(
+    from_email: str | None, recipient_email: str | None
+) -> bool:
+    normalized_from = _extract_email(from_email)
+    normalized_recipient = _extract_email(recipient_email)
+    if not normalized_from or not normalized_recipient:
+        return False
+    if normalized_from == normalized_recipient:
+        return True
+    from_alias_key = _gmail_plus_alias_key(normalized_from)
+    recipient_alias_key = _gmail_plus_alias_key(normalized_recipient)
+    return bool(
+        from_alias_key and recipient_alias_key and from_alias_key == recipient_alias_key
+    )
 
 
 def _google_oauth_redirect_uri(settings) -> str:
@@ -1181,7 +1211,7 @@ def _gmail_reply_from_thread(
             continue
         headers = _gmail_message_headers(thread_message)
         from_email = _extract_email(parseaddr(headers.get("from", ""))[1])
-        if from_email != recipient_email:
+        if not _gmail_address_matches_reply_recipient(from_email, recipient_email):
             continue
         return thread_message, gmail_message_id
     return {}, ""
