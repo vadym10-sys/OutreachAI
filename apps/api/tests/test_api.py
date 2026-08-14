@@ -16464,6 +16464,491 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
     assert any(item["action"] == "email.sent" for item in crm_after_send["activity"])
 
 
+def _gmail_sync_message(
+    *,
+    message_id: str,
+    thread_id: str,
+    from_email: str,
+    snippet: str,
+    internal_date: datetime,
+    labels: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    epoch_ms = int((internal_date - datetime(1970, 1, 1)).total_seconds() * 1000)
+    return {
+        "id": message_id,
+        "threadId": thread_id,
+        "internalDate": str(epoch_ms),
+        "labelIds": labels or [],
+        "snippet": snippet,
+        "payload": {
+            "headers": [
+                {"name": "From", "value": f"Sender <{from_email}>"},
+            ]
+        },
+    }
+
+
+def _install_gmail_sync_mocks(
+    monkeypatch: pytest.MonkeyPatch, threads: dict[str, list[dict[str, Any]]]
+) -> list[str]:
+    monkeypatch.setattr(
+        "app.api.routes._gmail_access_token_from_sender",
+        lambda sender: "gmail-access-token",
+    )
+    monkeypatch.setattr(
+        "app.api.routes.record_email_memory",
+        lambda *args, **kwargs: None,
+    )
+    calls: list[str] = []
+
+    class FakeGmailResponse:
+        def __init__(self, payload: dict[str, Any]):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    class FakeGmailClient:
+        def __init__(self, *args: Any, **kwargs: Any):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+            return None
+
+        def get(self, url: str, params=None) -> FakeGmailResponse:
+            calls.append(url)
+            assert "messages/send" not in url
+            assert "/threads/" in url
+            thread_id = url.rsplit("/", 1)[-1]
+            return FakeGmailResponse({"messages": threads.get(thread_id, [])})
+
+    monkeypatch.setattr("app.api.routes.httpx.Client", FakeGmailClient)
+    return calls
+
+
+def _create_gmail_sync_fixture(
+    *,
+    user_email: str,
+    lead_email: Optional[str],
+    recipient_email: str,
+    thread_id: str,
+    outbound_message_id: str,
+) -> dict[str, str]:
+    db = get_sessionmaker()()
+    try:
+        workspace = Workspace(
+            owner_user_id=user_email,
+            name=f"Gmail sync {uuid4().hex[:8]}",
+        )
+        db.add(workspace)
+        db.flush()
+        lead = Lead(
+            user_id=user_email,
+            workspace_id=workspace.id,
+            company=f"Gmail Reply Co {uuid4().hex[:8]}",
+            website="https://gmail-reply-sync.example",
+            industry="SaaS",
+            email=lead_email,
+            status=LeadStatus.contacted,
+        )
+        db.add(lead)
+        db.flush()
+        email = EmailMessage(
+            user_id=user_email,
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            direction="outbound",
+            subject="Reply tracking test",
+            recipient_email=recipient_email,
+            body="Hello from OutreachAI",
+            provider_message_id=outbound_message_id,
+            delivery_status="sent",
+            sent_at=datetime.utcnow() - timedelta(minutes=5),
+            tags={"provider_thread_id": thread_id},
+        )
+        settings = AppSettings(
+            user_id=user_email,
+            workspace_id=workspace.id,
+            general={},
+            ai={},
+            email={
+                "sender": {
+                    "provider": "gmail",
+                    "sender_name": "QA Sender",
+                    "sender_email": "qa.sender@testmail.local",
+                    "reply_to": "qa.sender@testmail.local",
+                    "enabled": True,
+                    "oauth": {"refresh_token_encrypted": "encrypted"},
+                    "smtp": {},
+                }
+            },
+            billing={},
+            security={},
+            api={},
+        )
+        db.add_all([email, settings])
+        db.commit()
+        return {
+            "workspace_id": str(workspace.id),
+            "lead_id": str(lead.id),
+            "email_id": str(email.id),
+            "user_email": user_email,
+        }
+    finally:
+        db.close()
+
+
+def _gmail_reply_sync_counts(workspace_id: str, message_id: str) -> tuple[int, int]:
+    db = get_sessionmaker()()
+    try:
+        inbound_count = (
+            db.query(EmailMessage)
+            .filter(
+                EmailMessage.workspace_id == UUID(workspace_id),
+                EmailMessage.direction == "inbound",
+                EmailMessage.provider_message_id == message_id,
+            )
+            .count()
+        )
+        audit_count = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.workspace_id == UUID(workspace_id),
+                AuditLog.action == "outreach.gmail.reply_synced",
+                AuditLog.metadata_json["gmail_message_id"].as_string() == message_id,
+            )
+            .count()
+        )
+        return inbound_count, audit_count
+    finally:
+        db.close()
+
+
+def test_gmail_reply_sync_uses_recipient_email_when_lead_email_missing(
+    monkeypatch,
+) -> None:
+    run_id = uuid4().hex
+    recipient = f"fallback-{run_id}@reply-sync.example"
+    fixture = _create_gmail_sync_fixture(
+        user_email=f"gmail-null-lead-{run_id}@example.com",
+        lead_email=None,
+        recipient_email=recipient,
+        thread_id=f"thread-null-lead-{run_id}",
+        outbound_message_id=f"outbound-null-lead-{run_id}",
+    )
+    _install_gmail_sync_mocks(
+        monkeypatch,
+        {
+            f"thread-null-lead-{run_id}": [
+                _gmail_sync_message(
+                    message_id=f"outbound-null-lead-{run_id}",
+                    thread_id=f"thread-null-lead-{run_id}",
+                    from_email="qa.sender@testmail.local",
+                    snippet="Outbound body",
+                    internal_date=datetime.utcnow() - timedelta(minutes=4),
+                    labels=["SENT"],
+                ),
+                _gmail_sync_message(
+                    message_id=f"reply-null-lead-{run_id}",
+                    thread_id=f"thread-null-lead-{run_id}",
+                    from_email=recipient,
+                    snippet="Interested in the fallback path.",
+                    internal_date=datetime.utcnow(),
+                ),
+            ]
+        },
+    )
+
+    response = client.post(
+        "/api/outreach/oauth/gmail/sync",
+        headers={
+            "Authorization": "Bearer dev",
+            "X-Test-User-Email": fixture["user_email"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["synced"] == 1
+
+    db = get_sessionmaker()()
+    try:
+        email = db.get(EmailMessage, UUID(fixture["email_id"]))
+        lead = db.get(Lead, UUID(fixture["lead_id"]))
+        assert email is not None
+        assert email.delivery_status == "replied"
+        assert email.replied_at is not None
+        assert email.reply_body == "Interested in the fallback path."
+        assert email.reply_assistant["gmail_message_id"] == f"reply-null-lead-{run_id}"
+        assert lead is not None
+        assert lead.email is None
+        assert lead.status == LeadStatus.replied
+        inbound = (
+            db.query(EmailMessage)
+            .filter(
+                EmailMessage.workspace_id == UUID(fixture["workspace_id"]),
+                EmailMessage.direction == "inbound",
+                EmailMessage.provider_message_id == f"reply-null-lead-{run_id}",
+            )
+            .one()
+        )
+        assert inbound.lead_id == UUID(fixture["lead_id"])
+        assert inbound.recipient_email == recipient
+    finally:
+        db.close()
+
+
+def test_gmail_reply_sync_with_lead_email_still_works(monkeypatch) -> None:
+    run_id = uuid4().hex
+    lead_email = f"lead-{run_id}@reply-sync.example"
+    fixture = _create_gmail_sync_fixture(
+        user_email=f"gmail-lead-email-{run_id}@example.com",
+        lead_email=lead_email,
+        recipient_email=lead_email,
+        thread_id=f"thread-lead-email-{run_id}",
+        outbound_message_id=f"outbound-lead-email-{run_id}",
+    )
+    _install_gmail_sync_mocks(
+        monkeypatch,
+        {
+            f"thread-lead-email-{run_id}": [
+                _gmail_sync_message(
+                    message_id=f"reply-lead-email-{run_id}",
+                    thread_id=f"thread-lead-email-{run_id}",
+                    from_email=lead_email,
+                    snippet="Tell me more about this.",
+                    internal_date=datetime.utcnow(),
+                )
+            ]
+        },
+    )
+
+    response = client.post(
+        "/api/outreach/oauth/gmail/sync",
+        headers={
+            "Authorization": "Bearer dev",
+            "X-Test-User-Email": fixture["user_email"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["synced"] == 1
+
+    db = get_sessionmaker()()
+    try:
+        email = db.get(EmailMessage, UUID(fixture["email_id"]))
+        company = db.scalar(
+            select(Company).where(Company.lead_id == UUID(fixture["lead_id"]))
+        )
+        assert email and email.delivery_status == "replied"
+        assert company is not None
+        assert company.crm_stage == "Replied"
+        assert company.email_status == "Replied"
+    finally:
+        db.close()
+
+
+def test_gmail_reply_sync_repeated_run_does_not_duplicate_inbound_message(
+    monkeypatch,
+) -> None:
+    run_id = uuid4().hex
+    recipient = f"repeat-{run_id}@reply-sync.example"
+    fixture = _create_gmail_sync_fixture(
+        user_email=f"gmail-repeat-{run_id}@example.com",
+        lead_email=None,
+        recipient_email=recipient,
+        thread_id=f"thread-repeat-{run_id}",
+        outbound_message_id=f"outbound-repeat-{run_id}",
+    )
+    _install_gmail_sync_mocks(
+        monkeypatch,
+        {
+            f"thread-repeat-{run_id}": [
+                _gmail_sync_message(
+                    message_id=f"reply-repeat-{run_id}",
+                    thread_id=f"thread-repeat-{run_id}",
+                    from_email=recipient,
+                    snippet="Repeat sync should not duplicate me.",
+                    internal_date=datetime.utcnow(),
+                )
+            ]
+        },
+    )
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": fixture["user_email"],
+    }
+
+    first = client.post("/api/outreach/oauth/gmail/sync", headers=headers)
+    second = client.post("/api/outreach/oauth/gmail/sync", headers=headers)
+
+    assert first.status_code == 200
+    assert first.json()["synced"] == 1
+    assert second.status_code == 200
+    assert second.json()["synced"] == 0
+    assert _gmail_reply_sync_counts(
+        fixture["workspace_id"], f"reply-repeat-{run_id}"
+    ) == (1, 1)
+
+
+def test_gmail_reply_sync_does_not_cross_workspace_with_same_recipient(
+    monkeypatch,
+) -> None:
+    run_id = uuid4().hex
+    recipient = f"shared-{run_id}@reply-sync.example"
+    current = _create_gmail_sync_fixture(
+        user_email=f"gmail-current-{run_id}@example.com",
+        lead_email=None,
+        recipient_email=recipient,
+        thread_id=f"thread-current-{run_id}",
+        outbound_message_id=f"outbound-current-{run_id}",
+    )
+    other = _create_gmail_sync_fixture(
+        user_email=f"gmail-other-{run_id}@example.com",
+        lead_email=recipient,
+        recipient_email=recipient,
+        thread_id=f"thread-current-{run_id}",
+        outbound_message_id=f"outbound-other-{run_id}",
+    )
+    _install_gmail_sync_mocks(
+        monkeypatch,
+        {
+            f"thread-current-{run_id}": [
+                _gmail_sync_message(
+                    message_id=f"reply-current-{run_id}",
+                    thread_id=f"thread-current-{run_id}",
+                    from_email=recipient,
+                    snippet="Workspace scoped reply.",
+                    internal_date=datetime.utcnow(),
+                )
+            ]
+        },
+    )
+
+    response = client.post(
+        "/api/outreach/oauth/gmail/sync",
+        headers={
+            "Authorization": "Bearer dev",
+            "X-Test-User-Email": current["user_email"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["synced"] == 1
+
+    db = get_sessionmaker()()
+    try:
+        other_email = db.get(EmailMessage, UUID(other["email_id"]))
+        other_lead = db.get(Lead, UUID(other["lead_id"]))
+        assert other_email and other_email.delivery_status == "sent"
+        assert other_email.replied_at is None
+        assert other_lead and other_lead.status == LeadStatus.contacted
+        assert (
+            db.query(EmailMessage)
+            .filter(
+                EmailMessage.workspace_id == UUID(other["workspace_id"]),
+                EmailMessage.direction == "inbound",
+                EmailMessage.provider_message_id == f"reply-current-{run_id}",
+            )
+            .count()
+            == 0
+        )
+    finally:
+        db.close()
+
+
+def test_gmail_reply_sync_ignores_outbound_message_inside_thread(monkeypatch) -> None:
+    run_id = uuid4().hex
+    recipient = f"outbound-only-{run_id}@reply-sync.example"
+    fixture = _create_gmail_sync_fixture(
+        user_email=f"gmail-outbound-only-{run_id}@example.com",
+        lead_email=None,
+        recipient_email=recipient,
+        thread_id=f"thread-outbound-only-{run_id}",
+        outbound_message_id=f"outbound-primary-{run_id}",
+    )
+    _install_gmail_sync_mocks(
+        monkeypatch,
+        {
+            f"thread-outbound-only-{run_id}": [
+                _gmail_sync_message(
+                    message_id=f"outbound-followup-{run_id}",
+                    thread_id=f"thread-outbound-only-{run_id}",
+                    from_email="qa.sender@testmail.local",
+                    snippet="Follow-up sent by us.",
+                    internal_date=datetime.utcnow(),
+                    labels=["SENT"],
+                )
+            ]
+        },
+    )
+
+    response = client.post(
+        "/api/outreach/oauth/gmail/sync",
+        headers={
+            "Authorization": "Bearer dev",
+            "X-Test-User-Email": fixture["user_email"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["synced"] == 0
+
+    db = get_sessionmaker()()
+    try:
+        email = db.get(EmailMessage, UUID(fixture["email_id"]))
+        assert email and email.delivery_status == "sent"
+        assert email.replied_at is None
+    finally:
+        db.close()
+
+
+def test_gmail_reply_sync_ignores_unrelated_thread(monkeypatch) -> None:
+    run_id = uuid4().hex
+    recipient = f"unrelated-{run_id}@reply-sync.example"
+    fixture = _create_gmail_sync_fixture(
+        user_email=f"gmail-unrelated-{run_id}@example.com",
+        lead_email=recipient,
+        recipient_email=recipient,
+        thread_id=f"thread-expected-{run_id}",
+        outbound_message_id=f"outbound-unrelated-{run_id}",
+    )
+    calls = _install_gmail_sync_mocks(
+        monkeypatch,
+        {
+            f"thread-expected-{run_id}": [
+                _gmail_sync_message(
+                    message_id=f"reply-wrong-thread-{run_id}",
+                    thread_id=f"thread-other-{run_id}",
+                    from_email=recipient,
+                    snippet="This came from another Gmail thread.",
+                    internal_date=datetime.utcnow(),
+                )
+            ]
+        },
+    )
+
+    response = client.post(
+        "/api/outreach/oauth/gmail/sync",
+        headers={
+            "Authorization": "Bearer dev",
+            "X-Test-User-Email": fixture["user_email"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["synced"] == 0
+    assert all("/messages?" not in item for item in calls)
+
+    db = get_sessionmaker()()
+    try:
+        email = db.get(EmailMessage, UUID(fixture["email_id"]))
+        assert email and email.delivery_status == "sent"
+        assert email.replied_at is None
+    finally:
+        db.close()
+
+
 def test_gmail_reply_sync_updates_crm_and_is_idempotent(monkeypatch) -> None:
     run_id = str(int(time.time() * 1000))
     user_email = f"reply-crm-sync-{run_id}@example.com"
