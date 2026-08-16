@@ -2879,12 +2879,33 @@ class _FakePostgresConnection:
             self.state.tables.update(
                 {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
             )
+            if "CREATE TABLE IF NOT EXISTS agent_runs" in sql:
+                self.state.tables.update(
+                    {
+                        "agent_runs",
+                        "agent_steps",
+                        "agent_tool_calls",
+                        "agent_approval_requests",
+                        "agent_trace_events",
+                    }
+                )
             return _FakeScalarResult()
         if "CREATE TABLE IF NOT EXISTS backup_runs" in sql:
             self.state.tables.add("backup_runs")
             return _FakeScalarResult()
         if "CREATE TABLE IF NOT EXISTS plan_usage_reservations" in sql:
             self.state.tables.add("plan_usage_reservations")
+            return _FakeScalarResult()
+        if "CREATE TABLE IF NOT EXISTS agent_runs" in sql:
+            self.state.tables.update(
+                {
+                    "agent_runs",
+                    "agent_steps",
+                    "agent_tool_calls",
+                    "agent_approval_requests",
+                    "agent_trace_events",
+                }
+            )
             return _FakeScalarResult()
         if "INSERT INTO schema_migrations" in sql:
             assert params
@@ -3019,9 +3040,19 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(
         "019_canonical_subscription_resolver",
         "020_billing_subscription_transitions",
         "021_plan_usage_reservations",
+        "022_agent_runtime_control_plane",
     }
     state.tables.update(
-        {"ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs"}
+        {
+            "ai_memory_settings",
+            "ai_memory_entries",
+            "ai_memory_audit_logs",
+            "agent_runs",
+            "agent_steps",
+            "agent_tool_calls",
+            "agent_approval_requests",
+            "agent_trace_events",
+        }
     )
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
     engine = _FakePostgresEngine(state)
@@ -3265,6 +3296,11 @@ def test_postgres_migration_failure_sets_negative_schema_status(
         "ai_memory_settings",
         "ai_memory_entries",
         "ai_memory_audit_logs",
+        "agent_runs",
+        "agent_steps",
+        "agent_tool_calls",
+        "agent_approval_requests",
+        "agent_trace_events",
     }
     assert "synthetic migration failure" in status.error
 
@@ -3336,6 +3372,18 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
         / "migrations"
         / "019_canonical_subscription_resolver.sql"
     ).read_text(encoding="utf-8")
+    root_agent_runtime = (
+        REPO_ROOT / "db" / "migrations" / "022_agent_runtime_control_plane.sql"
+    ).read_text(encoding="utf-8")
+    packaged_agent_runtime = (
+        REPO_ROOT
+        / "apps"
+        / "api"
+        / "app"
+        / "db"
+        / "migrations"
+        / "022_agent_runtime_control_plane.sql"
+    ).read_text(encoding="utf-8")
 
     assert packaged_migration == root_migration
     assert packaged_read_indexes == root_read_indexes
@@ -3343,6 +3391,7 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     assert packaged_recipient == root_recipient
     assert packaged_workspace_profile == root_workspace_profile
     assert packaged_canonical_billing == root_canonical_billing
+    assert packaged_agent_runtime == root_agent_runtime
     assert (
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_audit_logs_workspace_lead_created_id"
         in root_hardening
@@ -3360,6 +3409,8 @@ def test_ai_memory_migration_assets_are_packaged_with_api_image() -> None:
     )
     assert "HAVING COUNT(*) > 1" in root_canonical_billing
     assert "uq_subscriptions_stripe_subscription_id" in root_canonical_billing
+    assert "CREATE TABLE IF NOT EXISTS agent_runs" in root_agent_runtime
+    assert "CREATE TABLE IF NOT EXISTS agent_trace_events" in root_agent_runtime
     assert (REPO_ROOT / "apps" / "api" / "app" / "db" / "schema.sql").exists()
 
 
@@ -3815,6 +3866,40 @@ def test_postgres_schema_assets_include_plan_usage_reservations() -> None:
     assert "idx_plan_usage_reservations_active" in packaged_migration
     assert "DROP TABLE IF EXISTS plan_usage_reservations" in packaged_migration
     assert "021_plan_usage_reservations" in REQUIRED_POSTGRES_MIGRATIONS
+
+
+def test_postgres_schema_assets_include_agent_runtime_control_plane() -> None:
+    schema = (
+        Path(__file__).resolve().parents[1] / "app" / "db" / "schema.sql"
+    ).read_text(encoding="utf-8")
+    packaged_migration = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "db"
+        / "migrations"
+        / "022_agent_runtime_control_plane.sql"
+    ).read_text(encoding="utf-8")
+    root_migration = (
+        Path(__file__).resolve().parents[3]
+        / "db"
+        / "migrations"
+        / "022_agent_runtime_control_plane.sql"
+    ).read_text(encoding="utf-8")
+
+    assert packaged_migration == root_migration
+    for table_name in [
+        "agent_runs",
+        "agent_steps",
+        "agent_tool_calls",
+        "agent_approval_requests",
+        "agent_trace_events",
+    ]:
+        assert f"CREATE TABLE IF NOT EXISTS {table_name}" in schema
+        assert f"CREATE TABLE IF NOT EXISTS {table_name}" in packaged_migration
+    assert "uq_agent_runs_workspace_idempotency" in packaged_migration
+    assert "uq_agent_tool_calls_idempotency" in packaged_migration
+    assert "uq_agent_approval_requests_idempotency" in packaged_migration
+    assert "022_agent_runtime_control_plane" in REQUIRED_POSTGRES_MIGRATIONS
 
 
 def test_startup_logs_validation_steps_and_fails_fast_on_database_error(
@@ -23024,3 +23109,508 @@ def test_autopilot_worker_obeys_outbound_provider_kill_switch(monkeypatch) -> No
         )
     finally:
         db.close()
+
+
+class _StaticAgentPlanner:
+    def __init__(self, steps: list[dict[str, Any]] | None = None, exc: Exception | None = None) -> None:
+        self.steps = steps or []
+        self.exc = exc
+        self.calls = 0
+
+    def plan(self, *, objective: str, workspace: Workspace, tools: list[Any]):
+        from app.services.agent_runtime.orchestrator import PlanResult
+        from app.services.agent_runtime.schemas import AgentPlan, ModelUsage
+
+        self.calls += 1
+        if self.exc:
+            raise self.exc
+        return PlanResult(
+            plan=AgentPlan.model_validate({"objective": objective, "steps": self.steps}),
+            model="test-agent-model",
+            prompt_version="test-agent-plan-v1",
+            token_usage=ModelUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            latency_ms=3,
+        )
+
+
+def _install_agent_runtime(monkeypatch, steps: list[dict[str, Any]], *, registry=None):
+    from app.api import agent_runtime as agent_runtime_api
+    from app.services.agent_runtime.orchestrator import AgentRuntimeOrchestrator
+
+    planner = _StaticAgentPlanner(steps)
+    orchestrator = AgentRuntimeOrchestrator(
+        registry=registry,
+        planner=planner,
+        feature_enabled=True,
+    )
+    monkeypatch.setattr(agent_runtime_api, "_orchestrator", orchestrator)
+    return planner
+
+
+def _create_agent_run(headers: dict[str, str], objective: str, idempotency_key: str = ""):
+    return client.post(
+        "/api/workspace-app/agent-runs",
+        headers=headers,
+        json={"objective": objective, "idempotency_key": idempotency_key},
+    )
+
+
+def test_agent_runtime_feature_flag_default_off_blocks_create(monkeypatch) -> None:
+    from app.api import agent_runtime as agent_runtime_api
+    from app.models.entities import AgentRun
+    from app.services.agent_runtime.orchestrator import AgentRuntimeOrchestrator
+
+    planner = _StaticAgentPlanner(
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Should not execute"},
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        agent_runtime_api,
+        "_orchestrator",
+        AgentRuntimeOrchestrator(planner=planner),
+    )
+    monkeypatch.setattr(get_settings(), "ai_control_plane_enabled", False)
+
+    response = _create_agent_run(
+        USER_A_AUTH,
+        "Find safe early customers without sending email.",
+    )
+
+    assert response.status_code == 503
+    assert planner.calls == 0
+    with get_sessionmaker()() as db:
+        assert db.query(AgentRun).count() == 0
+
+
+def test_agent_runtime_tool_registry_endpoint_returns_strict_workspace_tools() -> None:
+    response = client.get("/api/workspace-app/agent-runs/tools", headers=USER_A_AUTH)
+    payload = response.json()
+    by_name = {item["name"]: item for item in payload}
+
+    assert response.status_code == 200
+    assert {
+        "understand_business",
+        "search_companies",
+        "research_company",
+        "verify_email",
+        "score_lead",
+        "save_to_crm",
+        "generate_email_draft",
+        "send_email",
+        "sync_replies",
+    }.issubset(by_name)
+    assert by_name["save_to_crm"]["action_type"] == "internal_write"
+    assert by_name["save_to_crm"]["requires_approval"] is True
+    assert by_name["send_email"]["action_type"] == "external_side_effect"
+    assert by_name["send_email"]["requires_approval"] is True
+    assert by_name["generate_email_draft"]["requires_approval"] is False
+    assert by_name["save_to_crm"]["input_schema"]["additionalProperties"] is False
+    assert "crm:write" in by_name["save_to_crm"]["required_permissions"]
+
+
+def test_agent_runtime_workspace_isolation_and_idempotent_create(monkeypatch) -> None:
+    planner = _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Find local service companies"},
+            }
+        ],
+    )
+
+    first = _create_agent_run(
+        USER_A_AUTH,
+        "Find local service companies without sending email.",
+        idempotency_key="agent-run-idempotent",
+    )
+    second = _create_agent_run(
+        USER_A_AUTH,
+        "Find local service companies without sending email.",
+        idempotency_key="agent-run-idempotent",
+    )
+    run_id = first.json()["run"]["id"]
+    cross_workspace = client.get(f"/api/workspace-app/agent-runs/{run_id}", headers=USER_B_AUTH)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["run"]["id"] == second.json()["run"]["id"]
+    assert first.json()["run"]["status"] == "completed"
+    assert cross_workspace.status_code == 404
+    assert planner.calls == 1
+
+
+def test_agent_runtime_rejects_invalid_structured_plan(monkeypatch) -> None:
+    from app.api import agent_runtime as agent_runtime_api
+    from app.services.agent_runtime.errors import StructuredPlanValidationError
+    from app.services.agent_runtime.orchestrator import AgentRuntimeOrchestrator
+
+    orchestrator = AgentRuntimeOrchestrator(
+        planner=_StaticAgentPlanner(exc=StructuredPlanValidationError("bad plan")),
+        feature_enabled=True,
+    )
+    monkeypatch.setattr(agent_runtime_api, "_orchestrator", orchestrator)
+
+    response = _create_agent_run(USER_A_AUTH, "Create a safe plan.")
+    payload = response.json()
+    trace = client.get(
+        f"/api/workspace-app/agent-runs/{payload['run']['id']}/trace",
+        headers=USER_A_AUTH,
+    ).json()
+
+    assert response.status_code == 202
+    assert payload["run"]["status"] == "failed"
+    assert payload["run"]["error_category"] == "invalid_structured_plan"
+    assert any(event["error_category"] == "invalid_structured_plan" for event in trace["trace"])
+
+
+def test_agent_runtime_unknown_tool_and_invalid_arguments_block_run(monkeypatch) -> None:
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "unknown",
+                "title": "Unknown tool",
+                "tool_name": "delete_everything",
+                "arguments": {},
+            }
+        ],
+    )
+    unknown = _create_agent_run(USER_A_AUTH, "Use an unknown tool safely.")
+    assert unknown.status_code == 202
+    assert unknown.json()["run"]["status"] == "failed"
+    assert unknown.json()["run"]["error_category"] == "unknown_tool"
+
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "bad-args",
+                "title": "Score lead",
+                "tool_name": "score_lead",
+                "arguments": {"signals": ["hiring"]},
+            }
+        ],
+    )
+    invalid_args = _create_agent_run(USER_A_AUTH, "Validate tool arguments.")
+    assert invalid_args.status_code == 202
+    assert invalid_args.json()["run"]["status"] == "failed"
+    assert invalid_args.json()["run"]["error_category"] == "invalid_tool_arguments"
+
+
+def test_agent_runtime_read_only_tool_executes_and_crm_write_pauses(monkeypatch) -> None:
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Find customer-fit companies"},
+            },
+            {
+                "id": "crm",
+                "title": "Save candidate",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": "Agent Runtime CRM Pause",
+                    "website": "https://agent-runtime-crm.example",
+                    "contact_email": "buyer@agent-runtime-crm.example",
+                },
+            },
+        ],
+    )
+
+    response = _create_agent_run(USER_A_AUTH, "Research and pause before CRM write.")
+    payload = response.json()
+
+    assert response.status_code == 202
+    assert payload["run"]["status"] == "waiting_approval"
+    assert payload["steps"][0]["status"] == "completed"
+    assert payload["steps"][1]["status"] == "waiting_approval"
+    assert payload["approvals"][0]["approval_state"] == "pending"
+    assert payload["approvals"][0]["tool_name"] == "save_to_crm"
+
+
+def test_agent_runtime_send_email_requires_user_approval_and_final_confirmation(
+    monkeypatch,
+) -> None:
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "send",
+                "title": "Send email",
+                "tool_name": "send_email",
+                "arguments": {"email_id": str(uuid4())},
+            }
+        ],
+    )
+    response = _create_agent_run(USER_A_AUTH, "Send only after approval.")
+    payload = response.json()
+    approval_id = payload["approvals"][0]["id"]
+
+    ai_approval = client.post(
+        f"/api/workspace-app/agent-runs/{payload['run']['id']}/approve",
+        headers=USER_A_AUTH,
+        json={"approval_request_id": approval_id, "actor_type": "ai"},
+    )
+    missing_confirmation = client.post(
+        f"/api/workspace-app/agent-runs/{payload['run']['id']}/approve",
+        headers=USER_A_AUTH,
+        json={"approval_request_id": approval_id, "actor_type": "user"},
+    )
+
+    assert response.status_code == 202
+    assert payload["run"]["status"] == "waiting_approval"
+    assert payload["approvals"][0]["decision"]["required_confirmations"] == [
+        "manual_draft_approval",
+        "separate_final_send_confirmation",
+    ]
+    assert ai_approval.status_code == 409
+    assert "AI cannot approve" in ai_approval.json()["detail"]
+    assert missing_confirmation.status_code == 409
+    assert "final Send confirmation" in missing_confirmation.json()["detail"]
+
+
+def test_agent_runtime_missing_or_corrupt_approval_state_blocks_action() -> None:
+    from app.models.entities import AgentApprovalRequest
+    from app.services.agent_runtime.adapters import default_tool_registry
+    from app.services.agent_runtime.approval_policy import AgentApprovalPolicy
+    from app.services.agent_runtime.errors import ApprovalStateError
+
+    policy = AgentApprovalPolicy()
+    crm_tool = default_tool_registry().get("save_to_crm")
+    corrupt_approval = AgentApprovalRequest(
+        run_id=uuid4(),
+        step_id=uuid4(),
+        tool_call_id=uuid4(),
+        workspace_id=uuid4(),
+        user_id="user_agent_runtime_policy",
+        tool_name="save_to_crm",
+        action_type="internal_write",
+        approval_state="approved",
+        tool_arguments_json={},
+        decision_json={"actor_type": "ai"},
+        decided_by_user_id="",
+    )
+
+    with pytest.raises(ApprovalStateError, match="Missing approval state"):
+        policy.validate_approval_decision(tool=crm_tool, approval=None)
+    with pytest.raises(ApprovalStateError, match="AI cannot approve"):
+        policy.validate_approval_decision(tool=crm_tool, approval=corrupt_approval)
+
+
+def test_agent_runtime_provider_not_called_without_approval(monkeypatch) -> None:
+    from app.services.agent_runtime.adapters import AgentToolAdapters
+    from app.services.agent_runtime.registry import build_default_tool_registry
+
+    calls: list[dict[str, Any]] = []
+    adapters = AgentToolAdapters()
+    handlers = adapters.handlers()
+
+    def forbidden_send(context, payload):
+        calls.append(payload.model_dump())
+        raise AssertionError("send provider must not be called before approval")
+
+    handlers["send_email"] = forbidden_send
+    registry = build_default_tool_registry(handlers)
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "send",
+                "title": "Send email",
+                "tool_name": "send_email",
+                "arguments": {"email_id": str(uuid4())},
+            }
+        ],
+        registry=registry,
+    )
+
+    response = _create_agent_run(USER_A_AUTH, "Try to send email.")
+
+    assert response.status_code == 202
+    assert response.json()["run"]["status"] == "waiting_approval"
+    assert calls == []
+
+
+def test_agent_runtime_approve_resume_is_idempotent_for_crm_write(monkeypatch) -> None:
+    from app.models.entities import AgentToolCall
+
+    company_name = f"Agent Runtime Idempotent {uuid4()}"
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "crm",
+                "title": "Save to CRM",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": company_name,
+                    "website": "https://agent-runtime-idempotent.example",
+                    "contact_email": "buyer@agent-runtime-idempotent.example",
+                },
+            }
+        ],
+    )
+    created = _create_agent_run(USER_A_AUTH, "Save one approved CRM record.")
+    run_id = created.json()["run"]["id"]
+    approval_id = created.json()["approvals"][0]["id"]
+
+    approved = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/approve",
+        headers=USER_A_AUTH,
+        json={"approval_request_id": approval_id, "idempotency_key": "approve-once"},
+    )
+    first_resume = client.post(f"/api/workspace-app/agent-runs/{run_id}/resume", headers=USER_A_AUTH)
+    second_approve = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/approve",
+        headers=USER_A_AUTH,
+        json={"approval_request_id": approval_id, "idempotency_key": "approve-once"},
+    )
+    second_resume = client.post(f"/api/workspace-app/agent-runs/{run_id}/resume", headers=USER_A_AUTH)
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"])
+        company_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Company)
+                .where(Company.workspace_id == workspace_id, Company.name == company_name)
+            )
+            or 0
+        )
+        tool_calls = (
+            db.scalar(
+                select(func.count())
+                .select_from(AgentToolCall)
+                .where(AgentToolCall.workspace_id == workspace_id, AgentToolCall.tool_name == "save_to_crm")
+            )
+            or 0
+        )
+
+    assert approved.status_code == 200
+    assert first_resume.status_code == 200
+    assert first_resume.json()["run"]["status"] == "completed"
+    assert second_approve.status_code == 200
+    assert second_resume.status_code == 200
+    assert second_resume.json()["run"]["status"] == "completed"
+    assert company_count == 1
+    assert tool_calls >= 1
+
+
+def test_agent_runtime_trace_redacts_secrets_and_marks_untrusted(monkeypatch) -> None:
+    secret_value = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456 refresh_token=secret123"
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": secret_value},
+            }
+        ],
+    )
+    response = _create_agent_run(USER_A_AUTH, "Trace redaction check.")
+    run_id = response.json()["run"]["id"]
+    trace = client.get(f"/api/workspace-app/agent-runs/{run_id}/trace", headers=USER_A_AUTH)
+    trace_text = json.dumps(trace.json(), sort_keys=True)
+
+    assert trace.status_code == 200
+    assert "abcdefghijklmnopqrstuvwxyz123456" not in trace_text
+    assert "secret123" not in trace_text
+    assert "[REDACTED_SECRET]" in trace_text
+    assert any(event["untrusted_input"] for event in trace.json()["trace"])
+
+
+def test_agent_runtime_cancel_and_failed_run_are_terminal(monkeypatch) -> None:
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Prepare context"},
+            }
+        ],
+    )
+    completed = _create_agent_run(USER_A_AUTH, "Complete then stay terminal.")
+    cancelled_after_completed = client.post(
+        f"/api/workspace-app/agent-runs/{completed.json()['run']['id']}/cancel",
+        headers=USER_A_AUTH,
+        json={"reason": "late cancel"},
+    )
+
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "bad-args",
+                "title": "Score lead",
+                "tool_name": "score_lead",
+                "arguments": {"signals": ["hiring"]},
+            }
+        ],
+    )
+    failed = _create_agent_run(USER_A_AUTH, "Fail safely.")
+    resume_failed = client.post(
+        f"/api/workspace-app/agent-runs/{failed.json()['run']['id']}/resume",
+        headers=USER_A_AUTH,
+    )
+
+    assert completed.json()["run"]["status"] == "completed"
+    assert cancelled_after_completed.status_code == 200
+    assert cancelled_after_completed.json()["status"] == "completed"
+    assert failed.json()["run"]["status"] == "failed"
+    assert resume_failed.status_code == 200
+    assert resume_failed.json()["run"]["status"] == "failed"
+
+
+def test_agent_runtime_draft_edit_resets_existing_approval(monkeypatch) -> None:
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-draft-reset-{uuid4()}@example.com",
+    }
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    with get_sessionmaker()() as db:
+        email = EmailMessage(
+            user_id=headers["X-Test-User-Email"],
+            workspace_id=UUID(workspace["id"]),
+            direction="outbound",
+            subject="Approved subject",
+            recipient_email="buyer@draft-reset.example",
+            preview="Approved body",
+            body="Approved body",
+            delivery_status="approved",
+            tags={
+                "approved": True,
+                "approval_version": 1,
+                "approval_source": "manual",
+                "send_confirmation_snapshot": {"fingerprint": "old"},
+            },
+        )
+        db.add(email)
+        db.commit()
+        email_id = str(email.id)
+
+    edited = client.patch(
+        f"/api/workspace-app/emails/{email_id}",
+        headers=headers,
+        json={"body": "Edited body requires a fresh approval."},
+    )
+
+    assert edited.status_code == 200
+    assert edited.json()["email"]["delivery_status"] == "draft"
+    assert edited.json()["email"]["tags"].get("approved") is None
+    assert "send_confirmation_snapshot" not in edited.json()["email"]["tags"]

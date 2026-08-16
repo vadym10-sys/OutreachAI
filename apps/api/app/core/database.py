@@ -31,8 +31,17 @@ REQUIRED_POSTGRES_MIGRATIONS = (
     "019_canonical_subscription_resolver",
     "020_billing_subscription_transitions",
     "021_plan_usage_reservations",
+    "022_agent_runtime_control_plane",
 )
 REQUIRED_AI_MEMORY_TABLES = ("ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs")
+REQUIRED_AGENT_RUNTIME_TABLES = (
+    "agent_runs",
+    "agent_steps",
+    "agent_tool_calls",
+    "agent_approval_requests",
+    "agent_trace_events",
+)
+REQUIRED_RUNTIME_TABLES = (*REQUIRED_AI_MEMORY_TABLES, *REQUIRED_AGENT_RUNTIME_TABLES)
 
 
 class RuntimeSchemaError(RuntimeError):
@@ -54,7 +63,7 @@ _LAST_RUNTIME_SCHEMA_STATUS = RuntimeSchemaStatus(
     ready=False,
     checked_at="",
     pending_migrations=list(REQUIRED_POSTGRES_MIGRATIONS),
-    missing_tables=list(REQUIRED_AI_MEMORY_TABLES),
+    missing_tables=list(REQUIRED_RUNTIME_TABLES),
     pgvector_available=False,
     pgvector_installed=False,
     error="schema_not_checked",
@@ -258,7 +267,7 @@ def _build_runtime_schema_status(connection, *, error: str = "") -> RuntimeSchem
     pending = [version for version in REQUIRED_POSTGRES_MIGRATIONS if version not in applied]
     missing_tables = [
         table_name
-        for table_name in REQUIRED_AI_MEMORY_TABLES
+        for table_name in REQUIRED_RUNTIME_TABLES
         if not bool(connection.execute(text("SELECT to_regclass(:name) IS NOT NULL"), {"name": f"public.{table_name}"}).scalar())
     ]
     pgvector_available = _pg_bool(connection, "SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector')")
@@ -295,7 +304,7 @@ def validate_runtime_schema(engine: Engine) -> RuntimeSchemaStatus:
             ready=False,
             checked_at=datetime.utcnow().isoformat(),
             pending_migrations=list(REQUIRED_POSTGRES_MIGRATIONS),
-            missing_tables=list(REQUIRED_AI_MEMORY_TABLES),
+            missing_tables=list(REQUIRED_RUNTIME_TABLES),
             pgvector_available=False,
             pgvector_installed=False,
             error=_safe_schema_error(exc),
@@ -375,7 +384,7 @@ def initialize_database_schema(engine: Engine) -> None:
                 ready=False,
                 checked_at=datetime.utcnow().isoformat(),
                 pending_migrations=list(REQUIRED_POSTGRES_MIGRATIONS),
-                missing_tables=list(REQUIRED_AI_MEMORY_TABLES),
+                missing_tables=list(REQUIRED_RUNTIME_TABLES),
                 pgvector_available=False,
                 pgvector_installed=False,
                 error=safe_error,

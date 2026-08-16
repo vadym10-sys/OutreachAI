@@ -199,6 +199,275 @@ class PlanUsageReservation(Base):
     workspace: Mapped[Workspace] = relationship()
 
 
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'planning', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled')",
+            name="ck_agent_runs_status",
+        ),
+        Index("idx_agent_runs_workspace_status_created", "workspace_id", "status", "created_at"),
+        Index(
+            "uq_agent_runs_workspace_idempotency",
+            "workspace_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key <> ''"),
+            sqlite_where=text("idempotency_key <> ''"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    objective: Mapped[str] = mapped_column(Text, default="")
+    plan_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    current_step_index: Mapped[int] = mapped_column(Integer, default=0)
+    current_step_name: Mapped[str] = mapped_column(String(160), default="")
+    input_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(120), default="")
+    token_usage_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    estimated_cost: Mapped[Optional[float]] = mapped_column(Numeric)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    error_category: Mapped[str] = mapped_column(String(80), default="", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    workspace: Mapped[Workspace] = relationship()
+
+
+class AgentStep(Base):
+    __tablename__ = "agent_steps"
+    __table_args__ = (
+        UniqueConstraint("run_id", "step_index", name="uq_agent_steps_run_index"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'waiting_approval', 'completed', 'failed', 'skipped')",
+            name="ck_agent_steps_status",
+        ),
+        CheckConstraint(
+            "approval_state IN ('none', 'pending', 'approved', 'rejected')",
+            name="ck_agent_steps_approval_state",
+        ),
+        Index("idx_agent_steps_workspace_run", "workspace_id", "run_id", "step_index"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    step_index: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    title: Mapped[str] = mapped_column(String(160), default="")
+    tool_name: Mapped[str] = mapped_column(String(120), default="", index=True)
+    input_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    approval_state: Mapped[str] = mapped_column(String(32), default="none", index=True)
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(120), default="")
+    token_usage_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    estimated_cost: Mapped[Optional[float]] = mapped_column(Numeric)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    error_category: Mapped[str] = mapped_column(String(80), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    run: Mapped[AgentRun] = relationship()
+    workspace: Mapped[Workspace] = relationship()
+
+
+class AgentToolCall(Base):
+    __tablename__ = "agent_tool_calls"
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('read_only', 'internal_write', 'external_side_effect')",
+            name="ck_agent_tool_calls_action_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'waiting_approval', 'succeeded', 'failed', 'blocked', 'skipped')",
+            name="ck_agent_tool_calls_status",
+        ),
+        CheckConstraint(
+            "approval_state IN ('none', 'pending', 'approved', 'rejected')",
+            name="ck_agent_tool_calls_approval_state",
+        ),
+        Index("idx_agent_tool_calls_workspace_run", "workspace_id", "run_id", "created_at"),
+        Index("idx_agent_tool_calls_workspace_tool", "workspace_id", "tool_name", "created_at"),
+        Index(
+            "uq_agent_tool_calls_idempotency",
+            "workspace_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key <> ''"),
+            sqlite_where=text("idempotency_key <> ''"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    step_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("agent_steps.id", ondelete="SET NULL"), index=True
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    tool_name: Mapped[str] = mapped_column(String(120), index=True)
+    action_type: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    arguments_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    approval_state: Mapped[str] = mapped_column(String(32), default="none", index=True)
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(120), default="")
+    token_usage_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    estimated_cost: Mapped[Optional[float]] = mapped_column(Numeric)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    error_category: Mapped[str] = mapped_column(String(80), default="", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(200), default="", index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    run: Mapped[AgentRun] = relationship()
+    step: Mapped[Optional[AgentStep]] = relationship()
+    workspace: Mapped[Workspace] = relationship()
+
+
+class AgentApprovalRequest(Base):
+    __tablename__ = "agent_approval_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('read_only', 'internal_write', 'external_side_effect')",
+            name="ck_agent_approval_requests_action_type",
+        ),
+        CheckConstraint(
+            "approval_state IN ('none', 'pending', 'approved', 'rejected')",
+            name="ck_agent_approval_requests_approval_state",
+        ),
+        Index("idx_agent_approval_requests_workspace_run", "workspace_id", "run_id", "requested_at"),
+        Index("idx_agent_approval_requests_workspace_state", "workspace_id", "approval_state", "requested_at"),
+        Index(
+            "uq_agent_approval_requests_idempotency",
+            "workspace_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key <> ''"),
+            sqlite_where=text("idempotency_key <> ''"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    step_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("agent_steps.id", ondelete="SET NULL"), index=True
+    )
+    tool_call_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("agent_tool_calls.id", ondelete="SET NULL"), index=True
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    tool_name: Mapped[str] = mapped_column(String(120), index=True)
+    action_type: Mapped[str] = mapped_column(String(40), index=True)
+    approval_state: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    tool_arguments_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    decision_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    idempotency_key: Mapped[str] = mapped_column(String(200), default="", index=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    decided_by_user_id: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    run: Mapped[AgentRun] = relationship()
+    step: Mapped[Optional[AgentStep]] = relationship()
+    tool_call: Mapped[Optional[AgentToolCall]] = relationship()
+    workspace: Mapped[Workspace] = relationship()
+
+
+class AgentTraceEvent(Base):
+    __tablename__ = "agent_trace_events"
+    __table_args__ = (
+        Index("idx_agent_trace_events_workspace_run", "workspace_id", "run_id", "created_at"),
+        Index("idx_agent_trace_events_workspace_tool", "workspace_id", "tool_name", "created_at"),
+        Index("idx_agent_trace_events_workspace_error", "workspace_id", "error_category", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    step_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("agent_steps.id", ondelete="SET NULL"), index=True
+    )
+    tool_call_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("agent_tool_calls.id", ondelete="SET NULL"), index=True
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    event_type: Mapped[str] = mapped_column(String(120), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="", index=True)
+    model: Mapped[str] = mapped_column(String(120), default="")
+    tool_name: Mapped[str] = mapped_column(String(120), default="", index=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    token_usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    estimated_cost: Mapped[Optional[float]] = mapped_column(Numeric)
+    approval_decision: Mapped[str] = mapped_column(String(32), default="", index=True)
+    error_category: Mapped[str] = mapped_column(String(80), default="", index=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    data_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    untrusted_input: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    run: Mapped[AgentRun] = relationship()
+    step: Mapped[Optional[AgentStep]] = relationship()
+    tool_call: Mapped[Optional[AgentToolCall]] = relationship()
+    workspace: Mapped[Workspace] = relationship()
+
+
 class User(Base):
     __tablename__ = "users"
 
