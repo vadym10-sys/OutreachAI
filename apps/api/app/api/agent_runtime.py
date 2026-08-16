@@ -13,6 +13,7 @@ from app.services.agent_runtime.errors import (
     AgentRuntimeError,
     ApprovalStateError,
     FeatureDisabledError,
+    IdempotencyConflictError,
 )
 from app.services.agent_runtime.orchestrator import (
     AgentRuntimeOrchestrator,
@@ -42,6 +43,11 @@ def _http_error(exc: AgentRuntimeError) -> HTTPException:
         )
     if isinstance(exc, ApprovalStateError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, IdempotencyConflictError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency request already exists with a different payload.",
+        )
     if isinstance(exc, AgentRunStateError):
         message = str(exc)
         if "not found" in message.lower():

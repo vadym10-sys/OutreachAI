@@ -3897,6 +3897,10 @@ def test_postgres_schema_assets_include_agent_runtime_control_plane() -> None:
         assert f"CREATE TABLE IF NOT EXISTS {table_name}" in schema
         assert f"CREATE TABLE IF NOT EXISTS {table_name}" in packaged_migration
     assert "uq_agent_runs_workspace_idempotency" in packaged_migration
+    assert "dry_run BOOLEAN NOT NULL DEFAULT false" in packaged_migration
+    assert "request_fingerprint VARCHAR(128) NOT NULL DEFAULT ''" in packaged_migration
+    assert "dry_run BOOLEAN NOT NULL DEFAULT false" in schema
+    assert "request_fingerprint VARCHAR(128) NOT NULL DEFAULT ''" in schema
     assert "uq_agent_tool_calls_idempotency" in packaged_migration
     assert "uq_agent_approval_requests_idempotency" in packaged_migration
     assert "022_agent_runtime_control_plane" in REQUIRED_POSTGRES_MIGRATIONS
@@ -23133,7 +23137,13 @@ class _StaticAgentPlanner:
         )
 
 
-def _install_agent_runtime(monkeypatch, steps: list[dict[str, Any]], *, registry=None):
+def _install_agent_runtime(
+    monkeypatch,
+    steps: list[dict[str, Any]],
+    *,
+    registry=None,
+    permission_resolver=None,
+):
     from app.api import agent_runtime as agent_runtime_api
     from app.services.agent_runtime.orchestrator import AgentRuntimeOrchestrator
 
@@ -23141,17 +23151,27 @@ def _install_agent_runtime(monkeypatch, steps: list[dict[str, Any]], *, registry
     orchestrator = AgentRuntimeOrchestrator(
         registry=registry,
         planner=planner,
+        permission_resolver=permission_resolver,
         feature_enabled=True,
     )
     monkeypatch.setattr(agent_runtime_api, "_orchestrator", orchestrator)
     return planner
 
 
-def _create_agent_run(headers: dict[str, str], objective: str, idempotency_key: str = ""):
+def _create_agent_run(
+    headers: dict[str, str],
+    objective: str,
+    idempotency_key: str = "",
+    dry_run: bool = False,
+):
     return client.post(
         "/api/workspace-app/agent-runs",
         headers=headers,
-        json={"objective": objective, "idempotency_key": idempotency_key},
+        json={
+            "objective": objective,
+            "idempotency_key": idempotency_key,
+            "dry_run": dry_run,
+        },
     )
 
 
@@ -23214,6 +23234,78 @@ def test_agent_runtime_tool_registry_endpoint_returns_strict_workspace_tools() -
     assert "crm:write" in by_name["save_to_crm"]["required_permissions"]
 
 
+def test_agent_runtime_openai_planner_receives_strict_tool_schemas(monkeypatch) -> None:
+    from app.services.agent_runtime import orchestrator as orchestrator_module
+    from app.services.agent_runtime.adapters import default_tool_registry
+
+    captured: dict[str, Any] = {}
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "objective": "Find safe customers.",
+                                    "steps": [
+                                        {
+                                            "id": "context",
+                                            "title": "Understand business",
+                                            "tool_name": "understand_business",
+                                            "arguments": {
+                                                "objective": "Find safe customers."
+                                            },
+                                            "reason": "Read context first.",
+                                        }
+                                    ],
+                                }
+                            )
+                        )
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=4, completion_tokens=3, total_tokens=7
+                ),
+            )
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    monkeypatch.setattr(orchestrator_module, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(get_settings(), "openai_api_key", "sk-test-agent-planner")
+    workspace = SimpleNamespace(
+        company="",
+        industry="",
+        target_country="",
+        target_customer="",
+        offer="",
+        cta="",
+        tone="",
+        language="",
+    )
+
+    result = orchestrator_module.OpenAIAgentPlanner().plan(
+        objective="Find safe customers.",
+        workspace=workspace,
+        tools=default_tool_registry().all(),
+    )
+
+    payload = json.loads(captured["kwargs"]["messages"][1]["content"])
+    tools = {item["name"]: item for item in payload["untrusted_data"]["tools"]}
+
+    assert result.plan.steps[0].tool_name == "understand_business"
+    assert tools["save_to_crm"]["input_schema"]["additionalProperties"] is False
+    assert tools["save_to_crm"]["dry_run_supported"] is True
+    assert "crm:write" in tools["save_to_crm"]["required_permissions"]
+    assert tools["send_email"]["approval_requirements"][
+        "separate_final_send_confirmation_required"
+    ] is True
+
+
 def test_agent_runtime_workspace_isolation_and_idempotent_create(monkeypatch) -> None:
     planner = _install_agent_runtime(
         monkeypatch,
@@ -23246,6 +23338,48 @@ def test_agent_runtime_workspace_isolation_and_idempotent_create(monkeypatch) ->
     assert first.json()["run"]["status"] == "completed"
     assert cross_workspace.status_code == 404
     assert planner.calls == 1
+
+
+def test_agent_runtime_idempotency_key_conflicts_on_different_payload(monkeypatch) -> None:
+    planner = _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Find local service companies"},
+            }
+        ],
+    )
+    objective = "Find local service companies without sending email."
+    first_key = f"agent-run-conflict-{uuid4()}"
+    second_key = f"agent-run-dry-conflict-{uuid4()}"
+
+    first = _create_agent_run(USER_A_AUTH, objective, idempotency_key=first_key)
+    same = _create_agent_run(USER_A_AUTH, objective, idempotency_key=first_key)
+    changed_objective = _create_agent_run(
+        USER_A_AUTH,
+        "Find a different segment without sending email.",
+        idempotency_key=first_key,
+    )
+    dry_first = _create_agent_run(USER_A_AUTH, objective, idempotency_key=second_key)
+    changed_dry_run = _create_agent_run(
+        USER_A_AUTH,
+        objective,
+        idempotency_key=second_key,
+        dry_run=True,
+    )
+
+    assert first.status_code == 202
+    assert same.status_code == 202
+    assert first.json()["run"]["id"] == same.json()["run"]["id"]
+    assert changed_objective.status_code == 409
+    assert "different payload" in changed_objective.json()["detail"]
+    assert dry_first.status_code == 202
+    assert changed_dry_run.status_code == 409
+    assert "different payload" in changed_dry_run.json()["detail"]
+    assert planner.calls == 2
 
 
 def test_agent_runtime_rejects_invalid_structured_plan(monkeypatch) -> None:
@@ -23306,6 +23440,56 @@ def test_agent_runtime_unknown_tool_and_invalid_arguments_block_run(monkeypatch)
     assert invalid_args.json()["run"]["error_category"] == "invalid_tool_arguments"
 
 
+def test_agent_runtime_validates_entire_plan_before_any_write_handler(monkeypatch) -> None:
+    subject = f"Agent Runtime Atomic Draft {uuid4()}"
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "draft",
+                "title": "Generate draft",
+                "tool_name": "generate_email_draft",
+                "arguments": {
+                    "recipient_email": "buyer@agent-runtime-atomic.example",
+                    "subject": subject,
+                    "body": "This write must not execute before full plan validation.",
+                },
+            },
+            {
+                "id": "bad-score",
+                "title": "Score lead",
+                "tool_name": "score_lead",
+                "arguments": {"signals": ["hiring"]},
+            },
+        ],
+    )
+
+    response = _create_agent_run(USER_A_AUTH, "Validate every step before writes.")
+    payload = response.json()
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(
+            client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"]
+        )
+        draft_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(EmailMessage)
+                .where(
+                    EmailMessage.workspace_id == workspace_id,
+                    EmailMessage.subject == subject,
+                )
+            )
+            or 0
+        )
+
+    assert response.status_code == 202
+    assert payload["run"]["status"] == "failed"
+    assert payload["run"]["error_category"] == "invalid_tool_arguments"
+    assert payload["steps"] == []
+    assert draft_count == 0
+
+
 def test_agent_runtime_read_only_tool_executes_and_crm_write_pauses(monkeypatch) -> None:
     _install_agent_runtime(
         monkeypatch,
@@ -23340,6 +23524,126 @@ def test_agent_runtime_read_only_tool_executes_and_crm_write_pauses(monkeypatch)
     assert payload["approvals"][0]["tool_name"] == "save_to_crm"
 
 
+def test_agent_runtime_run_dry_run_forces_crm_dry_run_after_approval_resume(monkeypatch) -> None:
+    company_name = f"Agent Runtime Dry CRM {uuid4()}"
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "crm",
+                "title": "Save candidate",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": company_name,
+                    "website": "https://agent-runtime-dry-crm.example",
+                    "contact_email": "buyer@agent-runtime-dry-crm.example",
+                    "dry_run": False,
+                },
+            }
+        ],
+    )
+
+    created = _create_agent_run(
+        USER_A_AUTH,
+        "Dry-run CRM save even if plan disables dry_run.",
+        dry_run=True,
+    )
+    payload = created.json()
+    run_id = payload["run"]["id"]
+    approval_id = payload["approvals"][0]["id"]
+    approved = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/approve",
+        headers=USER_A_AUTH,
+        json={"approval_request_id": approval_id, "idempotency_key": "dry-crm-approval"},
+    )
+    resumed = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/resume", headers=USER_A_AUTH
+    )
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(
+            client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"]
+        )
+        company_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Company)
+                .where(Company.workspace_id == workspace_id, Company.name == company_name)
+            )
+            or 0
+        )
+        lead_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Lead)
+                .where(Lead.workspace_id == workspace_id, Lead.company == company_name)
+            )
+            or 0
+        )
+
+    assert created.status_code == 202
+    assert payload["run"]["dry_run"] is True
+    assert payload["steps"][0]["input"]["dry_run"] is True
+    assert payload["approvals"][0]["tool_arguments"]["dry_run"] is True
+    assert approved.status_code == 200
+    assert resumed.status_code == 200
+    assert resumed.json()["run"]["status"] == "completed"
+    assert resumed.json()["steps"][0]["output"]["status"] == "dry_run"
+    assert resumed.json()["steps"][0]["output"]["dry_run"] is True
+    assert company_count == 0
+    assert lead_count == 0
+
+
+def test_agent_runtime_run_dry_run_prevents_email_draft_creation(monkeypatch) -> None:
+    subject = f"Agent Runtime Dry Draft {uuid4()}"
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "draft",
+                "title": "Generate draft",
+                "tool_name": "generate_email_draft",
+                "arguments": {
+                    "recipient_email": "buyer@agent-runtime-dry-draft.example",
+                    "subject": subject,
+                    "body": "Hello from a dry-run draft.",
+                    "dry_run": False,
+                },
+            }
+        ],
+    )
+
+    response = _create_agent_run(
+        USER_A_AUTH,
+        "Dry-run email drafting without creating EmailMessage.",
+        dry_run=True,
+    )
+    payload = response.json()
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(
+            client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"]
+        )
+        draft_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(EmailMessage)
+                .where(
+                    EmailMessage.workspace_id == workspace_id,
+                    EmailMessage.subject == subject,
+                )
+            )
+            or 0
+        )
+
+    assert response.status_code == 202
+    assert payload["run"]["status"] == "completed"
+    assert payload["run"]["dry_run"] is True
+    assert payload["steps"][0]["input"]["dry_run"] is True
+    assert payload["steps"][0]["output"]["status"] == "dry_run"
+    assert draft_count == 0
+
+
 def test_agent_runtime_send_email_requires_user_approval_and_final_confirmation(
     monkeypatch,
 ) -> None:
@@ -23368,6 +23672,11 @@ def test_agent_runtime_send_email_requires_user_approval_and_final_confirmation(
         headers=USER_A_AUTH,
         json={"approval_request_id": approval_id, "actor_type": "user"},
     )
+    dry_run_send = _create_agent_run(
+        USER_A_AUTH,
+        "Dry-run must block unsupported external sends.",
+        dry_run=True,
+    )
 
     assert response.status_code == 202
     assert payload["run"]["status"] == "waiting_approval"
@@ -23379,6 +23688,10 @@ def test_agent_runtime_send_email_requires_user_approval_and_final_confirmation(
     assert "AI cannot approve" in ai_approval.json()["detail"]
     assert missing_confirmation.status_code == 409
     assert "final Send confirmation" in missing_confirmation.json()["detail"]
+    assert dry_run_send.status_code == 202
+    assert dry_run_send.json()["run"]["status"] == "failed"
+    assert dry_run_send.json()["run"]["error_category"] == "tool_execution_blocked"
+    assert dry_run_send.json()["approvals"] == []
 
 
 def test_agent_runtime_missing_or_corrupt_approval_state_blocks_action() -> None:
@@ -23441,6 +23754,75 @@ def test_agent_runtime_provider_not_called_without_approval(monkeypatch) -> None
     assert response.status_code == 202
     assert response.json()["run"]["status"] == "waiting_approval"
     assert calls == []
+
+
+def test_agent_runtime_permission_denied_blocks_handler_and_crm_write(monkeypatch) -> None:
+    from app.services.agent_runtime.adapters import AgentToolAdapters
+    from app.services.agent_runtime.registry import build_default_tool_registry
+
+    class _LimitedPermissionResolver:
+        def allowed_permissions(self, db, *, workspace, user_id) -> set[str]:
+            return {"workspace:read", "crm:read", "contacts:read"}
+
+    calls: list[dict[str, Any]] = []
+    company_name = f"Agent Runtime Permission CRM {uuid4()}"
+    adapters = AgentToolAdapters()
+    handlers = adapters.handlers()
+
+    def forbidden_save_to_crm(context, payload):
+        calls.append(payload.model_dump())
+        raise AssertionError("save_to_crm handler must not run without crm:write")
+
+    handlers["save_to_crm"] = forbidden_save_to_crm
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "crm",
+                "title": "Save candidate",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": company_name,
+                    "website": "https://agent-runtime-permission.example",
+                    "contact_email": "buyer@agent-runtime-permission.example",
+                },
+            }
+        ],
+        registry=build_default_tool_registry(handlers),
+        permission_resolver=_LimitedPermissionResolver(),
+    )
+
+    response = _create_agent_run(USER_A_AUTH, "Try CRM write without permission.")
+    payload = response.json()
+    trace = client.get(
+        f"/api/workspace-app/agent-runs/{payload['run']['id']}/trace",
+        headers=USER_A_AUTH,
+    ).json()
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(
+            client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"]
+        )
+        company_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Company)
+                .where(Company.workspace_id == workspace_id, Company.name == company_name)
+            )
+            or 0
+        )
+
+    assert response.status_code == 202
+    assert payload["run"]["status"] == "failed"
+    assert payload["run"]["error_category"] == "permission_denied"
+    assert payload["approvals"] == []
+    assert calls == []
+    assert company_count == 0
+    assert any(
+        event["event_type"] == "tool.permission_denied"
+        and event["error_category"] == "permission_denied"
+        for event in trace["trace"]
+    )
 
 
 def test_agent_runtime_approve_resume_is_idempotent_for_crm_write(monkeypatch) -> None:

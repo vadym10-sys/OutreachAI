@@ -92,6 +92,7 @@ class AgentRunOut(StrictModel):
     user_id: str
     status: RunStatus
     objective: str
+    dry_run: bool = False
     plan: dict[str, Any] = Field(default_factory=dict)
     current_step_index: int = 0
     current_step_name: str = ""

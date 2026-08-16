@@ -226,6 +226,7 @@ class AgentRun(Base):
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     objective: Mapped[str] = mapped_column(Text, default="")
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     plan_json: Mapped[dict] = mapped_column(JSON, default=dict)
     current_step_index: Mapped[int] = mapped_column(Integer, default=0)
     current_step_name: Mapped[str] = mapped_column(String(160), default="")
@@ -238,6 +239,9 @@ class AgentRun(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     error_category: Mapped[str] = mapped_column(String(80), default="", index=True)
     idempotency_key: Mapped[str] = mapped_column(String(160), default="", index=True)
+    request_fingerprint: Mapped[str] = mapped_column(
+        String(128), default="", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, index=True
     )

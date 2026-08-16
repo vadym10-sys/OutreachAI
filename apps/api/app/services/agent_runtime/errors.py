@@ -41,3 +41,11 @@ class ToolExecutionBlockedError(AgentRuntimeError):
 
 class AgentRunStateError(AgentRuntimeError):
     category = "invalid_run_state"
+
+
+class IdempotencyConflictError(AgentRunStateError):
+    category = "idempotency_conflict"
+
+
+class PermissionDeniedError(AgentRuntimeError):
+    category = "permission_denied"

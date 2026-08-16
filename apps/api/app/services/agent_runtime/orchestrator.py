@@ -28,15 +28,22 @@ from app.services.agent_runtime.errors import (
     AgentRunStateError,
     ApprovalStateError,
     FeatureDisabledError,
+    IdempotencyConflictError,
+    PermissionDeniedError,
     StructuredPlanValidationError,
     ToolArgumentValidationError,
     ToolOutputValidationError,
+    ToolExecutionBlockedError,
     UnknownToolError,
 )
 from app.services.agent_runtime.model_usage import (
     estimated_cost_for_usage,
     merge_token_usage,
     usage_from_openai_response,
+)
+from app.services.agent_runtime.permissions import (
+    AgentRuntimePermissionResolver,
+    WorkspaceRolePermissionResolver,
 )
 from app.services.agent_runtime.registry import ToolDefinition, ToolRegistry
 from app.services.agent_runtime.schemas import (
@@ -101,6 +108,17 @@ class OpenAIAgentPlanner:
                 "action_type": tool.action_type,
                 "requires_approval": tool.requires_approval,
                 "description": tool.description,
+                "input_schema": tool.input_model.model_json_schema(),
+                "dry_run_supported": tool.dry_run_supported,
+                "required_permissions": list(tool.required_permissions),
+                "approval_requirements": {
+                    "fail_closed": True,
+                    "manual_user_approval_required": tool.requires_approval,
+                    "separate_final_send_confirmation_required": tool.name
+                    == "send_email",
+                    "draft_modification_resets_approval": tool.name
+                    in {"generate_email_draft", "send_email"},
+                },
             }
             for tool in tools
         ]
@@ -173,11 +191,13 @@ class AgentRuntimeOrchestrator:
         registry: ToolRegistry | None = None,
         policy: AgentApprovalPolicy | None = None,
         planner: AgentPlanner | None = None,
+        permission_resolver: AgentRuntimePermissionResolver | None = None,
         feature_enabled: bool | None = None,
     ) -> None:
         self.registry = registry or default_tool_registry()
         self.policy = policy or AgentApprovalPolicy()
         self.planner = planner or OpenAIAgentPlanner()
+        self.permission_resolver = permission_resolver or WorkspaceRolePermissionResolver()
         self._feature_enabled = feature_enabled
 
     @property
@@ -199,8 +219,15 @@ class AgentRuntimeOrchestrator:
         request_id: str = "",
     ) -> AgentRun:
         self._require_enabled()
-        existing = self._existing_run_for_key(db, workspace_id=workspace.id, key=payload.idempotency_key)
+        request_fingerprint = self._request_fingerprint(payload)
+        existing = self._existing_run_for_key(
+            db, workspace_id=workspace.id, key=payload.idempotency_key
+        )
         if existing is not None:
+            if existing.request_fingerprint != request_fingerprint:
+                raise IdempotencyConflictError(
+                    "Idempotency request already exists with a different payload."
+                )
             return existing
         started = time.perf_counter()
         run = AgentRun(
@@ -208,7 +235,12 @@ class AgentRuntimeOrchestrator:
             user_id=user_id,
             status="queued",
             objective=payload.objective,
-            idempotency_key=payload.idempotency_key,
+            dry_run=payload.dry_run,
+            input_json=sanitize_for_trace(
+                {"objective": payload.objective, "dry_run": payload.dry_run}
+            ),
+            idempotency_key=payload.idempotency_key.strip(),
+            request_fingerprint=request_fingerprint,
         )
         db.add(run)
         db.flush()
@@ -228,12 +260,15 @@ class AgentRuntimeOrchestrator:
                 workspace=workspace,
                 tools=self.registry.all(),
             )
+            validated_plan = self._validate_plan(run=run, plan=plan_result.plan)
             run.model = plan_result.model
             run.prompt_version = plan_result.prompt_version
-            run.token_usage_json = merge_token_usage(run.token_usage_json, plan_result.token_usage)
+            run.token_usage_json = merge_token_usage(
+                run.token_usage_json, plan_result.token_usage
+            )
             run.estimated_cost = plan_result.estimated_cost
             run.latency_ms = plan_result.latency_ms
-            run.plan_json = sanitize_for_trace(plan_result.plan.model_dump())
+            run.plan_json = sanitize_for_trace(validated_plan.model_dump())
             record_trace(
                 db,
                 run_id=run.id,
@@ -248,7 +283,7 @@ class AgentRuntimeOrchestrator:
                 data=run.plan_json,
                 untrusted_input=True,
             )
-            self._create_steps(db, run=run, plan=plan_result.plan)
+            self._create_steps(db, run=run, plan=validated_plan)
             transition_run(run, "running")
             self._execute_available_steps(
                 db,
@@ -485,6 +520,7 @@ class AgentRuntimeOrchestrator:
         request_id: str,
     ) -> None:
         has_failed_tool = False
+        failed_error_category = ""
         steps = list(
             db.scalars(
                 select(AgentStep)
@@ -528,6 +564,7 @@ class AgentRuntimeOrchestrator:
                 return
             except Exception as exc:
                 has_failed_tool = True
+                failed_error_category = failed_error_category or error_category(exc)
                 transition_step(step, "failed", error_category=error_category(exc))
                 record_trace(
                     db,
@@ -546,7 +583,9 @@ class AgentRuntimeOrchestrator:
             if blocked:
                 return
         if has_failed_tool:
-            transition_run(run, "failed", error_category="tool_failed")
+            transition_run(
+                run, "failed", error_category=failed_error_category or "tool_failed"
+            )
             return
         transition_run(run, "completed")
         record_trace(
@@ -569,7 +608,11 @@ class AgentRuntimeOrchestrator:
         request_id: str,
     ) -> bool:
         tool = self.registry.get(step.tool_name)
-        arguments = tool.validate_arguments(step.input_json or {})
+        arguments = self._validate_and_prepare_arguments(
+            run=run,
+            tool=tool,
+            arguments=step.input_json or {},
+        )
         step.input_json = sanitize_for_trace(arguments.model_dump(mode="json"))
         decision = self.policy.decision_for_tool(tool)
         idempotency_key = self._tool_call_idempotency_key(run, step, tool, arguments.model_dump(mode="json"))
@@ -579,6 +622,15 @@ class AgentRuntimeOrchestrator:
             step=step,
             tool=tool,
             idempotency_key=idempotency_key,
+            user_id=user_id,
+        )
+        self._require_tool_permissions(
+            db,
+            run=run,
+            step=step,
+            tool_call=tool_call,
+            tool=tool,
+            workspace=workspace,
             user_id=user_id,
         )
         if decision.requires_approval:
@@ -669,6 +721,91 @@ class AgentRuntimeOrchestrator:
             untrusted_input=bool(result_json.get("untrusted_input")),
         )
         return False
+
+    def _validate_plan(self, *, run: AgentRun, plan: AgentPlan) -> AgentPlan:
+        normalized_steps = []
+        for item in plan.steps:
+            tool = self.registry.get(item.tool_name)
+            arguments = self._validate_and_prepare_arguments(
+                run=run,
+                tool=tool,
+                arguments=item.arguments,
+            )
+            normalized_steps.append(
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "tool_name": item.tool_name,
+                    "arguments": arguments.model_dump(mode="json"),
+                    "reason": item.reason,
+                }
+            )
+        return AgentPlan.model_validate(
+            {
+                "objective": plan.objective,
+                "steps": normalized_steps,
+            }
+        )
+
+    def _validate_and_prepare_arguments(
+        self,
+        *,
+        run: AgentRun,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+    ):
+        prepared = dict(arguments or {})
+        dry_run_field_present = "dry_run" in tool.input_model.model_fields
+        if run.dry_run and tool.action_type in {
+            "internal_write",
+            "external_side_effect",
+        }:
+            if not tool.dry_run_supported or not dry_run_field_present:
+                raise ToolExecutionBlockedError("Tool cannot run safely in dry-run mode.")
+        if run.dry_run and tool.dry_run_supported and dry_run_field_present:
+            prepared["dry_run"] = True
+        return tool.validate_arguments(prepared)
+
+    def _require_tool_permissions(
+        self,
+        db: Session,
+        *,
+        run: AgentRun,
+        step: AgentStep,
+        tool_call: AgentToolCall,
+        tool: ToolDefinition,
+        workspace: Workspace,
+        user_id: str,
+    ) -> None:
+        if not tool.required_permissions:
+            return
+        allowed = self.permission_resolver.allowed_permissions(
+            db,
+            workspace=workspace,
+            user_id=user_id,
+        )
+        if set(tool.required_permissions).issubset(allowed):
+            return
+        tool_call.status = "blocked"
+        tool_call.error_category = PermissionDeniedError.category
+        tool_call.completed_at = datetime.utcnow()
+        record_trace(
+            db,
+            run_id=run.id,
+            step_id=step.id,
+            tool_call_id=tool_call.id,
+            workspace_id=workspace.id,
+            user_id=user_id,
+            event_type="tool.permission_denied",
+            status="blocked",
+            tool_name=tool.name,
+            error=PermissionDeniedError("Tool permission denied."),
+            data={
+                "action_type": tool.action_type,
+                "required_permission_count": len(tool.required_permissions),
+            },
+        )
+        raise PermissionDeniedError("Tool permission denied.")
 
     def _create_steps(self, db: Session, *, run: AgentRun, plan: AgentPlan) -> None:
         for index, item in enumerate(plan.steps):
@@ -775,7 +912,21 @@ class AgentRuntimeOrchestrator:
         if not self.feature_enabled:
             raise FeatureDisabledError("AI Control Plane is disabled.")
 
-    def _existing_run_for_key(self, db: Session, *, workspace_id: UUID, key: str) -> AgentRun | None:
+    def _request_fingerprint(self, payload: AgentRunCreateIn) -> str:
+        raw = json.dumps(
+            {
+                "version": "agent-run-create-v1",
+                "objective": payload.objective,
+                "dry_run": payload.dry_run,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _existing_run_for_key(
+        self, db: Session, *, workspace_id: UUID, key: str
+    ) -> AgentRun | None:
         clean_key = key.strip()
         if not clean_key:
             return None
@@ -819,6 +970,7 @@ def run_out(run: AgentRun) -> AgentRunOut:
         user_id=run.user_id,
         status=run.status,
         objective=run.objective,
+        dry_run=bool(run.dry_run),
         plan=run.plan_json if isinstance(run.plan_json, dict) else {},
         current_step_index=int(run.current_step_index or 0),
         current_step_name=run.current_step_name or "",
