@@ -87,6 +87,7 @@ from app.api.routes import (
     _subscription_status_for_workspace,
 )  # noqa: E402
 from app.models.entities import (
+    ActionPolicyEnforcement,
     AICustomerFinderSource,
     AIMemoryEntry,
     AISalesEmployee,
@@ -2889,6 +2890,8 @@ class _FakePostgresConnection:
                         "agent_trace_events",
                     }
                 )
+            if "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in sql:
+                self.state.tables.add("action_policy_enforcements")
             return _FakeScalarResult()
         if "CREATE TABLE IF NOT EXISTS backup_runs" in sql:
             self.state.tables.add("backup_runs")
@@ -2906,6 +2909,9 @@ class _FakePostgresConnection:
                     "agent_trace_events",
                 }
             )
+            return _FakeScalarResult()
+        if "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in sql:
+            self.state.tables.add("action_policy_enforcements")
             return _FakeScalarResult()
         if "INSERT INTO schema_migrations" in sql:
             assert params
@@ -3041,6 +3047,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(
         "020_billing_subscription_transitions",
         "021_plan_usage_reservations",
         "022_agent_runtime_control_plane",
+        "023_action_policy_enforcements",
     }
     state.tables.update(
         {
@@ -3052,6 +3059,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(
             "agent_tool_calls",
             "agent_approval_requests",
             "agent_trace_events",
+            "action_policy_enforcements",
         }
     )
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
@@ -3301,6 +3309,7 @@ def test_postgres_migration_failure_sets_negative_schema_status(
         "agent_tool_calls",
         "agent_approval_requests",
         "agent_trace_events",
+        "action_policy_enforcements",
     }
     assert "synthetic migration failure" in status.error
 
@@ -3904,6 +3913,33 @@ def test_postgres_schema_assets_include_agent_runtime_control_plane() -> None:
     assert "uq_agent_tool_calls_idempotency" in packaged_migration
     assert "uq_agent_approval_requests_idempotency" in packaged_migration
     assert "022_agent_runtime_control_plane" in REQUIRED_POSTGRES_MIGRATIONS
+
+
+def test_postgres_schema_assets_include_action_policy_enforcements() -> None:
+    schema = (
+        Path(__file__).resolve().parents[1] / "app" / "db" / "schema.sql"
+    ).read_text(encoding="utf-8")
+    packaged_migration = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "db"
+        / "migrations"
+        / "023_action_policy_enforcements.sql"
+    ).read_text(encoding="utf-8")
+    root_migration = (
+        Path(__file__).resolve().parents[3]
+        / "db"
+        / "migrations"
+        / "023_action_policy_enforcements.sql"
+    ).read_text(encoding="utf-8")
+
+    assert packaged_migration == root_migration
+    assert "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in schema
+    assert "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in packaged_migration
+    assert "uq_action_policy_enforcements_idempotency" in packaged_migration
+    assert "ck_action_policy_enforcements_actor_type" in packaged_migration
+    assert "ck_action_policy_enforcements_status" in packaged_migration
+    assert "023_action_policy_enforcements" in REQUIRED_POSTGRES_MIGRATIONS
 
 
 def test_startup_logs_validation_steps_and_fails_fast_on_database_error(
@@ -16536,13 +16572,17 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
         item["action"] == "email.approved" for item in crm_after_approval["activity"]
     )
 
-    monkeypatch.setattr(
-        "app.api.routes.send_email",
-        lambda **kwargs: {"id": "resend-approved-manual-draft"},
-    )
+    sent_payload: dict[str, Any] = {}
+
+    def fake_legacy_send(**kwargs):
+        sent_payload.update(kwargs)
+        return {"id": "resend-approved-manual-draft"}
+
+    monkeypatch.setattr("app.api.routes.send_email", fake_legacy_send)
     sent_response = client.post(f"/api/emails/{draft['id']}/send", headers=AUTH)
     assert sent_response.status_code == 200
     assert sent_response.json()["delivery_status"] == "sent"
+    assert sent_payload["policy_enforcement"].action_name == "email.send"
 
     crm_after_send = client.get(
         "/api/crm/companies?search=Manual%20Draft", headers=AUTH
@@ -18470,6 +18510,7 @@ def test_approved_email_uses_workspace_sender(monkeypatch) -> None:
 
     sent = client.post(f"/api/emails/{draft['id']}/send", headers=headers)
     assert sent.status_code == 200
+    assert sent_payload["policy_enforcement"].action_name == "email.send"
     assert sent_payload["from_email"] == "sales@example.com"
     assert sent_payload["from_name"] == "Sales Team"
     assert sent_payload["reply_to"] == "reply@example.com"
@@ -19394,6 +19435,8 @@ def test_resend_webhook_updates_delivery_metrics() -> None:
 
 
 def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    workspace_id = UUID(workspace["id"])
     monkeypatch.setattr(
         "app.api.webhooks.suggest_reply",
         lambda payload: type(
@@ -19411,12 +19454,16 @@ def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
     db = get_sessionmaker()()
     try:
         campaign = Campaign(
-            user_id="dev_user", name="Reply Campaign", industry="Construction"
+            user_id="dev_user",
+            workspace_id=workspace_id,
+            name="Reply Campaign",
+            industry="Construction",
         )
         db.add(campaign)
         db.flush()
         lead = Lead(
             user_id="dev_user",
+            workspace_id=workspace_id,
             campaign_id=campaign.id,
             company="Reply Build Co",
             email="reply@example.com",
@@ -19425,12 +19472,17 @@ def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
         db.add(lead)
         db.flush()
         company = Company(
-            user_id="dev_user", lead_id=lead.id, name="Reply Build Co", source="crm"
+            user_id="dev_user",
+            workspace_id=workspace_id,
+            lead_id=lead.id,
+            name="Reply Build Co",
+            source="crm",
         )
         db.add(company)
         db.flush()
         message = EmailMessage(
             user_id="dev_user",
+            workspace_id=workspace_id,
             campaign_id=campaign.id,
             lead_id=lead.id,
             direction="outbound",
@@ -22140,7 +22192,7 @@ def test_growth_engine_returns_briefing_and_persists_goal() -> None:
     assert refreshed.json()["goal"]["goal"] == "I want 12 meetings this month."
 
 
-def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(
+def test_autonomous_acquisition_run_imports_qualifies_prepares_and_blocks_send(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -22217,8 +22269,10 @@ def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(
             },
         )(),
     )
+    provider_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "app.services.acquisition.send_email", lambda **kwargs: {"id": "auto-email-1"}
+        "app.services.emailer._send_resend_email",
+        lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"},
     )
 
     workspace = client.get("/api/workspace", headers=AUTH).json()
@@ -22245,14 +22299,13 @@ def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(
     assert data["leads_imported"] == 1
     assert data["leads_qualified"] == 1
     assert data["emails_generated"] == 1
-    assert data["emails_sent"] == 1
+    assert data["emails_sent"] == 0
 
     lead_page = client.get("/api/leads?search=Autonomous", headers=AUTH).json()
-    assert lead_page["items"][0]["status"] == "Contacted"
-    dashboard = client.get("/api/dashboard", headers=AUTH).json()
-    assert dashboard["emails_sent"] >= 1
+    assert lead_page["items"][0]["status"] == "Qualified"
+    assert provider_calls == []
     activity = client.get("/api/activity", headers=AUTH).json()
-    assert any(item["action"] == "automation.email_sent" for item in activity)
+    assert any(item["action"] == "automation.email_send_blocked" for item in activity)
 
     unauthorized = client.post(
         "/api/automation/run", headers={"X-Automation-Secret": "wrong"}
@@ -22312,15 +22365,11 @@ def test_campaign_automation_send_obeys_outbound_provider_kill_switch(
         db.add(message)
         db.commit()
 
-        with pytest.raises(
-            EmailProviderSendingDisabledError,
-            match="Outbound sending is disabled in this environment.",
-        ):
-            acquisition._send_ready_email(db, workspace, campaign, lead, message)
+        assert not acquisition._send_ready_email(db, workspace, campaign, lead, message)
         db.refresh(message)
         db.refresh(lead)
         assert provider_calls == []
-        assert message.delivery_status == "draft"
+        assert message.delivery_status == "needs_review"
         assert message.provider_message_id is None
         assert lead.status == LeadStatus.qualified
     finally:
@@ -22946,12 +22995,11 @@ def _autopilot_fixture(
     return db, workspace, campaign, lead, email, job
 
 
-def test_autopilot_worker_sends_once_and_survives_reprocessing(monkeypatch) -> None:
-    sent = []
+def test_autopilot_worker_blocks_send_and_survives_reprocessing(monkeypatch) -> None:
+    provider_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "app.services.autopilot.send_email",
-        lambda **kwargs: sent.append(kwargs)
-        or {"id": "gmail-msg-1", "thread_id": "thread-1"},
+        "app.services.emailer._send_gmail_email",
+        lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"},
     )
     monkeypatch.setattr(
         "app.services.autopilot._within_working_hours", lambda campaign: True
@@ -22962,17 +23010,17 @@ def test_autopilot_worker_sends_once_and_survives_reprocessing(monkeypatch) -> N
     try:
         assert process_autopilot_email_job(db, job)
         db.refresh(email)
-        assert email.delivery_status == "sent"
-        assert email.provider_message_id == "gmail-msg-1"
-        assert len(sent) == 1
+        assert email.delivery_status == "needs_review"
+        assert email.provider_message_id is None
+        assert provider_calls == []
         retry_job = db.get(EnrichmentJob, job.id)
         assert process_autopilot_email_job(db, retry_job)
-        assert len(sent) == 1
+        assert provider_calls == []
         assert (
             db.query(AuditLog)
             .filter(
                 AuditLog.workspace_id == workspace.id,
-                AuditLog.action == "autopilot.email.sent",
+                AuditLog.action == "autopilot.requires_review",
             )
             .count()
             == 1
@@ -22982,10 +23030,9 @@ def test_autopilot_worker_sends_once_and_survives_reprocessing(monkeypatch) -> N
 
 
 def test_autopilot_pause_stop_and_workspace_isolation(monkeypatch) -> None:
-    sent = []
     monkeypatch.setattr(
-        "app.services.autopilot.send_email",
-        lambda **kwargs: sent.append(kwargs) or {"id": f"gmail-msg-{len(sent)}"},
+        "app.services.emailer._send_gmail_email",
+        lambda **kwargs: pytest.fail("autopilot must not call Gmail provider"),
     )
     monkeypatch.setattr(
         "app.services.autopilot._within_working_hours", lambda campaign: True
@@ -23013,14 +23060,12 @@ def test_autopilot_pause_stop_and_workspace_isolation(monkeypatch) -> None:
         assert process_autopilot_email_job(db, job_a)
         db.refresh(job_a)
         assert job_a.status == "cancelled"
-        assert not sent
 
         email_b = db.get(EmailMessage, email_b_id)
         job_b = db.get(EnrichmentJob, job_b_id)
         assert process_autopilot_email_job(db, job_b)
         db.refresh(email_b)
-        assert email_b.delivery_status == "sent"
-        assert len(sent) == 1
+        assert email_b.delivery_status == "needs_review"
         assert (
             db.query(EmailMessage)
             .filter(
@@ -23034,7 +23079,7 @@ def test_autopilot_pause_stop_and_workspace_isolation(monkeypatch) -> None:
             db.query(EmailMessage)
             .filter(
                 EmailMessage.workspace_id == workspace_b_id,
-                EmailMessage.delivery_status == "sent",
+                EmailMessage.delivery_status == "needs_review",
             )
             .count()
             == 1
@@ -23047,7 +23092,8 @@ def test_autopilot_suppression_and_staging_domain_block_keep_crm_review(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.autopilot.send_email", lambda **kwargs: {"id": "should-not-send"}
+        "app.services.emailer._send_gmail_email",
+        lambda **kwargs: pytest.fail("suppressed autopilot must not call Gmail"),
     )
     monkeypatch.setattr(
         "app.services.autopilot._within_working_hours", lambda campaign: True
@@ -23722,6 +23768,225 @@ def test_agent_runtime_missing_or_corrupt_approval_state_blocks_action() -> None
         policy.validate_approval_decision(tool=crm_tool, approval=corrupt_approval)
 
 
+def test_action_policy_gateway_fail_closed_and_idempotent_redacted() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionApprovalContext,
+        ActionPolicyGateway,
+        require_provider_policy,
+    )
+    from app.services.agent_runtime.errors import (
+        ApprovalStateError,
+        IdempotencyConflictError,
+        PermissionDeniedError,
+        ToolExecutionBlockedError,
+    )
+
+    db = get_sessionmaker()()
+    try:
+        owner_id = f"policy-owner-{uuid4()}@example.com"
+        workspace = Workspace(owner_user_id=owner_id, name="Policy Gateway Workspace")
+        other_workspace = Workspace(
+            owner_user_id=f"other-policy-{uuid4()}@example.com",
+            name="Other Policy Workspace",
+        )
+        db.add_all([workspace, other_workspace])
+        db.flush()
+        gateway = ActionPolicyGateway()
+
+        with pytest.raises(ApprovalStateError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="ai",
+                actor_id=owner_id,
+                action_name="email.draft.approve",
+                input_payload={"email_id": str(uuid4())},
+            )
+        with pytest.raises(ApprovalStateError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=owner_id,
+                action_name="autonomous.email.send",
+                input_payload={"email_id": str(uuid4()), "body": "Sensitive body"},
+                idempotency_key=f"worker-send-{uuid4()}",
+            )
+        with pytest.raises(PermissionDeniedError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=f"not-a-member-{uuid4()}@example.com",
+                action_name="crm.write",
+                input_payload={"company": "Denied"},
+            )
+        with pytest.raises(PermissionDeniedError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="crm.write",
+                input_payload={"company": "Cross workspace"},
+                resource_workspace_id=other_workspace.id,
+                resource_id=uuid4(),
+            )
+
+        before_counts = {
+            "companies": db.query(Company).count(),
+            "leads": db.query(Lead).count(),
+            "emails": db.query(EmailMessage).count(),
+        }
+        dry_run = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="crm.write",
+            input_payload={"company": "Dry Run Only", "dry_run": True},
+            dry_run=True,
+        )
+        gateway.record_success(db, dry_run, result={"dry_run": True})
+        db.flush()
+        assert before_counts == {
+            "companies": db.query(Company).count(),
+            "leads": db.query(Lead).count(),
+            "emails": db.query(EmailMessage).count(),
+        }
+
+        draft_key = f"draft-policy-{uuid4()}"
+        draft_input = {"subject": "Hello", "body": "Full sensitive body"}
+        draft_decision = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.draft.create",
+            input_payload=draft_input,
+            idempotency_key=draft_key,
+        )
+        gateway.record_success(
+            db,
+            draft_decision,
+            result={
+                "email_body": "Full sensitive body",
+                "access_token": "sk-secret-token",
+            },
+        )
+        db.commit()
+
+        replay = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.draft.create",
+            input_payload=draft_input,
+            idempotency_key=draft_key,
+        )
+        assert replay.replay is True
+        with pytest.raises(IdempotencyConflictError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="email.draft.create",
+                input_payload={"subject": "Changed", "body": "Full sensitive body"},
+                idempotency_key=draft_key,
+            )
+
+        approval = ActionApprovalContext(
+            approved=True,
+            approved_by_actor_type="human",
+            approved_by_user_id=owner_id,
+            manual_draft_approval=True,
+            final_send_confirmation=True,
+            fingerprint="approved-fingerprint",
+        )
+        with pytest.raises(ApprovalStateError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="email.send",
+                input_payload={"email_id": str(uuid4()), "body": "Body"},
+                approval=approval,
+                idempotency_key=f"stale-fingerprint-{uuid4()}",
+                required_approval_fingerprint="new-fingerprint",
+            )
+
+        email_id = str(uuid4())
+        send_key = f"send-policy-{uuid4()}"
+        send_input = {"email_id": email_id, "body": "Body"}
+        send_decision = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=send_input,
+            approval=approval,
+            idempotency_key=send_key,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        require_provider_policy(send_decision)
+        gateway.record_success(db, send_decision, result={"provider_message_id": "ok"})
+        db.commit()
+        replay_send = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=send_input,
+            approval=approval,
+            idempotency_key=send_key,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        assert replay_send.replay is True
+        with pytest.raises(ToolExecutionBlockedError):
+            require_provider_policy(replay_send)
+
+        rows = db.scalars(
+            select(ActionPolicyEnforcement).where(
+                ActionPolicyEnforcement.workspace_id == workspace.id,
+                ActionPolicyEnforcement.action_name == "email.draft.create",
+            )
+        ).all()
+        assert rows
+        redacted = json.dumps(rows[0].result_json, sort_keys=True)
+        assert "Full sensitive body" not in redacted
+        assert "sk-secret-token" not in redacted
+        assert "sha256" in redacted
+        assert "[REDACTED_SECRET]" in redacted
+    finally:
+        db.close()
+
+
+def test_emailer_blocks_provider_without_policy(monkeypatch) -> None:
+    from app.services import emailer
+    from app.services.agent_runtime.errors import ToolExecutionBlockedError
+
+    provider_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(get_settings(), "outbound_provider_sends_disabled", False)
+    monkeypatch.setattr(
+        "app.services.emailer._send_resend_email",
+        lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"},
+    )
+
+    with pytest.raises(ToolExecutionBlockedError):
+        emailer.send_email(
+            to_email="buyer@policy.example",
+            subject="Policy",
+            body="Body",
+            provider="resend",
+        )
+    assert provider_calls == []
+
+
 def test_agent_runtime_provider_not_called_without_approval(monkeypatch) -> None:
     from app.services.agent_runtime.adapters import AgentToolAdapters
     from app.services.agent_runtime.registry import build_default_tool_registry
@@ -23978,7 +24243,9 @@ def test_agent_runtime_draft_edit_resets_existing_approval(monkeypatch) -> None:
             tags={
                 "approved": True,
                 "approval_version": 1,
+                "approval_fingerprint": "old-draft-fingerprint",
                 "approval_source": "manual",
+                "approval_user_id": headers["X-Test-User-Email"],
                 "send_confirmation_snapshot": {"fingerprint": "old"},
             },
         )
@@ -23995,4 +24262,5 @@ def test_agent_runtime_draft_edit_resets_existing_approval(monkeypatch) -> None:
     assert edited.status_code == 200
     assert edited.json()["email"]["delivery_status"] == "draft"
     assert edited.json()["email"]["tags"].get("approved") is None
+    assert "approval_fingerprint" not in edited.json()["email"]["tags"]
     assert "send_confirmation_snapshot" not in edited.json()["email"]["tags"]

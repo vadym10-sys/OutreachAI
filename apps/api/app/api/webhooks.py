@@ -21,6 +21,8 @@ from app.models.entities import AppSettings, AuditLog, BillingCheckoutSession, C
 from app.schemas.dto import ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 from app.services.ai_memory import record_email_memory
+from app.services.agent_runtime.action_gateway import ActionPolicyGateway, policy_http_exception
+from app.services.agent_runtime.errors import AgentRuntimeError
 from app.services.billing import UnknownStripePriceError, require_plan_for_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
 from app.services.entitlements import UNKNOWN_PRICE_STATUS, reconcile_app_settings_billing_cache
 from app.services.plan_catalog import PLAN_CATALOG, plan_limits
@@ -29,6 +31,7 @@ from app.services.continuous_learning import apply_continuous_learning_event
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 logger = logging.getLogger("outreachai.stripe")
+_action_policy_gateway = ActionPolicyGateway()
 PAID_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 PENDING_SUBSCRIPTION_VERIFICATION_STATUS = "degraded_pending_subscription_verification"
 
@@ -788,7 +791,12 @@ def _sales_inbox_output(
 def _apply_sales_inbox_crm_update(db: Session, message: EmailMessage, classification: str, crm_update: dict[str, Any]) -> None:
     if not message.lead_id:
         return
-    lead = db.get(Lead, message.lead_id)
+    lead = db.scalar(
+        select(Lead).where(
+            Lead.id == message.lead_id,
+            Lead.workspace_id == message.workspace_id,
+        )
+    )
     if lead is not None:
         status_map = {
             "Meeting": LeadStatus.meeting,
@@ -810,7 +818,14 @@ def _apply_sales_inbox_crm_update(db: Session, message: EmailMessage, classifica
 def _record_sales_inbox_company_history(db: Session, message: EmailMessage, sales_inbox: dict[str, Any]) -> None:
     if not message.lead_id:
         return
-    company = db.scalar(select(Company).where(Company.lead_id == message.lead_id).order_by(Company.updated_at.desc()))
+    company = db.scalar(
+        select(Company)
+        .where(
+            Company.lead_id == message.lead_id,
+            Company.workspace_id == message.workspace_id,
+        )
+        .order_by(Company.updated_at.desc())
+    )
     if company is None:
         return
     metadata = company.metadata_json or {}
@@ -903,7 +918,16 @@ def _record_email_memory_outcome(db: Session, *, message: EmailMessage, company:
     workspace = db.get(Workspace, message.workspace_id)
     if workspace is None:
         return
-    lead = db.get(Lead, message.lead_id) if message.lead_id else None
+    lead = (
+        db.scalar(
+            select(Lead).where(
+                Lead.id == message.lead_id,
+                Lead.workspace_id == message.workspace_id,
+            )
+        )
+        if message.lead_id
+        else None
+    )
     try:
         record_email_memory(db, workspace=workspace, user_id=message.user_id, email=message, lead=lead, company=company, event=outcome, extra=extra or {})
     except Exception as exc:
@@ -913,13 +937,27 @@ def _record_email_memory_outcome(db: Session, *, message: EmailMessage, company:
 def _sync_crm_email_status(db: Session, message: EmailMessage, stage: str, email_status: str) -> None:
     if not message.lead_id:
         return
-    company = db.scalar(select(Company).where(Company.lead_id == message.lead_id).order_by(Company.updated_at.desc()))
+    company = db.scalar(
+        select(Company)
+        .where(
+            Company.lead_id == message.lead_id,
+            Company.workspace_id == message.workspace_id,
+        )
+        .order_by(Company.updated_at.desc())
+    )
     if company is None:
         return
     company.email_status = email_status
     company.crm_stage = stage
     company.updated_at = datetime.utcnow()
-    deal = db.scalar(select(Deal).where(Deal.lead_id == message.lead_id).order_by(Deal.updated_at.desc()))
+    deal = db.scalar(
+        select(Deal)
+        .where(
+            Deal.lead_id == message.lead_id,
+            Deal.workspace_id == message.workspace_id,
+        )
+        .order_by(Deal.updated_at.desc())
+    )
     if deal:
         deal.stage = stage
         deal.next_step = "Reply received. Review and book the next step." if stage == "Replied" else deal.next_step
@@ -947,9 +985,51 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
     message = db.scalar(select(EmailMessage).where(EmailMessage.provider_message_id == message_id))
     if message is None:
         return {"received": True, "matched": False}
+    workspace = db.get(Workspace, message.workspace_id) if message.workspace_id else None
+    if workspace is None:
+        raise HTTPException(status_code=409, detail="Webhook email workspace is missing.")
+    event_id = str(payload.get("id") or data.get("id") or hashlib.sha256(raw_payload).hexdigest())
+    try:
+        sync_policy = _action_policy_gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="system",
+            actor_id=message.user_id,
+            action_name="email.state.sync",
+            input_payload={
+                "route": "webhooks.resend",
+                "event_id": event_id,
+                "event_type": event_type,
+                "message_id": str(message.id),
+                "provider_message_id": message_id,
+            },
+            idempotency_key=f"resend-webhook:{workspace.id}:{event_type}:{event_id}",
+            resource_workspace_id=message.workspace_id,
+            resource_id=message.id,
+        )
+    except AgentRuntimeError as exc:
+        raise policy_http_exception(exc) from exc
+    if sync_policy.replay:
+        return {
+            "received": True,
+            "matched": True,
+            "type": event_type,
+            "replay": True,
+        }
 
     now = datetime.utcnow()
-    company = db.scalar(select(Company).where(Company.lead_id == message.lead_id).order_by(Company.updated_at.desc())) if message.lead_id else None
+    company = (
+        db.scalar(
+            select(Company)
+            .where(
+                Company.lead_id == message.lead_id,
+                Company.workspace_id == message.workspace_id,
+            )
+            .order_by(Company.updated_at.desc())
+        )
+        if message.lead_id
+        else None
+    )
     if event_type == "email.delivered":
         message.delivered_at = message.delivered_at or now
         message.delivery_status = "delivered"
@@ -963,7 +1043,16 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         message.opened_at = message.opened_at or now
         message.delivery_status = "opened"
         _sync_crm_email_status(db, message, "Sent", "Opened")
-        lead = db.get(Lead, message.lead_id) if message.lead_id else None
+        lead = (
+            db.scalar(
+                select(Lead).where(
+                    Lead.id == message.lead_id,
+                    Lead.workspace_id == message.workspace_id,
+                )
+            )
+            if message.lead_id
+            else None
+        )
         if lead:
             lead.status = LeadStatus.contacted
         _record_email_memory_outcome(db, message=message, company=company, outcome="open")
@@ -986,7 +1075,16 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
         message.replied_at = message.replied_at or now
         message.reply_body = reply_body
         message.delivery_status = "replied"
-        lead = db.get(Lead, message.lead_id) if message.lead_id else None
+        lead = (
+            db.scalar(
+                select(Lead).where(
+                    Lead.id == message.lead_id,
+                    Lead.workspace_id == message.workspace_id,
+                )
+            )
+            if message.lead_id
+            else None
+        )
         if lead:
             lead.status = LeadStatus.interested
         try:
@@ -1052,5 +1150,14 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
     else:
         return {"received": True, "matched": True, "type": event_type, "ignored": True}
     db.add(AuditLog(user_id=message.user_id, workspace_id=message.workspace_id, action=f"resend.{event_type}", ip_address=request.client.host if request.client else None, metadata_json={"email_id": str(message.id), "provider_message_id": message.provider_message_id}))
+    _action_policy_gateway.record_success(
+        db,
+        sync_policy,
+        result={
+            "email_id": str(message.id),
+            "event_type": event_type,
+            "provider_message_id": message.provider_message_id,
+        },
+    )
     db.commit()
     return {"received": True, "matched": True, "type": event_type}

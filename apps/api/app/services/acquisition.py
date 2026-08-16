@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -28,7 +29,12 @@ from app.models.entities import (
 )
 from app.schemas.dto import LeadFinderRequest, PersonalizeRequest
 from app.services.ai import adaptive_follow_ups, personalize_email, sales_copilot
-from app.services.emailer import send_email
+from app.services.agent_runtime.action_gateway import (
+    ActionApprovalContext,
+    ActionPolicyDecision,
+    ActionPolicyGateway,
+)
+from app.services.agent_runtime.errors import AgentRuntimeError
 from app.services.lead_finder import find_leads
 from app.services.plan_enforcement import (
     check_usage_available,
@@ -38,6 +44,7 @@ from app.services.website import collect_website
 from app.services.ai import analyze_company_website
 
 logger = logging.getLogger("outreachai.acquisition")
+_action_policy_gateway = ActionPolicyGateway()
 
 
 def _fit_db_text(value: str | None, max_length: int) -> str | None:
@@ -47,6 +54,39 @@ def _fit_db_text(value: str | None, max_length: int) -> str | None:
     if len(text) <= max_length:
         return text
     return text[: max_length - 1].rstrip() + "…"
+
+
+def _owner_approval(workspace: Workspace) -> ActionApprovalContext:
+    return ActionApprovalContext(
+        approved=True,
+        approved_by_actor_type="human",
+        approved_by_user_id=workspace.owner_user_id,
+    )
+
+
+def _enforce_worker_policy(
+    db: Session,
+    *,
+    workspace: Workspace,
+    action_name: str,
+    input_payload: dict[str, Any],
+    idempotency_key: str,
+    resource_workspace_id: UUID | None = None,
+    resource_id: UUID | str | None = None,
+    approval: ActionApprovalContext | None = None,
+) -> ActionPolicyDecision:
+    return _action_policy_gateway.enforce(
+        db,
+        workspace=workspace,
+        actor_type="worker",
+        actor_id=workspace.owner_user_id,
+        action_name=action_name,
+        input_payload=input_payload,
+        approval=approval,
+        idempotency_key=idempotency_key,
+        resource_workspace_id=resource_workspace_id,
+        resource_id=resource_id,
+    )
 
 
 @dataclass
@@ -308,6 +348,24 @@ def _import_daily_leads(db: Session, workspace: Workspace, campaign: Campaign) -
                 campaign.id,
             )
             break
+        crm_policy = _enforce_worker_policy(
+            db,
+            workspace=workspace,
+            action_name="crm.write",
+            input_payload={
+                "route": "automation.lead_import",
+                "campaign_id": str(campaign.id),
+                "company": item.company,
+                "website": item.website,
+                "email": str(item.email or "").strip().lower(),
+            },
+            approval=_owner_approval(workspace),
+            idempotency_key=(
+                f"automation-crm-import:{workspace.id}:{campaign.id}:"
+                f"{hashlib.sha256(str(item.email or item.website or item.company).strip().lower().encode('utf-8')).hexdigest()}"
+            ),
+            resource_workspace_id=workspace.id,
+        )
         lead = Lead(
             user_id=workspace.owner_user_id,
             workspace_id=workspace.id,
@@ -337,6 +395,11 @@ def _import_daily_leads(db: Session, workspace: Workspace, campaign: Campaign) -
             workspace.id,
             "automation.lead_imported",
             {"lead_id": str(lead.id), "company": lead.company},
+        )
+        _action_policy_gateway.record_success(
+            db,
+            crm_policy,
+            result={"lead_id": str(lead.id), "company": lead.company},
         )
     return imported
 
@@ -408,10 +471,29 @@ def _qualify_lead(
             campaign.id,
         )
         return False
+    crm_policy = _enforce_worker_policy(
+        db,
+        workspace=workspace,
+        action_name="crm.write",
+        input_payload={
+            "route": "automation.lead_qualification",
+            "campaign_id": str(campaign.id),
+            "lead_id": str(lead.id),
+        },
+        approval=_owner_approval(workspace),
+        idempotency_key=f"automation-crm-qualify:{workspace.id}:{lead.id}:v1",
+        resource_workspace_id=lead.workspace_id,
+        resource_id=lead.id,
+    )
     analysis = _latest_analysis(db, workspace, lead)
     messages = list(
         db.scalars(
-            select(EmailMessage).where(EmailMessage.lead_id == lead.id).limit(10)
+            select(EmailMessage)
+            .where(
+                EmailMessage.workspace_id == workspace.id,
+                EmailMessage.lead_id == lead.id,
+            )
+            .limit(10)
         ).all()
     )
     result = sales_copilot(
@@ -459,6 +541,11 @@ def _qualify_lead(
         "automation.lead_qualified",
         {"lead_id": str(lead.id), "status": lead.status.value},
     )
+    _action_policy_gateway.record_success(
+        db,
+        crm_policy,
+        result={"lead_id": str(lead.id), "status": lead.status.value},
+    )
     return lead.status == LeadStatus.qualified
 
 
@@ -481,6 +568,20 @@ def _generate_email_if_needed(
             campaign.id,
         )
         return None
+    draft_policy = _enforce_worker_policy(
+        db,
+        workspace=workspace,
+        action_name="email.draft.create",
+        input_payload={
+            "route": "automation.email_generation",
+            "campaign_id": str(campaign.id),
+            "lead_id": str(lead.id),
+            "recipient_email": str(lead.email or "").strip().lower(),
+        },
+        idempotency_key=f"automation-email-draft:{workspace.id}:{lead.id}:v1",
+        resource_workspace_id=lead.workspace_id,
+        resource_id=lead.id,
+    )
     analysis = _latest_analysis(db, workspace, lead)
     generated = personalize_email(
         PersonalizeRequest(
@@ -523,7 +624,98 @@ def _generate_email_if_needed(
         "automation.email_generated",
         {"lead_id": str(lead.id)},
     )
+    _action_policy_gateway.record_success(
+        db,
+        draft_policy,
+        result={"lead_id": str(lead.id), "email_id": str(message.id), "draft_only": True},
+    )
     return message
+
+
+def _email_tags(message: EmailMessage | None) -> dict[str, Any]:
+    return message.tags if message and isinstance(message.tags, dict) else {}
+
+
+def _email_approval_version(message: EmailMessage) -> int:
+    version = int(_email_tags(message).get("approval_version") or 0)
+    return max(1, version)
+
+
+def _block_automation_send_until_manual_review(
+    db: Session,
+    *,
+    workspace: Workspace,
+    campaign: Campaign,
+    lead: Lead,
+    message: EmailMessage,
+    route: str,
+) -> bool:
+    try:
+        _action_policy_gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="worker",
+            actor_id=workspace.owner_user_id,
+            action_name="autonomous.email.send",
+            input_payload={
+                "route": route,
+                "campaign_id": str(campaign.id),
+                "lead_id": str(lead.id),
+                "email_id": str(message.id),
+                "recipient_email": lead.email,
+                "subject": message.subject,
+                "body": message.body,
+            },
+            idempotency_key=(
+                f"automation-email-send:{workspace.id}:"
+                f"{message.id}:v{_email_approval_version(message)}"
+            ),
+            resource_workspace_id=message.workspace_id,
+            resource_id=message.id,
+        )
+    except AgentRuntimeError as exc:
+        message.delivery_status = "needs_review"
+        message.tags = {
+            **_email_tags(message),
+            "automation_send_blocked": True,
+            "automation_send_blocked_reason": str(exc),
+            "manual_send_required": True,
+        }
+        _audit(
+            db,
+            workspace.owner_user_id,
+            workspace.id,
+            "automation.email_send_blocked",
+            {
+                "campaign_id": str(campaign.id),
+                "lead_id": str(lead.id),
+                "email_id": str(message.id),
+                "route": route,
+            },
+        )
+        db.flush()
+        return False
+    message.delivery_status = "needs_review"
+    message.tags = {
+        **_email_tags(message),
+        "automation_send_blocked": True,
+        "automation_send_blocked_reason": "provider_send_not_available",
+        "manual_send_required": True,
+    }
+    _audit(
+        db,
+        workspace.owner_user_id,
+        workspace.id,
+        "automation.email_send_blocked",
+        {
+            "campaign_id": str(campaign.id),
+            "lead_id": str(lead.id),
+            "email_id": str(message.id),
+            "route": route,
+        },
+    )
+    db.flush()
+    return False
 
 
 def _send_ready_email(
@@ -560,31 +752,14 @@ def _send_ready_email(
     )
     if not message:
         return False
-    try:
-        check_usage_available(db, workspace.owner_user_id, workspace, "email_sends")
-    except HTTPException:
-        logger.info(
-            "automation.email_send_plan_limit_reached workspace_id=%s campaign_id=%s",
-            workspace.id,
-            campaign.id,
-        )
-        return False
-    response = send_email(
-        to_email=lead.email, subject=message.subject, body=message.body
-    )
-    message.sent_at = datetime.utcnow()
-    message.provider_message_id = str(response.get("id"))
-    message.delivery_status = "sent"
-    lead.status = LeadStatus.contacted
-    increment_usage_after_success(db, workspace.owner_user_id, workspace, "email_sends")
-    _audit(
+    return _block_automation_send_until_manual_review(
         db,
-        workspace.owner_user_id,
-        workspace.id,
-        "automation.email_sent",
-        {"lead_id": str(lead.id), "email_id": str(message.id)},
+        workspace=workspace,
+        campaign=campaign,
+        lead=lead,
+        message=message,
+        route="acquisition.ready_email",
     )
-    return True
 
 
 def _send_due_follow_ups(db: Session, workspace: Workspace, campaign: Campaign) -> int:
@@ -612,7 +787,16 @@ def _send_due_follow_ups(db: Session, workspace: Workspace, campaign: Campaign) 
     for original in originals:
         if sent >= get_settings().automation_send_limit_per_run:
             break
-        lead = db.get(Lead, original.lead_id) if original.lead_id else None
+        lead = (
+            db.scalar(
+                select(Lead).where(
+                    Lead.id == original.lead_id,
+                    Lead.workspace_id == workspace.id,
+                )
+            )
+            if original.lead_id
+            else None
+        )
         if (
             not lead
             or not lead.email
@@ -646,6 +830,25 @@ def _send_due_follow_ups(db: Session, workspace: Workspace, campaign: Campaign) 
                 or (step.body if step else "")
                 or f"Hi, just following up on my note about {campaign.offer or 'your growth priorities'}."
             )
+            draft_policy = _enforce_worker_policy(
+                db,
+                workspace=workspace,
+                action_name="email.draft.create",
+                input_payload={
+                    "route": "automation.follow_up_draft",
+                    "campaign_id": str(campaign.id),
+                    "lead_id": str(lead.id),
+                    "parent_email_id": str(original.id),
+                    "sequence_step": step_order,
+                    "recipient_email": str(lead.email or "").strip().lower(),
+                },
+                idempotency_key=(
+                    f"automation-followup-draft:{workspace.id}:"
+                    f"{original.id}:step{step_order}"
+                ),
+                resource_workspace_id=lead.workspace_id,
+                resource_id=lead.id,
+            )
             message = EmailMessage(
                 user_id=workspace.owner_user_id,
                 workspace_id=workspace.id,
@@ -665,35 +868,24 @@ def _send_due_follow_ups(db: Session, workspace: Workspace, campaign: Campaign) 
             )
             db.add(message)
             db.flush()
-            try:
-                check_usage_available(
-                    db, workspace.owner_user_id, workspace, "email_sends"
-                )
-            except HTTPException:
-                logger.info(
-                    "automation.follow_up_send_plan_limit_reached workspace_id=%s campaign_id=%s",
-                    workspace.id,
-                    campaign.id,
-                )
-                return sent
-            response = send_email(
-                to_email=lead.email, subject=message.subject, body=message.body
-            )
-            message.sent_at = datetime.utcnow()
-            message.provider_message_id = str(response.get("id"))
-            message.delivery_status = "sent"
-            lead.status = LeadStatus.contacted
-            increment_usage_after_success(
-                db, workspace.owner_user_id, workspace, "email_sends"
-            )
-            _audit(
+            _action_policy_gateway.record_success(
                 db,
-                workspace.owner_user_id,
-                workspace.id,
-                "automation.follow_up_sent",
-                {"lead_id": str(lead.id), "step": step_order},
+                draft_policy,
+                result={
+                    "lead_id": str(lead.id),
+                    "email_id": str(message.id),
+                    "draft_only": True,
+                    "sequence_step": step_order,
+                },
             )
-            sent += 1
+            _block_automation_send_until_manual_review(
+                db,
+                workspace=workspace,
+                campaign=campaign,
+                lead=lead,
+                message=message,
+                route="acquisition.follow_up",
+            )
             break
     return sent
 
@@ -749,7 +941,16 @@ def _detect_meetings(db: Session, workspace: Workspace, campaign: Campaign) -> i
     )
     meetings = 0
     for message in messages:
-        lead = db.get(Lead, message.lead_id) if message.lead_id else None
+        lead = (
+            db.scalar(
+                select(Lead).where(
+                    Lead.id == message.lead_id,
+                    Lead.workspace_id == workspace.id,
+                )
+            )
+            if message.lead_id
+            else None
+        )
         if not lead or lead.status == LeadStatus.meeting:
             continue
         assistant = message.reply_assistant or {}

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routes import (
     _current_workspace,
+    _enforce_action_policy,
     _limits_for_workspace,
     _plan_for_workspace,
     _upgrade_message,
@@ -57,6 +58,18 @@ def update_company_watchlist(
         raise HTTPException(
             status_code=402, detail=_upgrade_message(plan, "Advanced Analytics")
         )
+    crm_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="crm.write",
+        input_payload={
+            "route": "revenue_intelligence.watchlist",
+            "company_id": str(company_id),
+            "watchlisted": payload.watchlisted,
+        },
+        resource_id=company_id,
+    )
     try:
         return set_company_watchlist(
             db,
@@ -64,6 +77,7 @@ def update_company_watchlist(
             user_id=user.user_id,
             company_id=company_id,
             watchlisted=payload.watchlisted,
+            action_policy=crm_policy,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
