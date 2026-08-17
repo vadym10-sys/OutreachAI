@@ -24510,6 +24510,290 @@ def test_action_policy_gateway_worker_delegation_required_and_scoped() -> None:
             )
 
 
+def test_action_policy_gateway_enrichment_job_type_scope_matrix() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionDelegationContext,
+        ActionPolicyGateway,
+        request_fingerprint_for_action,
+    )
+    from app.services.agent_runtime.errors import ApprovalStateError
+
+    owner_id = f"job-scope-{uuid4()}@example.com"
+    gateway = ActionPolicyGateway()
+
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_id, name="Job Scope")
+        db.add(workspace)
+        db.flush()
+        lead = Lead(
+            user_id=owner_id,
+            workspace_id=workspace.id,
+            company="Job Scope Lead",
+            website="https://job-scope.example",
+            email="buyer@job-scope.example",
+        )
+        db.add(lead)
+        db.flush()
+        company = Company(
+            user_id=owner_id,
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            name="Job Scope Company",
+            website=lead.website,
+            domain="job-scope.example",
+        )
+        db.add(company)
+        db.flush()
+
+        def make_job(job_type: str, payload_json: dict[str, Any] | None = None) -> EnrichmentJob:
+            job = EnrichmentJob(
+                workspace_id=workspace.id,
+                user_id=owner_id,
+                lead_id=lead.id,
+                job_type=job_type,
+                status="running",
+                request_id=str(uuid4()),
+                payload_json=payload_json or {},
+            )
+            db.add(job)
+            db.flush()
+            return job
+
+        company_job = make_job("company_enrichment")
+        deep_job = make_job("deep_contact_search", {"company_id": str(company.id)})
+        autopilot_job = make_job(
+            "autopilot_email_send",
+            {"email_id": str(uuid4()), "campaign_id": str(uuid4())},
+        )
+        unknown_job = make_job("mystery_job")
+
+        def delegation_for(
+            *,
+            job: EnrichmentJob,
+            action_name: str,
+            payload: dict[str, Any],
+            resource_id: UUID,
+        ) -> ActionDelegationContext:
+            return ActionDelegationContext(
+                delegated_by_user_id=owner_id,
+                delegation_type="job_created_by_user",
+                evidence_id=str(job.id),
+                fingerprint=request_fingerprint_for_action(
+                    action_name=action_name,
+                    input_payload=payload,
+                ),
+                workspace_id=workspace.id,
+                action_name=action_name,
+                resource_id=resource_id,
+            )
+
+        def enforce_job(
+            *,
+            job: EnrichmentJob,
+            action_name: str,
+            payload: dict[str, Any],
+            resource_id: UUID,
+            suffix: str,
+        ):
+            return gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{job.id}",
+                action_name=action_name,
+                input_payload=payload,
+                delegation=delegation_for(
+                    job=job,
+                    action_name=action_name,
+                    payload=payload,
+                    resource_id=resource_id,
+                ),
+                idempotency_key=f"job-scope:{workspace.id}:{job.id}:{suffix}",
+                resource_workspace_id=workspace.id,
+                resource_id=resource_id,
+            )
+
+        company_payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+        }
+        company_decision = enforce_job(
+            job=company_job,
+            action_name="crm.write",
+            payload=company_payload,
+            resource_id=lead.id,
+            suffix="company-crm",
+        )
+        assert company_decision.allowed is True
+        gateway.record_success(db, company_decision, result={"ok": True})
+
+        company_draft_payload = {
+            "route": "worker.company_enrichment.draft",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+        }
+        company_draft_decision = enforce_job(
+            job=company_job,
+            action_name="email.draft.create",
+            payload=company_draft_payload,
+            resource_id=lead.id,
+            suffix="company-draft",
+        )
+        assert company_draft_decision.allowed is True
+        gateway.record_success(db, company_draft_decision, result={"draft": True})
+
+        deep_payload = {
+            "route": "worker.deep_contact_search",
+            "job_id": str(deep_job.id),
+            "lead_id": str(lead.id),
+            "company_id": str(company.id),
+        }
+        deep_decision = enforce_job(
+            job=deep_job,
+            action_name="crm.write",
+            payload=deep_payload,
+            resource_id=company.id,
+            suffix="deep-crm",
+        )
+        assert deep_decision.allowed is True
+        gateway.record_success(db, deep_decision, result={"ok": True})
+
+        company_failure_payload = {
+            "route": "worker.enrichment_failure",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+            "job_type": "company_enrichment",
+        }
+        company_failure = enforce_job(
+            job=company_job,
+            action_name="crm.write",
+            payload=company_failure_payload,
+            resource_id=lead.id,
+            suffix="company-failure",
+        )
+        assert company_failure.allowed is True
+        gateway.record_success(db, company_failure, result={"failed": True})
+
+        deep_failure_payload = {
+            "route": "worker.enrichment_failure",
+            "job_id": str(deep_job.id),
+            "lead_id": str(lead.id),
+            "job_type": "deep_contact_search",
+        }
+        deep_failure = enforce_job(
+            job=deep_job,
+            action_name="crm.write",
+            payload=deep_failure_payload,
+            resource_id=lead.id,
+            suffix="deep-failure",
+        )
+        assert deep_failure.allowed is True
+        gateway.record_success(db, deep_failure, result={"failed": True})
+
+        autopilot_company_payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(autopilot_job.id),
+            "lead_id": str(lead.id),
+        }
+        with pytest.raises(ApprovalStateError, match="job type"):
+            enforce_job(
+                job=autopilot_job,
+                action_name="crm.write",
+                payload=autopilot_company_payload,
+                resource_id=lead.id,
+                suffix="autopilot-company",
+            )
+
+        autopilot_draft_payload = {
+            "route": "worker.company_enrichment.draft",
+            "job_id": str(autopilot_job.id),
+            "lead_id": str(lead.id),
+        }
+        with pytest.raises(ApprovalStateError, match="job type"):
+            enforce_job(
+                job=autopilot_job,
+                action_name="email.draft.create",
+                payload=autopilot_draft_payload,
+                resource_id=lead.id,
+                suffix="autopilot-draft",
+            )
+
+        autonomous_payload = {
+            "route": "worker.autopilot_email_send",
+            "job_id": str(autopilot_job.id),
+            "email_id": str(uuid4()),
+            "recipient_email": "buyer@job-scope.example",
+            "sender_email": "sender@job-scope.example",
+            "subject": "Blocked autonomous send",
+            "body": "Provider must remain blocked.",
+            "approval_version": 1,
+            "confirmation_fingerprint": "not-approved",
+        }
+        with pytest.raises(ApprovalStateError, match="requires a human"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{autopilot_job.id}",
+                action_name="autonomous.email.send",
+                input_payload=autonomous_payload,
+                delegation=delegation_for(
+                    job=autopilot_job,
+                    action_name="autonomous.email.send",
+                    payload=autonomous_payload,
+                    resource_id=lead.id,
+                ),
+                idempotency_key=f"job-scope:{workspace.id}:{autopilot_job.id}:autonomous-send",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+
+        company_deep_payload = {
+            "route": "worker.deep_contact_search",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+            "company_id": str(company.id),
+        }
+        with pytest.raises(ApprovalStateError, match="job type"):
+            enforce_job(
+                job=company_job,
+                action_name="crm.write",
+                payload=company_deep_payload,
+                resource_id=company.id,
+                suffix="company-deep",
+            )
+
+        mismatched_failure_payload = {
+            "route": "worker.enrichment_failure",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+            "job_type": "deep_contact_search",
+        }
+        with pytest.raises(ApprovalStateError, match="job type mismatch"):
+            enforce_job(
+                job=company_job,
+                action_name="crm.write",
+                payload=mismatched_failure_payload,
+                resource_id=lead.id,
+                suffix="failure-mismatch",
+            )
+
+        unknown_payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(unknown_job.id),
+            "lead_id": str(lead.id),
+        }
+        with pytest.raises(ApprovalStateError, match="job type"):
+            enforce_job(
+                job=unknown_job,
+                action_name="crm.write",
+                payload=unknown_payload,
+                resource_id=lead.id,
+                suffix="unknown",
+            )
+
+
 def test_action_policy_gateway_delegation_evidence_negative_cases() -> None:
     from app.services.agent_runtime.action_gateway import (
         ActionDelegationContext,
@@ -24808,6 +25092,9 @@ def test_action_policy_gateway_caller_permissions_cannot_weaken_definition() -> 
 def test_action_policy_gateway_failure_redacts_raw_exception_secrets() -> None:
     from app.services.agent_runtime.action_gateway import ActionPolicyGateway
 
+    class CategorizedSensitiveError(RuntimeError):
+        category = "Authorization: Bearer category-token"
+
     with get_sessionmaker()() as db:
         owner_id = f"failure-redaction-{uuid4()}@example.com"
         workspace = Workspace(owner_user_id=owner_id, name="Failure Redaction")
@@ -24830,7 +25117,7 @@ def test_action_policy_gateway_failure_redacts_raw_exception_secrets() -> None:
             "Hello buyer, this is the complete sensitive email body. "
             "It includes private offer details and should not be stored raw."
         )
-        exc = RuntimeError(
+        exc = (
             "Authorization: Bearer sk-test-secret-token-1234567890 "
             "smtp_password=hunter2 "
             f"body={sensitive_body}"
@@ -24839,10 +25126,39 @@ def test_action_policy_gateway_failure_redacts_raw_exception_secrets() -> None:
         db.flush()
         row = db.get(ActionPolicyEnforcement, decision.enforcement.id)
         assert row is not None
+        assert row.error_category == "external_error"
+        assert len(row.error_category) <= 80
+        assert "sk-test-secret-token-1234567890" not in row.error_category
+        assert "hunter2" not in row.error_category
+        assert sensitive_body not in row.error_category
         assert "sk-test-secret-token-1234567890" not in row.error_message
         assert "hunter2" not in row.error_message
         assert sensitive_body not in row.error_message
         assert len(row.error_message) <= 1000
+
+        categorized = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.draft.create",
+            input_payload={
+                "subject": "Redact category",
+                "body": "Draft body should still be hashed in fingerprints.",
+            },
+            idempotency_key=f"failure-redaction-category:{workspace.id}",
+        )
+        gateway.record_failure(
+            db,
+            categorized,
+            CategorizedSensitiveError("category attribute should not be stored raw"),
+        )
+        db.flush()
+        categorized_row = db.get(ActionPolicyEnforcement, categorized.enforcement.id)
+        assert categorized_row is not None
+        assert categorized_row.error_category == "CategorizedSensitiveError"
+        assert "category-token" not in categorized_row.error_category
+        assert len(categorized_row.error_category) <= 80
 
 
 def test_action_policy_gateway_invalid_payload_blocks_before_provider_policy() -> None:

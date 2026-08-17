@@ -38,7 +38,7 @@ from app.services.agent_runtime.permissions import (
     WorkspaceRolePermissionResolver,
 )
 from app.services.agent_runtime.registry import ToolRegistry
-from app.services.agent_runtime.tracing import error_category, sanitize_for_trace
+from app.services.agent_runtime.tracing import sanitize_for_trace
 
 ActorType = Literal["human", "ai", "worker", "system"]
 ActionType = Literal["read_only", "internal_write", "external_side_effect"]
@@ -57,6 +57,36 @@ POLICY_ERROR_SECRET_RE = re.compile(
 )
 POLICY_ERROR_BODY_RE = re.compile(
     r"(?is)\b(body|email_body|message_body|draft_body|reply_body)\b\s*[:=]\s*.+"
+)
+POLICY_ERROR_CATEGORY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,79}$")
+POLICY_ERROR_CATEGORY_SENSITIVE_RE = re.compile(
+    r"(?i)(authorization|bearer|cookie|api[_-]?key|apikey|access[_-]?token|"
+    r"refresh[_-]?token|oauth|password|secret|client[_-]?secret|"
+    r"private[_-]?key|smtp[_-]?password|smtp[_-]?username|"
+    r"body=|email_body|message_body|draft_body|reply_body)"
+)
+ENRICHMENT_JOB_ACTION_SCOPES: dict[str, frozenset[tuple[str, str]]] = {
+    "company_enrichment": frozenset(
+        {
+            ("crm.write", "worker.company_enrichment"),
+            ("email.draft.create", "worker.company_enrichment.draft"),
+            ("crm.write", "worker.enrichment_failure"),
+        }
+    ),
+    "deep_contact_search": frozenset(
+        {
+            ("crm.write", "worker.deep_contact_search"),
+            ("crm.write", "worker.enrichment_failure"),
+        }
+    ),
+    "autopilot_email_send": frozenset(
+        {
+            ("crm.write", "worker.autopilot_email_send_failure"),
+        }
+    ),
+}
+ENRICHMENT_JOB_FAILURE_ROUTES = frozenset(
+    {"worker.enrichment_failure", "worker.autopilot_email_send_failure"}
 )
 
 
@@ -461,6 +491,18 @@ class DelegationEvidenceResolver:
             raise ApprovalStateError("Delegation job mismatch.")
         if str(input_payload.get("lead_id") or "") != str(job.lead_id):
             raise PermissionDeniedError("Delegation job lead mismatch.")
+        job_type = str(job.job_type or "").strip()
+        allowed_scopes = ENRICHMENT_JOB_ACTION_SCOPES.get(job_type)
+        if not allowed_scopes:
+            raise ApprovalStateError("Delegation job type is not supported.")
+        if (action_name, route) not in allowed_scopes:
+            raise ApprovalStateError(
+                "Delegation job type does not allow this action scope."
+            )
+        if route in ENRICHMENT_JOB_FAILURE_ROUTES and str(
+            input_payload.get("job_type") or ""
+        ) != job_type:
+            raise ApprovalStateError("Delegation failure job type mismatch.")
         if route == "worker.deep_contact_search":
             expected_company_id = str((job.payload_json or {}).get("company_id") or "")
             if expected_company_id and str(input_payload.get("company_id") or "") != expected_company_id:
@@ -470,16 +512,8 @@ class DelegationEvidenceResolver:
             str(input_payload.get("company_id") or ""),
         }:
             raise PermissionDeniedError("Delegation resource mismatch.")
-        allowed_routes = {
-            ("crm.write", "worker.company_enrichment"),
-            ("crm.write", "worker.deep_contact_search"),
-            ("crm.write", "worker.enrichment_failure"),
-            ("email.draft.create", "worker.company_enrichment.draft"),
-        }
-        if (action_name, route) not in allowed_routes:
-            raise ApprovalStateError("Delegation action scope mismatch.")
         active_statuses = {"pending", "running", "retrying"}
-        if route == "worker.enrichment_failure":
+        if route in ENRICHMENT_JOB_FAILURE_ROUTES:
             active_statuses = {"pending", "running", "retrying", "failed"}
         if job.cancel_requested or job.status not in active_statuses:
             raise ApprovalStateError("Delegation job is not active.")
@@ -912,9 +946,7 @@ class ActionPolicyGateway:
             .where(*_active_claim_predicates(decision, now))
             .values(
                 status="failed",
-                error_category=(
-                    error_category(exc) if isinstance(exc, Exception) else str(exc)
-                ),
+                error_category=_policy_safe_error_category(exc),
                 error_message=_policy_safe_error_message(exc),
                 execution_claim_token="",
                 claim_expires_at=None,
@@ -1213,7 +1245,7 @@ class ActionPolicyGateway:
                 request_fingerprint=request_fingerprint,
                 dry_run=dry_run,
                 status="blocked",
-                error_category=error_category(exc),
+                error_category=_policy_safe_error_category(exc),
                 error_message=reason,
                 completed_at=datetime.utcnow(),
             )
@@ -1355,6 +1387,31 @@ def _policy_safe_error_message(exc: Exception | str) -> str:
     redacted = sanitize_for_trace({"error": text}, max_string_length=1000)
     safe = str(redacted.get("error") or "") if isinstance(redacted, dict) else ""
     return safe[:1000]
+
+
+def _policy_normalized_error_category(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip()
+    if (
+        not text
+        or len(text) > 80
+        or not POLICY_ERROR_CATEGORY_RE.fullmatch(text)
+        or POLICY_ERROR_CATEGORY_SENSITIVE_RE.search(text)
+    ):
+        return fallback
+    return text
+
+
+def _policy_safe_error_category(exc: Exception | str) -> str:
+    if isinstance(exc, str):
+        return "external_error"
+    raw_category = getattr(exc, "category", "")
+    category = _policy_normalized_error_category(raw_category, fallback="")
+    if category:
+        return category
+    return _policy_normalized_error_category(
+        exc.__class__.__name__,
+        fallback="external_error",
+    )
 
 
 def _normalized_email(value: Any) -> str:

@@ -9037,8 +9037,13 @@ def mark_enrichment_job_failed(
         )
         if workspace is None or lead is None:
             return
+        failure_route = (
+            "worker.autopilot_email_send_failure"
+            if job.job_type == "autopilot_email_send"
+            else "worker.enrichment_failure"
+        )
         policy_payload = {
-            "route": "worker.enrichment_failure",
+            "route": failure_route,
             "job_id": str(job.id),
             "lead_id": str(lead.id),
             "job_type": job.job_type,
