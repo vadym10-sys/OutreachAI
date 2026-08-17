@@ -11617,6 +11617,7 @@ def mark_email_sent(
             provider=sender_status.provider,
             smtp_config=smtp_config,
             idempotency_key=idempotency_key,
+            policy_db=db,
             policy_enforcement=send_policy,
         )
     except EmailProviderSendingDisabledError as exc:

@@ -628,6 +628,8 @@ CREATE TABLE IF NOT EXISTS action_policy_enforcements (
   actor_id VARCHAR(128) NOT NULL,
   user_id VARCHAR(128) NOT NULL DEFAULT '',
   delegated_by_user_id VARCHAR(128) NOT NULL DEFAULT '',
+  delegation_type VARCHAR(80) NOT NULL DEFAULT '',
+  delegation_evidence_id VARCHAR(160) NOT NULL DEFAULT '',
   delegation_fingerprint VARCHAR(128) NOT NULL DEFAULT '',
   action_name VARCHAR(160) NOT NULL,
   action_type VARCHAR(40) NOT NULL,

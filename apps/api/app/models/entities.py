@@ -513,6 +513,10 @@ class ActionPolicyEnforcement(Base):
     actor_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str] = mapped_column(String(128), default="", index=True)
     delegated_by_user_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    delegation_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    delegation_evidence_id: Mapped[str] = mapped_column(
+        String(160), default="", index=True
+    )
     delegation_fingerprint: Mapped[str] = mapped_column(String(128), default="")
     action_name: Mapped[str] = mapped_column(String(160), index=True)
     action_type: Mapped[str] = mapped_column(String(40), index=True)

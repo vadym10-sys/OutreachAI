@@ -317,19 +317,18 @@ def _job_action_delegation(
     )
 
 
-def _workspace_automation_delegation(
+def _company_action_delegation(
     *,
     workspace: Workspace,
-    delegated_by_user_id: str,
-    evidence_id: str,
+    company: Company,
     action_name: str,
     input_payload: dict[str, Any],
     resource_id: UUID | str | None = None,
 ) -> ActionDelegationContext:
     return ActionDelegationContext(
-        delegated_by_user_id=delegated_by_user_id,
-        delegation_type="workspace_automation_authorization",
-        evidence_id=evidence_id,
+        delegated_by_user_id=company.user_id,
+        delegation_type="company_nightly_prioritization",
+        evidence_id=str(company.id),
         fingerprint=request_fingerprint_for_action(
             action_name=action_name,
             input_payload=input_payload,
@@ -9376,20 +9375,13 @@ def run_continuous_company_monitoring_once(
                 "lead_id": str(company.lead_id or ""),
                 "change_fingerprint": change_fingerprint,
             }
-            crm_policy = _enforce_worker_action_policy(
+            crm_policy = _action_policy_gateway.enforce(
                 db,
                 workspace=workspace,
-                actor_id=f"worker:monitoring:{company.id}:{change_fingerprint[:16]}",
+                actor_type="human",
+                actor_id=delegated_user_id,
                 action_name="crm.write",
                 input_payload=policy_payload,
-                delegation=_workspace_automation_delegation(
-                    workspace=workspace,
-                    delegated_by_user_id=delegated_user_id,
-                    evidence_id=f"manual-monitoring:{workspace.id}",
-                    action_name="crm.write",
-                    input_payload=policy_payload,
-                    resource_id=company.id,
-                ),
                 idempotency_key=(
                     f"worker-monitoring-crm:{workspace.id}:"
                     f"{company.id}:{change_fingerprint}"
@@ -9557,10 +9549,9 @@ def run_nightly_lead_prioritization_once() -> int:
                 ),
                 action_name="crm.write",
                 input_payload=policy_payload,
-                delegation=_workspace_automation_delegation(
+                delegation=_company_action_delegation(
                     workspace=workspace,
-                    delegated_by_user_id=delegated_user_id,
-                    evidence_id=f"company:{company.id}",
+                    company=company,
                     action_name="crm.write",
                     input_payload=policy_payload,
                     resource_id=company.id,
@@ -16200,6 +16191,7 @@ def send_approved_email(
             provider=sender_status.provider,
             smtp_config=smtp_config,
             idempotency_key=idempotency_key,
+            policy_db=db,
             policy_enforcement=send_policy,
         )
     except HTTPException as exc:

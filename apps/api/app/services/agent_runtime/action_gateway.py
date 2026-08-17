@@ -10,11 +10,20 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.entities import ActionPolicyEnforcement, Workspace
+from app.models.entities import (
+    ActionPolicyEnforcement,
+    Campaign,
+    CampaignStatus,
+    Company,
+    EmailMessage,
+    EnrichmentJob,
+    Lead,
+    Workspace,
+)
 from app.services.agent_runtime.errors import (
     AgentRuntimeError,
     ApprovalStateError,
@@ -84,6 +93,14 @@ class ActionDelegationContext:
     workspace_id: UUID | str | None = None
     action_name: str = ""
     resource_id: UUID | str | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedDelegationEvidence:
+    delegated_by_user_id: str
+    delegation_type: str
+    evidence_id: str
+    fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -342,6 +359,254 @@ ACTION_DEFINITIONS: dict[str, ActionDefinition] = {
 }
 
 
+class DelegationEvidenceResolver:
+    def resolve(
+        self,
+        db: Session,
+        *,
+        workspace: Workspace,
+        delegation: ActionDelegationContext | None,
+        action_name: str,
+        resource_id: UUID | str | None,
+        request_fingerprint: str,
+        input_payload: dict[str, Any],
+    ) -> ResolvedDelegationEvidence:
+        if delegation is None:
+            raise ApprovalStateError("Missing durable delegation blocks worker action.")
+        delegated_by = str(delegation.delegated_by_user_id or "").strip()
+        delegation_type = str(delegation.delegation_type or "").strip()
+        evidence_id = str(delegation.evidence_id or "").strip()
+        if not delegated_by:
+            raise ApprovalStateError("Delegation must be tied to a human user.")
+        if not delegation_type:
+            raise ApprovalStateError("Delegation type is required.")
+        if not evidence_id:
+            raise ApprovalStateError("Delegation evidence is required.")
+        if not delegation.workspace_id or str(delegation.workspace_id) != str(workspace.id):
+            raise PermissionDeniedError("Delegation workspace mismatch.")
+        if not delegation.action_name or delegation.action_name != action_name:
+            raise ApprovalStateError("Delegation action mismatch.")
+        if delegation.resource_id and resource_id and str(delegation.resource_id) != str(resource_id):
+            raise PermissionDeniedError("Delegation resource mismatch.")
+        if not delegation.fingerprint or delegation.fingerprint != request_fingerprint:
+            raise ApprovalStateError("Delegation fingerprint mismatch.")
+
+        if delegation_type == "job_created_by_user":
+            return self._resolve_enrichment_job(
+                db,
+                workspace=workspace,
+                delegated_by=delegated_by,
+                evidence_id=evidence_id,
+                action_name=action_name,
+                resource_id=resource_id,
+                input_payload=input_payload,
+                request_fingerprint=request_fingerprint,
+            )
+        if delegation_type == "campaign_automation_authorization":
+            return self._resolve_campaign(
+                db,
+                workspace=workspace,
+                delegated_by=delegated_by,
+                evidence_id=evidence_id,
+                action_name=action_name,
+                resource_id=resource_id,
+                input_payload=input_payload,
+                request_fingerprint=request_fingerprint,
+            )
+        if delegation_type == "company_nightly_prioritization":
+            return self._resolve_company_prioritization(
+                db,
+                workspace=workspace,
+                delegated_by=delegated_by,
+                evidence_id=evidence_id,
+                action_name=action_name,
+                resource_id=resource_id,
+                input_payload=input_payload,
+                request_fingerprint=request_fingerprint,
+            )
+        if delegation_type == "provider_message_state_sync":
+            return self._resolve_provider_message_sync(
+                db,
+                workspace=workspace,
+                delegated_by=delegated_by,
+                evidence_id=evidence_id,
+                action_name=action_name,
+                resource_id=resource_id,
+                input_payload=input_payload,
+                request_fingerprint=request_fingerprint,
+            )
+        raise ApprovalStateError("Delegation evidence type is not supported.")
+
+    def _resolve_enrichment_job(
+        self,
+        db: Session,
+        *,
+        workspace: Workspace,
+        delegated_by: str,
+        evidence_id: str,
+        action_name: str,
+        resource_id: UUID | str | None,
+        input_payload: dict[str, Any],
+        request_fingerprint: str,
+    ) -> ResolvedDelegationEvidence:
+        job = db.get(EnrichmentJob, _uuid_for_evidence(evidence_id))
+        if job is None:
+            raise ApprovalStateError("Delegation evidence was not found.")
+        if job.workspace_id != workspace.id:
+            raise PermissionDeniedError("Delegation evidence workspace mismatch.")
+        if str(job.user_id or "").strip() != delegated_by:
+            raise PermissionDeniedError("Delegation user mismatch.")
+        route = str(input_payload.get("route") or "")
+        if str(input_payload.get("job_id") or "") != str(job.id):
+            raise ApprovalStateError("Delegation job mismatch.")
+        if str(input_payload.get("lead_id") or "") != str(job.lead_id):
+            raise PermissionDeniedError("Delegation job lead mismatch.")
+        if route == "worker.deep_contact_search":
+            expected_company_id = str((job.payload_json or {}).get("company_id") or "")
+            if expected_company_id and str(input_payload.get("company_id") or "") != expected_company_id:
+                raise PermissionDeniedError("Delegation job company mismatch.")
+        if resource_id and str(resource_id) not in {
+            str(job.lead_id),
+            str(input_payload.get("company_id") or ""),
+        }:
+            raise PermissionDeniedError("Delegation resource mismatch.")
+        allowed_routes = {
+            ("crm.write", "worker.company_enrichment"),
+            ("crm.write", "worker.deep_contact_search"),
+            ("crm.write", "worker.enrichment_failure"),
+            ("email.draft.create", "worker.company_enrichment.draft"),
+        }
+        if (action_name, route) not in allowed_routes:
+            raise ApprovalStateError("Delegation action scope mismatch.")
+        active_statuses = {"pending", "running", "retrying"}
+        if route == "worker.enrichment_failure":
+            active_statuses = {"pending", "running", "retrying", "failed"}
+        if job.cancel_requested or job.status not in active_statuses:
+            raise ApprovalStateError("Delegation job is not active.")
+        return ResolvedDelegationEvidence(
+            delegated_by_user_id=delegated_by,
+            delegation_type="job_created_by_user",
+            evidence_id=str(job.id),
+            fingerprint=request_fingerprint,
+        )
+
+    def _resolve_campaign(
+        self,
+        db: Session,
+        *,
+        workspace: Workspace,
+        delegated_by: str,
+        evidence_id: str,
+        action_name: str,
+        resource_id: UUID | str | None,
+        input_payload: dict[str, Any],
+        request_fingerprint: str,
+    ) -> ResolvedDelegationEvidence:
+        campaign = db.get(Campaign, _uuid_for_evidence(evidence_id))
+        if campaign is None:
+            raise ApprovalStateError("Delegation evidence was not found.")
+        if campaign.workspace_id != workspace.id:
+            raise PermissionDeniedError("Delegation evidence workspace mismatch.")
+        if str(campaign.user_id or "").strip() != delegated_by:
+            raise PermissionDeniedError("Delegation user mismatch.")
+        if str(input_payload.get("campaign_id") or "") != str(campaign.id):
+            raise ApprovalStateError("Delegation campaign mismatch.")
+        route = str(input_payload.get("route") or "")
+        allowed_routes = {
+            ("crm.write", "automation.lead_import"),
+            ("crm.write", "automation.lead_qualification"),
+            ("email.draft.create", "automation.email_generation"),
+            ("email.draft.create", "automation.follow_up_draft"),
+        }
+        if (action_name, route) not in allowed_routes:
+            raise ApprovalStateError("Delegation action scope mismatch.")
+        if campaign.status not in {CampaignStatus.running, CampaignStatus.scheduled}:
+            raise ApprovalStateError("Delegation campaign is not active.")
+        lead_id = str(input_payload.get("lead_id") or "")
+        if lead_id:
+            lead = db.get(Lead, _uuid_for_evidence(lead_id))
+            if lead is None or lead.workspace_id != workspace.id:
+                raise PermissionDeniedError("Delegation lead workspace mismatch.")
+            if lead.campaign_id and lead.campaign_id != campaign.id:
+                raise PermissionDeniedError("Delegation lead campaign mismatch.")
+        if resource_id and lead_id and str(resource_id) != lead_id:
+            raise PermissionDeniedError("Delegation resource mismatch.")
+        return ResolvedDelegationEvidence(
+            delegated_by_user_id=delegated_by,
+            delegation_type="campaign_automation_authorization",
+            evidence_id=str(campaign.id),
+            fingerprint=request_fingerprint,
+        )
+
+    def _resolve_company_prioritization(
+        self,
+        db: Session,
+        *,
+        workspace: Workspace,
+        delegated_by: str,
+        evidence_id: str,
+        action_name: str,
+        resource_id: UUID | str | None,
+        input_payload: dict[str, Any],
+        request_fingerprint: str,
+    ) -> ResolvedDelegationEvidence:
+        company = db.get(Company, _uuid_for_evidence(evidence_id))
+        if company is None:
+            raise ApprovalStateError("Delegation evidence was not found.")
+        if company.workspace_id != workspace.id:
+            raise PermissionDeniedError("Delegation evidence workspace mismatch.")
+        if str(company.user_id or "").strip() != delegated_by:
+            raise PermissionDeniedError("Delegation user mismatch.")
+        if action_name != "crm.write" or input_payload.get("route") != "worker.nightly_lead_prioritization":
+            raise ApprovalStateError("Delegation action scope mismatch.")
+        if str(input_payload.get("company_id") or "") != str(company.id):
+            raise ApprovalStateError("Delegation company mismatch.")
+        if resource_id and str(resource_id) != str(company.id):
+            raise PermissionDeniedError("Delegation resource mismatch.")
+        if input_payload.get("lead_id") and company.lead_id and str(input_payload["lead_id"]) != str(company.lead_id):
+            raise PermissionDeniedError("Delegation company lead mismatch.")
+        return ResolvedDelegationEvidence(
+            delegated_by_user_id=delegated_by,
+            delegation_type="company_nightly_prioritization",
+            evidence_id=str(company.id),
+            fingerprint=request_fingerprint,
+        )
+
+    def _resolve_provider_message_sync(
+        self,
+        db: Session,
+        *,
+        workspace: Workspace,
+        delegated_by: str,
+        evidence_id: str,
+        action_name: str,
+        resource_id: UUID | str | None,
+        input_payload: dict[str, Any],
+        request_fingerprint: str,
+    ) -> ResolvedDelegationEvidence:
+        message = db.get(EmailMessage, _uuid_for_evidence(evidence_id))
+        if message is None:
+            raise ApprovalStateError("Delegation evidence was not found.")
+        if message.workspace_id != workspace.id:
+            raise PermissionDeniedError("Delegation evidence workspace mismatch.")
+        if str(message.user_id or "").strip() != delegated_by:
+            raise PermissionDeniedError("Delegation user mismatch.")
+        if action_name != "email.state.sync" or input_payload.get("route") != "webhooks.resend":
+            raise ApprovalStateError("Delegation action scope mismatch.")
+        if str(input_payload.get("message_id") or "") != str(message.id):
+            raise ApprovalStateError("Delegation email message mismatch.")
+        if resource_id and str(resource_id) != str(message.id):
+            raise PermissionDeniedError("Delegation resource mismatch.")
+        if not message.provider_message_id or str(input_payload.get("provider_message_id") or "") != str(message.provider_message_id):
+            raise PermissionDeniedError("Delegation provider message mismatch.")
+        return ResolvedDelegationEvidence(
+            delegated_by_user_id=delegated_by,
+            delegation_type="provider_message_state_sync",
+            evidence_id=str(message.id),
+            fingerprint=request_fingerprint,
+        )
+
+
 class ActionPolicyGateway:
     def __init__(
         self,
@@ -349,10 +614,12 @@ class ActionPolicyGateway:
         permission_resolver: AgentRuntimePermissionResolver | None = None,
         registry: ToolRegistry | None = None,
         approval_policy: AgentApprovalPolicy | None = None,
+        delegation_resolver: DelegationEvidenceResolver | None = None,
     ) -> None:
         self.permission_resolver = permission_resolver or WorkspaceRolePermissionResolver()
         self.registry = registry
         self.approval_policy = approval_policy or AgentApprovalPolicy()
+        self.delegation_resolver = delegation_resolver or DelegationEvidenceResolver()
 
     def enforce(
         self,
@@ -434,14 +701,21 @@ class ActionPolicyGateway:
             )
             raise PermissionDeniedError("Action workspace mismatch.")
         try:
-            permission_actor_id = self._permission_actor_id(
+            resolved_delegation = self._resolve_delegation(
+                db,
                 workspace=workspace,
                 actor_type=actor_type,
                 action_name=action_name,
+                input_payload=validated_payload,
                 resource_id=resource_id,
                 delegation=delegation,
                 request_fingerprint=request_fingerprint,
                 required_permissions=effective_permissions,
+            )
+            permission_actor_id = (
+                resolved_delegation.delegated_by_user_id
+                if resolved_delegation
+                else ""
             )
         except (ApprovalStateError, PermissionDeniedError) as exc:
             self._record_blocked(
@@ -533,11 +807,19 @@ class ActionPolicyGateway:
                 actor_type=actor_type,
                 actor_id=clean_actor_id,
                 delegated_by_user_id=(
-                    str(delegation.delegated_by_user_id).strip()
-                    if delegation
+                    resolved_delegation.delegated_by_user_id
+                    if resolved_delegation
                     else ""
                 ),
-                delegation_fingerprint=delegation.fingerprint if delegation else "",
+                delegation_type=(
+                    resolved_delegation.delegation_type if resolved_delegation else ""
+                ),
+                delegation_evidence_id=(
+                    resolved_delegation.evidence_id if resolved_delegation else ""
+                ),
+                delegation_fingerprint=(
+                    resolved_delegation.fingerprint if resolved_delegation else ""
+                ),
                 action_name=action_name,
                 action_type=definition.action_type,
                 resource_id=resource_id,
@@ -593,16 +875,28 @@ class ActionPolicyGateway:
     ) -> None:
         if not decision or not decision.enforcement or decision.replay:
             return
-        _require_decision_claim(decision)
-        enforcement = decision.enforcement
-        enforcement.status = "succeeded"
-        enforcement.result_json = _policy_safe_payload(result or {})
-        enforcement.error_category = ""
-        enforcement.error_message = ""
-        enforcement.completed_at = datetime.utcnow()
-        enforcement.updated_at = datetime.utcnow()
-        db.add(enforcement)
+        now = datetime.utcnow()
+        updated = db.execute(
+            update(ActionPolicyEnforcement)
+            .where(*_active_claim_predicates(decision, now))
+            .values(
+                status="succeeded",
+                result_json=_policy_safe_payload(result or {}),
+                error_category="",
+                error_message="",
+                execution_claim_token="",
+                claim_expires_at=None,
+                completed_at=now,
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if updated.rowcount != 1:
+            raise ToolExecutionBlockedError(
+                "Action policy execution claim is no longer active."
+            )
         db.flush()
+        db.expire(decision.enforcement)
 
     def record_failure(
         self,
@@ -612,17 +906,29 @@ class ActionPolicyGateway:
     ) -> None:
         if not decision or not decision.enforcement or decision.replay:
             return
-        _require_decision_claim(decision)
-        enforcement = decision.enforcement
-        enforcement.status = "failed"
-        enforcement.error_category = (
-            error_category(exc) if isinstance(exc, Exception) else str(exc)
+        now = datetime.utcnow()
+        updated = db.execute(
+            update(ActionPolicyEnforcement)
+            .where(*_active_claim_predicates(decision, now))
+            .values(
+                status="failed",
+                error_category=(
+                    error_category(exc) if isinstance(exc, Exception) else str(exc)
+                ),
+                error_message=_policy_safe_error_message(exc),
+                execution_claim_token="",
+                claim_expires_at=None,
+                completed_at=now,
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
         )
-        enforcement.error_message = _policy_safe_error_message(exc)
-        enforcement.completed_at = datetime.utcnow()
-        enforcement.updated_at = datetime.utcnow()
-        db.add(enforcement)
+        if updated.rowcount != 1:
+            raise ToolExecutionBlockedError(
+                "Action policy execution claim is no longer active."
+            )
         db.flush()
+        db.expire(decision.enforcement)
 
     def _definition(self, action_name: str) -> ActionDefinition:
         definition = ACTION_DEFINITIONS.get(action_name)
@@ -658,39 +964,32 @@ class ActionPolicyGateway:
             raise ToolExecutionBlockedError("Invalid action policy payload.") from exc
         return model.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
 
-    def _permission_actor_id(
+    def _resolve_delegation(
         self,
+        db: Session,
         *,
         workspace: Workspace,
         actor_type: ActorType,
         action_name: str,
+        input_payload: dict[str, Any],
         resource_id: UUID | str | None,
         delegation: ActionDelegationContext | None,
         request_fingerprint: str,
         required_permissions: tuple[str, ...],
-    ) -> str:
+    ) -> ResolvedDelegationEvidence | None:
         if actor_type not in {"worker", "system"}:
-            return ""
+            return None
         if not required_permissions:
-            return ""
-        if delegation is None:
-            raise ApprovalStateError("Missing durable delegation blocks worker action.")
-        delegated_by = str(delegation.delegated_by_user_id or "").strip()
-        if not delegated_by:
-            raise ApprovalStateError("Delegation must be tied to a human user.")
-        if delegation.workspace_id and str(delegation.workspace_id) != str(workspace.id):
-            raise PermissionDeniedError("Delegation workspace mismatch.")
-        if delegation.action_name and delegation.action_name != action_name:
-            raise ApprovalStateError("Delegation action mismatch.")
-        if delegation.resource_id and resource_id and str(delegation.resource_id) != str(resource_id):
-            raise PermissionDeniedError("Delegation resource mismatch.")
-        if not delegation.fingerprint or delegation.fingerprint != request_fingerprint:
-            raise ApprovalStateError("Delegation fingerprint mismatch.")
-        if not str(delegation.delegation_type or "").strip():
-            raise ApprovalStateError("Delegation type is required.")
-        if not str(delegation.evidence_id or "").strip():
-            raise ApprovalStateError("Delegation evidence is required.")
-        return delegated_by
+            return None
+        return self.delegation_resolver.resolve(
+            db,
+            workspace=workspace,
+            delegation=delegation,
+            action_name=action_name,
+            resource_id=resource_id,
+            request_fingerprint=request_fingerprint,
+            input_payload=input_payload,
+        )
 
     def _require_permissions(
         self,
@@ -760,6 +1059,8 @@ class ActionPolicyGateway:
         actor_type: ActorType,
         actor_id: str,
         delegated_by_user_id: str,
+        delegation_type: str,
+        delegation_evidence_id: str,
         delegation_fingerprint: str,
         action_name: str,
         action_type: ActionType,
@@ -795,6 +1096,8 @@ class ActionPolicyGateway:
             actor_id=actor_id,
             user_id=delegated_by_user_id or actor_id,
             delegated_by_user_id=delegated_by_user_id,
+            delegation_type=delegation_type,
+            delegation_evidence_id=delegation_evidence_id,
             delegation_fingerprint=delegation_fingerprint,
             action_name=action_name,
             action_type=action_type,
@@ -1058,7 +1361,16 @@ def _normalized_email(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
-def _require_decision_claim(decision: ActionPolicyDecision) -> None:
+def _uuid_for_evidence(value: str) -> UUID:
+    try:
+        return UUID(str(value))
+    except Exception as exc:
+        raise ApprovalStateError("Delegation evidence was not found.") from exc
+
+
+def _active_claim_predicates(
+    decision: ActionPolicyDecision, now: datetime
+) -> tuple[Any, ...]:
     enforcement = decision.enforcement
     if enforcement is None:
         raise ToolExecutionBlockedError("Action policy claim is missing.")
@@ -1066,15 +1378,22 @@ def _require_decision_claim(decision: ActionPolicyDecision) -> None:
         raise ToolExecutionBlockedError("Replay cannot own an execution claim.")
     if not decision.execution_claim_token:
         raise ToolExecutionBlockedError("Action policy execution claim is missing.")
-    if enforcement.execution_claim_token != decision.execution_claim_token:
-        raise ToolExecutionBlockedError("Action policy execution claim mismatch.")
-    if enforcement.status != "started":
-        raise ToolExecutionBlockedError("Action policy execution claim is not active.")
-    if enforcement.claim_expires_at and enforcement.claim_expires_at < datetime.utcnow():
-        raise ToolExecutionBlockedError("Action policy execution claim expired.")
+    return (
+        ActionPolicyEnforcement.id == enforcement.id,
+        ActionPolicyEnforcement.workspace_id == enforcement.workspace_id,
+        ActionPolicyEnforcement.action_name == decision.action_name,
+        ActionPolicyEnforcement.request_fingerprint == decision.request_fingerprint,
+        ActionPolicyEnforcement.status == "started",
+        ActionPolicyEnforcement.execution_claim_token
+        == decision.execution_claim_token,
+        or_(
+            ActionPolicyEnforcement.claim_expires_at.is_(None),
+            ActionPolicyEnforcement.claim_expires_at >= now,
+        ),
+    )
 
 
-def require_provider_policy(decision: ActionPolicyDecision | None) -> None:
+def require_provider_policy(db: Session, decision: ActionPolicyDecision | None) -> None:
     if decision is None:
         raise ToolExecutionBlockedError(
             "Email provider send blocked by missing server-side policy enforcement."
@@ -1083,4 +1402,14 @@ def require_provider_policy(decision: ActionPolicyDecision | None) -> None:
         raise ToolExecutionBlockedError(
             "Email provider send blocked by server-side policy state."
         )
-    _require_decision_claim(decision)
+    now = datetime.utcnow()
+    active_claim_id = db.scalar(
+        select(ActionPolicyEnforcement.id).where(
+            *_active_claim_predicates(decision, now),
+            ActionPolicyEnforcement.action_type == "external_side_effect",
+        )
+    )
+    if active_claim_id is None:
+        raise ToolExecutionBlockedError(
+            "Email provider send blocked by inactive action policy claim."
+        )
