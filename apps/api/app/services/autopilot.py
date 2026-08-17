@@ -393,7 +393,7 @@ def process_autopilot_email_job(
             db,
             workspace=workspace,
             actor_type="worker",
-            actor_id=job.user_id,
+            actor_id=f"worker:autopilot:{job.id}",
             action_name="autonomous.email.send",
             input_payload={
                 "route": "autopilot.worker",

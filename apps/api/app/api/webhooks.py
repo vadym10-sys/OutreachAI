@@ -21,7 +21,12 @@ from app.models.entities import AppSettings, AuditLog, BillingCheckoutSession, C
 from app.schemas.dto import ReplyAssistantRequest
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, suggest_reply
 from app.services.ai_memory import record_email_memory
-from app.services.agent_runtime.action_gateway import ActionPolicyGateway, policy_http_exception
+from app.services.agent_runtime.action_gateway import (
+    ActionDelegationContext,
+    ActionPolicyGateway,
+    policy_http_exception,
+    request_fingerprint_for_action,
+)
 from app.services.agent_runtime.errors import AgentRuntimeError
 from app.services.billing import UnknownStripePriceError, require_plan_for_price_id, subscription_payload, subscription_price_id, timestamp_to_datetime
 from app.services.entitlements import UNKNOWN_PRICE_STATUS, reconcile_app_settings_billing_cache
@@ -989,20 +994,33 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)) -> dic
     if workspace is None:
         raise HTTPException(status_code=409, detail="Webhook email workspace is missing.")
     event_id = str(payload.get("id") or data.get("id") or hashlib.sha256(raw_payload).hexdigest())
+    policy_payload = {
+        "route": "webhooks.resend",
+        "event_id": event_id,
+        "event_type": event_type,
+        "message_id": str(message.id),
+        "provider_message_id": message_id,
+    }
     try:
         sync_policy = _action_policy_gateway.enforce(
             db,
             workspace=workspace,
             actor_type="system",
-            actor_id=message.user_id,
+            actor_id=f"system:resend-webhook:{event_id}",
             action_name="email.state.sync",
-            input_payload={
-                "route": "webhooks.resend",
-                "event_id": event_id,
-                "event_type": event_type,
-                "message_id": str(message.id),
-                "provider_message_id": message_id,
-            },
+            input_payload=policy_payload,
+            delegation=ActionDelegationContext(
+                delegated_by_user_id=message.user_id,
+                delegation_type="provider_message_state_sync",
+                evidence_id=str(message.id),
+                fingerprint=request_fingerprint_for_action(
+                    action_name="email.state.sync",
+                    input_payload=policy_payload,
+                ),
+                workspace_id=workspace.id,
+                action_name="email.state.sync",
+                resource_id=message.id,
+            ),
             idempotency_key=f"resend-webhook:{workspace.id}:{event_type}:{event_id}",
             resource_workspace_id=message.workspace_id,
             resource_id=message.id,

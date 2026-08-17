@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Literal
-from uuid import UUID
+from datetime import datetime, timedelta
+from typing import Any, Literal, Optional, Union
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -40,6 +42,13 @@ BODY_FIELDS = {
     "reply_body",
     "message_body",
 }
+ACTION_POLICY_CLAIM_TTL_SECONDS = 900
+POLICY_ERROR_SECRET_RE = re.compile(
+    r"(?i)\b(smtp[_-]?password|smtp[_-]?username|smtp[_-]?pass)\b\s*[:=]\s*['\"]?[^'\"\s,;]+"
+)
+POLICY_ERROR_BODY_RE = re.compile(
+    r"(?is)\b(body|email_body|message_body|draft_body|reply_body)\b\s*[:=]\s*.+"
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +76,17 @@ class ActionApprovalContext:
 
 
 @dataclass(frozen=True)
+class ActionDelegationContext:
+    delegated_by_user_id: str
+    delegation_type: str
+    evidence_id: str
+    fingerprint: str
+    workspace_id: UUID | str | None = None
+    action_name: str = ""
+    resource_id: UUID | str | None = None
+
+
+@dataclass(frozen=True)
 class ActionPolicyDecision:
     allowed: bool
     reason: str
@@ -76,6 +96,185 @@ class ActionPolicyDecision:
     replay: bool = False
     provider_side_effect_allowed: bool = False
     enforcement: ActionPolicyEnforcement | None = None
+    execution_claim_token: str = ""
+
+
+class _PolicyPayloadModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    route: str = Field(default="", max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("metadata", "context")
+    @classmethod
+    def _safe_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _policy_safe_payload(value)
+
+
+class _PolicyCrmWriteInput(_PolicyPayloadModel):
+    action: str = Field(default="", max_length=120)
+    source: str = Field(default="", max_length=120)
+    status: str = Field(default="", max_length=120)
+    status_before: str = Field(default="", max_length=120)
+    status_after: str = Field(default="", max_length=120)
+    status_transition: str = Field(default="", max_length=120)
+    stage: str = Field(default="", max_length=120)
+    job_type: str = Field(default="", max_length=120)
+    request_id: str = Field(default="", max_length=160)
+    company: str = Field(default="", max_length=300)
+    company_name: str = Field(default="", max_length=300)
+    website: str = Field(default="", max_length=500)
+    domain: str = Field(default="", max_length=500)
+    notes: str = Field(default="", max_length=4000)
+    email: str = Field(default="", max_length=320)
+    contact_email: str = Field(default="", max_length=320)
+    recipient_email: str = Field(default="", max_length=320)
+    body: str = Field(default="", max_length=10000)
+    tier: str = Field(default="", max_length=80)
+    date: str = Field(default="", max_length=40)
+    change_fingerprint: str = Field(default="", max_length=128)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    filters: Optional[Union[dict[str, Any], list[Any]]] = None
+    fields: list[str] = Field(default_factory=list)
+    updates: dict[str, Any] = Field(default_factory=dict)
+    found: Optional[bool] = None
+    force: Optional[bool] = None
+    watchlisted: Optional[bool] = None
+    confirmed_not_delivered: Optional[bool] = None
+    has_email: Optional[bool] = None
+    has_phone: Optional[bool] = None
+    has_linkedin: Optional[bool] = None
+    dry_run: Optional[bool] = None
+    count: Optional[int] = None
+    candidate_count: Optional[int] = None
+    draft_count: Optional[int] = None
+    lead_count: Optional[int] = None
+    company_count: Optional[int] = None
+    score: Optional[Union[int, float]] = None
+    icp_score: Optional[int] = None
+    company_id: Optional[Union[UUID, str]] = None
+    lead_id: Optional[Union[UUID, str]] = None
+    email_id: Optional[Union[UUID, str]] = None
+    campaign_id: Optional[Union[UUID, str]] = None
+    employee_id: Optional[Union[UUID, str]] = None
+    job_id: Optional[Union[UUID, str]] = None
+    result_id: Optional[Union[UUID, str]] = None
+    contact_id: Optional[Union[UUID, str]] = None
+    note_id: Optional[Union[UUID, str]] = None
+    plan_id: Optional[Union[UUID, str]] = None
+    smoke_test_id: Optional[Union[UUID, str]] = None
+
+    @field_validator(
+        "company_id",
+        "lead_id",
+        "email_id",
+        "campaign_id",
+        "employee_id",
+        "job_id",
+        "result_id",
+        "contact_id",
+        "note_id",
+        "plan_id",
+        "smoke_test_id",
+        mode="before",
+    )
+    @classmethod
+    def _uuid_or_empty(cls, value: Any) -> Any:
+        if value in (None, ""):
+            return value
+        return str(UUID(str(value)))
+
+
+class _PolicyEmailDraftInput(_PolicyPayloadModel):
+    email_id: Optional[Union[UUID, str]] = None
+    lead_id: Optional[Union[UUID, str]] = None
+    company_id: Optional[Union[UUID, str]] = None
+    campaign_id: Optional[Union[UUID, str]] = None
+    employee_id: Optional[Union[UUID, str]] = None
+    job_id: Optional[Union[UUID, str]] = None
+    parent_email_id: Optional[Union[UUID, str]] = None
+    plan_id: Optional[Union[UUID, str]] = None
+    smoke_test_id: Optional[Union[UUID, str]] = None
+    result_id: Optional[Union[UUID, str]] = None
+    mode: str = Field(default="", max_length=80)
+    subject: str = Field(default="", max_length=300)
+    body: str = Field(default="", max_length=10000)
+    recipient_email: str = Field(default="", max_length=320)
+    sender_email: str = Field(default="", max_length=320)
+    command: str = Field(default="", max_length=4000)
+    delivery_status: str = Field(default="", max_length=80)
+    status_before: str = Field(default="", max_length=80)
+    status_after: str = Field(default="", max_length=80)
+    status_transition: str = Field(default="", max_length=80)
+    approval_fingerprint: str = Field(default="", max_length=128)
+    confirmation_fingerprint: str = Field(default="", max_length=128)
+    approval_version: Optional[int] = None
+    sequence_step: Optional[int] = None
+    confirmed_exact_draft: Optional[bool] = None
+    confirmed_not_delivered: Optional[bool] = None
+    dry_run: Optional[bool] = None
+    fields: list[str] = Field(default_factory=list)
+    updates: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator(
+        "email_id",
+        "lead_id",
+        "company_id",
+        "campaign_id",
+        "employee_id",
+        "job_id",
+        "parent_email_id",
+        "plan_id",
+        "smoke_test_id",
+        "result_id",
+        mode="before",
+    )
+    @classmethod
+    def _uuid_or_empty(cls, value: Any) -> Any:
+        if value in (None, ""):
+            return value
+        return str(UUID(str(value)))
+
+
+class _PolicyEmailSendInput(_PolicyPayloadModel):
+    email_id: UUID
+    lead_id: Optional[UUID] = None
+    recipient_email: str = Field(default="", max_length=320)
+    sender_email: str = Field(default="", max_length=320)
+    subject: str = Field(default="", max_length=300)
+    body: str = Field(default="", max_length=10000)
+    approval_version: Optional[int] = None
+    confirmation_fingerprint: str = Field(default="", max_length=128)
+    confirmed_draft_approval: Optional[bool] = None
+    confirmed_final_send: Optional[bool] = None
+    campaign_id: Optional[UUID] = None
+    job_id: Optional[UUID] = None
+
+
+class _PolicyReplySyncInput(_PolicyPayloadModel):
+    since_hours: Optional[int] = Field(default=None, ge=1, le=720)
+    candidate_count: Optional[int] = Field(default=None, ge=0, le=1000)
+    dry_run: Optional[bool] = None
+
+
+class _PolicyEmailStateSyncInput(_PolicyPayloadModel):
+    event_id: str = Field(default="", max_length=256)
+    event_type: str = Field(default="", max_length=160)
+    message_id: UUID
+    provider_message_id: str = Field(default="", max_length=256)
+
+
+POLICY_INPUT_SCHEMAS: dict[str, type[_PolicyPayloadModel]] = {
+    "crm.write": _PolicyCrmWriteInput,
+    "email.draft.create": _PolicyEmailDraftInput,
+    "email.draft.update": _PolicyEmailDraftInput,
+    "email.draft.approve": _PolicyEmailDraftInput,
+    "email.send": _PolicyEmailSendInput,
+    "autonomous.email.send": _PolicyEmailSendInput,
+    "gmail.replies.sync": _PolicyReplySyncInput,
+    "email.state.sync": _PolicyEmailStateSyncInput,
+}
 
 
 ACTION_DEFINITIONS: dict[str, ActionDefinition] = {
@@ -167,6 +366,7 @@ class ActionPolicyGateway:
         required_permissions: tuple[str, ...] | None = None,
         dry_run: bool = False,
         approval: ActionApprovalContext | None = None,
+        delegation: ActionDelegationContext | None = None,
         idempotency_key: str = "",
         resource_workspace_id: UUID | None = None,
         resource_id: UUID | str | None = None,
@@ -174,6 +374,14 @@ class ActionPolicyGateway:
     ) -> ActionPolicyDecision:
         definition = self._definition(action_name)
         self._validate_registered_tool_schema(definition)
+        validated_payload = self._validate_policy_input(definition, input_payload)
+        effective_permissions = _merge_required_permissions(
+            definition.required_permissions,
+            required_permissions or (),
+        )
+        request_fingerprint = request_fingerprint_for_action(
+            action_name=action_name, input_payload=validated_payload
+        )
         clean_actor_id = str(actor_id or "").strip()
         if not clean_actor_id:
             self._record_blocked(
@@ -184,10 +392,9 @@ class ActionPolicyGateway:
                 action_name=action_name,
                 action_type=definition.action_type,
                 resource_id=resource_id,
-                required_permissions=required_permissions
-                or definition.required_permissions,
+                required_permissions=effective_permissions,
                 dry_run=dry_run,
-                request_fingerprint="",
+                request_fingerprint=request_fingerprint,
                 reason="missing_actor_identity",
                 exc=PermissionDeniedError("Missing actor identity."),
             )
@@ -195,9 +402,6 @@ class ActionPolicyGateway:
         if actor_type not in {"human", "ai", "worker", "system"}:
             raise PermissionDeniedError("Unsupported actor type.")
         if definition.human_only and actor_type != "human":
-            request_fingerprint = request_fingerprint_for_action(
-                action_name=action_name, input_payload=input_payload
-            )
             self._record_blocked(
                 db,
                 workspace=workspace,
@@ -206,8 +410,7 @@ class ActionPolicyGateway:
                 action_name=action_name,
                 action_type=definition.action_type,
                 resource_id=resource_id,
-                required_permissions=required_permissions
-                or definition.required_permissions,
+                required_permissions=effective_permissions,
                 dry_run=dry_run,
                 request_fingerprint=request_fingerprint,
                 reason="action_requires_human_actor",
@@ -215,9 +418,6 @@ class ActionPolicyGateway:
             )
             raise ApprovalStateError("This action requires a human actor.")
         if resource_workspace_id is not None and resource_workspace_id != workspace.id:
-            request_fingerprint = request_fingerprint_for_action(
-                action_name=action_name, input_payload=input_payload
-            )
             self._record_blocked(
                 db,
                 workspace=workspace,
@@ -226,23 +426,44 @@ class ActionPolicyGateway:
                 action_name=action_name,
                 action_type=definition.action_type,
                 resource_id=resource_id,
-                required_permissions=required_permissions
-                or definition.required_permissions,
+                required_permissions=effective_permissions,
                 dry_run=dry_run,
                 request_fingerprint=request_fingerprint,
                 reason="workspace_mismatch",
                 exc=PermissionDeniedError("Action workspace mismatch."),
             )
             raise PermissionDeniedError("Action workspace mismatch.")
-        request_fingerprint = request_fingerprint_for_action(
-            action_name=action_name, input_payload=input_payload
-        )
-        effective_permissions = required_permissions or definition.required_permissions
+        try:
+            permission_actor_id = self._permission_actor_id(
+                workspace=workspace,
+                actor_type=actor_type,
+                action_name=action_name,
+                resource_id=resource_id,
+                delegation=delegation,
+                request_fingerprint=request_fingerprint,
+                required_permissions=effective_permissions,
+            )
+        except (ApprovalStateError, PermissionDeniedError) as exc:
+            self._record_blocked(
+                db,
+                workspace=workspace,
+                actor_type=actor_type,
+                actor_id=clean_actor_id,
+                action_name=action_name,
+                action_type=definition.action_type,
+                resource_id=resource_id,
+                required_permissions=effective_permissions,
+                dry_run=dry_run,
+                request_fingerprint=request_fingerprint,
+                reason="delegation_state_blocked",
+                exc=exc,
+            )
+            raise
         try:
             self._require_permissions(
                 db,
                 workspace=workspace,
-                actor_id=clean_actor_id,
+                actor_id=permission_actor_id or clean_actor_id,
                 required_permissions=effective_permissions,
             )
         except PermissionDeniedError as exc:
@@ -284,6 +505,9 @@ class ActionPolicyGateway:
                 definition,
                 actor_type=actor_type,
                 approval=approval,
+                delegation_satisfied=bool(
+                    actor_type in {"worker", "system"} and permission_actor_id
+                ),
                 required_approval_fingerprint=required_approval_fingerprint,
             )
         except ApprovalStateError as exc:
@@ -308,6 +532,12 @@ class ActionPolicyGateway:
                 workspace=workspace,
                 actor_type=actor_type,
                 actor_id=clean_actor_id,
+                delegated_by_user_id=(
+                    str(delegation.delegated_by_user_id).strip()
+                    if delegation
+                    else ""
+                ),
+                delegation_fingerprint=delegation.fingerprint if delegation else "",
                 action_name=action_name,
                 action_type=definition.action_type,
                 resource_id=resource_id,
@@ -335,15 +565,23 @@ class ActionPolicyGateway:
                 exc=exc,
             )
             raise
+        enforcement_row, execution_claim_token = enforcement
+        replay = bool(enforcement_row and enforcement_row.status == "succeeded")
         return ActionPolicyDecision(
             allowed=True,
             reason="policy_allowed",
             action_name=action_name,
             action_type=definition.action_type,
             request_fingerprint=request_fingerprint,
-            replay=bool(enforcement and enforcement.status == "succeeded"),
-            provider_side_effect_allowed=definition.provider_side_effect,
-            enforcement=enforcement,
+            replay=replay,
+            provider_side_effect_allowed=bool(
+                definition.provider_side_effect
+                and enforcement_row
+                and execution_claim_token
+                and not replay
+            ),
+            enforcement=enforcement_row,
+            execution_claim_token=execution_claim_token,
         )
 
     def record_success(
@@ -355,6 +593,7 @@ class ActionPolicyGateway:
     ) -> None:
         if not decision or not decision.enforcement or decision.replay:
             return
+        _require_decision_claim(decision)
         enforcement = decision.enforcement
         enforcement.status = "succeeded"
         enforcement.result_json = _policy_safe_payload(result or {})
@@ -373,12 +612,13 @@ class ActionPolicyGateway:
     ) -> None:
         if not decision or not decision.enforcement or decision.replay:
             return
+        _require_decision_claim(decision)
         enforcement = decision.enforcement
         enforcement.status = "failed"
         enforcement.error_category = (
             error_category(exc) if isinstance(exc, Exception) else str(exc)
         )
-        enforcement.error_message = str(exc)[:1000]
+        enforcement.error_message = _policy_safe_error_message(exc)
         enforcement.completed_at = datetime.utcnow()
         enforcement.updated_at = datetime.utcnow()
         db.add(enforcement)
@@ -406,6 +646,52 @@ class ActionPolicyGateway:
         if tool_policy.requires_approval and not definition.requires_approval:
             raise UnknownToolError("Action policy approval requirement mismatch.")
 
+    def _validate_policy_input(
+        self, definition: ActionDefinition, input_payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        schema = POLICY_INPUT_SCHEMAS.get(definition.name)
+        if schema is None:
+            raise UnknownToolError("Action policy input schema is missing.")
+        try:
+            model = schema.model_validate(input_payload)
+        except ValidationError as exc:
+            raise ToolExecutionBlockedError("Invalid action policy payload.") from exc
+        return model.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+
+    def _permission_actor_id(
+        self,
+        *,
+        workspace: Workspace,
+        actor_type: ActorType,
+        action_name: str,
+        resource_id: UUID | str | None,
+        delegation: ActionDelegationContext | None,
+        request_fingerprint: str,
+        required_permissions: tuple[str, ...],
+    ) -> str:
+        if actor_type not in {"worker", "system"}:
+            return ""
+        if not required_permissions:
+            return ""
+        if delegation is None:
+            raise ApprovalStateError("Missing durable delegation blocks worker action.")
+        delegated_by = str(delegation.delegated_by_user_id or "").strip()
+        if not delegated_by:
+            raise ApprovalStateError("Delegation must be tied to a human user.")
+        if delegation.workspace_id and str(delegation.workspace_id) != str(workspace.id):
+            raise PermissionDeniedError("Delegation workspace mismatch.")
+        if delegation.action_name and delegation.action_name != action_name:
+            raise ApprovalStateError("Delegation action mismatch.")
+        if delegation.resource_id and resource_id and str(delegation.resource_id) != str(resource_id):
+            raise PermissionDeniedError("Delegation resource mismatch.")
+        if not delegation.fingerprint or delegation.fingerprint != request_fingerprint:
+            raise ApprovalStateError("Delegation fingerprint mismatch.")
+        if not str(delegation.delegation_type or "").strip():
+            raise ApprovalStateError("Delegation type is required.")
+        if not str(delegation.evidence_id or "").strip():
+            raise ApprovalStateError("Delegation evidence is required.")
+        return delegated_by
+
     def _require_permissions(
         self,
         db: Session,
@@ -429,10 +715,17 @@ class ActionPolicyGateway:
         *,
         actor_type: ActorType,
         approval: ActionApprovalContext | None,
+        delegation_satisfied: bool,
         required_approval_fingerprint: str,
     ) -> None:
         approval_required = definition.requires_approval
         if actor_type == "human" and not definition.provider_side_effect:
+            approval_required = False
+        if (
+            actor_type in {"worker", "system"}
+            and not definition.provider_side_effect
+            and delegation_satisfied
+        ):
             approval_required = False
         if not approval_required:
             return
@@ -466,6 +759,8 @@ class ActionPolicyGateway:
         workspace: Workspace,
         actor_type: ActorType,
         actor_id: str,
+        delegated_by_user_id: str,
+        delegation_fingerprint: str,
         action_name: str,
         action_type: ActionType,
         resource_id: UUID | str | None,
@@ -475,7 +770,7 @@ class ActionPolicyGateway:
         idempotency_key: str,
         request_fingerprint: str,
         idempotency_required: bool,
-    ) -> ActionPolicyEnforcement | None:
+    ) -> tuple[ActionPolicyEnforcement | None, str]:
         key = str(idempotency_key or "").strip()
         if idempotency_required and not key:
             raise IdempotencyConflictError("Missing idempotency key blocks action.")
@@ -487,28 +782,20 @@ class ActionPolicyGateway:
                 )
             )
             if existing:
-                if existing.request_fingerprint != request_fingerprint:
-                    raise IdempotencyConflictError(
-                        "Idempotency request already exists with a different payload."
-                    )
-                if existing.status == "succeeded":
-                    return existing
-                if existing.status == "started":
-                    raise ToolExecutionBlockedError(
-                        "Action idempotency key is already in progress."
-                    )
-                existing.status = "started"
-                existing.error_category = ""
-                existing.error_message = ""
-                existing.completed_at = None
-                existing.updated_at = datetime.utcnow()
-                db.flush()
-                return existing
+                return self._claim_existing_enforcement(
+                    db,
+                    existing=existing,
+                    request_fingerprint=request_fingerprint,
+                )
+        execution_claim_token = _new_execution_claim_token()
+        now = datetime.utcnow()
         enforcement = ActionPolicyEnforcement(
             workspace_id=workspace.id,
             actor_type=actor_type,
             actor_id=actor_id,
-            user_id=actor_id,
+            user_id=delegated_by_user_id or actor_id,
+            delegated_by_user_id=delegated_by_user_id,
+            delegation_fingerprint=delegation_fingerprint,
             action_name=action_name,
             action_type=action_type,
             resource_id=str(resource_id or ""),
@@ -519,24 +806,79 @@ class ActionPolicyGateway:
             idempotency_key=key,
             dry_run=dry_run,
             status="started",
+            execution_claim_token=execution_claim_token,
+            claim_expires_at=now + timedelta(seconds=ACTION_POLICY_CLAIM_TTL_SECONDS),
         )
-        db.add(enforcement)
         try:
-            db.flush()
+            with db.begin_nested():
+                db.add(enforcement)
+                db.flush()
         except IntegrityError as exc:
-            db.rollback()
             existing = db.scalar(
                 select(ActionPolicyEnforcement).where(
                     ActionPolicyEnforcement.workspace_id == workspace.id,
                     ActionPolicyEnforcement.idempotency_key == key,
                 )
             )
-            if existing and existing.request_fingerprint == request_fingerprint:
-                return existing
+            if existing:
+                return self._claim_existing_enforcement(
+                    db,
+                    existing=existing,
+                    request_fingerprint=request_fingerprint,
+                )
             raise IdempotencyConflictError(
                 "Idempotency request already exists with a different payload."
             ) from exc
-        return enforcement
+        return enforcement, execution_claim_token
+
+    def _claim_existing_enforcement(
+        self,
+        db: Session,
+        *,
+        existing: ActionPolicyEnforcement,
+        request_fingerprint: str,
+    ) -> tuple[ActionPolicyEnforcement, str]:
+        if existing.request_fingerprint != request_fingerprint:
+            raise IdempotencyConflictError(
+                "Idempotency request already exists with a different payload."
+            )
+        if existing.status == "succeeded":
+            return existing, ""
+        if existing.status == "started":
+            raise ToolExecutionBlockedError(
+                "Action idempotency key is already in progress."
+            )
+        if existing.status != "failed":
+            raise ToolExecutionBlockedError("Action idempotency state is not retryable.")
+        claim_token = _new_execution_claim_token()
+        now = datetime.utcnow()
+        result = db.execute(
+            update(ActionPolicyEnforcement)
+            .where(
+                ActionPolicyEnforcement.id == existing.id,
+                ActionPolicyEnforcement.status == "failed",
+                ActionPolicyEnforcement.request_fingerprint == request_fingerprint,
+            )
+            .values(
+                status="started",
+                execution_claim_token=claim_token,
+                claim_expires_at=now + timedelta(seconds=ACTION_POLICY_CLAIM_TTL_SECONDS),
+                error_category="",
+                error_message="",
+                completed_at=None,
+                updated_at=now,
+            )
+        )
+        if result.rowcount != 1:
+            db.refresh(existing)
+            if existing.status == "succeeded":
+                return existing, ""
+            raise ToolExecutionBlockedError(
+                "Action idempotency key is already in progress."
+            )
+        db.flush()
+        db.refresh(existing)
+        return existing, claim_token
 
     def _record_blocked(
         self,
@@ -595,6 +937,22 @@ def policy_http_exception(exc: AgentRuntimeError) -> HTTPException:
             detail="Action policy is not configured for this route.",
         )
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+def _merge_required_permissions(
+    definition_permissions: tuple[str, ...],
+    additional_permissions: tuple[str, ...],
+) -> tuple[str, ...]:
+    merged: list[str] = []
+    for permission in (*definition_permissions, *additional_permissions):
+        clean = str(permission or "").strip()
+        if clean and clean not in merged:
+            merged.append(clean)
+    return tuple(merged)
+
+
+def _new_execution_claim_token() -> str:
+    return uuid4().hex
 
 
 def request_fingerprint_for_action(
@@ -687,8 +1045,33 @@ def _policy_safe_payload(value: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _policy_safe_error_message(exc: Exception | str) -> str:
+    text = str(exc)
+    text = POLICY_ERROR_SECRET_RE.sub("[REDACTED_SECRET]", text)
+    text = POLICY_ERROR_BODY_RE.sub(r"\1=[REDACTED_EMAIL_BODY]", text)
+    redacted = sanitize_for_trace({"error": text}, max_string_length=1000)
+    safe = str(redacted.get("error") or "") if isinstance(redacted, dict) else ""
+    return safe[:1000]
+
+
 def _normalized_email(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _require_decision_claim(decision: ActionPolicyDecision) -> None:
+    enforcement = decision.enforcement
+    if enforcement is None:
+        raise ToolExecutionBlockedError("Action policy claim is missing.")
+    if decision.replay:
+        raise ToolExecutionBlockedError("Replay cannot own an execution claim.")
+    if not decision.execution_claim_token:
+        raise ToolExecutionBlockedError("Action policy execution claim is missing.")
+    if enforcement.execution_claim_token != decision.execution_claim_token:
+        raise ToolExecutionBlockedError("Action policy execution claim mismatch.")
+    if enforcement.status != "started":
+        raise ToolExecutionBlockedError("Action policy execution claim is not active.")
+    if enforcement.claim_expires_at and enforcement.claim_expires_at < datetime.utcnow():
+        raise ToolExecutionBlockedError("Action policy execution claim expired.")
 
 
 def require_provider_policy(decision: ActionPolicyDecision | None) -> None:
@@ -700,3 +1083,4 @@ def require_provider_policy(decision: ActionPolicyDecision | None) -> None:
         raise ToolExecutionBlockedError(
             "Email provider send blocked by server-side policy state."
         )
+    _require_decision_claim(decision)

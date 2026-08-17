@@ -7295,7 +7295,7 @@ def sales_employee_run(
                         db,
                         workspace=workspace,
                         actor_type="worker",
-                        actor_id=user_id,
+                        actor_id=f"worker:sales-employee:{employee.id}",
                         action_name="autonomous.email.send",
                         input_payload={
                             "route": "sales_employee.run",

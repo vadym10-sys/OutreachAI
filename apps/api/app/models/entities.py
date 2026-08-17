@@ -512,6 +512,8 @@ class ActionPolicyEnforcement(Base):
     actor_type: Mapped[str] = mapped_column(String(32), index=True)
     actor_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    delegated_by_user_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    delegation_fingerprint: Mapped[str] = mapped_column(String(128), default="")
     action_name: Mapped[str] = mapped_column(String(160), index=True)
     action_type: Mapped[str] = mapped_column(String(40), index=True)
     resource_id: Mapped[str] = mapped_column(String(160), default="", index=True)
@@ -524,6 +526,10 @@ class ActionPolicyEnforcement(Base):
     idempotency_key: Mapped[str] = mapped_column(String(200), default="", index=True)
     dry_run: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="started", index=True)
+    execution_claim_token: Mapped[str] = mapped_column(
+        String(128), default="", index=True
+    )
+    claim_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
     result_json: Mapped[dict] = mapped_column(JSON, default=dict)
     error_category: Mapped[str] = mapped_column(String(80), default="", index=True)
     error_message: Mapped[str] = mapped_column(Text, default="")

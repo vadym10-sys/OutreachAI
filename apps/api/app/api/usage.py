@@ -106,11 +106,13 @@ from app.services.emailer import (
 )
 from app.services.agent_runtime.action_gateway import (
     ActionApprovalContext,
+    ActionDelegationContext,
     ActionPolicyDecision,
     ActionPolicyGateway,
     email_draft_approval_fingerprint,
     email_send_confirmation_snapshot,
     policy_http_exception,
+    request_fingerprint_for_action,
 )
 from app.services.agent_runtime.errors import AgentRuntimeError
 from app.services.enrichment_queue import (
@@ -253,23 +255,16 @@ def _record_action_policy_failure(
     _action_policy_gateway.record_failure(db, decision, exc)
 
 
-def _worker_action_approval(user_id: str) -> ActionApprovalContext:
-    return ActionApprovalContext(
-        approved=True,
-        approved_by_actor_type="human",
-        approved_by_user_id=user_id,
-    )
-
-
 def _enforce_worker_action_policy(
     db: Session,
     *,
     workspace: Workspace,
-    user_id: str,
+    actor_id: str,
     action_name: str,
     input_payload: dict[str, Any],
     required_permissions: tuple[str, ...] | None = None,
     approval: ActionApprovalContext | None = None,
+    delegation: ActionDelegationContext | None = None,
     idempotency_key: str,
     resource_workspace_id: UUID | None = None,
     resource_id: UUID | str | None = None,
@@ -278,13 +273,69 @@ def _enforce_worker_action_policy(
         db,
         workspace=workspace,
         actor_type="worker",
-        actor_id=user_id,
+        actor_id=actor_id,
         action_name=action_name,
         input_payload=input_payload,
         required_permissions=required_permissions,
         approval=approval,
+        delegation=delegation,
         idempotency_key=idempotency_key,
         resource_workspace_id=resource_workspace_id,
+        resource_id=resource_id,
+    )
+
+
+def _job_action_delegation(
+    *,
+    workspace: Workspace,
+    job: EnrichmentJob,
+    action_name: str,
+    input_payload: dict[str, Any],
+    resource_id: UUID | str | None = None,
+) -> ActionDelegationContext:
+    if job.workspace_id != workspace.id or not str(job.user_id or "").strip():
+        return ActionDelegationContext(
+            delegated_by_user_id="",
+            delegation_type="invalid_job_delegation",
+            evidence_id=str(job.id),
+            fingerprint="",
+            workspace_id=workspace.id,
+            action_name=action_name,
+            resource_id=resource_id,
+        )
+    return ActionDelegationContext(
+        delegated_by_user_id=job.user_id,
+        delegation_type="job_created_by_user",
+        evidence_id=str(job.id),
+        fingerprint=request_fingerprint_for_action(
+            action_name=action_name,
+            input_payload=input_payload,
+        ),
+        workspace_id=workspace.id,
+        action_name=action_name,
+        resource_id=resource_id,
+    )
+
+
+def _workspace_automation_delegation(
+    *,
+    workspace: Workspace,
+    delegated_by_user_id: str,
+    evidence_id: str,
+    action_name: str,
+    input_payload: dict[str, Any],
+    resource_id: UUID | str | None = None,
+) -> ActionDelegationContext:
+    return ActionDelegationContext(
+        delegated_by_user_id=delegated_by_user_id,
+        delegation_type="workspace_automation_authorization",
+        evidence_id=evidence_id,
+        fingerprint=request_fingerprint_for_action(
+            action_name=action_name,
+            input_payload=input_payload,
+        ),
+        workspace_id=workspace.id,
+        action_name=action_name,
         resource_id=resource_id,
     )
 
@@ -8630,17 +8681,24 @@ def process_enrichment_job(job_id: UUID, claim_token: str | None = None) -> bool
                 message="Workspace or lead no longer exists.",
                 claim_token=claim_token,
             )
+        policy_payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+        }
         crm_policy = _enforce_worker_action_policy(
             db,
             workspace=workspace,
-            user_id=job.user_id,
+            actor_id=f"worker:{job.id}",
             action_name="crm.write",
-            input_payload={
-                "route": "worker.company_enrichment",
-                "job_id": str(job.id),
-                "lead_id": str(lead.id),
-            },
-            approval=_worker_action_approval(job.user_id),
+            input_payload=policy_payload,
+            delegation=_job_action_delegation(
+                workspace=workspace,
+                job=job,
+                action_name="crm.write",
+                input_payload=policy_payload,
+                resource_id=lead.id,
+            ),
             idempotency_key=f"worker-crm-write:{workspace.id}:{job.id}:v1",
             resource_workspace_id=lead.workspace_id,
             resource_id=lead.id,
@@ -8741,16 +8799,24 @@ def process_enrichment_job(job_id: UUID, claim_token: str | None = None) -> bool
             )
             return completed
 
+        policy_payload = {
+            "route": "worker.company_enrichment.draft",
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+        }
         draft_policy = _enforce_worker_action_policy(
             db,
             workspace=workspace,
-            user_id=job.user_id,
+            actor_id=f"worker:{job.id}",
             action_name="email.draft.create",
-            input_payload={
-                "route": "worker.company_enrichment.draft",
-                "job_id": str(job.id),
-                "lead_id": str(lead.id),
-            },
+            input_payload=policy_payload,
+            delegation=_job_action_delegation(
+                workspace=workspace,
+                job=job,
+                action_name="email.draft.create",
+                input_payload=policy_payload,
+                resource_id=lead.id,
+            ),
             idempotency_key=f"worker-email-draft:{workspace.id}:{job.id}:v1",
             resource_workspace_id=lead.workspace_id,
             resource_id=lead.id,
@@ -8858,18 +8924,25 @@ def process_deep_contact_search_job(
                 message="Workspace, lead, or company no longer exists.",
                 claim_token=claim_token,
             )
+        policy_payload = {
+            "route": "worker.deep_contact_search",
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+            "company_id": str(company.id),
+        }
         crm_policy = _enforce_worker_action_policy(
             db,
             workspace=workspace,
-            user_id=job.user_id,
+            actor_id=f"worker:{job.id}",
             action_name="crm.write",
-            input_payload={
-                "route": "worker.deep_contact_search",
-                "job_id": str(job.id),
-                "lead_id": str(lead.id),
-                "company_id": str(company.id),
-            },
-            approval=_worker_action_approval(job.user_id),
+            input_payload=policy_payload,
+            delegation=_job_action_delegation(
+                workspace=workspace,
+                job=job,
+                action_name="crm.write",
+                input_payload=policy_payload,
+                resource_id=company.id,
+            ),
             idempotency_key=f"worker-crm-write:{workspace.id}:{job.id}:v1",
             resource_workspace_id=company.workspace_id,
             resource_id=company.id,
@@ -8965,18 +9038,25 @@ def mark_enrichment_job_failed(
         )
         if workspace is None or lead is None:
             return
+        policy_payload = {
+            "route": "worker.enrichment_failure",
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+            "job_type": job.job_type,
+        }
         crm_policy = _enforce_worker_action_policy(
             db,
             workspace=workspace,
-            user_id=job.user_id,
+            actor_id=f"worker:{job.id}",
             action_name="crm.write",
-            input_payload={
-                "route": "worker.enrichment_failure",
-                "job_id": str(job.id),
-                "lead_id": str(lead.id),
-                "job_type": job.job_type,
-            },
-            approval=_worker_action_approval(job.user_id),
+            input_payload=policy_payload,
+            delegation=_job_action_delegation(
+                workspace=workspace,
+                job=job,
+                action_name="crm.write",
+                input_payload=policy_payload,
+                resource_id=lead.id,
+            ),
             idempotency_key=f"worker-crm-failure:{workspace.id}:{job.id}:v1",
             resource_workspace_id=lead.workspace_id,
             resource_id=lead.id,
@@ -9210,7 +9290,7 @@ def _lead_prioritization_from_metadata(
 
 
 def run_continuous_company_monitoring_once(
-    *, workspace_id: UUID | None = None
+    *, workspace_id: UUID | None = None, initiated_by_user_id: str = ""
 ) -> list[dict[str, Any]]:
     db = get_sessionmaker()()
     changed: list[dict[str, Any]] = []
@@ -9274,7 +9354,14 @@ def run_continuous_company_monitoring_once(
             )
             if workspace is None:
                 continue
-            actor_id = str(company.user_id or (lead.user_id if lead else "") or workspace.owner_user_id)
+            delegated_user_id = str(initiated_by_user_id or "").strip()
+            if not delegated_user_id:
+                logger.warning(
+                    "monitoring worker skipped crm write without durable delegation workspace_id=%s company_id=%s",
+                    workspace.id,
+                    company.id,
+                )
+                continue
             change_fingerprint = hashlib.sha256(
                 json.dumps(
                     latest_changes,
@@ -9283,18 +9370,26 @@ def run_continuous_company_monitoring_once(
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()
+            policy_payload = {
+                "route": "worker.continuous_company_monitoring",
+                "company_id": str(company.id),
+                "lead_id": str(company.lead_id or ""),
+                "change_fingerprint": change_fingerprint,
+            }
             crm_policy = _enforce_worker_action_policy(
                 db,
                 workspace=workspace,
-                user_id=actor_id,
+                actor_id=f"worker:monitoring:{company.id}:{change_fingerprint[:16]}",
                 action_name="crm.write",
-                input_payload={
-                    "route": "worker.continuous_company_monitoring",
-                    "company_id": str(company.id),
-                    "lead_id": str(company.lead_id or ""),
-                    "change_fingerprint": change_fingerprint,
-                },
-                approval=_worker_action_approval(actor_id),
+                input_payload=policy_payload,
+                delegation=_workspace_automation_delegation(
+                    workspace=workspace,
+                    delegated_by_user_id=delegated_user_id,
+                    evidence_id=f"manual-monitoring:{workspace.id}",
+                    action_name="crm.write",
+                    input_payload=policy_payload,
+                    resource_id=company.id,
+                ),
                 idempotency_key=(
                     f"worker-monitoring-crm:{workspace.id}:"
                     f"{company.id}:{change_fingerprint}"
@@ -9305,7 +9400,7 @@ def run_continuous_company_monitoring_once(
             if lead is not None:
                 _refresh_company_intelligence(
                     db,
-                    user_id=actor_id,
+                    user_id=delegated_user_id,
                     workspace=workspace,
                     lead=lead,
                     company=company,
@@ -9331,7 +9426,7 @@ def run_continuous_company_monitoring_once(
             create_revenue_notification_if_needed(
                 db,
                 company=company,
-                user_id=actor_id,
+                user_id=delegated_user_id,
                 workspace_id=company.workspace_id,
                 intelligence=revenue_snapshot,
             )
@@ -9377,7 +9472,9 @@ def run_company_monitoring(
         )
         or 0
     )
-    changes = run_continuous_company_monitoring_once(workspace_id=workspace.id)
+    changes = run_continuous_company_monitoring_once(
+        workspace_id=workspace.id, initiated_by_user_id=user.user_id
+    )
     return UsageMonitoringOut(
         status="success",
         message=(
@@ -9407,7 +9504,14 @@ def run_nightly_lead_prioritization_once() -> int:
             workspace = db.get(Workspace, company.workspace_id) if company.workspace_id else None
             if workspace is None:
                 continue
-            actor_id = str(company.user_id or workspace.owner_user_id)
+            delegated_user_id = str(company.user_id or "").strip()
+            if not delegated_user_id:
+                logger.warning(
+                    "lead prioritization worker skipped crm write without durable delegation workspace_id=%s company_id=%s",
+                    workspace.id,
+                    company.id,
+                )
+                continue
             prioritization_weights: dict[str, float] | None = None
             if workspace_key:
                 if workspace_key not in weights_by_workspace:
@@ -9447,10 +9551,20 @@ def run_nightly_lead_prioritization_once() -> int:
             crm_policy = _enforce_worker_action_policy(
                 db,
                 workspace=workspace,
-                user_id=actor_id,
+                actor_id=(
+                    f"worker:lead-prioritization:{company.id}:"
+                    f"{policy_payload['date']}"
+                ),
                 action_name="crm.write",
                 input_payload=policy_payload,
-                approval=_worker_action_approval(actor_id),
+                delegation=_workspace_automation_delegation(
+                    workspace=workspace,
+                    delegated_by_user_id=delegated_user_id,
+                    evidence_id=f"company:{company.id}",
+                    action_name="crm.write",
+                    input_payload=policy_payload,
+                    resource_id=company.id,
+                ),
                 idempotency_key=(
                     f"worker-prioritization-crm:{workspace.id}:"
                     f"{company.id}:{policy_payload['date']}"

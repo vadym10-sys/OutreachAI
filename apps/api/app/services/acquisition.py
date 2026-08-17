@@ -30,9 +30,10 @@ from app.models.entities import (
 from app.schemas.dto import LeadFinderRequest, PersonalizeRequest
 from app.services.ai import adaptive_follow_ups, personalize_email, sales_copilot
 from app.services.agent_runtime.action_gateway import (
-    ActionApprovalContext,
+    ActionDelegationContext,
     ActionPolicyDecision,
     ActionPolicyGateway,
+    request_fingerprint_for_action,
 )
 from app.services.agent_runtime.errors import AgentRuntimeError
 from app.services.lead_finder import find_leads
@@ -56,35 +57,69 @@ def _fit_db_text(value: str | None, max_length: int) -> str | None:
     return text[: max_length - 1].rstrip() + "…"
 
 
-def _owner_approval(workspace: Workspace) -> ActionApprovalContext:
-    return ActionApprovalContext(
-        approved=True,
-        approved_by_actor_type="human",
-        approved_by_user_id=workspace.owner_user_id,
-    )
-
-
 def _enforce_worker_policy(
     db: Session,
     *,
     workspace: Workspace,
+    campaign: Campaign,
     action_name: str,
     input_payload: dict[str, Any],
     idempotency_key: str,
     resource_workspace_id: UUID | None = None,
     resource_id: UUID | str | None = None,
-    approval: ActionApprovalContext | None = None,
 ) -> ActionPolicyDecision:
     return _action_policy_gateway.enforce(
         db,
         workspace=workspace,
         actor_type="worker",
-        actor_id=workspace.owner_user_id,
+        actor_id=f"worker:automation:{campaign.id}",
         action_name=action_name,
         input_payload=input_payload,
-        approval=approval,
+        delegation=_campaign_action_delegation(
+            workspace=workspace,
+            campaign=campaign,
+            action_name=action_name,
+            input_payload=input_payload,
+            resource_id=resource_id,
+        ),
         idempotency_key=idempotency_key,
         resource_workspace_id=resource_workspace_id,
+        resource_id=resource_id,
+    )
+
+
+def _campaign_action_delegation(
+    *,
+    workspace: Workspace,
+    campaign: Campaign,
+    action_name: str,
+    input_payload: dict[str, Any],
+    resource_id: UUID | str | None = None,
+) -> ActionDelegationContext:
+    if (
+        campaign.workspace_id != workspace.id
+        or not str(campaign.user_id or "").strip()
+        or campaign.status not in {CampaignStatus.running, CampaignStatus.scheduled}
+    ):
+        return ActionDelegationContext(
+            delegated_by_user_id="",
+            delegation_type="invalid_campaign_automation",
+            evidence_id=str(campaign.id),
+            fingerprint="",
+            workspace_id=workspace.id,
+            action_name=action_name,
+            resource_id=resource_id,
+        )
+    return ActionDelegationContext(
+        delegated_by_user_id=campaign.user_id,
+        delegation_type="campaign_automation_authorization",
+        evidence_id=str(campaign.id),
+        fingerprint=request_fingerprint_for_action(
+            action_name=action_name,
+            input_payload=input_payload,
+        ),
+        workspace_id=workspace.id,
+        action_name=action_name,
         resource_id=resource_id,
     )
 
@@ -348,18 +383,19 @@ def _import_daily_leads(db: Session, workspace: Workspace, campaign: Campaign) -
                 campaign.id,
             )
             break
+        policy_payload = {
+            "route": "automation.lead_import",
+            "campaign_id": str(campaign.id),
+            "company": item.company,
+            "website": item.website,
+            "email": str(item.email or "").strip().lower(),
+        }
         crm_policy = _enforce_worker_policy(
             db,
             workspace=workspace,
+            campaign=campaign,
             action_name="crm.write",
-            input_payload={
-                "route": "automation.lead_import",
-                "campaign_id": str(campaign.id),
-                "company": item.company,
-                "website": item.website,
-                "email": str(item.email or "").strip().lower(),
-            },
-            approval=_owner_approval(workspace),
+            input_payload=policy_payload,
             idempotency_key=(
                 f"automation-crm-import:{workspace.id}:{campaign.id}:"
                 f"{hashlib.sha256(str(item.email or item.website or item.company).strip().lower().encode('utf-8')).hexdigest()}"
@@ -471,16 +507,17 @@ def _qualify_lead(
             campaign.id,
         )
         return False
+    policy_payload = {
+        "route": "automation.lead_qualification",
+        "campaign_id": str(campaign.id),
+        "lead_id": str(lead.id),
+    }
     crm_policy = _enforce_worker_policy(
         db,
         workspace=workspace,
+        campaign=campaign,
         action_name="crm.write",
-        input_payload={
-            "route": "automation.lead_qualification",
-            "campaign_id": str(campaign.id),
-            "lead_id": str(lead.id),
-        },
-        approval=_owner_approval(workspace),
+        input_payload=policy_payload,
         idempotency_key=f"automation-crm-qualify:{workspace.id}:{lead.id}:v1",
         resource_workspace_id=lead.workspace_id,
         resource_id=lead.id,
@@ -571,6 +608,7 @@ def _generate_email_if_needed(
     draft_policy = _enforce_worker_policy(
         db,
         workspace=workspace,
+        campaign=campaign,
         action_name="email.draft.create",
         input_payload={
             "route": "automation.email_generation",
@@ -655,7 +693,7 @@ def _block_automation_send_until_manual_review(
             db,
             workspace=workspace,
             actor_type="worker",
-            actor_id=workspace.owner_user_id,
+            actor_id=f"worker:automation:{campaign.id}",
             action_name="autonomous.email.send",
             input_payload={
                 "route": route,
@@ -833,6 +871,7 @@ def _send_due_follow_ups(db: Session, workspace: Workspace, campaign: Campaign) 
             draft_policy = _enforce_worker_policy(
                 db,
                 workspace=workspace,
+                campaign=campaign,
                 action_name="email.draft.create",
                 input_payload={
                     "route": "automation.follow_up_draft",

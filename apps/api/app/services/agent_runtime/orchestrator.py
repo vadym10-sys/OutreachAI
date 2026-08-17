@@ -799,9 +799,8 @@ class AgentRuntimeOrchestrator:
             actor_id=user_id,
             action_name=action_name,
             input_payload={
-                "run_id": str(run.id),
-                "tool_name": tool.name,
-                "arguments": arguments,
+                **arguments,
+                "context": {"run_id": str(run.id), "tool_name": tool.name},
             },
             required_permissions=tool.required_permissions,
             dry_run=bool(run.dry_run or arguments.get("dry_run")),
