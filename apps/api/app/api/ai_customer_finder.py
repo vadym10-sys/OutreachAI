@@ -10,7 +10,16 @@ from app.api.routes import _current_workspace
 from app.core.database import get_db
 from app.core.security import WorkspaceUserContext
 from app.models.entities import AICustomerFinderJob, AICustomerFinderResult, EmailMessage
-from app.services.ai_customer_finder.schemas import CustomerFinderCriteria, CustomerFinderJobOut, CustomerFinderResultActionOut
+from app.services.agent_runtime.action_gateway import (
+    ActionPolicyGateway,
+    policy_http_exception,
+)
+from app.services.agent_runtime.errors import AgentRuntimeError
+from app.services.ai_customer_finder.schemas import (
+    CustomerFinderCriteria,
+    CustomerFinderJobOut,
+    CustomerFinderResultActionOut,
+)
 from app.services.ai_customer_finder.service import (
     SIMPLE_STATUS_DRAFT_READY,
     SIMPLE_STATUS_SENT,
@@ -22,6 +31,7 @@ from app.services.ai_customer_finder.service import (
 )
 
 router = APIRouter()
+_action_policy_gateway = ActionPolicyGateway()
 
 
 @router.post("/searches", response_model=CustomerFinderJobOut, status_code=202)
@@ -102,9 +112,32 @@ def save_customer_finder_email_draft(
     email = _result_email(db, result)
     if email is None:
         raise HTTPException(status_code=409, detail="Email draft is not ready yet.")
+    try:
+        draft_policy = _action_policy_gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=user.user_id,
+            action_name="email.draft.update",
+            input_payload={
+                "route": "ai_customer_finder.save_draft",
+                "result_id": str(result.id),
+                "email_id": str(email.id),
+                "delivery_status": email.delivery_status,
+            },
+            resource_workspace_id=email.workspace_id,
+            resource_id=email.id,
+        )
+    except AgentRuntimeError as exc:
+        raise policy_http_exception(exc) from exc
     if email.delivery_status != "sent":
         email.delivery_status = "draft"
     _sync_result_email_metadata(result, email, simple_status=SIMPLE_STATUS_SENT if email.delivery_status == "sent" else SIMPLE_STATUS_DRAFT_READY)
+    _action_policy_gateway.record_success(
+        db,
+        draft_policy,
+        result={"email_id": str(email.id), "delivery_status": email.delivery_status},
+    )
     db.commit()
     db.refresh(result)
     return CustomerFinderResultActionOut(status="success", message="Draft saved in CRM.", result=result_out(result))
@@ -126,9 +159,12 @@ def send_customer_finder_email(
         raise HTTPException(status_code=409, detail="Email draft is not ready yet.")
     if not result.public_work_contact:
         return CustomerFinderResultActionOut(status="error", message="A verified recipient email is required before sending.", result=result_out(result))
-    if email.delivery_status != "sent":
-        email.delivery_status = "approved"
-        db.commit()
+    if email.delivery_status != "approved":
+        return CustomerFinderResultActionOut(
+            status="error",
+            message="Review and approve this draft before sending. Nothing was sent.",
+            result=result_out(result),
+        )
     from app.api.usage import send_approved_email
 
     send_result = send_approved_email(email.id, request, user, db)

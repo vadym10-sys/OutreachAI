@@ -32,6 +32,7 @@ REQUIRED_POSTGRES_MIGRATIONS = (
     "020_billing_subscription_transitions",
     "021_plan_usage_reservations",
     "022_agent_runtime_control_plane",
+    "023_action_policy_enforcements",
 )
 REQUIRED_AI_MEMORY_TABLES = ("ai_memory_settings", "ai_memory_entries", "ai_memory_audit_logs")
 REQUIRED_AGENT_RUNTIME_TABLES = (
@@ -41,7 +42,12 @@ REQUIRED_AGENT_RUNTIME_TABLES = (
     "agent_approval_requests",
     "agent_trace_events",
 )
-REQUIRED_RUNTIME_TABLES = (*REQUIRED_AI_MEMORY_TABLES, *REQUIRED_AGENT_RUNTIME_TABLES)
+REQUIRED_ACTION_POLICY_TABLES = ("action_policy_enforcements",)
+REQUIRED_RUNTIME_TABLES = (
+    *REQUIRED_AI_MEMORY_TABLES,
+    *REQUIRED_AGENT_RUNTIME_TABLES,
+    *REQUIRED_ACTION_POLICY_TABLES,
+)
 
 
 class RuntimeSchemaError(RuntimeError):

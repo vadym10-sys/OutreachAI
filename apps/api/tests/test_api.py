@@ -1,5 +1,7 @@
 # ruff: noqa: E402
 
+from __future__ import annotations
+
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -87,6 +89,7 @@ from app.api.routes import (
     _subscription_status_for_workspace,
 )  # noqa: E402
 from app.models.entities import (
+    ActionPolicyEnforcement,
     AICustomerFinderSource,
     AIMemoryEntry,
     AISalesEmployee,
@@ -2889,6 +2892,8 @@ class _FakePostgresConnection:
                         "agent_trace_events",
                     }
                 )
+            if "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in sql:
+                self.state.tables.add("action_policy_enforcements")
             return _FakeScalarResult()
         if "CREATE TABLE IF NOT EXISTS backup_runs" in sql:
             self.state.tables.add("backup_runs")
@@ -2906,6 +2911,9 @@ class _FakePostgresConnection:
                     "agent_trace_events",
                 }
             )
+            return _FakeScalarResult()
+        if "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in sql:
+            self.state.tables.add("action_policy_enforcements")
             return _FakeScalarResult()
         if "INSERT INTO schema_migrations" in sql:
             assert params
@@ -3041,6 +3049,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(
         "020_billing_subscription_transitions",
         "021_plan_usage_reservations",
         "022_agent_runtime_control_plane",
+        "023_action_policy_enforcements",
     }
     state.tables.update(
         {
@@ -3052,6 +3061,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(
             "agent_tool_calls",
             "agent_approval_requests",
             "agent_trace_events",
+            "action_policy_enforcements",
         }
     )
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
@@ -3301,6 +3311,7 @@ def test_postgres_migration_failure_sets_negative_schema_status(
         "agent_tool_calls",
         "agent_approval_requests",
         "agent_trace_events",
+        "action_policy_enforcements",
     }
     assert "synthetic migration failure" in status.error
 
@@ -3904,6 +3915,37 @@ def test_postgres_schema_assets_include_agent_runtime_control_plane() -> None:
     assert "uq_agent_tool_calls_idempotency" in packaged_migration
     assert "uq_agent_approval_requests_idempotency" in packaged_migration
     assert "022_agent_runtime_control_plane" in REQUIRED_POSTGRES_MIGRATIONS
+
+
+def test_postgres_schema_assets_include_action_policy_enforcements() -> None:
+    schema = (
+        Path(__file__).resolve().parents[1] / "app" / "db" / "schema.sql"
+    ).read_text(encoding="utf-8")
+    packaged_migration = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "db"
+        / "migrations"
+        / "023_action_policy_enforcements.sql"
+    ).read_text(encoding="utf-8")
+    root_migration = (
+        Path(__file__).resolve().parents[3]
+        / "db"
+        / "migrations"
+        / "023_action_policy_enforcements.sql"
+    ).read_text(encoding="utf-8")
+
+    assert packaged_migration == root_migration
+    assert "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in schema
+    assert "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in packaged_migration
+    assert "delegation_type VARCHAR(80) NOT NULL DEFAULT ''" in schema
+    assert "delegation_evidence_id VARCHAR(160) NOT NULL DEFAULT ''" in schema
+    assert "ADD COLUMN IF NOT EXISTS delegation_type" in packaged_migration
+    assert "ADD COLUMN IF NOT EXISTS delegation_evidence_id" in packaged_migration
+    assert "uq_action_policy_enforcements_idempotency" in packaged_migration
+    assert "ck_action_policy_enforcements_actor_type" in packaged_migration
+    assert "ck_action_policy_enforcements_status" in packaged_migration
+    assert "023_action_policy_enforcements" in REQUIRED_POSTGRES_MIGRATIONS
 
 
 def test_startup_logs_validation_steps_and_fails_fast_on_database_error(
@@ -16536,13 +16578,17 @@ def test_manual_lead_draft_email_does_not_send(monkeypatch) -> None:
         item["action"] == "email.approved" for item in crm_after_approval["activity"]
     )
 
-    monkeypatch.setattr(
-        "app.api.routes.send_email",
-        lambda **kwargs: {"id": "resend-approved-manual-draft"},
-    )
+    sent_payload: dict[str, Any] = {}
+
+    def fake_legacy_send(**kwargs):
+        sent_payload.update(kwargs)
+        return {"id": "resend-approved-manual-draft"}
+
+    monkeypatch.setattr("app.api.routes.send_email", fake_legacy_send)
     sent_response = client.post(f"/api/emails/{draft['id']}/send", headers=AUTH)
     assert sent_response.status_code == 200
     assert sent_response.json()["delivery_status"] == "sent"
+    assert sent_payload["policy_enforcement"].action_name == "email.send"
 
     crm_after_send = client.get(
         "/api/crm/companies?search=Manual%20Draft", headers=AUTH
@@ -18470,6 +18516,7 @@ def test_approved_email_uses_workspace_sender(monkeypatch) -> None:
 
     sent = client.post(f"/api/emails/{draft['id']}/send", headers=headers)
     assert sent.status_code == 200
+    assert sent_payload["policy_enforcement"].action_name == "email.send"
     assert sent_payload["from_email"] == "sales@example.com"
     assert sent_payload["from_name"] == "Sales Team"
     assert sent_payload["reply_to"] == "reply@example.com"
@@ -19394,6 +19441,8 @@ def test_resend_webhook_updates_delivery_metrics() -> None:
 
 
 def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
+    workspace = client.get("/api/workspace", headers=AUTH).json()
+    workspace_id = UUID(workspace["id"])
     monkeypatch.setattr(
         "app.api.webhooks.suggest_reply",
         lambda payload: type(
@@ -19411,12 +19460,16 @@ def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
     db = get_sessionmaker()()
     try:
         campaign = Campaign(
-            user_id="dev_user", name="Reply Campaign", industry="Construction"
+            user_id="dev_user",
+            workspace_id=workspace_id,
+            name="Reply Campaign",
+            industry="Construction",
         )
         db.add(campaign)
         db.flush()
         lead = Lead(
             user_id="dev_user",
+            workspace_id=workspace_id,
             campaign_id=campaign.id,
             company="Reply Build Co",
             email="reply@example.com",
@@ -19425,12 +19478,17 @@ def test_resend_webhook_handles_bounce_complaint_and_reply(monkeypatch) -> None:
         db.add(lead)
         db.flush()
         company = Company(
-            user_id="dev_user", lead_id=lead.id, name="Reply Build Co", source="crm"
+            user_id="dev_user",
+            workspace_id=workspace_id,
+            lead_id=lead.id,
+            name="Reply Build Co",
+            source="crm",
         )
         db.add(company)
         db.flush()
         message = EmailMessage(
             user_id="dev_user",
+            workspace_id=workspace_id,
             campaign_id=campaign.id,
             lead_id=lead.id,
             direction="outbound",
@@ -22140,7 +22198,7 @@ def test_growth_engine_returns_briefing_and_persists_goal() -> None:
     assert refreshed.json()["goal"]["goal"] == "I want 12 meetings this month."
 
 
-def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(
+def test_autonomous_acquisition_run_imports_qualifies_prepares_and_blocks_send(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -22217,8 +22275,10 @@ def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(
             },
         )(),
     )
+    provider_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "app.services.acquisition.send_email", lambda **kwargs: {"id": "auto-email-1"}
+        "app.services.emailer._send_resend_email",
+        lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"},
     )
 
     workspace = client.get("/api/workspace", headers=AUTH).json()
@@ -22245,14 +22305,13 @@ def test_autonomous_acquisition_run_imports_qualifies_sends_and_logs(
     assert data["leads_imported"] == 1
     assert data["leads_qualified"] == 1
     assert data["emails_generated"] == 1
-    assert data["emails_sent"] == 1
+    assert data["emails_sent"] == 0
 
     lead_page = client.get("/api/leads?search=Autonomous", headers=AUTH).json()
-    assert lead_page["items"][0]["status"] == "Contacted"
-    dashboard = client.get("/api/dashboard", headers=AUTH).json()
-    assert dashboard["emails_sent"] >= 1
+    assert lead_page["items"][0]["status"] == "Qualified"
+    assert provider_calls == []
     activity = client.get("/api/activity", headers=AUTH).json()
-    assert any(item["action"] == "automation.email_sent" for item in activity)
+    assert any(item["action"] == "automation.email_send_blocked" for item in activity)
 
     unauthorized = client.post(
         "/api/automation/run", headers={"X-Automation-Secret": "wrong"}
@@ -22312,15 +22371,11 @@ def test_campaign_automation_send_obeys_outbound_provider_kill_switch(
         db.add(message)
         db.commit()
 
-        with pytest.raises(
-            EmailProviderSendingDisabledError,
-            match="Outbound sending is disabled in this environment.",
-        ):
-            acquisition._send_ready_email(db, workspace, campaign, lead, message)
+        assert not acquisition._send_ready_email(db, workspace, campaign, lead, message)
         db.refresh(message)
         db.refresh(lead)
         assert provider_calls == []
-        assert message.delivery_status == "draft"
+        assert message.delivery_status == "needs_review"
         assert message.provider_message_id is None
         assert lead.status == LeadStatus.qualified
     finally:
@@ -22946,12 +23001,11 @@ def _autopilot_fixture(
     return db, workspace, campaign, lead, email, job
 
 
-def test_autopilot_worker_sends_once_and_survives_reprocessing(monkeypatch) -> None:
-    sent = []
+def test_autopilot_worker_blocks_send_and_survives_reprocessing(monkeypatch) -> None:
+    provider_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        "app.services.autopilot.send_email",
-        lambda **kwargs: sent.append(kwargs)
-        or {"id": "gmail-msg-1", "thread_id": "thread-1"},
+        "app.services.emailer._send_gmail_email",
+        lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"},
     )
     monkeypatch.setattr(
         "app.services.autopilot._within_working_hours", lambda campaign: True
@@ -22962,17 +23016,17 @@ def test_autopilot_worker_sends_once_and_survives_reprocessing(monkeypatch) -> N
     try:
         assert process_autopilot_email_job(db, job)
         db.refresh(email)
-        assert email.delivery_status == "sent"
-        assert email.provider_message_id == "gmail-msg-1"
-        assert len(sent) == 1
+        assert email.delivery_status == "needs_review"
+        assert email.provider_message_id is None
+        assert provider_calls == []
         retry_job = db.get(EnrichmentJob, job.id)
         assert process_autopilot_email_job(db, retry_job)
-        assert len(sent) == 1
+        assert provider_calls == []
         assert (
             db.query(AuditLog)
             .filter(
                 AuditLog.workspace_id == workspace.id,
-                AuditLog.action == "autopilot.email.sent",
+                AuditLog.action == "autopilot.requires_review",
             )
             .count()
             == 1
@@ -22982,10 +23036,9 @@ def test_autopilot_worker_sends_once_and_survives_reprocessing(monkeypatch) -> N
 
 
 def test_autopilot_pause_stop_and_workspace_isolation(monkeypatch) -> None:
-    sent = []
     monkeypatch.setattr(
-        "app.services.autopilot.send_email",
-        lambda **kwargs: sent.append(kwargs) or {"id": f"gmail-msg-{len(sent)}"},
+        "app.services.emailer._send_gmail_email",
+        lambda **kwargs: pytest.fail("autopilot must not call Gmail provider"),
     )
     monkeypatch.setattr(
         "app.services.autopilot._within_working_hours", lambda campaign: True
@@ -23013,14 +23066,12 @@ def test_autopilot_pause_stop_and_workspace_isolation(monkeypatch) -> None:
         assert process_autopilot_email_job(db, job_a)
         db.refresh(job_a)
         assert job_a.status == "cancelled"
-        assert not sent
 
         email_b = db.get(EmailMessage, email_b_id)
         job_b = db.get(EnrichmentJob, job_b_id)
         assert process_autopilot_email_job(db, job_b)
         db.refresh(email_b)
-        assert email_b.delivery_status == "sent"
-        assert len(sent) == 1
+        assert email_b.delivery_status == "needs_review"
         assert (
             db.query(EmailMessage)
             .filter(
@@ -23034,7 +23085,7 @@ def test_autopilot_pause_stop_and_workspace_isolation(monkeypatch) -> None:
             db.query(EmailMessage)
             .filter(
                 EmailMessage.workspace_id == workspace_b_id,
-                EmailMessage.delivery_status == "sent",
+                EmailMessage.delivery_status == "needs_review",
             )
             .count()
             == 1
@@ -23047,7 +23098,8 @@ def test_autopilot_suppression_and_staging_domain_block_keep_crm_review(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.autopilot.send_email", lambda **kwargs: {"id": "should-not-send"}
+        "app.services.emailer._send_gmail_email",
+        lambda **kwargs: pytest.fail("suppressed autopilot must not call Gmail"),
     )
     monkeypatch.setattr(
         "app.services.autopilot._within_working_hours", lambda campaign: True
@@ -23722,6 +23774,1566 @@ def test_agent_runtime_missing_or_corrupt_approval_state_blocks_action() -> None
         policy.validate_approval_decision(tool=crm_tool, approval=corrupt_approval)
 
 
+def test_action_policy_gateway_fail_closed_and_idempotent_redacted() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionApprovalContext,
+        ActionPolicyGateway,
+        require_provider_policy,
+    )
+    from app.services.agent_runtime.errors import (
+        ApprovalStateError,
+        IdempotencyConflictError,
+        PermissionDeniedError,
+        ToolExecutionBlockedError,
+    )
+
+    db = get_sessionmaker()()
+    try:
+        owner_id = f"policy-owner-{uuid4()}@example.com"
+        workspace = Workspace(owner_user_id=owner_id, name="Policy Gateway Workspace")
+        other_workspace = Workspace(
+            owner_user_id=f"other-policy-{uuid4()}@example.com",
+            name="Other Policy Workspace",
+        )
+        db.add_all([workspace, other_workspace])
+        db.flush()
+        gateway = ActionPolicyGateway()
+
+        with pytest.raises(ApprovalStateError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="ai",
+                actor_id=owner_id,
+                action_name="email.draft.approve",
+                input_payload={"email_id": str(uuid4())},
+            )
+        with pytest.raises(ApprovalStateError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=owner_id,
+                action_name="autonomous.email.send",
+                input_payload={"email_id": str(uuid4()), "body": "Sensitive body"},
+                idempotency_key=f"worker-send-{uuid4()}",
+            )
+        with pytest.raises(PermissionDeniedError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=f"not-a-member-{uuid4()}@example.com",
+                action_name="crm.write",
+                input_payload={"company": "Denied"},
+            )
+        with pytest.raises(PermissionDeniedError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="crm.write",
+                input_payload={"company": "Cross workspace"},
+                resource_workspace_id=other_workspace.id,
+                resource_id=uuid4(),
+            )
+
+        before_counts = {
+            "companies": db.query(Company).count(),
+            "leads": db.query(Lead).count(),
+            "emails": db.query(EmailMessage).count(),
+        }
+        dry_run = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="crm.write",
+            input_payload={"company": "Dry Run Only", "dry_run": True},
+            dry_run=True,
+        )
+        gateway.record_success(db, dry_run, result={"dry_run": True})
+        db.flush()
+        assert before_counts == {
+            "companies": db.query(Company).count(),
+            "leads": db.query(Lead).count(),
+            "emails": db.query(EmailMessage).count(),
+        }
+
+        draft_key = f"draft-policy-{uuid4()}"
+        draft_input = {"subject": "Hello", "body": "Full sensitive body"}
+        draft_decision = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.draft.create",
+            input_payload=draft_input,
+            idempotency_key=draft_key,
+        )
+        gateway.record_success(
+            db,
+            draft_decision,
+            result={
+                "email_body": "Full sensitive body",
+                "access_token": "sk-secret-token",
+            },
+        )
+        db.commit()
+
+        replay = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.draft.create",
+            input_payload=draft_input,
+            idempotency_key=draft_key,
+        )
+        assert replay.replay is True
+        with pytest.raises(IdempotencyConflictError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="email.draft.create",
+                input_payload={"subject": "Changed", "body": "Full sensitive body"},
+                idempotency_key=draft_key,
+            )
+
+        approval = ActionApprovalContext(
+            approved=True,
+            approved_by_actor_type="human",
+            approved_by_user_id=owner_id,
+            manual_draft_approval=True,
+            final_send_confirmation=True,
+            fingerprint="approved-fingerprint",
+        )
+        with pytest.raises(ApprovalStateError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="email.send",
+                input_payload={"email_id": str(uuid4()), "body": "Body"},
+                approval=approval,
+                idempotency_key=f"stale-fingerprint-{uuid4()}",
+                required_approval_fingerprint="new-fingerprint",
+            )
+
+        email_id = str(uuid4())
+        send_key = f"send-policy-{uuid4()}"
+        send_input = {"email_id": email_id, "body": "Body"}
+        send_decision = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=send_input,
+            approval=approval,
+            idempotency_key=send_key,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        require_provider_policy(db, send_decision)
+        gateway.record_success(db, send_decision, result={"provider_message_id": "ok"})
+        db.commit()
+        replay_send = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=send_input,
+            approval=approval,
+            idempotency_key=send_key,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        assert replay_send.replay is True
+        with pytest.raises(ToolExecutionBlockedError):
+            require_provider_policy(db, replay_send)
+
+        rows = db.scalars(
+            select(ActionPolicyEnforcement).where(
+                ActionPolicyEnforcement.workspace_id == workspace.id,
+                ActionPolicyEnforcement.action_name == "email.draft.create",
+            )
+        ).all()
+        assert rows
+        redacted = json.dumps(rows[0].result_json, sort_keys=True)
+        assert "Full sensitive body" not in redacted
+        assert "sk-secret-token" not in redacted
+        assert "sha256" in redacted
+        assert "[REDACTED_SECRET]" in redacted
+    finally:
+        db.close()
+
+
+def test_action_policy_gateway_send_claim_allows_one_provider_attempt() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionApprovalContext,
+        ActionPolicyGateway,
+        require_provider_policy,
+    )
+    from app.services.agent_runtime.errors import ToolExecutionBlockedError
+
+    owner_id = f"policy-concurrency-{uuid4()}@example.com"
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_id, name="Policy Concurrency")
+        db.add(workspace)
+        db.commit()
+        workspace_id = workspace.id
+
+    gateway = ActionPolicyGateway()
+    email_id = uuid4()
+    send_payload = {
+        "route": "legacy.email.send",
+        "email_id": str(email_id),
+        "lead_id": str(uuid4()),
+        "recipient_email": "buyer@concurrency.example",
+        "sender_email": "sender@concurrency.example",
+        "subject": "Concurrency",
+        "body": "Only one provider call is allowed.",
+        "approval_version": 1,
+        "confirmation_fingerprint": "approved-fingerprint",
+    }
+    approval = ActionApprovalContext(
+        approved=True,
+        approved_by_actor_type="human",
+        approved_by_user_id=owner_id,
+        manual_draft_approval=True,
+        final_send_confirmation=True,
+        fingerprint="approved-fingerprint",
+    )
+    key = f"send-concurrency:{workspace_id}:{email_id}:v1"
+    provider_calls = 0
+    db_one = get_sessionmaker()()
+    db_two = get_sessionmaker()()
+    db_three = get_sessionmaker()()
+    try:
+        workspace_one = db_one.get(Workspace, workspace_id)
+        assert workspace_one is not None
+        first = gateway.enforce(
+            db_one,
+            workspace=workspace_one,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=send_payload,
+            approval=approval,
+            idempotency_key=key,
+            resource_workspace_id=workspace_id,
+            resource_id=email_id,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        db_one.commit()
+
+        workspace_two = db_two.get(Workspace, workspace_id)
+        assert workspace_two is not None
+        with pytest.raises(ToolExecutionBlockedError, match="already in progress"):
+            gateway.enforce(
+                db_two,
+                workspace=workspace_two,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="email.send",
+                input_payload=send_payload,
+                approval=approval,
+                idempotency_key=key,
+                resource_workspace_id=workspace_id,
+                resource_id=email_id,
+                required_approval_fingerprint="approved-fingerprint",
+            )
+        db_two.rollback()
+        db_two.close()
+
+        require_provider_policy(db_one, first)
+        provider_calls += 1
+        gateway.record_success(
+            db_one, first, result={"provider_message_id": "provider-one"}
+        )
+        db_one.commit()
+
+        workspace_three = db_three.get(Workspace, workspace_id)
+        assert workspace_three is not None
+        replay = gateway.enforce(
+            db_three,
+            workspace=workspace_three,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=send_payload,
+            approval=approval,
+            idempotency_key=key,
+            resource_workspace_id=workspace_id,
+            resource_id=email_id,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        assert replay.replay is True
+        assert replay.provider_side_effect_allowed is False
+        with pytest.raises(ToolExecutionBlockedError):
+            require_provider_policy(db_three, replay)
+        assert provider_calls == 1
+    finally:
+        db_one.close()
+        db_two.close()
+        db_three.close()
+
+
+def test_action_policy_gateway_integrity_conflict_started_is_blocked(monkeypatch) -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionApprovalContext,
+        ActionPolicyGateway,
+        request_fingerprint_for_action,
+    )
+    from app.services.agent_runtime.errors import ToolExecutionBlockedError
+
+    owner_id = f"policy-integrity-{uuid4()}@example.com"
+    gateway = ActionPolicyGateway()
+    email_id = uuid4()
+    payload = {
+        "route": "legacy.email.send",
+        "email_id": str(email_id),
+        "recipient_email": "buyer@integrity.example",
+        "sender_email": "sender@integrity.example",
+        "subject": "Integrity",
+        "body": "Body",
+        "approval_version": 1,
+        "confirmation_fingerprint": "approved-fingerprint",
+    }
+    fingerprint = request_fingerprint_for_action(
+        action_name="email.send", input_payload=payload
+    )
+    approval = ActionApprovalContext(
+        approved=True,
+        approved_by_actor_type="human",
+        approved_by_user_id=owner_id,
+        manual_draft_approval=True,
+        final_send_confirmation=True,
+        fingerprint="approved-fingerprint",
+    )
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_id, name="Integrity Policy")
+        db.add(workspace)
+        db.flush()
+        workspace_id = workspace.id
+        key = f"integrity:{workspace.id}:{email_id}"
+        db.add(
+            ActionPolicyEnforcement(
+                workspace_id=workspace.id,
+                actor_type="human",
+                actor_id=owner_id,
+                user_id=owner_id,
+                action_name="email.send",
+                action_type="external_side_effect",
+                resource_id=str(email_id),
+                required_permissions_json=["email:send"],
+                approval_state="approved",
+                approval_fingerprint="approved-fingerprint",
+                request_fingerprint=fingerprint,
+                idempotency_key=key,
+                status="started",
+                execution_claim_token="existing-owner",
+                claim_expires_at=datetime.utcnow() + timedelta(minutes=5),
+            )
+        )
+        db.commit()
+
+    db_conflict = get_sessionmaker()()
+    try:
+        workspace = db_conflict.get(Workspace, workspace_id)
+        assert workspace is not None
+        original_scalar = db_conflict.scalar
+        hidden = {"done": False}
+
+        def hide_first_policy_lookup(statement, *args, **kwargs):
+            if (
+                not hidden["done"]
+                and "action_policy_enforcements" in str(statement)
+            ):
+                hidden["done"] = True
+                return None
+            return original_scalar(statement, *args, **kwargs)
+
+        monkeypatch.setattr(db_conflict, "scalar", hide_first_policy_lookup)
+        with pytest.raises(ToolExecutionBlockedError, match="already in progress"):
+            gateway.enforce(
+                db_conflict,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="email.send",
+                input_payload=payload,
+                approval=approval,
+                idempotency_key=key,
+                resource_workspace_id=workspace_id,
+                resource_id=email_id,
+                required_approval_fingerprint="approved-fingerprint",
+            )
+    finally:
+        db_conflict.close()
+
+
+def test_action_policy_gateway_failed_retry_claim_is_atomic() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionApprovalContext,
+        ActionPolicyGateway,
+        request_fingerprint_for_action,
+    )
+    from app.services.agent_runtime.errors import ToolExecutionBlockedError
+
+    owner_id = f"policy-failed-claim-{uuid4()}@example.com"
+    gateway = ActionPolicyGateway()
+    email_id = uuid4()
+    payload = {
+        "route": "legacy.email.send",
+        "email_id": str(email_id),
+        "recipient_email": "buyer@failed-claim.example",
+        "sender_email": "sender@failed-claim.example",
+        "subject": "Retry",
+        "body": "Retry body",
+        "approval_version": 1,
+        "confirmation_fingerprint": "approved-fingerprint",
+    }
+    fingerprint = request_fingerprint_for_action(
+        action_name="email.send", input_payload=payload
+    )
+    approval = ActionApprovalContext(
+        approved=True,
+        approved_by_actor_type="human",
+        approved_by_user_id=owner_id,
+        manual_draft_approval=True,
+        final_send_confirmation=True,
+        fingerprint="approved-fingerprint",
+    )
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_id, name="Failed Claim Policy")
+        db.add(workspace)
+        db.flush()
+        workspace_id = workspace.id
+        key = f"failed-claim:{workspace.id}:{email_id}"
+        db.add(
+            ActionPolicyEnforcement(
+                workspace_id=workspace.id,
+                actor_type="human",
+                actor_id=owner_id,
+                user_id=owner_id,
+                action_name="email.send",
+                action_type="external_side_effect",
+                resource_id=str(email_id),
+                required_permissions_json=["email:send"],
+                approval_state="approved",
+                approval_fingerprint="approved-fingerprint",
+                request_fingerprint=fingerprint,
+                idempotency_key=key,
+                status="failed",
+                execution_claim_token="failed-owner",
+                claim_expires_at=datetime.utcnow() - timedelta(minutes=5),
+            )
+        )
+        db.commit()
+
+    db_one = get_sessionmaker()()
+    db_two = get_sessionmaker()()
+    try:
+        workspace_one = db_one.get(Workspace, workspace_id)
+        assert workspace_one is not None
+        retry = gateway.enforce(
+            db_one,
+            workspace=workspace_one,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=payload,
+            approval=approval,
+            idempotency_key=key,
+            resource_workspace_id=workspace_id,
+            resource_id=email_id,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        assert retry.provider_side_effect_allowed is True
+        assert retry.execution_claim_token
+        db_one.commit()
+
+        workspace_two = db_two.get(Workspace, workspace_id)
+        assert workspace_two is not None
+        with pytest.raises(ToolExecutionBlockedError, match="already in progress"):
+            gateway.enforce(
+                db_two,
+                workspace=workspace_two,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="email.send",
+                input_payload=payload,
+                approval=approval,
+                idempotency_key=key,
+                resource_workspace_id=workspace_id,
+                resource_id=email_id,
+                required_approval_fingerprint="approved-fingerprint",
+            )
+    finally:
+        db_one.close()
+        db_two.close()
+
+
+def test_action_policy_gateway_stale_claim_cannot_finalize_or_send() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionApprovalContext,
+        ActionPolicyGateway,
+        require_provider_policy,
+    )
+    from app.services.agent_runtime.errors import ToolExecutionBlockedError
+
+    owner_id = f"policy-stale-claim-{uuid4()}@example.com"
+    gateway = ActionPolicyGateway()
+    email_id = uuid4()
+    payload = {
+        "route": "legacy.email.send",
+        "email_id": str(email_id),
+        "recipient_email": "buyer@stale-claim.example",
+        "sender_email": "sender@stale-claim.example",
+        "subject": "Stale claim",
+        "body": "Only the current DB claim can send.",
+        "approval_version": 1,
+        "confirmation_fingerprint": "approved-fingerprint",
+    }
+    approval = ActionApprovalContext(
+        approved=True,
+        approved_by_actor_type="human",
+        approved_by_user_id=owner_id,
+        manual_draft_approval=True,
+        final_send_confirmation=True,
+        fingerprint="approved-fingerprint",
+    )
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_id, name="Stale Claim")
+        db.add(workspace)
+        db.commit()
+        workspace_id = workspace.id
+
+    key = f"stale-claim:{workspace_id}:{email_id}:v1"
+    db_a = get_sessionmaker()()
+    db_b = get_sessionmaker()()
+    provider_calls = 0
+    try:
+        workspace_a = db_a.get(Workspace, workspace_id)
+        assert workspace_a is not None
+        decision_a = gateway.enforce(
+            db_a,
+            workspace=workspace_a,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=payload,
+            approval=approval,
+            idempotency_key=key,
+            resource_workspace_id=workspace_id,
+            resource_id=email_id,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        token_a = decision_a.execution_claim_token
+        assert token_a
+        db_a.commit()
+
+        gateway.record_failure(db_a, decision_a, RuntimeError("provider failed"))
+        db_a.commit()
+
+        workspace_b = db_b.get(Workspace, workspace_id)
+        assert workspace_b is not None
+        decision_b = gateway.enforce(
+            db_b,
+            workspace=workspace_b,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.send",
+            input_payload=payload,
+            approval=approval,
+            idempotency_key=key,
+            resource_workspace_id=workspace_id,
+            resource_id=email_id,
+            required_approval_fingerprint="approved-fingerprint",
+        )
+        token_b = decision_b.execution_claim_token
+        assert token_b and token_b != token_a
+        db_b.commit()
+
+        with pytest.raises(ToolExecutionBlockedError, match="inactive"):
+            require_provider_policy(db_a, decision_a)
+        with pytest.raises(ToolExecutionBlockedError, match="no longer active"):
+            gateway.record_success(db_a, decision_a, result={"stale": True})
+        db_a.rollback()
+        with pytest.raises(ToolExecutionBlockedError, match="no longer active"):
+            gateway.record_failure(db_a, decision_a, RuntimeError("stale failure"))
+        db_a.rollback()
+
+        current = db_b.get(ActionPolicyEnforcement, decision_b.enforcement.id)
+        assert current is not None
+        assert current.status == "started"
+        assert current.execution_claim_token == token_b
+
+        require_provider_policy(db_b, decision_b)
+        provider_calls += 1
+        gateway.record_success(db_b, decision_b, result={"provider_message_id": "ok"})
+        db_b.commit()
+
+        completed = db_b.get(ActionPolicyEnforcement, decision_b.enforcement.id)
+        assert completed is not None
+        assert completed.status == "succeeded"
+        assert completed.execution_claim_token == ""
+        assert completed.claim_expires_at is None
+        assert provider_calls == 1
+    finally:
+        db_a.close()
+        db_b.close()
+
+
+def test_action_policy_gateway_worker_delegation_required_and_scoped() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionApprovalContext,
+        ActionDelegationContext,
+        ActionPolicyGateway,
+        request_fingerprint_for_action,
+    )
+    from app.services.agent_runtime.errors import ApprovalStateError, PermissionDeniedError
+
+    owner_id = f"worker-delegation-{uuid4()}@example.com"
+    other_owner_id = f"worker-delegation-other-{uuid4()}@example.com"
+    gateway = ActionPolicyGateway()
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_id, name="Worker Delegation")
+        other_workspace = Workspace(
+            owner_user_id=other_owner_id, name="Other Worker Delegation"
+        )
+        db.add_all([workspace, other_workspace])
+        db.flush()
+        lead = Lead(
+            user_id=owner_id,
+            workspace_id=workspace.id,
+            company="Delegation Lead",
+            email="buyer@delegation.example",
+        )
+        db.add(lead)
+        db.flush()
+        job = EnrichmentJob(
+            workspace_id=workspace.id,
+            user_id=owner_id,
+            lead_id=lead.id,
+            job_type="company_enrichment",
+            status="running",
+            request_id=str(uuid4()),
+        )
+        db.add(job)
+        db.flush()
+        payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+        }
+        synthetic_approval = ActionApprovalContext(
+            approved=True,
+            approved_by_actor_type="human",
+            approved_by_user_id=owner_id,
+        )
+        with pytest.raises(ApprovalStateError, match="delegation"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{payload['job_id']}",
+                action_name="crm.write",
+                input_payload=payload,
+                approval=synthetic_approval,
+                idempotency_key=f"worker-no-delegation:{workspace.id}:{lead.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+        with pytest.raises(ApprovalStateError, match="delegation"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=owner_id,
+                action_name="crm.write",
+                input_payload=payload,
+                idempotency_key=f"owner-id-no-delegation:{workspace.id}:{lead.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+
+        fingerprint = request_fingerprint_for_action(
+            action_name="crm.write", input_payload=payload
+        )
+        delegation = ActionDelegationContext(
+            delegated_by_user_id=owner_id,
+            delegation_type="job_created_by_user",
+            evidence_id=str(payload["job_id"]),
+            fingerprint=fingerprint,
+            workspace_id=workspace.id,
+            action_name="crm.write",
+            resource_id=lead.id,
+        )
+        allowed = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="worker",
+            actor_id=f"worker:{payload['job_id']}",
+            action_name="crm.write",
+            input_payload=payload,
+            delegation=delegation,
+            idempotency_key=f"worker-valid-delegation:{workspace.id}:{lead.id}",
+            resource_workspace_id=workspace.id,
+            resource_id=lead.id,
+        )
+        assert allowed.allowed is True
+        assert allowed.enforcement is not None
+        assert allowed.enforcement.actor_id.startswith("worker:")
+        assert allowed.enforcement.delegated_by_user_id == owner_id
+        gateway.record_success(db, allowed, result={"lead_id": str(lead.id)})
+
+        with pytest.raises(PermissionDeniedError, match="Delegation workspace"):
+            gateway.enforce(
+                db,
+                workspace=other_workspace,
+                actor_type="worker",
+                actor_id=f"worker:{payload['job_id']}",
+                action_name="crm.write",
+                input_payload=payload,
+                delegation=delegation,
+                idempotency_key=(
+                    f"worker-cross-workspace:{other_workspace.id}:{lead.id}"
+                ),
+                resource_workspace_id=other_workspace.id,
+                resource_id=lead.id,
+            )
+
+
+def test_action_policy_gateway_enrichment_job_type_scope_matrix() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionDelegationContext,
+        ActionPolicyGateway,
+        request_fingerprint_for_action,
+    )
+    from app.services.agent_runtime.errors import ApprovalStateError
+
+    owner_id = f"job-scope-{uuid4()}@example.com"
+    gateway = ActionPolicyGateway()
+
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_id, name="Job Scope")
+        db.add(workspace)
+        db.flush()
+        lead = Lead(
+            user_id=owner_id,
+            workspace_id=workspace.id,
+            company="Job Scope Lead",
+            website="https://job-scope.example",
+            email="buyer@job-scope.example",
+        )
+        db.add(lead)
+        db.flush()
+        company = Company(
+            user_id=owner_id,
+            workspace_id=workspace.id,
+            lead_id=lead.id,
+            name="Job Scope Company",
+            website=lead.website,
+            domain="job-scope.example",
+        )
+        db.add(company)
+        db.flush()
+
+        def make_job(job_type: str, payload_json: dict[str, Any] | None = None) -> EnrichmentJob:
+            job = EnrichmentJob(
+                workspace_id=workspace.id,
+                user_id=owner_id,
+                lead_id=lead.id,
+                job_type=job_type,
+                status="running",
+                request_id=str(uuid4()),
+                payload_json=payload_json or {},
+            )
+            db.add(job)
+            db.flush()
+            return job
+
+        company_job = make_job("company_enrichment")
+        deep_job = make_job("deep_contact_search", {"company_id": str(company.id)})
+        autopilot_job = make_job(
+            "autopilot_email_send",
+            {"email_id": str(uuid4()), "campaign_id": str(uuid4())},
+        )
+        unknown_job = make_job("mystery_job")
+
+        def delegation_for(
+            *,
+            job: EnrichmentJob,
+            action_name: str,
+            payload: dict[str, Any],
+            resource_id: UUID,
+        ) -> ActionDelegationContext:
+            return ActionDelegationContext(
+                delegated_by_user_id=owner_id,
+                delegation_type="job_created_by_user",
+                evidence_id=str(job.id),
+                fingerprint=request_fingerprint_for_action(
+                    action_name=action_name,
+                    input_payload=payload,
+                ),
+                workspace_id=workspace.id,
+                action_name=action_name,
+                resource_id=resource_id,
+            )
+
+        def enforce_job(
+            *,
+            job: EnrichmentJob,
+            action_name: str,
+            payload: dict[str, Any],
+            resource_id: UUID,
+            suffix: str,
+        ):
+            return gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{job.id}",
+                action_name=action_name,
+                input_payload=payload,
+                delegation=delegation_for(
+                    job=job,
+                    action_name=action_name,
+                    payload=payload,
+                    resource_id=resource_id,
+                ),
+                idempotency_key=f"job-scope:{workspace.id}:{job.id}:{suffix}",
+                resource_workspace_id=workspace.id,
+                resource_id=resource_id,
+            )
+
+        company_payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+        }
+        company_decision = enforce_job(
+            job=company_job,
+            action_name="crm.write",
+            payload=company_payload,
+            resource_id=lead.id,
+            suffix="company-crm",
+        )
+        assert company_decision.allowed is True
+        gateway.record_success(db, company_decision, result={"ok": True})
+
+        company_draft_payload = {
+            "route": "worker.company_enrichment.draft",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+        }
+        company_draft_decision = enforce_job(
+            job=company_job,
+            action_name="email.draft.create",
+            payload=company_draft_payload,
+            resource_id=lead.id,
+            suffix="company-draft",
+        )
+        assert company_draft_decision.allowed is True
+        gateway.record_success(db, company_draft_decision, result={"draft": True})
+
+        deep_payload = {
+            "route": "worker.deep_contact_search",
+            "job_id": str(deep_job.id),
+            "lead_id": str(lead.id),
+            "company_id": str(company.id),
+        }
+        deep_decision = enforce_job(
+            job=deep_job,
+            action_name="crm.write",
+            payload=deep_payload,
+            resource_id=company.id,
+            suffix="deep-crm",
+        )
+        assert deep_decision.allowed is True
+        gateway.record_success(db, deep_decision, result={"ok": True})
+
+        company_failure_payload = {
+            "route": "worker.enrichment_failure",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+            "job_type": "company_enrichment",
+        }
+        company_failure = enforce_job(
+            job=company_job,
+            action_name="crm.write",
+            payload=company_failure_payload,
+            resource_id=lead.id,
+            suffix="company-failure",
+        )
+        assert company_failure.allowed is True
+        gateway.record_success(db, company_failure, result={"failed": True})
+
+        deep_failure_payload = {
+            "route": "worker.enrichment_failure",
+            "job_id": str(deep_job.id),
+            "lead_id": str(lead.id),
+            "job_type": "deep_contact_search",
+        }
+        deep_failure = enforce_job(
+            job=deep_job,
+            action_name="crm.write",
+            payload=deep_failure_payload,
+            resource_id=lead.id,
+            suffix="deep-failure",
+        )
+        assert deep_failure.allowed is True
+        gateway.record_success(db, deep_failure, result={"failed": True})
+
+        autopilot_company_payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(autopilot_job.id),
+            "lead_id": str(lead.id),
+        }
+        with pytest.raises(ApprovalStateError, match="job type"):
+            enforce_job(
+                job=autopilot_job,
+                action_name="crm.write",
+                payload=autopilot_company_payload,
+                resource_id=lead.id,
+                suffix="autopilot-company",
+            )
+
+        autopilot_draft_payload = {
+            "route": "worker.company_enrichment.draft",
+            "job_id": str(autopilot_job.id),
+            "lead_id": str(lead.id),
+        }
+        with pytest.raises(ApprovalStateError, match="job type"):
+            enforce_job(
+                job=autopilot_job,
+                action_name="email.draft.create",
+                payload=autopilot_draft_payload,
+                resource_id=lead.id,
+                suffix="autopilot-draft",
+            )
+
+        autonomous_payload = {
+            "route": "worker.autopilot_email_send",
+            "job_id": str(autopilot_job.id),
+            "email_id": str(uuid4()),
+            "recipient_email": "buyer@job-scope.example",
+            "sender_email": "sender@job-scope.example",
+            "subject": "Blocked autonomous send",
+            "body": "Provider must remain blocked.",
+            "approval_version": 1,
+            "confirmation_fingerprint": "not-approved",
+        }
+        with pytest.raises(ApprovalStateError, match="requires a human"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{autopilot_job.id}",
+                action_name="autonomous.email.send",
+                input_payload=autonomous_payload,
+                delegation=delegation_for(
+                    job=autopilot_job,
+                    action_name="autonomous.email.send",
+                    payload=autonomous_payload,
+                    resource_id=lead.id,
+                ),
+                idempotency_key=f"job-scope:{workspace.id}:{autopilot_job.id}:autonomous-send",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+
+        company_deep_payload = {
+            "route": "worker.deep_contact_search",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+            "company_id": str(company.id),
+        }
+        with pytest.raises(ApprovalStateError, match="job type"):
+            enforce_job(
+                job=company_job,
+                action_name="crm.write",
+                payload=company_deep_payload,
+                resource_id=company.id,
+                suffix="company-deep",
+            )
+
+        mismatched_failure_payload = {
+            "route": "worker.enrichment_failure",
+            "job_id": str(company_job.id),
+            "lead_id": str(lead.id),
+            "job_type": "deep_contact_search",
+        }
+        with pytest.raises(ApprovalStateError, match="job type mismatch"):
+            enforce_job(
+                job=company_job,
+                action_name="crm.write",
+                payload=mismatched_failure_payload,
+                resource_id=lead.id,
+                suffix="failure-mismatch",
+            )
+
+        unknown_payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(unknown_job.id),
+            "lead_id": str(lead.id),
+        }
+        with pytest.raises(ApprovalStateError, match="job type"):
+            enforce_job(
+                job=unknown_job,
+                action_name="crm.write",
+                payload=unknown_payload,
+                resource_id=lead.id,
+                suffix="unknown",
+            )
+
+
+def test_action_policy_gateway_delegation_evidence_negative_cases() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionDelegationContext,
+        ActionPolicyGateway,
+        request_fingerprint_for_action,
+    )
+    from app.services.agent_runtime.errors import ApprovalStateError, PermissionDeniedError
+
+    owner_id = f"delegation-negative-{uuid4()}@example.com"
+    other_owner_id = f"delegation-negative-other-{uuid4()}@example.com"
+    gateway = ActionPolicyGateway()
+    with get_sessionmaker()() as db:
+        workspace = Workspace(owner_user_id=owner_id, name="Delegation Negative")
+        other_workspace = Workspace(
+            owner_user_id=other_owner_id, name="Delegation Negative Other"
+        )
+        db.add_all([workspace, other_workspace])
+        db.flush()
+        lead = Lead(
+            user_id=owner_id,
+            workspace_id=workspace.id,
+            company="Delegation Negative Lead",
+            email="buyer@delegation-negative.example",
+        )
+        other_lead = Lead(
+            user_id=other_owner_id,
+            workspace_id=other_workspace.id,
+            company="Other Delegation Negative Lead",
+            email="buyer@other-delegation-negative.example",
+        )
+        db.add_all([lead, other_lead])
+        db.flush()
+        job = EnrichmentJob(
+            workspace_id=workspace.id,
+            user_id=owner_id,
+            lead_id=lead.id,
+            job_type="company_enrichment",
+            status="running",
+            request_id=str(uuid4()),
+        )
+        other_job = EnrichmentJob(
+            workspace_id=other_workspace.id,
+            user_id=other_owner_id,
+            lead_id=other_lead.id,
+            job_type="company_enrichment",
+            status="running",
+            request_id=str(uuid4()),
+        )
+        stopped_campaign = Campaign(
+            user_id=owner_id,
+            workspace_id=workspace.id,
+            name="Stopped Campaign",
+            status=CampaignStatus.stopped,
+        )
+        db.add_all([job, other_job, stopped_campaign])
+        db.flush()
+
+        def job_payload(job_id: UUID, lead_id: UUID) -> dict[str, str]:
+            return {
+                "route": "worker.company_enrichment",
+                "job_id": str(job_id),
+                "lead_id": str(lead_id),
+            }
+
+        def job_delegation(
+            *,
+            evidence_id: UUID,
+            payload: dict[str, str],
+            delegated_by_user_id: str = owner_id,
+            workspace_id: UUID | None = None,
+            action_name: str = "crm.write",
+            resource_id: UUID | None = None,
+            fingerprint: str | None = None,
+        ) -> ActionDelegationContext:
+            return ActionDelegationContext(
+                delegated_by_user_id=delegated_by_user_id,
+                delegation_type="job_created_by_user",
+                evidence_id=str(evidence_id),
+                fingerprint=fingerprint
+                if fingerprint is not None
+                else request_fingerprint_for_action(
+                    action_name="crm.write", input_payload=payload
+                ),
+                workspace_id=workspace_id or workspace.id,
+                action_name=action_name,
+                resource_id=resource_id or lead.id,
+            )
+
+        missing_job_id = uuid4()
+        missing_payload = job_payload(missing_job_id, lead.id)
+        with pytest.raises(ApprovalStateError, match="not found"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{missing_job_id}",
+                action_name="crm.write",
+                input_payload=missing_payload,
+                delegation=job_delegation(
+                    evidence_id=missing_job_id, payload=missing_payload
+                ),
+                idempotency_key=f"missing-job:{workspace.id}:{missing_job_id}",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+
+        other_payload = job_payload(other_job.id, other_lead.id)
+        with pytest.raises(PermissionDeniedError, match="workspace mismatch"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{other_job.id}",
+                action_name="crm.write",
+                input_payload=other_payload,
+                delegation=job_delegation(
+                    evidence_id=other_job.id,
+                    payload=other_payload,
+                    workspace_id=workspace.id,
+                    resource_id=other_lead.id,
+                ),
+                idempotency_key=f"other-workspace-job:{workspace.id}:{other_job.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=other_lead.id,
+            )
+
+        payload = job_payload(job.id, lead.id)
+        with pytest.raises(PermissionDeniedError, match="user mismatch"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{job.id}",
+                action_name="crm.write",
+                input_payload=payload,
+                delegation=job_delegation(
+                    evidence_id=job.id,
+                    payload=payload,
+                    delegated_by_user_id=other_owner_id,
+                ),
+                idempotency_key=f"user-mismatch-job:{workspace.id}:{job.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+
+        with pytest.raises(ApprovalStateError, match="action mismatch"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{job.id}",
+                action_name="crm.write",
+                input_payload=payload,
+                delegation=job_delegation(
+                    evidence_id=job.id,
+                    payload=payload,
+                    action_name="email.draft.create",
+                ),
+                idempotency_key=f"action-mismatch-job:{workspace.id}:{job.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+        with pytest.raises(PermissionDeniedError, match="resource mismatch"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{job.id}",
+                action_name="crm.write",
+                input_payload=payload,
+                delegation=job_delegation(
+                    evidence_id=job.id,
+                    payload=payload,
+                    resource_id=uuid4(),
+                ),
+                idempotency_key=f"resource-mismatch-job:{workspace.id}:{job.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+        with pytest.raises(ApprovalStateError, match="fingerprint mismatch"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:{job.id}",
+                action_name="crm.write",
+                input_payload=payload,
+                delegation=job_delegation(
+                    evidence_id=job.id,
+                    payload=payload,
+                    fingerprint="not-the-policy-fingerprint",
+                ),
+                idempotency_key=f"fingerprint-mismatch-job:{workspace.id}:{job.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=lead.id,
+            )
+
+        campaign_payload = {
+            "route": "automation.lead_import",
+            "campaign_id": str(stopped_campaign.id),
+            "company": "Stopped Campaign Buyer",
+            "website": "https://stopped-campaign.example",
+            "email": "buyer@stopped-campaign.example",
+        }
+        with pytest.raises(ApprovalStateError, match="campaign is not active"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:automation:{stopped_campaign.id}",
+                action_name="crm.write",
+                input_payload=campaign_payload,
+                delegation=ActionDelegationContext(
+                    delegated_by_user_id=owner_id,
+                    delegation_type="campaign_automation_authorization",
+                    evidence_id=str(stopped_campaign.id),
+                    fingerprint=request_fingerprint_for_action(
+                        action_name="crm.write", input_payload=campaign_payload
+                    ),
+                    workspace_id=workspace.id,
+                    action_name="crm.write",
+                ),
+                idempotency_key=f"stopped-campaign:{workspace.id}:{stopped_campaign.id}",
+                resource_workspace_id=workspace.id,
+            )
+
+        fabricated_payload = {
+            "route": "worker.nightly_lead_prioritization",
+            "company_id": str(uuid4()),
+            "lead_id": "",
+            "tier": "A",
+            "score": 90,
+            "date": "2026-08-18",
+        }
+        with pytest.raises(ApprovalStateError, match="not found"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id="worker:fabricated",
+                action_name="crm.write",
+                input_payload=fabricated_payload,
+                delegation=ActionDelegationContext(
+                    delegated_by_user_id=owner_id,
+                    delegation_type="company_nightly_prioritization",
+                    evidence_id=fabricated_payload["company_id"],
+                    fingerprint=request_fingerprint_for_action(
+                        action_name="crm.write", input_payload=fabricated_payload
+                    ),
+                    workspace_id=workspace.id,
+                    action_name="crm.write",
+                    resource_id=fabricated_payload["company_id"],
+                ),
+                idempotency_key=f"fabricated-context:{workspace.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=fabricated_payload["company_id"],
+            )
+
+
+def test_action_policy_gateway_caller_permissions_cannot_weaken_definition() -> None:
+    from app.services.agent_runtime.action_gateway import ActionPolicyGateway
+    from app.services.agent_runtime.errors import PermissionDeniedError
+
+    class _WeakResolver:
+        def allowed_permissions(self, db, *, workspace, user_id) -> set[str]:
+            return {"workspace:read"}
+
+    with get_sessionmaker()() as db:
+        owner_id = f"weak-permission-{uuid4()}@example.com"
+        workspace = Workspace(owner_user_id=owner_id, name="Weak Permission")
+        db.add(workspace)
+        db.flush()
+        gateway = ActionPolicyGateway(permission_resolver=_WeakResolver())
+        with pytest.raises(PermissionDeniedError):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="crm.write",
+                input_payload={"company": "Cannot weaken"},
+                required_permissions=("workspace:read",),
+            )
+        blocked = db.scalar(
+            select(ActionPolicyEnforcement)
+            .where(ActionPolicyEnforcement.workspace_id == workspace.id)
+            .order_by(ActionPolicyEnforcement.created_at.desc())
+        )
+        assert blocked is not None
+        assert set(blocked.required_permissions_json) == {
+            "crm:write",
+            "workspace:read",
+        }
+
+
+def test_action_policy_gateway_failure_redacts_raw_exception_secrets() -> None:
+    from app.services.agent_runtime.action_gateway import ActionPolicyGateway
+
+    class CategorizedSensitiveError(RuntimeError):
+        category = "Authorization: Bearer category-token"
+
+    with get_sessionmaker()() as db:
+        owner_id = f"failure-redaction-{uuid4()}@example.com"
+        workspace = Workspace(owner_user_id=owner_id, name="Failure Redaction")
+        db.add(workspace)
+        db.flush()
+        gateway = ActionPolicyGateway()
+        decision = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.draft.create",
+            input_payload={
+                "subject": "Redact",
+                "body": "Draft body should be hashed in fingerprints.",
+            },
+            idempotency_key=f"failure-redaction:{workspace.id}",
+        )
+        sensitive_body = (
+            "Hello buyer, this is the complete sensitive email body. "
+            "It includes private offer details and should not be stored raw."
+        )
+        exc = (
+            "Authorization: Bearer sk-test-secret-token-1234567890 "
+            "smtp_password=hunter2 "
+            f"body={sensitive_body}"
+        )
+        gateway.record_failure(db, decision, exc)
+        db.flush()
+        row = db.get(ActionPolicyEnforcement, decision.enforcement.id)
+        assert row is not None
+        assert row.error_category == "external_error"
+        assert len(row.error_category) <= 80
+        assert "sk-test-secret-token-1234567890" not in row.error_category
+        assert "hunter2" not in row.error_category
+        assert sensitive_body not in row.error_category
+        assert "sk-test-secret-token-1234567890" not in row.error_message
+        assert "hunter2" not in row.error_message
+        assert sensitive_body not in row.error_message
+        assert len(row.error_message) <= 1000
+
+        categorized = gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=owner_id,
+            action_name="email.draft.create",
+            input_payload={
+                "subject": "Redact category",
+                "body": "Draft body should still be hashed in fingerprints.",
+            },
+            idempotency_key=f"failure-redaction-category:{workspace.id}",
+        )
+        gateway.record_failure(
+            db,
+            categorized,
+            CategorizedSensitiveError("category attribute should not be stored raw"),
+        )
+        db.flush()
+        categorized_row = db.get(ActionPolicyEnforcement, categorized.enforcement.id)
+        assert categorized_row is not None
+        assert categorized_row.error_category == "CategorizedSensitiveError"
+        assert "category-token" not in categorized_row.error_category
+        assert len(categorized_row.error_category) <= 80
+
+
+def test_action_policy_gateway_invalid_payload_blocks_before_provider_policy() -> None:
+    from app.services.agent_runtime.action_gateway import (
+        ActionApprovalContext,
+        ActionPolicyGateway,
+    )
+    from app.services.agent_runtime.errors import ToolExecutionBlockedError
+
+    with get_sessionmaker()() as db:
+        owner_id = f"invalid-payload-{uuid4()}@example.com"
+        workspace = Workspace(owner_user_id=owner_id, name="Invalid Payload")
+        db.add(workspace)
+        db.flush()
+        gateway = ActionPolicyGateway()
+        approval = ActionApprovalContext(
+            approved=True,
+            approved_by_actor_type="human",
+            approved_by_user_id=owner_id,
+            manual_draft_approval=True,
+            final_send_confirmation=True,
+            fingerprint="approved-fingerprint",
+        )
+        with pytest.raises(ToolExecutionBlockedError, match="Invalid action policy"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=owner_id,
+                action_name="email.send",
+                input_payload={
+                    "email_id": "not-a-uuid",
+                    "body": "Provider must never see invalid policy payload.",
+                    "unexpected_override": "email_id",
+                },
+                approval=approval,
+                idempotency_key=f"invalid-payload:{workspace.id}",
+                required_approval_fingerprint="approved-fingerprint",
+            )
+
+
+def test_manual_draft_approve_final_send_flow_still_uses_policy(monkeypatch) -> None:
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"manual-policy-send-{uuid4()}@example.com",
+    }
+    workspace = client.get("/api/workspace/me", headers=headers).json()
+    with get_sessionmaker()() as db:
+        lead = Lead(
+            user_id=headers["X-Test-User-Email"],
+            workspace_id=UUID(workspace["id"]),
+            company="Manual Policy Send",
+            website="https://manual-policy-send.example",
+            industry="SaaS",
+            email="buyer@manual-policy-send.example",
+        )
+        db.add(lead)
+        db.flush()
+        email = EmailMessage(
+            user_id=headers["X-Test-User-Email"],
+            workspace_id=UUID(workspace["id"]),
+            lead_id=lead.id,
+            direction="outbound",
+            subject="Manual policy send",
+            recipient_email=lead.email,
+            preview="Manual body",
+            body="Manual body",
+            delivery_status="draft",
+        )
+        db.add(email)
+        db.commit()
+        email_id = str(email.id)
+
+    sender_setup = client.put(
+        "/api/outreach/sender",
+        headers=headers,
+        json={
+            "provider": "resend",
+            "sender_name": "Manual Sender",
+            "sender_email": "sender@manual-policy-send.example",
+            "reply_to": "reply@manual-policy-send.example",
+            "daily_send_limit": 25,
+            "enabled": True,
+        },
+    )
+    assert sender_setup.status_code == 200
+    approved = client.post(
+        f"/api/workspace-app/emails/{email_id}/approve",
+        headers=headers,
+        json={
+            "confirmed_exact_draft": True,
+            "sender_email": "sender@manual-policy-send.example",
+            "recipient_email": "buyer@manual-policy-send.example",
+            "subject": "Manual policy send",
+            "body": "Manual body",
+        },
+    )
+    assert approved.status_code == 200
+
+    provider_calls: list[dict[str, Any]] = []
+
+    def fake_send(**kwargs):
+        provider_calls.append(kwargs)
+        return {"id": "manual-policy-provider-id", "thread_id": "manual-thread"}
+
+    monkeypatch.setattr("app.api.usage.send_email", fake_send)
+    sent = client.post(f"/api/workspace-app/emails/{email_id}/send", headers=headers)
+
+    assert sent.status_code == 200
+    assert sent.json()["email"]["delivery_status"] == "sent"
+    assert len(provider_calls) == 1
+    assert provider_calls[0]["policy_enforcement"].provider_side_effect_allowed is True
+    with get_sessionmaker()() as db:
+        policy = db.scalar(
+            select(ActionPolicyEnforcement).where(
+                ActionPolicyEnforcement.workspace_id == UUID(workspace["id"]),
+                ActionPolicyEnforcement.action_name == "email.send",
+                ActionPolicyEnforcement.resource_id == email_id,
+            )
+        )
+        assert policy is not None
+        assert policy.status == "succeeded"
+
+
+def test_autonomous_provider_send_stays_blocked_by_policy() -> None:
+    from app.services.agent_runtime.action_gateway import ActionPolicyGateway
+    from app.services.agent_runtime.errors import ApprovalStateError
+
+    with get_sessionmaker()() as db:
+        owner_id = f"autonomous-blocked-{uuid4()}@example.com"
+        workspace = Workspace(owner_user_id=owner_id, name="Autonomous Blocked")
+        db.add(workspace)
+        db.flush()
+        gateway = ActionPolicyGateway()
+        with pytest.raises(ApprovalStateError, match="human actor"):
+            gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="worker",
+                actor_id=f"worker:autonomous:{uuid4()}",
+                action_name="autonomous.email.send",
+                input_payload={
+                    "route": "autonomous.test",
+                    "email_id": str(uuid4()),
+                    "recipient_email": "buyer@autonomous-blocked.example",
+                    "subject": "Blocked",
+                    "body": "Autonomous send must not reach providers.",
+                },
+                idempotency_key=f"autonomous-blocked:{workspace.id}",
+                resource_workspace_id=workspace.id,
+                resource_id=uuid4(),
+            )
+
+
+def test_emailer_blocks_provider_without_policy(monkeypatch) -> None:
+    from app.services import emailer
+    from app.services.agent_runtime.errors import ToolExecutionBlockedError
+
+    provider_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(get_settings(), "outbound_provider_sends_disabled", False)
+    monkeypatch.setattr(
+        "app.services.emailer._send_resend_email",
+        lambda **kwargs: provider_calls.append(kwargs) or {"id": "should-not-send"},
+    )
+
+    with pytest.raises(ToolExecutionBlockedError):
+        emailer.send_email(
+            to_email="buyer@policy.example",
+            subject="Policy",
+            body="Body",
+            provider="resend",
+        )
+    assert provider_calls == []
+
+
 def test_agent_runtime_provider_not_called_without_approval(monkeypatch) -> None:
     from app.services.agent_runtime.adapters import AgentToolAdapters
     from app.services.agent_runtime.registry import build_default_tool_registry
@@ -23978,7 +25590,9 @@ def test_agent_runtime_draft_edit_resets_existing_approval(monkeypatch) -> None:
             tags={
                 "approved": True,
                 "approval_version": 1,
+                "approval_fingerprint": "old-draft-fingerprint",
                 "approval_source": "manual",
+                "approval_user_id": headers["X-Test-User-Email"],
                 "send_confirmation_snapshot": {"fingerprint": "old"},
             },
         )
@@ -23995,4 +25609,5 @@ def test_agent_runtime_draft_edit_resets_existing_approval(monkeypatch) -> None:
     assert edited.status_code == 200
     assert edited.json()["email"]["delivery_status"] == "draft"
     assert edited.json()["email"]["tags"].get("approved") is None
+    assert "approval_fingerprint" not in edited.json()["email"]["tags"]
     assert "send_confirmation_snapshot" not in edited.json()["email"]["tags"]

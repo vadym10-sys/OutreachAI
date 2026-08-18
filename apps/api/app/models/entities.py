@@ -472,6 +472,81 @@ class AgentTraceEvent(Base):
     workspace: Mapped[Workspace] = relationship()
 
 
+class ActionPolicyEnforcement(Base):
+    __tablename__ = "action_policy_enforcements"
+    __table_args__ = (
+        CheckConstraint(
+            "actor_type IN ('human', 'ai', 'worker', 'system')",
+            name="ck_action_policy_enforcements_actor_type",
+        ),
+        CheckConstraint(
+            "action_type IN ('read_only', 'internal_write', 'external_side_effect')",
+            name="ck_action_policy_enforcements_action_type",
+        ),
+        CheckConstraint(
+            "status IN ('started', 'succeeded', 'failed', 'blocked')",
+            name="ck_action_policy_enforcements_status",
+        ),
+        Index(
+            "idx_action_policy_enforcements_workspace_action",
+            "workspace_id",
+            "action_name",
+            "created_at",
+        ),
+        Index(
+            "uq_action_policy_enforcements_idempotency",
+            "workspace_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key <> ''"),
+            sqlite_where=text("idempotency_key <> ''"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    actor_type: Mapped[str] = mapped_column(String(32), index=True)
+    actor_id: Mapped[str] = mapped_column(String(128), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    delegated_by_user_id: Mapped[str] = mapped_column(String(128), default="", index=True)
+    delegation_type: Mapped[str] = mapped_column(String(80), default="", index=True)
+    delegation_evidence_id: Mapped[str] = mapped_column(
+        String(160), default="", index=True
+    )
+    delegation_fingerprint: Mapped[str] = mapped_column(String(128), default="")
+    action_name: Mapped[str] = mapped_column(String(160), index=True)
+    action_type: Mapped[str] = mapped_column(String(40), index=True)
+    resource_id: Mapped[str] = mapped_column(String(160), default="", index=True)
+    required_permissions_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    approval_state: Mapped[str] = mapped_column(String(32), default="none", index=True)
+    approval_fingerprint: Mapped[str] = mapped_column(String(128), default="")
+    request_fingerprint: Mapped[str] = mapped_column(
+        String(128), default="", nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200), default="", index=True)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="started", index=True)
+    execution_claim_token: Mapped[str] = mapped_column(
+        String(128), default="", index=True
+    )
+    claim_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_category: Mapped[str] = mapped_column(String(80), default="", index=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    workspace: Mapped[Workspace] = relationship()
+
+
 class User(Base):
     __tablename__ = "users"
 

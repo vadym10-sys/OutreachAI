@@ -23,6 +23,11 @@ from app.models.entities import (
     Workspace,
 )
 from app.services.agent_runtime.adapters import ToolExecutionContext, default_tool_registry
+from app.services.agent_runtime.action_gateway import (
+    ActionApprovalContext,
+    ActionPolicyDecision,
+    ActionPolicyGateway,
+)
 from app.services.agent_runtime.approval_policy import AgentApprovalPolicy
 from app.services.agent_runtime.errors import (
     AgentRunStateError,
@@ -68,6 +73,12 @@ from app.services.agent_runtime.tracing import error_category, record_trace, san
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, _trust_payload, _trust_system_prompt
 
 PROMPT_VERSION = "agent-runtime-plan-v1"
+GATEWAY_ACTION_BY_TOOL = {
+    "save_to_crm": "crm.write",
+    "generate_email_draft": "email.draft.create",
+    "send_email": "email.send",
+    "sync_replies": "gmail.replies.sync",
+}
 
 
 @dataclass(frozen=True)
@@ -198,6 +209,10 @@ class AgentRuntimeOrchestrator:
         self.policy = policy or AgentApprovalPolicy()
         self.planner = planner or OpenAIAgentPlanner()
         self.permission_resolver = permission_resolver or WorkspaceRolePermissionResolver()
+        self.action_gateway = ActionPolicyGateway(
+            permission_resolver=self.permission_resolver,
+            registry=self.registry,
+        )
         self._feature_enabled = feature_enabled
 
     @property
@@ -633,6 +648,7 @@ class AgentRuntimeOrchestrator:
             workspace=workspace,
             user_id=user_id,
         )
+        approval: AgentApprovalRequest | None = None
         if decision.requires_approval:
             approval = self._approval_for_step(db, run=run, step=step, tool_call=tool_call, tool=tool)
             if approval.approval_state != "approved":
@@ -671,11 +687,23 @@ class AgentRuntimeOrchestrator:
         tool_call.status = "running"
         tool_call.started_at = datetime.utcnow()
         context = ToolExecutionContext(db=db, workspace=workspace, user_id=user_id, request_id=request_id)
+        gateway_decision: ActionPolicyDecision | None = None
         started = time.perf_counter()
         try:
+            gateway_decision = self._enforce_action_gateway(
+                db,
+                run=run,
+                tool=tool,
+                arguments=arguments.model_dump(mode="json"),
+                workspace=workspace,
+                user_id=user_id,
+                approval=approval,
+                idempotency_key=idempotency_key,
+            )
             raw_output = tool.handler(context, arguments)
             output = tool.validate_output(raw_output)
         except Exception as exc:
+            self.action_gateway.record_failure(db, gateway_decision, exc)
             latency_ms = round((time.perf_counter() - started) * 1000)
             tool_call.status = "failed"
             tool_call.error_category = error_category(exc)
@@ -699,6 +727,7 @@ class AgentRuntimeOrchestrator:
             raise
         latency_ms = round((time.perf_counter() - started) * 1000)
         result_json = sanitize_for_trace(output.model_dump(mode="json"))
+        self.action_gateway.record_success(db, gateway_decision, result=result_json)
         tool_call.status = "succeeded"
         tool_call.result_json = result_json
         tool_call.latency_ms = latency_ms
@@ -721,6 +750,65 @@ class AgentRuntimeOrchestrator:
             untrusted_input=bool(result_json.get("untrusted_input")),
         )
         return False
+
+    def _enforce_action_gateway(
+        self,
+        db: Session,
+        *,
+        run: AgentRun,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+        workspace: Workspace,
+        user_id: str,
+        approval: AgentApprovalRequest | None,
+        idempotency_key: str,
+    ) -> ActionPolicyDecision | None:
+        action_name = GATEWAY_ACTION_BY_TOOL.get(tool.name)
+        if not action_name:
+            return None
+        approval_context = None
+        if approval is not None:
+            decision = (
+                approval.decision_json
+                if isinstance(approval.decision_json, dict)
+                else {}
+            )
+            approval_context = ActionApprovalContext(
+                approved=approval.approval_state == "approved",
+                approved_by_actor_type="human"
+                if approval.decided_by_user_id
+                else "",
+                approved_by_user_id=approval.decided_by_user_id or "",
+                manual_draft_approval=bool(
+                    decision.get("manual_draft_approval")
+                    or approval.approval_state == "approved"
+                ),
+                final_send_confirmation=bool(
+                    decision.get("final_send_confirmation")
+                ),
+                fingerprint=str(
+                    decision.get("fingerprint")
+                    or decision.get("approval_fingerprint")
+                    or ""
+                ),
+            )
+        return self.action_gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="ai",
+            actor_id=user_id,
+            action_name=action_name,
+            input_payload={
+                **arguments,
+                "context": {"run_id": str(run.id), "tool_name": tool.name},
+            },
+            required_permissions=tool.required_permissions,
+            dry_run=bool(run.dry_run or arguments.get("dry_run")),
+            approval=approval_context,
+            idempotency_key=idempotency_key,
+            resource_workspace_id=run.workspace_id,
+            resource_id=run.id,
+        )
 
     def _validate_plan(self, *, run: AgentRun, plan: AgentPlan) -> AgentPlan:
         normalized_steps = []

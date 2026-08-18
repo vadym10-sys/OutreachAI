@@ -15,28 +15,25 @@ from app.models.entities import (
     AuditLog,
     Campaign,
     CampaignStatus,
-    Company,
     EmailMessage,
     EnrichmentJob,
     Lead,
     LeadStatus,
     Workspace,
 )
-from app.services.emailer import EmailProviderSendingDisabledError, send_email
+from app.services.agent_runtime.action_gateway import ActionPolicyGateway
+from app.services.agent_runtime.errors import AgentRuntimeError
 from app.services.entitlements import BillingEntitlement, resolve_billing_entitlement
 from app.services.enrichment_queue import (
     complete_job,
     mark_cancelled,
     update_job_progress,
 )
-from app.services.plan_enforcement import (
-    check_usage_available,
-    increment_usage_after_success,
-)
 from app.services.secret_box import decrypt_secret
 
 logger = logging.getLogger("outreachai.autopilot")
 PRODUCTION_SMOKE_TEST_SOURCE = "production_smoke_test"
+_action_policy_gateway = ActionPolicyGateway()
 
 
 class AutopilotDeferred(RuntimeError):
@@ -53,6 +50,15 @@ def _metadata(lead: Lead | None) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _email_tags(email: EmailMessage | None) -> dict[str, Any]:
+    return email.tags if email and isinstance(email.tags, dict) else {}
+
+
+def _email_approval_version(email: EmailMessage) -> int:
+    version = int(_email_tags(email).get("approval_version") or 0)
+    return max(1, version)
 
 
 def _settings_for_workspace(
@@ -195,24 +201,31 @@ def _mark_requires_review(
                 "email_status": "Requires review",
             }
         )
+    already_requires_review = False
     if email:
+        current_tags = email.tags if isinstance(email.tags, dict) else {}
+        already_requires_review = (
+            email.delivery_status == "needs_review"
+            and bool(current_tags.get("autopilot_blocked_reason"))
+        )
         email.delivery_status = "needs_review"
         email.tags = {
-            **(email.tags if isinstance(email.tags, dict) else {}),
+            **current_tags,
             "autopilot_blocked_reason": reason,
         }
-    db.add(
-        AuditLog(
-            user_id=job.user_id,
-            workspace_id=job.workspace_id,
-            action="autopilot.requires_review",
-            metadata_json={
-                "job_id": str(job.id),
-                "lead_id": str(job.lead_id),
-                "reason": reason,
-            },
+    if not already_requires_review:
+        db.add(
+            AuditLog(
+                user_id=job.user_id,
+                workspace_id=job.workspace_id,
+                action="autopilot.requires_review",
+                metadata_json={
+                    "job_id": str(job.id),
+                    "lead_id": str(job.lead_id),
+                    "reason": reason,
+                },
+            )
         )
-    )
     db.commit()
     return complete_job(
         db, job, partial=True, warnings=[reason], claim_token=claim_token
@@ -290,9 +303,24 @@ def process_autopilot_email_job(
     payload = job.payload_json if isinstance(job.payload_json, dict) else {}
     campaign_id = UUID(str(payload.get("campaign_id")))
     email_id = UUID(str(payload.get("email_id")))
-    campaign = db.get(Campaign, campaign_id)
-    lead = db.get(Lead, job.lead_id)
-    email = db.get(EmailMessage, email_id)
+    campaign = db.scalar(
+        select(Campaign).where(
+            Campaign.id == campaign_id,
+            Campaign.workspace_id == job.workspace_id,
+        )
+    )
+    lead = db.scalar(
+        select(Lead).where(
+            Lead.id == job.lead_id,
+            Lead.workspace_id == job.workspace_id,
+        )
+    )
+    email = db.scalar(
+        select(EmailMessage).where(
+            EmailMessage.id == email_id,
+            EmailMessage.workspace_id == job.workspace_id,
+        )
+    )
     settings = _settings_for_workspace(db, job.user_id, job.workspace_id)
     if campaign is None or email is None or lead is None:
         return mark_cancelled(
@@ -333,7 +361,7 @@ def process_autopilot_email_job(
     block_reason = _recipient_safe(db, job, lead, email, settings)
     if block_reason:
         return _mark_requires_review(db, job, lead, email, block_reason, claim_token)
-    sender, oauth_config = _sender_runtime_config(settings)
+    sender, _oauth_config = _sender_runtime_config(settings)
     if _sent_today(db, job.workspace_id, campaign.id) >= int(
         sender["daily_send_limit"] or 25
     ):
@@ -350,80 +378,47 @@ def process_autopilot_email_job(
         return mark_cancelled(
             db, job, message="Workspace no longer exists.", claim_token=claim_token
         )
-    try:
-        check_usage_available(db, job.user_id, workspace, "email_sends")
-    except Exception as exc:
-        logger.info(
-            "autopilot.plan_limit_deferred workspace_id=%s job_id=%s reason=%s",
-            job.workspace_id,
-            job.id,
-            exc,
-        )
-        raise AutopilotDeferred("Plan email sending limit reached.", delay_seconds=3600)
     if email.delivery_status == "sent":
         return complete_job(db, job, partial=False, claim_token=claim_token)
     update_job_progress(
         db,
         job,
-        stage="sending",
-        message="Sending through connected Gmail.",
+        stage="policy_check",
+        message="Checking manual approval and Send confirmation.",
         percent=70,
         claim_token=claim_token,
     )
     try:
-        provider_response = send_email(
-            to_email=lead.email or "",
-            subject=email.subject,
-            body=email.body,
-            from_email=sender["sender_email"],
-            from_name=sender["sender_name"],
-            reply_to=sender["reply_to"],
-            provider="gmail",
-            oauth_config=oauth_config,
-        )
-    except EmailProviderSendingDisabledError as exc:
-        return _mark_requires_review(db, job, lead, email, str(exc), claim_token)
-    now = datetime.utcnow()
-    email.delivery_status = "sent"
-    email.sent_at = now
-    email.provider_message_id = str(provider_response.get("id") or "")
-    email.tags = {
-        **(email.tags if isinstance(email.tags, dict) else {}),
-        "autopilot": True,
-        "campaign_id": str(campaign.id),
-        "sender_email": sender["sender_email"],
-        "sender_provider": "gmail",
-    }
-    lead.status = LeadStatus.contacted
-    lead.notes = __import__("json").dumps(
-        {
-            **_metadata(lead),
-            "autopilot_status": "sent",
-            "email_status": "Sent",
-            "email_sent_at": now.isoformat(),
-        }
-    )
-    company = db.scalar(
-        select(Company).where(
-            Company.workspace_id == job.workspace_id, Company.lead_id == lead.id
-        )
-    )
-    if company:
-        company.email_status = "Sent"
-        company.crm_stage = "Contacted"
-    increment_usage_after_success(db, job.user_id, workspace, "email_sends")
-    db.add(
-        AuditLog(
-            user_id=job.user_id,
-            workspace_id=job.workspace_id,
-            action="autopilot.email.sent",
-            metadata_json={
+        _action_policy_gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="worker",
+            actor_id=f"worker:autopilot:{job.id}",
+            action_name="autonomous.email.send",
+            input_payload={
+                "route": "autopilot.worker",
+                "job_id": str(job.id),
                 "campaign_id": str(campaign.id),
                 "lead_id": str(lead.id),
                 "email_id": str(email.id),
-                "provider_message_id": email.provider_message_id,
+                "recipient_email": lead.email or "",
+                "subject": email.subject,
+                "body": email.body,
             },
+            idempotency_key=(
+                f"autopilot-email-send:{workspace.id}:"
+                f"{email.id}:v{_email_approval_version(email)}"
+            ),
+            resource_workspace_id=email.workspace_id,
+            resource_id=email.id,
         )
+    except AgentRuntimeError as exc:
+        return _mark_requires_review(db, job, lead, email, str(exc), claim_token)
+    return _mark_requires_review(
+        db,
+        job,
+        lead,
+        email,
+        "Autopilot provider sending is disabled until a human sends the draft.",
+        claim_token,
     )
-    db.commit()
-    return complete_job(db, job, partial=False, claim_token=claim_token)

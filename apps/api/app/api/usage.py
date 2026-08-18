@@ -104,6 +104,17 @@ from app.services.emailer import (
     EmailProviderSendingDisabledError,
     send_email,
 )
+from app.services.agent_runtime.action_gateway import (
+    ActionApprovalContext,
+    ActionDelegationContext,
+    ActionPolicyDecision,
+    ActionPolicyGateway,
+    email_draft_approval_fingerprint,
+    email_send_confirmation_snapshot,
+    policy_http_exception,
+    request_fingerprint_for_action,
+)
+from app.services.agent_runtime.errors import AgentRuntimeError
 from app.services.enrichment_queue import (
     cancel_jobs_for_lead,
     complete_job,
@@ -148,6 +159,7 @@ from app.services.website import normalize_website_url
 
 logger = logging.getLogger("outreachai.workspace_app")
 router = APIRouter()
+_action_policy_gateway = ActionPolicyGateway()
 
 
 UsageStatus = Literal[
@@ -194,6 +206,137 @@ VISIBLE_LANGUAGE_NAMES = {
     "polski": "Polish",
     "polish": "Polish",
 }
+
+
+def _enforce_action_policy(
+    db: Session,
+    *,
+    workspace: Workspace,
+    user_id: str,
+    action_name: str,
+    input_payload: dict[str, Any],
+    required_permissions: tuple[str, ...] | None = None,
+    approval: ActionApprovalContext | None = None,
+    idempotency_key: str = "",
+    resource_workspace_id: UUID | None = None,
+    resource_id: UUID | str | None = None,
+    required_approval_fingerprint: str = "",
+    dry_run: bool = False,
+) -> ActionPolicyDecision:
+    try:
+        return _action_policy_gateway.enforce(
+            db,
+            workspace=workspace,
+            actor_type="human",
+            actor_id=user_id,
+            action_name=action_name,
+            input_payload=input_payload,
+            required_permissions=required_permissions,
+            approval=approval,
+            idempotency_key=idempotency_key,
+            resource_workspace_id=resource_workspace_id,
+            resource_id=resource_id,
+            required_approval_fingerprint=required_approval_fingerprint,
+            dry_run=dry_run,
+        )
+    except AgentRuntimeError as exc:
+        raise policy_http_exception(exc) from exc
+
+
+def _record_action_policy_success(
+    db: Session, decision: ActionPolicyDecision | None, result: dict[str, Any] | None = None
+) -> None:
+    _action_policy_gateway.record_success(db, decision, result=result)
+
+
+def _record_action_policy_failure(
+    db: Session, decision: ActionPolicyDecision | None, exc: Exception | str
+) -> None:
+    _action_policy_gateway.record_failure(db, decision, exc)
+
+
+def _enforce_worker_action_policy(
+    db: Session,
+    *,
+    workspace: Workspace,
+    actor_id: str,
+    action_name: str,
+    input_payload: dict[str, Any],
+    required_permissions: tuple[str, ...] | None = None,
+    approval: ActionApprovalContext | None = None,
+    delegation: ActionDelegationContext | None = None,
+    idempotency_key: str,
+    resource_workspace_id: UUID | None = None,
+    resource_id: UUID | str | None = None,
+) -> ActionPolicyDecision:
+    return _action_policy_gateway.enforce(
+        db,
+        workspace=workspace,
+        actor_type="worker",
+        actor_id=actor_id,
+        action_name=action_name,
+        input_payload=input_payload,
+        required_permissions=required_permissions,
+        approval=approval,
+        delegation=delegation,
+        idempotency_key=idempotency_key,
+        resource_workspace_id=resource_workspace_id,
+        resource_id=resource_id,
+    )
+
+
+def _job_action_delegation(
+    *,
+    workspace: Workspace,
+    job: EnrichmentJob,
+    action_name: str,
+    input_payload: dict[str, Any],
+    resource_id: UUID | str | None = None,
+) -> ActionDelegationContext:
+    if job.workspace_id != workspace.id or not str(job.user_id or "").strip():
+        return ActionDelegationContext(
+            delegated_by_user_id="",
+            delegation_type="invalid_job_delegation",
+            evidence_id=str(job.id),
+            fingerprint="",
+            workspace_id=workspace.id,
+            action_name=action_name,
+            resource_id=resource_id,
+        )
+    return ActionDelegationContext(
+        delegated_by_user_id=job.user_id,
+        delegation_type="job_created_by_user",
+        evidence_id=str(job.id),
+        fingerprint=request_fingerprint_for_action(
+            action_name=action_name,
+            input_payload=input_payload,
+        ),
+        workspace_id=workspace.id,
+        action_name=action_name,
+        resource_id=resource_id,
+    )
+
+
+def _company_action_delegation(
+    *,
+    workspace: Workspace,
+    company: Company,
+    action_name: str,
+    input_payload: dict[str, Any],
+    resource_id: UUID | str | None = None,
+) -> ActionDelegationContext:
+    return ActionDelegationContext(
+        delegated_by_user_id=company.user_id,
+        delegation_type="company_nightly_prioritization",
+        evidence_id=str(company.id),
+        fingerprint=request_fingerprint_for_action(
+            action_name=action_name,
+            input_payload=input_payload,
+        ),
+        workspace_id=workspace.id,
+        action_name=action_name,
+        resource_id=resource_id,
+    )
 
 
 class UsageCounts(BaseModel):
@@ -8537,6 +8680,28 @@ def process_enrichment_job(job_id: UUID, claim_token: str | None = None) -> bool
                 message="Workspace or lead no longer exists.",
                 claim_token=claim_token,
             )
+        policy_payload = {
+            "route": "worker.company_enrichment",
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+        }
+        crm_policy = _enforce_worker_action_policy(
+            db,
+            workspace=workspace,
+            actor_id=f"worker:{job.id}",
+            action_name="crm.write",
+            input_payload=policy_payload,
+            delegation=_job_action_delegation(
+                workspace=workspace,
+                job=job,
+                action_name="crm.write",
+                input_payload=policy_payload,
+                resource_id=lead.id,
+            ),
+            idempotency_key=f"worker-crm-write:{workspace.id}:{job.id}:v1",
+            resource_workspace_id=lead.workspace_id,
+            resource_id=lead.id,
+        )
         request = _background_request(job.language or "English")
         language = job.language or workspace.language or "English"
         if job.cancel_requested or _lead_enrichment_cancelled(lead):
@@ -8562,6 +8727,11 @@ def process_enrichment_job(job_id: UUID, claim_token: str | None = None) -> bool
                 },
             )
             _sync_lead_to_crm(db, job.user_id, workspace, lead)
+            _record_action_policy_success(
+                db,
+                crm_policy,
+                {"job_id": str(job.id), "lead_id": str(lead.id), "cancelled": True},
+            )
             return mark_cancelled(db, job, claim_token=claim_token)
 
         lead.notes = _merge_lead_metadata(
@@ -8576,6 +8746,11 @@ def process_enrichment_job(job_id: UUID, claim_token: str | None = None) -> bool
             ),
         )
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
+        _record_action_policy_success(
+            db,
+            crm_policy,
+            {"job_id": str(job.id), "lead_id": str(lead.id), "stage": "running"},
+        )
         if not update_job_progress(
             db,
             job,
@@ -8623,8 +8798,35 @@ def process_enrichment_job(job_id: UUID, claim_token: str | None = None) -> bool
             )
             return completed
 
+        policy_payload = {
+            "route": "worker.company_enrichment.draft",
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+        }
+        draft_policy = _enforce_worker_action_policy(
+            db,
+            workspace=workspace,
+            actor_id=f"worker:{job.id}",
+            action_name="email.draft.create",
+            input_payload=policy_payload,
+            delegation=_job_action_delegation(
+                workspace=workspace,
+                job=job,
+                action_name="email.draft.create",
+                input_payload=policy_payload,
+                resource_id=lead.id,
+            ),
+            idempotency_key=f"worker-email-draft:{workspace.id}:{job.id}:v1",
+            resource_workspace_id=lead.workspace_id,
+            resource_id=lead.id,
+        )
         warnings = _complete_turnkey_b2b_research(
             db, request, job.user_id, workspace, [lead], request_id
+        )
+        _record_action_policy_success(
+            db,
+            draft_policy,
+            {"job_id": str(job.id), "lead_id": str(lead.id), "draft_only": True},
         )
         db.refresh(job)
         if job.cancel_requested:
@@ -8721,6 +8923,29 @@ def process_deep_contact_search_job(
                 message="Workspace, lead, or company no longer exists.",
                 claim_token=claim_token,
             )
+        policy_payload = {
+            "route": "worker.deep_contact_search",
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+            "company_id": str(company.id),
+        }
+        crm_policy = _enforce_worker_action_policy(
+            db,
+            workspace=workspace,
+            actor_id=f"worker:{job.id}",
+            action_name="crm.write",
+            input_payload=policy_payload,
+            delegation=_job_action_delegation(
+                workspace=workspace,
+                job=job,
+                action_name="crm.write",
+                input_payload=policy_payload,
+                resource_id=company.id,
+            ),
+            idempotency_key=f"worker-crm-write:{workspace.id}:{job.id}:v1",
+            resource_workspace_id=company.workspace_id,
+            resource_id=company.id,
+        )
 
         language = job.language or workspace.language or "English"
         if not update_job_progress(
@@ -8757,6 +8982,16 @@ def process_deep_contact_search_job(
         request = _background_request(language)
         _apply_deep_contact_result(
             db, request, job.user_id, workspace, company, lead, result
+        )
+        _record_action_policy_success(
+            db,
+            crm_policy,
+            {
+                "job_id": str(job.id),
+                "lead_id": str(lead.id),
+                "company_id": str(company.id),
+                "verified_email": bool(result.verified_email),
+            },
         )
         db.commit()
 
@@ -8802,6 +9037,34 @@ def mark_enrichment_job_failed(
         )
         if workspace is None or lead is None:
             return
+        failure_route = (
+            "worker.autopilot_email_send_failure"
+            if job.job_type == "autopilot_email_send"
+            else "worker.enrichment_failure"
+        )
+        policy_payload = {
+            "route": failure_route,
+            "job_id": str(job.id),
+            "lead_id": str(lead.id),
+            "job_type": job.job_type,
+        }
+        crm_policy = _enforce_worker_action_policy(
+            db,
+            workspace=workspace,
+            actor_id=f"worker:{job.id}",
+            action_name="crm.write",
+            input_payload=policy_payload,
+            delegation=_job_action_delegation(
+                workspace=workspace,
+                job=job,
+                action_name="crm.write",
+                input_payload=policy_payload,
+                resource_id=lead.id,
+            ),
+            idempotency_key=f"worker-crm-failure:{workspace.id}:{job.id}:v1",
+            resource_workspace_id=lead.workspace_id,
+            resource_id=lead.id,
+        )
 
         if job.job_type == "deep_contact_search":
             payload = job.payload_json if isinstance(job.payload_json, dict) else {}
@@ -8845,6 +9108,11 @@ def mark_enrichment_job_failed(
                 lead, "verified_email", "error", "No verified email was saved."
             )
             _sync_lead_to_crm(db, job.user_id, workspace, lead)
+            _record_action_policy_success(
+                db,
+                crm_policy,
+                {"job_id": str(job.id), "lead_id": str(lead.id), "failed": True},
+            )
             db.commit()
             return
 
@@ -8871,6 +9139,11 @@ def mark_enrichment_job_failed(
             },
         )
         _sync_lead_to_crm(db, job.user_id, workspace, lead)
+        _record_action_policy_success(
+            db,
+            crm_policy,
+            {"job_id": str(job.id), "lead_id": str(lead.id), "failed": True},
+        )
         db.commit()
     finally:
         db.close()
@@ -9021,7 +9294,7 @@ def _lead_prioritization_from_metadata(
 
 
 def run_continuous_company_monitoring_once(
-    *, workspace_id: UUID | None = None
+    *, workspace_id: UUID | None = None, initiated_by_user_id: str = ""
 ) -> list[dict[str, Any]]:
     db = get_sessionmaker()()
     changed: list[dict[str, Any]] = []
@@ -9049,7 +9322,16 @@ def run_continuous_company_monitoring_once(
                 if isinstance(metadata.get("company_intelligence"), dict)
                 else {}
             )
-            lead = db.get(Lead, company.lead_id) if company.lead_id else None
+            lead = (
+                db.scalar(
+                    select(Lead).where(
+                        Lead.id == company.lead_id,
+                        Lead.workspace_id == company.workspace_id,
+                    )
+                )
+                if company.lead_id
+                else None
+            )
 
             current_snapshot = _live_buying_signal_snapshot(
                 lead=lead,
@@ -9074,10 +9356,48 @@ def run_continuous_company_monitoring_once(
                 if company.workspace_id
                 else None
             )
-            if lead is not None and workspace is not None:
+            if workspace is None:
+                continue
+            delegated_user_id = str(initiated_by_user_id or "").strip()
+            if not delegated_user_id:
+                logger.warning(
+                    "monitoring worker skipped crm write without durable delegation workspace_id=%s company_id=%s",
+                    workspace.id,
+                    company.id,
+                )
+                continue
+            change_fingerprint = hashlib.sha256(
+                json.dumps(
+                    latest_changes,
+                    sort_keys=True,
+                    default=str,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            policy_payload = {
+                "route": "worker.continuous_company_monitoring",
+                "company_id": str(company.id),
+                "lead_id": str(company.lead_id or ""),
+                "change_fingerprint": change_fingerprint,
+            }
+            crm_policy = _action_policy_gateway.enforce(
+                db,
+                workspace=workspace,
+                actor_type="human",
+                actor_id=delegated_user_id,
+                action_name="crm.write",
+                input_payload=policy_payload,
+                idempotency_key=(
+                    f"worker-monitoring-crm:{workspace.id}:"
+                    f"{company.id}:{change_fingerprint}"
+                ),
+                resource_workspace_id=company.workspace_id,
+                resource_id=company.id,
+            )
+            if lead is not None:
                 _refresh_company_intelligence(
                     db,
-                    user_id=str(company.user_id or lead.user_id or ""),
+                    user_id=delegated_user_id,
                     workspace=workspace,
                     lead=lead,
                     company=company,
@@ -9100,14 +9420,22 @@ def run_continuous_company_monitoring_once(
             revenue_snapshot = build_and_store_revenue_intelligence(
                 db, company=company, companies=workspace_companies
             )
-            if company.workspace_id is not None:
-                create_revenue_notification_if_needed(
-                    db,
-                    company=company,
-                    user_id=str(company.user_id or (lead.user_id if lead else "")),
-                    workspace_id=company.workspace_id,
-                    intelligence=revenue_snapshot,
-                )
+            create_revenue_notification_if_needed(
+                db,
+                company=company,
+                user_id=delegated_user_id,
+                workspace_id=company.workspace_id,
+                intelligence=revenue_snapshot,
+            )
+            _record_action_policy_success(
+                db,
+                crm_policy,
+                {
+                    "company_id": str(company.id),
+                    "lead_id": str(company.lead_id or ""),
+                    "change_fingerprint": change_fingerprint,
+                },
+            )
 
             changed.append(
                 {
@@ -9141,7 +9469,9 @@ def run_company_monitoring(
         )
         or 0
     )
-    changes = run_continuous_company_monitoring_once(workspace_id=workspace.id)
+    changes = run_continuous_company_monitoring_once(
+        workspace_id=workspace.id, initiated_by_user_id=user.user_id
+    )
     return UsageMonitoringOut(
         status="success",
         message=(
@@ -9168,6 +9498,17 @@ def run_nightly_lead_prioritization_once() -> int:
         for company in companies:
             metadata = company.metadata_json or {}
             workspace_key = str(company.workspace_id or "")
+            workspace = db.get(Workspace, company.workspace_id) if company.workspace_id else None
+            if workspace is None:
+                continue
+            delegated_user_id = str(company.user_id or "").strip()
+            if not delegated_user_id:
+                logger.warning(
+                    "lead prioritization worker skipped crm write without durable delegation workspace_id=%s company_id=%s",
+                    workspace.id,
+                    company.id,
+                )
+                continue
             prioritization_weights: dict[str, float] | None = None
             if workspace_key:
                 if workspace_key not in weights_by_workspace:
@@ -9196,6 +9537,37 @@ def run_nightly_lead_prioritization_once() -> int:
                 metadata=metadata,
                 prioritization_weights=prioritization_weights,
             )
+            policy_payload = {
+                "route": "worker.nightly_lead_prioritization",
+                "company_id": str(company.id),
+                "lead_id": str(company.lead_id or ""),
+                "tier": prioritization["tier"],
+                "score": prioritization["score"],
+                "date": datetime.utcnow().date().isoformat(),
+            }
+            crm_policy = _enforce_worker_action_policy(
+                db,
+                workspace=workspace,
+                actor_id=(
+                    f"worker:lead-prioritization:{company.id}:"
+                    f"{policy_payload['date']}"
+                ),
+                action_name="crm.write",
+                input_payload=policy_payload,
+                delegation=_company_action_delegation(
+                    workspace=workspace,
+                    company=company,
+                    action_name="crm.write",
+                    input_payload=policy_payload,
+                    resource_id=company.id,
+                ),
+                idempotency_key=(
+                    f"worker-prioritization-crm:{workspace.id}:"
+                    f"{company.id}:{policy_payload['date']}"
+                ),
+                resource_workspace_id=company.workspace_id,
+                resource_id=company.id,
+            )
             company.metadata_json = {
                 **metadata,
                 "ai_lead_prioritization": prioritization,
@@ -9207,7 +9579,12 @@ def run_nightly_lead_prioritization_once() -> int:
             }
             company.updated_at = datetime.utcnow()
             if company.lead_id:
-                lead = db.get(Lead, company.lead_id)
+                lead = db.scalar(
+                    select(Lead).where(
+                        Lead.id == company.lead_id,
+                        Lead.workspace_id == company.workspace_id,
+                    )
+                )
                 if lead is not None:
                     lead.notes = _merge_lead_metadata(
                         lead,
@@ -9217,6 +9594,16 @@ def run_nightly_lead_prioritization_once() -> int:
                             "priority_score": prioritization["score"],
                         },
                     )
+            _record_action_policy_success(
+                db,
+                crm_policy,
+                {
+                    "company_id": str(company.id),
+                    "lead_id": str(company.lead_id or ""),
+                    "tier": prioritization["tier"],
+                    "score": prioritization["score"],
+                },
+            )
             updated += 1
         db.commit()
         return updated
@@ -11251,6 +11638,19 @@ def create_production_email_smoke_test(
         db, user.user_id, workspace
     )
     smoke_test_id = uuid4()
+    smoke_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="email.draft.create",
+        required_permissions=("crm:write", "email:draft"),
+        input_payload={
+            "route": "workspace_app.production_smoke.create",
+            "smoke_test_id": str(smoke_test_id),
+            "recipient_email": recipient,
+            "sender_email": sender_status.sender_email,
+        },
+    )
     metadata = _production_smoke_metadata(smoke_test_id, recipient)
     now = datetime.utcnow()
     lead = Lead(
@@ -11366,6 +11766,18 @@ def create_production_email_smoke_test(
             },
         )
     )
+    db.flush()
+    _record_action_policy_success(
+        db,
+        smoke_policy,
+        {
+            "smoke_test_id": str(smoke_test_id),
+            "lead_id": str(lead.id),
+            "company_id": str(company.id),
+            "email_id": str(draft.id),
+            "draft_only": True,
+        },
+    )
     db.commit()
     db.refresh(company)
     db.refresh(draft)
@@ -11479,6 +11891,20 @@ def cleanup_production_email_smoke_test(
             ),
         )
     deleted = {"leads": 0, "companies": 0, "drafts": 0, "activities": 0, "memories": 0}
+    cleanup_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="crm.write",
+        input_payload={
+            "route": "workspace_app.production_smoke.cleanup",
+            "smoke_test_id": str(payload.smoke_test_id),
+            "draft_count": len(draft_emails),
+            "lead_count": len(leads),
+            "company_count": len(companies),
+        },
+        resource_id=payload.smoke_test_id,
+    )
     now = datetime.utcnow()
     for entry in memories:
         entry.deleted_at = now
@@ -11518,6 +11944,11 @@ def cleanup_production_email_smoke_test(
                 "preserved_sent_email_records": max(0, len(emails) - len(draft_emails)),
             },
         )
+    )
+    _record_action_policy_success(
+        db,
+        cleanup_policy,
+        {"smoke_test_id": str(payload.smoke_test_id), "deleted": deleted},
     )
     db.commit()
     return ProductionEmailSmokeTestOut(
@@ -11595,6 +12026,19 @@ def create_internal_email_smoke_draft(
         db, user_id=user.user_id, workspace=workspace
     )
     smoke_test_id = uuid4()
+    smoke_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="email.draft.create",
+        required_permissions=("crm:write", "email:draft"),
+        input_payload={
+            "route": "workspace_app.internal_smoke_draft.create",
+            "smoke_test_id": str(smoke_test_id),
+            "recipient_email": recipient,
+            "sender_email": sender_status.sender_email,
+        },
+    )
     metadata = _internal_email_smoke_metadata(smoke_test_id, recipient, workspace.id)
     now = datetime.utcnow()
     lead = Lead(
@@ -11728,6 +12172,18 @@ def create_internal_email_smoke_draft(
             },
         )
     )
+    db.flush()
+    _record_action_policy_success(
+        db,
+        smoke_policy,
+        {
+            "smoke_test_id": str(smoke_test_id),
+            "lead_id": str(lead.id),
+            "company_id": str(company.id),
+            "email_id": str(draft.id),
+            "draft_only": True,
+        },
+    )
     try:
         db.commit()
     except IntegrityError:
@@ -11773,6 +12229,16 @@ def create_company(
     db: Session = Depends(get_db),
 ) -> UsageCompanyCreateOut:
     workspace = _current_workspace(db, user.user_id, user.email)
+    crm_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="crm.write",
+        input_payload={
+            "route": "workspace_app.companies.create",
+            "payload": payload.model_dump(mode="json"),
+        },
+    )
     existing_company = _find_existing_company(db, workspace.id, payload)
     if existing_company:
         if existing_company.lead_id:
@@ -11791,6 +12257,15 @@ def create_company(
                 )
                 existing_company = _sync_lead_to_crm(
                     db, user.user_id, workspace, existing_lead
+                )
+                _record_action_policy_success(
+                    db,
+                    crm_policy,
+                    {
+                        "status": "reused",
+                        "company_id": str(existing_company.id),
+                        "lead_id": str(existing_lead.id),
+                    },
                 )
                 db.commit()
                 db.refresh(existing_company)
@@ -11847,6 +12322,15 @@ def create_company(
                 provider="postgresql",
                 endpoint="workspace_app.company_sync_existing",
             )
+        _record_action_policy_success(
+            db,
+            crm_policy,
+            {
+                "status": "reused",
+                "company_id": str(company.id),
+                "lead_id": str(existing_lead.id),
+            },
+        )
         db.commit()
         return UsageCompanyCreateOut(
             status="reused",
@@ -11913,6 +12397,15 @@ def create_company(
         ),
     )
     _record_usage_after_success(db, user.user_id, workspace, "leads")
+    _record_action_policy_success(
+        db,
+        crm_policy,
+        {
+            "status": "created",
+            "company_id": str(company.id),
+            "lead_id": str(lead.id),
+        },
+    )
     db.commit()
     db.refresh(company)
     return UsageCompanyCreateOut(
@@ -12001,12 +12494,33 @@ def save_first_customer_result(
     result_id: UUID, user: WorkspaceUserContext, db: Session = Depends(get_db)
 ) -> CustomerFinderResultActionOut:
     workspace = _current_workspace(db, user.user_id, user.email)
+    crm_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="crm.write",
+        input_payload={
+            "route": "workspace_app.first_customer_result.save",
+            "result_id": str(result_id),
+        },
+        resource_id=result_id,
+    )
     try:
         result = save_first_customer_result_to_crm(
             db, workspace_id=workspace.id, result_id=result_id
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _record_action_policy_success(
+        db,
+        crm_policy,
+        {
+            "result_id": str(result.id),
+            "lead_id": str(result.lead_id) if result.lead_id else "",
+            "company_id": str(result.company_id) if result.company_id else "",
+        },
+    )
+    db.commit()
     return CustomerFinderResultActionOut(
         status="success",
         message="Lead saved to CRM. Outreach draft is ready for manual review.",
@@ -12975,6 +13489,21 @@ def deep_search_company_contacts(
             recommended_actions=["Add website", "Add contact manually"],
         )
 
+    crm_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="crm.write",
+        input_payload={
+            "route": "workspace_app.deep_contact_search",
+            "company_id": str(company.id),
+            "lead_id": str(lead.id) if lead else "",
+            "domain": domain,
+            "force": payload.force,
+        },
+        resource_workspace_id=company.workspace_id,
+        resource_id=company.id,
+    )
     request_id = request.headers.get("x-request-id") or str(uuid4())
     _lead_trace(
         request_id,
@@ -13014,6 +13543,11 @@ def deep_search_company_contacts(
             "error",
             "Technology stack is temporarily unavailable.",
         )
+        _record_action_policy_success(
+            db,
+            crm_policy,
+            {"company_id": str(company.id), "status": "blocked_missing_lead"},
+        )
         db.commit()
         raise HTTPException(
             status_code=400,
@@ -13030,6 +13564,11 @@ def deep_search_company_contacts(
         language=_workspace_language(request, workspace),
         domain=domain,
         force=payload.force,
+    )
+    _record_action_policy_success(
+        db,
+        crm_policy,
+        {"company_id": str(company.id), "job_id": str(job.id)},
     )
     db.commit()
 
@@ -13123,6 +13662,19 @@ def discover_company_contacts(
             company=_crm_company_out(db, workspace, user.user_id, company),
         )
 
+    crm_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="crm.write",
+        input_payload={
+            "route": "workspace_app.company.contacts",
+            "company_id": str(company.id),
+            "lead_id": str(lead.id),
+        },
+        resource_workspace_id=company.workspace_id,
+        resource_id=company.id,
+    )
     _complete_public_company_details(
         db,
         request,
@@ -13220,6 +13772,15 @@ def discover_company_contacts(
                 "roles_searched": list(DECISION_MAKER_TITLES),
             },
         )
+    _record_action_policy_success(
+        db,
+        crm_policy,
+        {
+            "company_id": str(company.id),
+            "lead_id": str(lead.id),
+            "verified_contact": bool(lead.email),
+        },
+    )
     db.commit()
     db.refresh(company)
     status: UsageStatus = "success" if lead.email else "empty"
@@ -13262,6 +13823,22 @@ def add_manual_company_contact(
             company=_crm_company_out(db, workspace, user.user_id, company),
         )
 
+    crm_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="crm.write",
+        input_payload={
+            "route": "workspace_app.company.contact_manual",
+            "company_id": str(company.id),
+            "lead_id": str(lead.id) if lead else "",
+            "has_email": bool(clean_email),
+            "has_phone": bool(clean_phone),
+            "has_linkedin": bool(clean_linkedin),
+        },
+        resource_workspace_id=company.workspace_id,
+        resource_id=company.id,
+    )
     contact = None
     if clean_email:
         contact = db.scalar(
@@ -13335,6 +13912,12 @@ def add_manual_company_contact(
             {"source": "manual", "email_status": contact.email_status},
         )
         company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    db.flush()
+    _record_action_policy_success(
+        db,
+        crm_policy,
+        {"company_id": str(company.id), "contact_id": str(contact.id)},
+    )
     db.commit()
     db.refresh(company)
     return UsageActionOut(
@@ -13409,6 +13992,21 @@ def generate_email_draft(
             f"AI Memory retrieval failed: {type(exc).__name__}."
         )
     analysis_context = {**analysis_context, "memory_context": memory_context}
+    draft_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="email.draft.create",
+        required_permissions=("email:draft", "crm:write"),
+        input_payload={
+            "route": "workspace_app.company.email_draft",
+            "company_id": str(company.id),
+            "lead_id": str(lead.id),
+            "recipient_email": str(lead.email or "").strip().lower(),
+        },
+        resource_workspace_id=company.workspace_id,
+        resource_id=company.id,
+    )
     try:
         _complete_public_company_details(
             db,
@@ -13526,6 +14124,11 @@ def generate_email_draft(
         event="draft",
         extra={"memory_context": memory_context},
     )
+    _record_action_policy_success(
+        db,
+        draft_policy,
+        {"email_id": str(email.id), "lead_id": str(lead.id), "draft_only": True},
+    )
     db.commit()
     db.refresh(email)
     return UsageActionOut(
@@ -13565,6 +14168,20 @@ def complete_company_opportunity(
             company=_crm_company_out(db, workspace, user.user_id, company),
         )
 
+    opportunity_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="email.draft.create",
+        required_permissions=("crm:write", "email:draft"),
+        input_payload={
+            "route": "workspace_app.complete_opportunity",
+            "company_id": str(company.id),
+            "lead_id": str(lead.id),
+        },
+        resource_workspace_id=company.workspace_id,
+        resource_id=company.id,
+    )
     request_id = request.headers.get("x-request-id") or str(uuid4())
     language = _workspace_language(request, workspace)
     warnings: list[str] = []
@@ -13981,6 +14598,16 @@ def complete_company_opportunity(
     )
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
     _refresh_company_intelligence(db, user.user_id, workspace, lead, company)
+    _record_action_policy_success(
+        db,
+        opportunity_policy,
+        {
+            "company_id": str(company.id),
+            "lead_id": str(lead.id),
+            "email_id": str(email.id) if email else "",
+            "draft_only": True,
+        },
+    )
     db.commit()
     db.refresh(company)
     if email:
@@ -14060,12 +14687,31 @@ def restart_company_auto_enrichment(
                 company=_crm_company_out(db, workspace, user.user_id, company),
             )
 
+        crm_policy = _enforce_action_policy(
+            db,
+            workspace=workspace,
+            user_id=user.user_id,
+            action_name="crm.write",
+            input_payload={
+                "route": "workspace_app.enrichment_restart",
+                "company_id": str(company.id),
+                "lead_id": str(lead.id),
+                "request_id": request_id,
+            },
+            resource_workspace_id=company.workspace_id,
+            resource_id=company.id,
+        )
         warnings: list[str] = []
         try:
             _mark_auto_enrichment_queued(
                 lead, request_id, _workspace_language(request, workspace)
             )
             company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+            _record_action_policy_success(
+                db,
+                crm_policy,
+                {"company_id": str(company.id), "lead_id": str(lead.id)},
+            )
             db.commit()
         except Exception as exc:
             db.rollback()
@@ -14210,6 +14856,20 @@ def cancel_company_auto_enrichment(
             company=_crm_company_out(db, workspace, user.user_id, company),
         )
     request_id = request.headers.get("x-request-id") or str(uuid4())
+    crm_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="crm.write",
+        input_payload={
+            "route": "workspace_app.enrichment_cancel",
+            "company_id": str(company.id),
+            "lead_id": str(lead.id),
+            "request_id": request_id,
+        },
+        resource_workspace_id=company.workspace_id,
+        resource_id=company.id,
+    )
     cancel_jobs_for_lead(
         db,
         workspace_id=workspace.id,
@@ -14237,6 +14897,11 @@ def cancel_company_auto_enrichment(
         },
     )
     company = _sync_lead_to_crm(db, user.user_id, workspace, lead)
+    _record_action_policy_success(
+        db,
+        crm_policy,
+        {"company_id": str(company.id), "lead_id": str(lead.id)},
+    )
     db.commit()
     company_out = _crm_company_out(db, workspace, user.user_id, company)
     return UsageActionOut(
@@ -14316,22 +14981,13 @@ def _email_send_confirmation_snapshot(
     body: str,
     approval_version: int,
 ) -> dict[str, Any]:
-    canonical = {
-        "sender_email": _normalized_email(sender_email),
-        "recipient_email": _normalized_email(recipient_email),
-        "subject": str(subject or ""),
-        "body": str(body or ""),
-        "approval_version": int(approval_version),
-    }
-    fingerprint_source = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
-    return {
-        "sender_email": canonical["sender_email"],
-        "recipient_email": canonical["recipient_email"],
-        "subject": canonical["subject"],
-        "body_sha256": hashlib.sha256(canonical["body"].encode("utf-8")).hexdigest(),
-        "approval_version": canonical["approval_version"],
-        "fingerprint": hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest(),
-    }
+    return email_send_confirmation_snapshot(
+        sender_email=sender_email,
+        recipient_email=recipient_email,
+        subject=subject,
+        body=body,
+        approval_version=approval_version,
+    )
 
 
 def _current_email_send_confirmation_snapshot(
@@ -14440,11 +15096,39 @@ def approve_email(
                 detail="The displayed sender, recipient, subject, or body no longer matches this draft. Refresh and confirm again.",
             )
         confirmation_snapshot = current_snapshot
+    draft_approval_fingerprint = email_draft_approval_fingerprint(
+        recipient_email=_normalized_email(
+            email.recipient_email or (lead.email if lead else "")
+        ),
+        subject=email.subject,
+        body=email.body,
+        approval_version=approval_version,
+    )
+    approval_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="email.draft.approve",
+        input_payload={
+            "email_id": str(email.id),
+            "delivery_status": email.delivery_status,
+            "confirmed_exact_draft": bool(payload and payload.confirmed_exact_draft),
+            "approval_fingerprint": draft_approval_fingerprint,
+            "confirmation_fingerprint": (
+                confirmation_snapshot.get("fingerprint")
+                if confirmation_snapshot
+                else ""
+            ),
+        },
+        resource_workspace_id=email.workspace_id,
+        resource_id=email.id,
+    )
     email.delivery_status = "approved"
     email.tags = {
         **tags,
         "approved": True,
         "approval_version": approval_version,
+        "approval_fingerprint": draft_approval_fingerprint,
         "approved_at": datetime.utcnow().isoformat(),
         "approval_source": "manual",
         "approval_user_id": user.user_id,
@@ -14493,6 +15177,11 @@ def approve_email(
             event="approved",
         )
     _sync_ai_customer_finder_result_email_state(db, email)
+    _record_action_policy_success(
+        db,
+        approval_policy,
+        {"email_id": str(email.id), "delivery_status": email.delivery_status},
+    )
     db.commit()
     db.refresh(email)
     return UsageActionOut(
@@ -14571,6 +15260,7 @@ def update_email_draft(
                 "approved_at",
                 "approval_source",
                 "approval_user_id",
+                "approval_fingerprint",
                 "send_attempt",
                 "send_claimed_at",
                 "send_claim_expires_at",
@@ -14582,6 +15272,21 @@ def update_email_draft(
                 "send_confirmation_user_id",
             }
         }
+    edit_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="email.draft.update",
+        input_payload={
+            "email_id": str(email.id),
+            "delivery_status": email.delivery_status,
+            "fields": sorted(updates.keys()),
+            "updates": updates,
+            "status_transition": status_transition,
+        },
+        resource_workspace_id=email.workspace_id,
+        resource_id=email.id,
+    )
     next_values = {**updates, "delivery_status": next_status, "tags": next_tags}
     result = db.execute(
         update(EmailMessage)
@@ -14681,6 +15386,16 @@ def update_email_draft(
             },
         )
     )
+    _record_action_policy_success(
+        db,
+        edit_policy,
+        {
+            "email_id": str(email.id),
+            "status_before": previous_status,
+            "status_after": email.delivery_status,
+            "fields": sorted(updates.keys()),
+        },
+    )
     db.commit()
     db.refresh(email)
     return UsageActionOut(
@@ -14700,6 +15415,33 @@ def _email_tags(email: EmailMessage | None) -> dict[str, Any]:
 def _email_approval_version(email: EmailMessage) -> int:
     version = int(_email_tags(email).get("approval_version") or 0)
     return max(1, version)
+
+
+def _email_policy_approval_context(
+    email: EmailMessage,
+    *,
+    final_send_confirmation: bool = False,
+) -> ActionApprovalContext:
+    tags = _email_tags(email)
+    snapshot = (
+        tags.get("send_confirmation_snapshot")
+        if isinstance(tags.get("send_confirmation_snapshot"), dict)
+        else {}
+    )
+    return ActionApprovalContext(
+        approved=bool(
+            email.delivery_status == "approved"
+            and tags.get("approved") is True
+            and tags.get("approval_source") == "manual"
+        ),
+        approved_by_actor_type="human"
+        if str(tags.get("approval_user_id") or "").strip()
+        else "",
+        approved_by_user_id=str(tags.get("approval_user_id") or "").strip(),
+        manual_draft_approval=bool(tags.get("approved") is True),
+        final_send_confirmation=final_send_confirmation or bool(snapshot),
+        fingerprint=str(snapshot.get("fingerprint") or tags.get("approval_fingerprint") or ""),
+    )
 
 
 def _email_send_idempotency_key(
@@ -15094,6 +15836,20 @@ def recover_email_send(
             detail="Confirm that the email is not in Gmail or SMTP Sent before recovering it for retry.",
         )
 
+    recover_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="email.draft.update",
+        input_payload={
+            "email_id": str(email.id),
+            "status_before": email.delivery_status,
+            "status_after": "approved",
+            "confirmed_not_delivered": payload.confirmed_not_delivered,
+        },
+        resource_workspace_id=email.workspace_id,
+        resource_id=email.id,
+    )
     email.delivery_status = "approved"
     email.tags = {
         **tags,
@@ -15140,6 +15896,11 @@ def recover_email_send(
                 "confirmed_not_delivered": True,
             },
         )
+    )
+    _record_action_policy_success(
+        db,
+        recover_policy,
+        {"email_id": str(email.id), "status_after": "approved"},
     )
     db.commit()
     db.refresh(email)
@@ -15193,6 +15954,22 @@ def send_approved_email(
     is_internal_email_smoke_draft = _is_internal_email_smoke_draft_email(
         initial_email
     ) or _is_internal_email_smoke_draft_lead(initial_lead)
+    if initial_email.delivery_status == "sending":
+        if _recover_stale_email_send_claim(
+            db,
+            workspace_id=workspace.id,
+            email_id=email_id,
+        ):
+            db.refresh(initial_email)
+    if initial_email.delivery_status == "sent":
+        raise HTTPException(status_code=409, detail="This email has already been sent.")
+    if initial_email.delivery_status == "sending":
+        raise HTTPException(
+            status_code=409,
+            detail="This email is already being sent. Wait for the current send lease to expire before retrying.",
+        )
+    if initial_email.delivery_status != "approved":
+        raise HTTPException(status_code=409, detail="Approve the email before sending.")
     smoke_confirmation_audits: list[tuple[str, str, str]] = []
     if is_production_smoke_test:
         _require_production_smoke_owner(db, user=user)
@@ -15275,6 +16052,101 @@ def send_approved_email(
     idempotency_key = _email_send_idempotency_key(
         workspace.id, email_id, _email_approval_version(initial_email)
     )
+    lead = initial_lead
+    recipient_email = (
+        str(initial_email.recipient_email or (lead.email if lead else "") or "")
+        .strip()
+        .lower()
+    )
+    if not lead or not recipient_email:
+        raise HTTPException(
+            status_code=409, detail="Add a verified recipient email before sending."
+        )
+    if _is_placeholder_recipient(recipient_email):
+        raise HTTPException(
+            status_code=400, detail="Use a real recipient email before sending."
+        )
+    tags = _email_tags(initial_email)
+    confirmed_snapshot = (
+        tags.get("send_confirmation_snapshot")
+        if isinstance(tags.get("send_confirmation_snapshot"), dict)
+        else None
+    )
+    current_snapshot = _current_email_send_confirmation_snapshot(
+        db,
+        user_id=user.user_id,
+        workspace=workspace,
+        email=initial_email,
+        lead=lead,
+        approval_version=_email_approval_version(initial_email),
+    )
+    server_confirmed_snapshot = (
+        current_snapshot
+        if (
+            (is_production_smoke_test or is_internal_email_smoke_draft)
+            and payload is not None
+            and payload.confirmed_send
+        )
+        else None
+    )
+    if (
+        not confirmed_snapshot
+        or confirmed_snapshot.get("fingerprint") != current_snapshot["fingerprint"]
+    ):
+        if server_confirmed_snapshot is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Confirm the exact sender, recipient, subject, and body before sending.",
+            )
+        confirmed_snapshot = server_confirmed_snapshot
+        initial_email.tags = {
+            **_email_tags(initial_email),
+            "send_confirmation_snapshot": confirmed_snapshot,
+            "send_confirmation_confirmed_at": datetime.utcnow().isoformat(),
+            "send_confirmation_user_id": user.user_id,
+        }
+    send_policy = _enforce_action_policy(
+        db,
+        workspace=workspace,
+        user_id=user.user_id,
+        action_name="email.send",
+        input_payload={
+            "email_id": str(initial_email.id),
+            "lead_id": str(lead.id),
+            "recipient_email": recipient_email,
+            "sender_email": current_snapshot["sender_email"],
+            "subject": initial_email.subject,
+            "body": initial_email.body,
+            "approval_version": _email_approval_version(initial_email),
+            "confirmation_fingerprint": current_snapshot["fingerprint"],
+        },
+        approval=_email_policy_approval_context(
+            initial_email,
+            final_send_confirmation=True,
+        ),
+        idempotency_key=idempotency_key,
+        resource_workspace_id=initial_email.workspace_id,
+        resource_id=initial_email.id,
+        required_approval_fingerprint=current_snapshot["fingerprint"],
+    )
+    if send_policy.replay and initial_email.delivery_status == "sent":
+        company = (
+            db.scalar(
+                select(Company)
+                .where(Company.lead_id == lead.id, Company.workspace_id == workspace.id)
+                .order_by(Company.updated_at.desc())
+            )
+            if lead
+            else None
+        )
+        return UsageActionOut(
+            status="success",
+            message="Approved email was already sent. CRM stage is unchanged.",
+            company=_crm_company_out(db, workspace, user.user_id, company)
+            if company
+            else None,
+            email=EmailOut.model_validate(initial_email),
+        )
     email = _claim_approved_email_for_send(
         db,
         workspace_id=workspace.id,
@@ -15291,76 +16163,6 @@ def send_approved_email(
             email_id=email.id,
             recipient_email=smoke_recipient,
         )
-    lead = (
-        db.scalar(
-            select(Lead).where(
-                Lead.id == email.lead_id, Lead.workspace_id == workspace.id
-            )
-        )
-        if email.lead_id
-        else None
-    )
-    recipient_email = (
-        str(email.recipient_email or (lead.email if lead else "") or "").strip().lower()
-    )
-    if not lead or not recipient_email:
-        _restore_email_send_retry_state(
-            db,
-            request=request,
-            user_id=user.user_id,
-            workspace=workspace,
-            lead=lead,
-            email_id=email.id,
-            reason="missing_recipient",
-        )
-        raise HTTPException(
-            status_code=409, detail="Add a verified recipient email before sending."
-        )
-    if _is_placeholder_recipient(recipient_email):
-        _restore_email_send_retry_state(
-            db,
-            request=request,
-            user_id=user.user_id,
-            workspace=workspace,
-            lead=lead,
-            email_id=email.id,
-            reason="placeholder_recipient",
-        )
-        raise HTTPException(
-            status_code=400, detail="Use a real recipient email before sending."
-        )
-    if not is_production_smoke_test:
-        tags = _email_tags(email)
-        confirmed_snapshot = (
-            tags.get("send_confirmation_snapshot")
-            if isinstance(tags.get("send_confirmation_snapshot"), dict)
-            else None
-        )
-        current_snapshot = _current_email_send_confirmation_snapshot(
-            db,
-            user_id=user.user_id,
-            workspace=workspace,
-            email=email,
-            lead=lead,
-            approval_version=_email_approval_version(email),
-        )
-        if (
-            not confirmed_snapshot
-            or confirmed_snapshot.get("fingerprint") != current_snapshot["fingerprint"]
-        ):
-            _restore_email_send_retry_state(
-                db,
-                request=request,
-                user_id=user.user_id,
-                workspace=workspace,
-                lead=lead,
-                email_id=email.id,
-                reason="send_confirmation_required",
-            )
-            raise HTTPException(
-                status_code=409,
-                detail="Confirm the exact sender, recipient, subject, and body before sending.",
-            )
 
     usage_reservation_id: UUID | None = None
     try:
@@ -15394,9 +16196,13 @@ def send_approved_email(
             provider=sender_status.provider,
             smtp_config=smtp_config,
             idempotency_key=idempotency_key,
+            policy_db=db,
+            policy_enforcement=send_policy,
         )
     except HTTPException as exc:
         release_usage_reservation(db, usage_reservation_id, reason=str(exc.detail))
+        db.commit()
+        _record_action_policy_failure(db, send_policy, str(exc.detail))
         db.commit()
         _restore_email_send_retry_state(
             db,
@@ -15414,6 +16220,8 @@ def send_approved_email(
     except EmailProviderSendingDisabledError as exc:
         release_usage_reservation(db, usage_reservation_id, reason=str(exc))
         db.commit()
+        _record_action_policy_failure(db, send_policy, exc)
+        db.commit()
         _restore_email_send_retry_state(
             db,
             request=request,
@@ -15426,6 +16234,8 @@ def send_approved_email(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except EmailProviderConfigurationError as exc:
         release_usage_reservation(db, usage_reservation_id, reason=str(exc))
+        db.commit()
+        _record_action_policy_failure(db, send_policy, exc)
         db.commit()
         _restore_email_send_retry_state(
             db,
@@ -15459,6 +16269,8 @@ def send_approved_email(
         ):
             finalize_usage_reservation(db, usage_reservation_id, user_id=user.user_id)
             db.commit()
+            _record_action_policy_failure(db, send_policy, exc)
+            db.commit()
             _mark_email_send_confirmation_pending(
                 db,
                 request=request,
@@ -15481,6 +16293,8 @@ def send_approved_email(
                 detail="Email sending could not be confirmed. Check the mailbox before recovering or sending again.",
             ) from exc
         release_usage_reservation(db, usage_reservation_id, reason=str(exc))
+        db.commit()
+        _record_action_policy_failure(db, send_policy, exc)
         db.commit()
         _restore_email_send_retry_state(
             db,
@@ -15514,6 +16328,8 @@ def send_approved_email(
         ):
             finalize_usage_reservation(db, usage_reservation_id, user_id=user.user_id)
             db.commit()
+            _record_action_policy_failure(db, send_policy, exc)
+            db.commit()
             _mark_email_send_confirmation_pending(
                 db,
                 request=request,
@@ -15538,6 +16354,8 @@ def send_approved_email(
         release_usage_reservation(
             db, usage_reservation_id, reason=exc.__class__.__name__
         )
+        db.commit()
+        _record_action_policy_failure(db, send_policy, exc)
         db.commit()
         _restore_email_send_retry_state(
             db,
@@ -15597,6 +16415,15 @@ def send_approved_email(
         event="sent",
     )
     _sync_ai_customer_finder_result_email_state(db, email)
+    _record_action_policy_success(
+        db,
+        send_policy,
+        {
+            "email_id": str(email.id),
+            "provider_message_id": email.provider_message_id,
+            "sender_provider": sender_status.provider,
+        },
+    )
     db.commit()
     db.refresh(email)
     db.refresh(company)

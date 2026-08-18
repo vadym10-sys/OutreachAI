@@ -203,8 +203,18 @@ def send_email(
     smtp_config: dict[str, Any] | None = None,
     oauth_config: dict[str, Any] | None = None,
     idempotency_key: Optional[str] = None,
+    policy_db: Any | None = None,
+    policy_enforcement: Any | None = None,
 ) -> dict:
     _raise_if_outbound_sends_disabled()
+    from app.services.agent_runtime.errors import ToolExecutionBlockedError
+    from app.services.agent_runtime.action_gateway import require_provider_policy
+
+    if policy_db is None:
+        raise ToolExecutionBlockedError(
+            "Email provider send blocked by missing server-side policy database check."
+        )
+    require_provider_policy(policy_db, policy_enforcement)
     if provider == "smtp":
         return _send_smtp_email(to_email=to_email, subject=subject, body=body, reply_to=reply_to, from_email=from_email, from_name=from_name, smtp_config=smtp_config)
     if provider == "gmail":

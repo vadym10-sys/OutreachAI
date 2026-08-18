@@ -9,6 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import AuditLog, Company, Notification, NotificationKind, Workspace
+from app.services.agent_runtime.action_gateway import ActionPolicyGateway
+
+_action_policy_gateway = ActionPolicyGateway()
 
 SignalCategory = Literal[
     "Hiring",
@@ -198,7 +201,15 @@ def build_and_store_revenue_intelligence(db: Session, *, company: Company, compa
     return item.model_dump()
 
 
-def set_company_watchlist(db: Session, *, workspace_id: UUID, user_id: str, company_id: UUID, watchlisted: bool) -> RevenueCompanyOut:
+def set_company_watchlist(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    user_id: str,
+    company_id: UUID,
+    watchlisted: bool,
+    action_policy: Any | None = None,
+) -> RevenueCompanyOut:
     company = db.scalar(select(Company).where(Company.id == company_id, Company.workspace_id == workspace_id))
     if company is None:
         raise ValueError("Company not found")
@@ -226,6 +237,11 @@ def set_company_watchlist(db: Session, *, workspace_id: UUID, user_id: str, comp
         **(company.metadata_json if isinstance(company.metadata_json, dict) else {}),
         "ai_revenue_intelligence": item.model_dump(),
     }
+    _action_policy_gateway.record_success(
+        db,
+        action_policy,
+        result={"company_id": str(company.id), "watchlisted": bool(watchlisted)},
+    )
     db.commit()
     db.refresh(company)
     return build_revenue_company(company, companies=[company])
