@@ -69,7 +69,7 @@ test.describe("manual production-readiness journey", () => {
     for (const [route, heading] of [
       ["/dashboard", "AI Поиск"],
       ["/dashboard/clients", "CRM"],
-      ["/dashboard/emails", "Письма"],
+      ["/dashboard/emails", "Emails"],
       ["/dashboard/settings", "Настройки"]
     ] as const) {
       await page.goto(route, { waitUntil: "domcontentloaded" });

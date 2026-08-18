@@ -4,7 +4,7 @@ import { mockWorkspaceApi } from "../mocks/workspace-api";
 const pages = [
   ["/dashboard", "AI Поиск"],
   ["/dashboard/clients", "CRM"],
-  ["/dashboard/emails", "Письма"],
+  ["/dashboard/emails", "Emails"],
   ["/dashboard/settings", "Настройки"]
 ] as const;
 

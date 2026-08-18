@@ -431,6 +431,25 @@ a[aria-label="Clerk logo"] {
   color: white;
 }
 
+.ai-tasks-workspace .ui-button:disabled {
+  background: #e2e8f0;
+  border: 1px solid #cbd5e1;
+  box-shadow: none;
+  color: #64748b;
+  cursor: not-allowed;
+  opacity: 1;
+  transform: none;
+}
+
+.ai-tasks-workspace .ui-button:disabled:hover,
+.ai-tasks-workspace .ui-button:disabled:focus {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+  box-shadow: none;
+  color: #64748b;
+  transform: none;
+}
+
 .ui-badge {
   align-items: center;
   border-radius: 999px;

@@ -83,10 +83,7 @@ class AgentToolAdapters:
         return SearchCompaniesOutput(
             executed=False,
             results=[],
-            reason=(
-                "Customer Finder provider calls are not executed by AI Control Plane v1. "
-                "Use the existing Customer Finder job path or a future approved adapter."
-            ),
+            reason="Safe task prepared the search, but no external search was run.",
         )
 
     def research_company(
@@ -134,7 +131,7 @@ class AgentToolAdapters:
             executed=False,
             company={"website": payload.website},
             facts=[],
-            reason="External website research is registered but not executed by AI Control Plane v1.",
+            reason="Safe task prepared website research, but no external research was run.",
         )
 
     def verify_email(
@@ -146,7 +143,7 @@ class AgentToolAdapters:
                 executed=True,
                 status="format_valid",
                 confidence=40,
-                reason="Local syntax check only; no Hunter/Gmail/provider verification was called.",
+                reason="Email format looks valid. No external verification was run in this safe task.",
             )
         return VerifyEmailOutput(
             executed=True,
@@ -303,14 +300,10 @@ class AgentToolAdapters:
         )
 
     def send_email(self, context: ToolExecutionContext, payload) -> SendEmailOutput:
-        raise ToolExecutionBlockedError(
-            "send_email is registered but external sending is disabled in AI Control Plane v1."
-        )
+        raise ToolExecutionBlockedError("Sending is blocked in this safe test mode.")
 
     def sync_replies(self, context: ToolExecutionContext, payload) -> SyncRepliesOutput:
-        raise ToolExecutionBlockedError(
-            "sync_replies is registered but Gmail/reply synchronization is disabled in AI Control Plane v1."
-        )
+        raise ToolExecutionBlockedError("Reply sync is blocked in this safe test mode.")
 
 
 def default_tool_registry():

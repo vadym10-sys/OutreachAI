@@ -237,6 +237,7 @@ class AgentRuntimeOrchestrator:
         planner: AgentPlanner | None = None,
         permission_resolver: AgentRuntimePermissionResolver | None = None,
         feature_enabled: bool | None = None,
+        force_dry_run: bool | None = None,
     ) -> None:
         self.registry = registry or default_tool_registry()
         self.policy = policy or AgentApprovalPolicy()
@@ -247,12 +248,19 @@ class AgentRuntimeOrchestrator:
             registry=self.registry,
         )
         self._feature_enabled = feature_enabled
+        self._force_dry_run = force_dry_run
 
     @property
     def feature_enabled(self) -> bool:
         if self._feature_enabled is not None:
             return self._feature_enabled
         return bool(get_settings().ai_control_plane_enabled)
+
+    @property
+    def force_dry_run(self) -> bool:
+        if self._force_dry_run is not None:
+            return self._force_dry_run
+        return bool(get_settings().ai_control_plane_force_dry_run)
 
     def list_tools(self) -> list[ToolRegistryItemOut]:
         return [tool.public_metadata() for tool in self.registry.all()]
@@ -262,6 +270,7 @@ class AgentRuntimeOrchestrator:
         return AgentRuntimeStatusOut(
             enabled=enabled,
             can_create_runs=enabled,
+            force_dry_run=self.force_dry_run,
             registered_tools_count=len(self.registry.all()),
         )
 
@@ -368,7 +377,10 @@ class AgentRuntimeOrchestrator:
         request_id: str = "",
     ) -> AgentRun:
         self._require_enabled()
-        request_fingerprint = self._request_fingerprint(payload)
+        effective_dry_run = self._effective_dry_run(payload.dry_run)
+        request_fingerprint = self._request_fingerprint(
+            payload, effective_dry_run=effective_dry_run
+        )
         existing = self._existing_run_for_key(
             db, workspace_id=workspace.id, key=payload.idempotency_key
         )
@@ -384,9 +396,9 @@ class AgentRuntimeOrchestrator:
             user_id=user_id,
             status="queued",
             objective=payload.objective,
-            dry_run=payload.dry_run,
+            dry_run=effective_dry_run,
             input_json=sanitize_for_trace(
-                {"objective": payload.objective, "dry_run": payload.dry_run}
+                {"objective": payload.objective, "dry_run": effective_dry_run}
             ),
             idempotency_key=payload.idempotency_key.strip(),
             request_fingerprint=request_fingerprint,
@@ -1133,7 +1145,14 @@ class AgentRuntimeOrchestrator:
         tool: ToolDefinition,
         arguments: dict[str, Any],
     ) -> str:
-        raw = json.dumps(sanitize_for_trace(arguments), sort_keys=True, separators=(",", ":"))
+        raw = json.dumps(
+            {
+                "arguments": sanitize_for_trace(arguments),
+                "effective_dry_run": bool(run.dry_run),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
         return f"agent-tool:{run.workspace_id}:{run.id}:{step.step_index}:{tool.name}:{digest}"
 
@@ -1141,12 +1160,17 @@ class AgentRuntimeOrchestrator:
         if not self.feature_enabled:
             raise FeatureDisabledError("AI Control Plane is disabled.")
 
-    def _request_fingerprint(self, payload: AgentRunCreateIn) -> str:
+    def _effective_dry_run(self, requested_dry_run: bool) -> bool:
+        return bool(requested_dry_run or self.force_dry_run)
+
+    def _request_fingerprint(
+        self, payload: AgentRunCreateIn, *, effective_dry_run: bool
+    ) -> str:
         raw = json.dumps(
             {
                 "version": "agent-run-create-v1",
                 "objective": payload.objective,
-                "dry_run": payload.dry_run,
+                "dry_run": effective_dry_run,
             },
             sort_keys=True,
             separators=(",", ":"),

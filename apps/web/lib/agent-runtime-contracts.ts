@@ -113,6 +113,7 @@ export type AgentRunDetail = z.infer<typeof agentRunDetailSchema>;
 export const agentRuntimeStatusSchema = z.object({
   enabled: z.boolean(),
   can_create_runs: z.boolean(),
+  force_dry_run: z.boolean(),
   registered_tools_count: z.number()
 }).passthrough();
 export type AgentRuntimeStatus = z.infer<typeof agentRuntimeStatusSchema>;

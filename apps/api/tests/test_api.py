@@ -23195,6 +23195,7 @@ def _install_agent_runtime(
     *,
     registry=None,
     permission_resolver=None,
+    force_dry_run: bool = False,
 ):
     from app.api import agent_runtime as agent_runtime_api
     from app.services.agent_runtime.orchestrator import AgentRuntimeOrchestrator
@@ -23205,6 +23206,7 @@ def _install_agent_runtime(
         planner=planner,
         permission_resolver=permission_resolver,
         feature_enabled=True,
+        force_dry_run=force_dry_run,
     )
     monkeypatch.setattr(agent_runtime_api, "_orchestrator", orchestrator)
     return planner
@@ -23411,6 +23413,7 @@ def test_agent_runtime_status_reads_when_disabled_and_mutations_fail_closed(monk
     assert status_response.json() == {
         "enabled": False,
         "can_create_runs": False,
+        "force_dry_run": True,
         "registered_tools_count": status_response.json()["registered_tools_count"],
     }
     assert status_response.json()["registered_tools_count"] >= 1
@@ -23686,6 +23689,253 @@ def test_agent_runtime_idempotency_key_conflicts_on_different_payload(monkeypatc
     assert changed_dry_run.status_code == 409
     assert "different payload" in changed_dry_run.json()["detail"]
     assert planner.calls == 2
+
+
+def test_agent_runtime_force_dry_run_default_and_effective_fingerprint(
+    monkeypatch,
+) -> None:
+    from app.api import agent_runtime as agent_runtime_api
+    from app.models.entities import EmailMessage
+    from app.services.agent_runtime.orchestrator import AgentRuntimeOrchestrator
+
+    subject = f"Agent Runtime Forced Draft {uuid4()}"
+    planner = _StaticAgentPlanner(
+        [
+            {
+                "id": "draft",
+                "title": "Prepare draft safely",
+                "tool_name": "generate_email_draft",
+                "arguments": {
+                    "recipient_email": "buyer@agent-runtime-force.example",
+                    "subject": subject,
+                    "body": "Forced dry-run must not create a local email draft.",
+                    "dry_run": False,
+                },
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        agent_runtime_api,
+        "_orchestrator",
+        AgentRuntimeOrchestrator(
+            planner=planner,
+            feature_enabled=True,
+        ),
+    )
+    idempotency_key = f"agent-run-force-dry-{uuid4()}"
+
+    status_response = client.get(
+        "/api/workspace-app/agent-runs/status", headers=USER_A_AUTH
+    )
+    first = _create_agent_run(
+        USER_A_AUTH,
+        "Create only a forced dry-run draft.",
+        idempotency_key=idempotency_key,
+        dry_run=False,
+    )
+    same_effective_mode = _create_agent_run(
+        USER_A_AUTH,
+        "Create only a forced dry-run draft.",
+        idempotency_key=idempotency_key,
+        dry_run=True,
+    )
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(
+            client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"]
+        )
+        draft_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(EmailMessage)
+                .where(
+                    EmailMessage.workspace_id == workspace_id,
+                    EmailMessage.subject == subject,
+                )
+            )
+            or 0
+        )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["force_dry_run"] is True
+    assert first.status_code == 202
+    assert first.json()["run"]["dry_run"] is True
+    assert first.json()["steps"][0]["input"]["dry_run"] is True
+    assert first.json()["steps"][0]["output"]["status"] == "dry_run"
+    assert same_effective_mode.status_code == 202
+    assert same_effective_mode.json()["run"]["id"] == first.json()["run"]["id"]
+    assert planner.calls == 1
+    assert draft_count == 0
+
+
+def test_agent_runtime_force_dry_run_e2e_approve_resume_without_side_effects(
+    monkeypatch,
+) -> None:
+    from app.models.entities import AgentRun, AgentTraceEvent
+
+    provider_calls: list[dict[str, Any]] = []
+    registry = _agent_runtime_registry_with_provider_call_recorder(provider_calls)
+    company_name = f"Agent Runtime Forced Safe CRM {uuid4()}"
+    subject = f"Agent Runtime Forced Safe Draft {uuid4()}"
+    private_body = f"Private forced dry-run body {uuid4()} must stay out of trace."
+    secret_marker = f"Bearer forced-dry-run-token-{uuid4()}"
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-force-e2e-{uuid4()}@example.com",
+    }
+    other_headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-force-e2e-other-{uuid4()}@example.com",
+    }
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "search",
+                "title": "Find potential companies",
+                "tool_name": "search_companies",
+                "arguments": {
+                    "query": "local service company",
+                    "target_country": "Poland",
+                    "max_results": 1,
+                    "dry_run": False,
+                },
+            },
+            {
+                "id": "crm",
+                "title": "Prepare CRM action",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": company_name,
+                    "website": "https://forced-safe-crm.example",
+                    "contact_email": "buyer@forced-safe-crm.example",
+                    "notes": f"Reviewed signal. {secret_marker}",
+                    "dry_run": False,
+                },
+            },
+            {
+                "id": "draft",
+                "title": "Prepare outreach draft",
+                "tool_name": "generate_email_draft",
+                "arguments": {
+                    "recipient_email": "buyer@forced-safe-crm.example",
+                    "subject": subject,
+                    "body": private_body,
+                    "dry_run": False,
+                },
+            },
+        ],
+        registry=registry,
+        force_dry_run=True,
+    )
+
+    created = _create_agent_run(
+        headers,
+        "Find a potential company, prepare a CRM action, and draft an email safely.",
+        dry_run=False,
+    )
+    payload = created.json()
+    run_id = payload["run"]["id"]
+    approval_id = payload["approvals"][0]["id"]
+    approved = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/approve",
+        headers=headers,
+        json={
+            "approval_request_id": approval_id,
+            "idempotency_key": "forced-dry-approval",
+            "manual_draft_approval": True,
+            "reason": "Reviewed dry-run CRM action.",
+        },
+    )
+    resumed = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/resume", headers=headers
+    )
+    detail = client.get(f"/api/workspace-app/agent-runs/{run_id}", headers=headers)
+    trace = client.get(f"/api/workspace-app/agent-runs/{run_id}/trace", headers=headers)
+    cross_workspace = client.get(
+        f"/api/workspace-app/agent-runs/{run_id}", headers=other_headers
+    )
+    detail_text = json.dumps(detail.json(), sort_keys=True)
+    trace_text = json.dumps(trace.json(), sort_keys=True)
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(
+            client.get("/api/workspace/me", headers=headers).json()["id"]
+        )
+        company_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Company)
+                .where(
+                    Company.workspace_id == workspace_id,
+                    Company.name == company_name,
+                )
+            )
+            or 0
+        )
+        lead_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Lead)
+                .where(Lead.workspace_id == workspace_id, Lead.company == company_name)
+            )
+            or 0
+        )
+        email_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(EmailMessage)
+                .where(
+                    EmailMessage.workspace_id == workspace_id,
+                    EmailMessage.subject == subject,
+                )
+            )
+            or 0
+        )
+        runtime_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(AgentRun)
+                .where(AgentRun.workspace_id == workspace_id)
+            )
+            or 0
+        )
+        trace_count = (
+            db.scalar(
+                select(func.count())
+                .select_from(AgentTraceEvent)
+                .where(AgentTraceEvent.workspace_id == workspace_id)
+            )
+            or 0
+        )
+
+    assert created.status_code == 202
+    assert payload["run"]["dry_run"] is True
+    assert payload["run"]["status"] == "waiting_approval"
+    assert payload["steps"][0]["status"] == "completed"
+    assert payload["steps"][1]["status"] == "waiting_approval"
+    assert payload["steps"][1]["input"]["dry_run"] is True
+    assert payload["approvals"][0]["tool_arguments"]["dry_run"] is True
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "waiting_approval"
+    assert resumed.status_code == 200
+    assert resumed.json()["run"]["status"] == "completed"
+    assert resumed.json()["run"]["dry_run"] is True
+    assert resumed.json()["steps"][1]["output"]["status"] == "dry_run"
+    assert resumed.json()["steps"][2]["input"]["dry_run"] is True
+    assert resumed.json()["steps"][2]["output"]["status"] == "dry_run"
+    assert cross_workspace.status_code == 404
+    assert runtime_count >= 1
+    assert trace_count >= 1
+    assert company_count == 0
+    assert lead_count == 0
+    assert email_count == 0
+    assert provider_calls == []
+    assert private_body not in detail_text
+    assert private_body not in trace_text
+    assert secret_marker not in trace_text
+    assert "raw provider" not in trace_text.lower()
+    assert "[REDACTED_CONTENT]" in detail_text
 
 
 def test_agent_runtime_rejects_invalid_structured_plan(monkeypatch) -> None:
