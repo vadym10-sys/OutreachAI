@@ -15,6 +15,7 @@ type ApprovalChecks = Record<string, { reviewed: boolean; finalSend: boolean; ge
 
 const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
 const sensitiveKeyPattern = /(authorization|cookie|api_key|apikey|access_token|refresh_token|oauth|password|secret|token|body|email_body|html_body|text_body)/i;
+const internalMessagePattern = /(adapter|backend|control plane|exception|provider|raw error|secret|sql|stack|token|tool|traceback)/i;
 
 const toolLabels: Record<string, string> = {
   understand_business: "aiTasks.tool.understandBusiness",
@@ -105,7 +106,9 @@ function outputSummary(detail: AgentRunDetail | null, translate: (key: string) =
   if (!completed) return detail.run.status === "completed" ? translate("aiTasks.resultCompletedNoOutput") : translate("aiTasks.noResultYet");
   const output = completed.output || {};
   if (output.status === "dry_run" || output.dry_run === true) return translate("aiTasks.resultDryRun");
-  if (typeof output.reason === "string" && output.reason) return output.reason.slice(0, 240);
+  if (typeof output.reason === "string" && output.reason && !internalMessagePattern.test(output.reason)) {
+    return output.reason.slice(0, 240);
+  }
   if (Array.isArray(output.results)) return `${output.results.length} ${translate("aiTasks.resultsPrepared")}`;
   if (output.company_id) return translate("aiTasks.resultCrmReady");
   if (output.email_id) return translate("aiTasks.resultDraftReady");
@@ -144,6 +147,8 @@ export function AiTasksWorkspace() {
   const canMutate = Boolean(
     statusChecked && !statusFailed && status?.enabled === true && status.can_create_runs === true && !loading
   );
+  const forceDryRun = status?.force_dry_run === true;
+  const effectiveDryRun = forceDryRun || dryRun;
   const selectedRun = selected?.run || null;
   const selectedPendingApprovals = selected?.approvals.filter((approval) => approval.approval_state === "pending") || [];
   const canResume = Boolean(selectedRun && selectedRun.status === "waiting_approval" && !hasPendingApprovals(selected) && canMutate);
@@ -217,12 +222,12 @@ export function AiTasksWorkspace() {
     setNotice("");
     setError("");
     try {
-      const created = await api.createRun({ objective: objective.trim(), dry_run: dryRun });
+      const created = await api.createRun({ objective: objective.trim(), dry_run: effectiveDryRun });
       setSelected(created);
       setSelectedRunId(created.run.id);
       setObjective("");
       setNotice(t("aiTasks.started"));
-      trackEvent("ai_tasks_run_started", { dry_run: dryRun });
+      trackEvent("ai_tasks_run_started", { dry_run: effectiveDryRun, force_dry_run: forceDryRun });
       await refresh(created.run.id);
     } catch (startError) {
       setError(safeErrorText(startError, t("aiTasks.startError")));
@@ -323,7 +328,7 @@ export function AiTasksWorkspace() {
   const statusLabel = useMemo(() => selectedRun ? t(`aiTasks.status.${selectedRun.status}`) : t("aiTasks.status.none"), [selectedRun, t]);
 
   return (
-    <div className="space-y-5">
+    <div className="ai-tasks-workspace space-y-5">
       <header className="grid gap-4 lg:grid-cols-[1.4fr_0.8fr] lg:items-stretch">
         <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-soft">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -340,6 +345,11 @@ export function AiTasksWorkspace() {
           {runtimeUnavailable ? (
             <div role="status" className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold leading-6 text-amber-900">
               {t("aiTasks.disabledMessage")}
+            </div>
+          ) : null}
+          {forceDryRun ? (
+            <div role="status" className="mt-4 rounded-2xl border border-teal-200 bg-teal-50 p-4 text-sm font-bold leading-6 text-teal-900">
+              {t("aiTasks.forceDryRunNotice")}
             </div>
           ) : null}
           {error ? <div role="alert" className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">{error}</div> : null}
@@ -375,9 +385,21 @@ export function AiTasksWorkspace() {
           />
         </label>
         <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <label className="flex min-h-12 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-bold text-slate-700">
-            <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} disabled={!canMutate || busy === "start"} className="size-4 accent-teal-700" />
-            {t("aiTasks.dryRun")}
+          <label className={`flex min-h-12 items-center gap-3 rounded-2xl border px-4 text-sm font-bold ${forceDryRun ? "border-slate-300 bg-slate-100 text-slate-600" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
+            <input
+              type="checkbox"
+              checked={effectiveDryRun}
+              onChange={(event) => {
+                if (!forceDryRun) setDryRun(event.target.checked);
+              }}
+              disabled={forceDryRun || !canMutate || busy === "start"}
+              aria-describedby={forceDryRun ? "ai-tasks-force-dry-run-help" : undefined}
+              className="size-4 accent-teal-700 disabled:cursor-not-allowed"
+            />
+            <span>
+              {t("aiTasks.dryRun")}
+              {forceDryRun ? <span id="ai-tasks-force-dry-run-help" className="mt-1 block text-xs font-bold text-slate-500">{t("aiTasks.forceDryRunHelp")}</span> : null}
+            </span>
           </label>
           <AppButton type="submit" disabled={!canMutate || busy === "start" || !objective.trim()} className="w-full sm:w-auto">
             {busy === "start" ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}

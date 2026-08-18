@@ -77,8 +77,8 @@ function isInternalEmailSmokeDraft(email: Email) {
 }
 
 function emailSafetyState(email: Email) {
-  if (canRecoverEmailForRetry(email)) return "Delivery is unconfirmed. Check Gmail/SMTP Sent and recover only if the message is not there.";
-  if (!canEditEmailDraft(email)) return "Read-only. Inbound replies and provider delivery records cannot be edited.";
+  if (canRecoverEmailForRetry(email)) return "Delivery is unconfirmed. Check Sent and recover only if the message is not there.";
+  if (!canEditEmailDraft(email)) return "Read-only. Replies and delivery records cannot be edited.";
   if (email.delivery_status === "approved") return "Approved. Editing will return it to draft and require approval again.";
   return "Manual approval required.";
 }
@@ -905,6 +905,7 @@ function ClientsSection() {
 
 function EmailsSection() {
   const api = useAiFirstApi();
+  const { t } = useI18n();
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [inbox, setInbox] = useState<Email[]>([]);
   const [draftEdits, setDraftEdits] = useState<Record<string, EmailDraftEdit>>({});
@@ -932,11 +933,11 @@ function EmailsSection() {
       setInboxHasMore(nextInbox.hasMore);
       setLoadError("");
     } catch (err) {
-      setLoadError(friendlyErrorMessage(err, "Could not load emails."));
+      setLoadError(friendlyErrorMessage(err, t("Could not load emails.")));
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [api, t]);
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
@@ -953,7 +954,7 @@ function EmailsSection() {
       setInboxCursor(olderInbox.nextCursor);
       setInboxHasMore(olderInbox.hasMore);
     } catch (err) {
-      setActionError(friendlyErrorMessage(err, "Could not load older replies."));
+      setActionError(friendlyErrorMessage(err, t("Could not load older replies.")));
     } finally {
       setBusy("");
     }
@@ -968,7 +969,7 @@ function EmailsSection() {
       setNotice(response.message);
       await load();
     } catch (err) {
-      setActionError(friendlyErrorMessage(err, "Could not approve this draft."));
+      setActionError(friendlyErrorMessage(err, t("Could not approve this draft.")));
     } finally {
       setBusy("");
     }
@@ -976,7 +977,7 @@ function EmailsSection() {
 
   async function saveEmailEdits(email: Email) {
     if (!canEditEmailDraft(email)) {
-      setActionError("Inbound replies and sent provider records are read-only.");
+      setActionError(t("This message is read-only and cannot be edited."));
       return;
     }
     const edit = draftEdits[email.id] || { recipient_email: emailRecipient(email, companyForEmail(companies, email)), subject: email.subject || "", body: email.body || "" };
@@ -992,10 +993,10 @@ function EmailsSection() {
         body: edit.body,
         preview: edit.body.slice(0, 180)
       });
-      setNotice(wasApproved ? "Changes saved. This email is back in draft and must be approved again before sending." : response.message);
+      setNotice(wasApproved ? t("Changes saved. This email is back in draft and must be approved again before sending.") : response.message);
       await load();
     } catch (err) {
-      setActionError(friendlyErrorMessage(err, "Could not save this draft."));
+      setActionError(friendlyErrorMessage(err, t("Could not save this draft.")));
     } finally {
       setBusy("");
     }
@@ -1021,7 +1022,7 @@ function EmailsSection() {
     try {
       if (!productionSmokeTest) {
         if (!senderEmail || !recipientEmail || !edit.subject || !edit.body) {
-          throw new Error("Sender, recipient, subject, and body are required before final send confirmation.");
+          throw new Error(t("Sender, recipient, subject, and body are required before final send confirmation."));
         }
         await api.approveEmail(email.id, {
           confirmed_exact_draft: true,
@@ -1036,7 +1037,7 @@ function EmailsSection() {
       setSendConfirmationEmail(null);
       await load();
     } catch (err) {
-      setActionError(friendlyErrorMessage(err, "Could not send this email."));
+      setActionError(friendlyErrorMessage(err, t("Could not send this email.")));
     } finally {
       setBusy("");
     }
@@ -1045,7 +1046,7 @@ function EmailsSection() {
   async function recoverForRetry(email: Email) {
     if (!canRecoverEmailForRetry(email)) return;
     if (!recoverConfirmations[email.id]) {
-      setActionError("Confirm that the message is not in Gmail or SMTP Sent before recovering it for retry.");
+      setActionError(t("Confirm that the message is not in Sent before recovering it for retry."));
       return;
     }
     setBusy(`recover:${email.id}`);
@@ -1053,11 +1054,11 @@ function EmailsSection() {
     setActionError("");
     try {
       const response = await api.recoverEmailForRetry(email.id, true);
-      setNotice(response.message || "Interrupted send recovered for retry. Nothing was sent automatically.");
+      setNotice(response.message || t("Interrupted send recovered for retry. Nothing was sent automatically."));
       setRecoverConfirmations((current) => ({ ...current, [email.id]: false }));
       await load();
     } catch (err) {
-      setActionError(friendlyErrorMessage(err, "Could not recover this email for retry."));
+      setActionError(friendlyErrorMessage(err, t("Could not recover this email for retry.")));
     } finally {
       setBusy("");
     }
@@ -1069,22 +1070,22 @@ function EmailsSection() {
     setActionError("");
     try {
       const result = await api.syncGmailReplies();
-      setNotice(`Replies synced: ${result.synced}. Reply tracking refreshed without sending automatic responses.`);
+      setNotice(`${t("Replies synced")}: ${result.synced}. ${t("Reply tracking refreshed without sending automatic responses.")}`);
       await load();
     } catch (err) {
-      setActionError(friendlyErrorMessage(err, "Could not sync Gmail replies."));
+      setActionError(friendlyErrorMessage(err, t("Could not sync Gmail replies.")));
     } finally {
       setBusy("");
     }
   }
 
   return (
-    <Frame title="Письма" copy="Email Approval Workspace: черновики и отправленные письма из backend. Отправка доступна только после ручного approve и отдельного подтверждения send.">
+    <Frame title={t("Emails")} copy={t("Email Approval Workspace: drafts and sent emails stay in one review queue. Sending is available only after manual approval and a separate final send confirmation.")}>
       <div className="flex flex-wrap justify-end gap-2">
-        <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void trackReplies()} aria-label="Track replies from Gmail">
-          {busy === "reply:sync" ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} Track replies
+        <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => void trackReplies()} aria-label={t("Track replies")}>
+          {busy === "reply:sync" ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} {t("Track replies")}
         </AppButton>
-        <AppButton variant="secondary" size="sm" onClick={() => void load()} aria-label="Refresh email drafts"><RefreshCw size={16} /> Refresh</AppButton>
+        <AppButton variant="secondary" size="sm" onClick={() => void load()} aria-label={t("Refresh email drafts")}><RefreshCw size={16} /> {t("Refresh")}</AppButton>
       </div>
       {notice ? <Notice tone="good">{notice}</Notice> : null}
       {actionError ? <Notice tone="bad">{actionError}</Notice> : null}
@@ -1093,12 +1094,12 @@ function EmailsSection() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 text-amber-700" size={22} />
           <div>
-            <p className="font-black text-ink">AI creates drafts only</p>
-            <p className="mt-1 text-sm font-semibold leading-6 text-amber-900">Approve verifies the draft. Send still requires a separate explicit confirmation and uses the existing backend email action.</p>
+            <p className="font-black text-ink">{t("AI creates drafts only")}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-amber-900">{t("Approving verifies the draft. Sending still requires a separate explicit confirmation.")}</p>
           </div>
         </div>
       </PremiumPanel>
-      {loading ? <LoadingStateView title="Loading email approval workspace." /> : emails.length ? <div className="space-y-4"><section className="grid gap-4">{emails.map((email) => {
+      {loading ? <LoadingStateView title={t("Loading email approval workspace.")} /> : emails.length ? <div className="space-y-4"><section className="grid gap-4">{emails.map((email) => {
         const relatedCompany = companyForEmail(companies, email);
         const replySummary = replyAssistantText(email);
         const edit = draftEdits[email.id] || { recipient_email: emailRecipient(email, relatedCompany), subject: email.subject || "", body: email.body || email.preview || "" };
@@ -1117,30 +1118,30 @@ function EmailsSection() {
             <div>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{productionSmokeTest ? "Production smoke-test draft" : internalSmokeDraft ? "Internal test draft" : "Editable email draft"}</p>
-                  <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{email.subject || "No subject"}</h2>
+                  <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{productionSmokeTest ? t("Production smoke-test draft") : internalSmokeDraft ? t("Internal test draft") : t("Editable email draft")}</p>
+                  <h2 className="mt-2 text-xl font-black tracking-tight text-ink">{email.subject || t("No subject")}</h2>
                   <p className="mt-1 text-sm font-bold text-slate-600">{pretty(email.delivery_status)}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !editable} onClick={() => void saveEmailEdits(email)} aria-label={`Save email edits ${email.subject || email.id}`}>{busy === `edit:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Save edits</AppButton>
-                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !editable || email.delivery_status === "approved"} onClick={() => void approve(email)} aria-label={`Approve email ${email.subject || email.id}`}>{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} Approve</AppButton>
-                  <AppButton size="sm" disabled={Boolean(busy) || !sendable} onClick={() => void send(email)} aria-label={`Send email ${email.subject || email.id}`}>{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} Send</AppButton>
+                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !editable} onClick={() => void saveEmailEdits(email)} aria-label={`${t("Save edits")} ${email.subject || email.id}`}>{busy === `edit:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} {t("Save edits")}</AppButton>
+                  <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !editable || email.delivery_status === "approved"} onClick={() => void approve(email)} aria-label={`${t("Approve")} ${email.subject || email.id}`}>{busy === `approve:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />} {t("Approve")}</AppButton>
+                  <AppButton size="sm" disabled={Boolean(busy) || !sendable} onClick={() => void send(email)} aria-label={`${t("Send")} ${email.subject || email.id}`}>{busy === `send:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />} {t("Send")}</AppButton>
                 </div>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <EvidenceLine label="Recipient" value={recipient || "Recipient not returned by this backend response"} />
-                <EvidenceLine label="Company" value={relatedCompany?.name || "Company not linked in this response"} />
-                {smokeTest ? <EvidenceLine label="Workspace" value={String(email.tags?.workspace_name || relatedCompany?.name || "Current workspace")} /> : null}
-                {smokeTest ? <EvidenceLine label="Sender" value={String(email.tags?.sender_email || "Not returned")} /> : null}
-                {smokeTest ? <EvidenceLine label="Provider" value={providerLabel(String(email.tags?.sender_provider || ""))} /> : null}
-                {smokeTest ? <EvidenceLine label="Smoke test ID" value={String(email.tags?.smoke_test_id || "")} /> : null}
+                <EvidenceLine label={t("Recipient")} value={recipient || t("Recipient was not returned.")} />
+                <EvidenceLine label={t("Company")} value={relatedCompany?.name || t("Company was not linked.")} />
+                {smokeTest ? <EvidenceLine label={t("Workspace")} value={String(email.tags?.workspace_name || relatedCompany?.name || t("Current workspace"))} /> : null}
+                {smokeTest ? <EvidenceLine label={t("Sender")} value={String(email.tags?.sender_email || t("Not returned"))} /> : null}
+                {smokeTest ? <EvidenceLine label={t("Sender type")} value={t(providerLabel(String(email.tags?.sender_provider || "")))} /> : null}
+                {smokeTest ? <EvidenceLine label={t("Smoke test ID")} value={String(email.tags?.smoke_test_id || "")} /> : null}
               </div>
               <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
-                {approvedEditable ? <Notice tone="warn">Editing an approved email returns it to draft. Approve it again before Send is enabled.</Notice> : null}
+                {approvedEditable ? <Notice tone="warn">{t("Editing an approved email returns it to draft. Approve it again before Send is enabled.")}</Notice> : null}
                 {recoverable ? <Notice tone="warn">
                   <div className="space-y-3">
-                    <p className="font-black text-amber-950">Delivery confirmation required</p>
-                    <p>Check Gmail or SMTP Sent for this mailbox. Recover for retry only after you confirm this exact email was not sent.</p>
+                    <p className="font-black text-amber-950">{t("Delivery confirmation required")}</p>
+                    <p>{t("Check Sent for this mailbox. Recover for retry only after you confirm this exact email was not sent.")}</p>
                     <label className="flex items-start gap-3 text-sm font-bold text-amber-950">
                       <input
                         type="checkbox"
@@ -1148,46 +1149,46 @@ function EmailsSection() {
                         onChange={(event) => setRecoverConfirmations((current) => ({ ...current, [email.id]: event.target.checked }))}
                         className="mt-1 h-4 w-4 rounded border-amber-400"
                       />
-                      I checked Gmail/SMTP Sent and this email was not sent.
+                      {t("I checked Sent and this email was not sent.")}
                     </label>
-                    <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !recoveryConfirmed} onClick={() => void recoverForRetry(email)} aria-label={`Recover for retry ${email.subject || email.id}`}>
-                      {busy === `recover:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />} Recover for retry
+                    <AppButton variant="secondary" size="sm" disabled={Boolean(busy) || !recoveryConfirmed} onClick={() => void recoverForRetry(email)} aria-label={`${t("Recover for retry")} ${email.subject || email.id}`}>
+                      {busy === `recover:${email.id}` ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />} {t("Recover for retry")}
                     </AppButton>
                   </div>
                 </Notice> : null}
-                {!editable && !recoverable ? <Notice tone="warn">This message is read-only because it is an inbound reply or provider delivery record.</Notice> : null}
-                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Recipient email<input type="email" value={edit.recipient_email} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), recipient_email: event.target.value } }))} disabled={!recipientEditable} className={fieldClass} /></label>
-                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Subject<input value={edit.subject} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), subject: event.target.value } }))} disabled={!editable} className={fieldClass} /></label>
-                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Body<textarea value={edit.body} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), body: event.target.value } }))} disabled={!editable} className="focus-ring mt-2 min-h-48 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]" /></label>
+                {!editable && !recoverable ? <Notice tone="warn">{t("This message is read-only because it is a reply or delivery record.")}</Notice> : null}
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{t("Recipient email")}<input type="email" value={edit.recipient_email} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), recipient_email: event.target.value } }))} disabled={!recipientEditable} className={fieldClass} /></label>
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{t("Subject")}<input value={edit.subject} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), subject: event.target.value } }))} disabled={!editable} className={fieldClass} /></label>
+                <label className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{t("Body")}<textarea value={edit.body} onChange={(event) => setDraftEdits((current) => ({ ...current, [email.id]: { ...(current[email.id] || edit), body: event.target.value } }))} disabled={!editable} className="focus-ring mt-2 min-h-48 w-full resize-y rounded-xl border border-[var(--ui-border)] bg-white p-3 text-sm leading-7 text-[var(--ui-text)] outline-none transition hover:border-[var(--ui-border-strong)] focus:border-[var(--ui-brand)]" /></label>
               </div>
             </div>
             <aside className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4">
-              <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">AI reasoning</p>
-              <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{relatedCompany?.reasoning || relatedCompany?.ai_summary || "No AI reasoning returned for this draft yet."}</p>
+              <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{t("AI reasoning")}</p>
+              <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">{relatedCompany?.reasoning || relatedCompany?.ai_summary || t("No AI reasoning returned for this draft yet.")}</p>
               <div className="mt-4 grid gap-3">
-                <EvidenceLine label="Evidence used" value={relatedCompany?.opportunity_analysis || relatedCompany?.suggested_offer || "Недостаточно данных"} />
-                <EvidenceLine label="Outreach strategy" value={relatedCompany?.outreach_strategy || relatedCompany?.sales_angle || "No outreach strategy returned yet."} />
-                <EvidenceLine label="Safety state" value={emailSafetyState(email)} />
-                <EvidenceLine label="Reply tracking" value={email.delivery_status === "replied" ? (replySummary || "Reply received. Review and respond manually.") : email.replied_at ? "Reply timestamp recorded. Review the conversation before responding." : "No reply tracked yet."} />
+                <EvidenceLine label={t("Evidence used")} value={relatedCompany?.opportunity_analysis || relatedCompany?.suggested_offer || t("Insufficient data")} />
+                <EvidenceLine label={t("Outreach strategy")} value={relatedCompany?.outreach_strategy || relatedCompany?.sales_angle || t("No outreach strategy returned yet.")} />
+                <EvidenceLine label={t("Safety state")} value={t(emailSafetyState(email))} />
+                <EvidenceLine label={t("Reply tracking")} value={email.delivery_status === "replied" ? (replySummary || t("Reply received. Review and respond manually.")) : email.replied_at ? t("Reply timestamp recorded. Review the conversation before responding.") : t("No reply tracked yet.")} />
               </div>
             </aside>
           </div>
         </SurfaceCard>;
       })}</section>{inboxHasMore ? <AppButton variant="secondary" disabled={Boolean(busy)} onClick={() => void loadOlderReplies()}>
-        {busy === "inbox:more" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />} Load older replies
-      </AppButton> : null}</div> : <EmptyStateView title="No email drafts yet." copy="Save a verified customer result to CRM to create a draft. AI will not send anything without explicit approval." />}
+        {busy === "inbox:more" ? <Loader2 className="animate-spin" size={16} /> : <Mail size={16} />} {t("Load older replies")}
+      </AppButton> : null}</div> : <EmptyStateView title={t("No email drafts yet.")} copy={t("Save a verified customer result to CRM to create a draft. AI will not send anything without explicit approval.")} />}
       {sendConfirmationEmail ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="send-confirmation-title">
           <div className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--ui-border)] bg-white p-5 shadow-2xl">
-            <h2 id="send-confirmation-title" className="text-lg font-black text-ink">Final Send confirmation</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">OutreachAI will send this approved email only after this confirmation. Closing this dialog sends nothing.</p>
+            <h2 id="send-confirmation-title" className="text-lg font-black text-ink">{t("Final send confirmation")}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{t("OutreachAI will send this approved email only after this confirmation. Closing this dialog sends nothing.")}</p>
             {isProductionSmokeTestEmail(sendConfirmationEmail) || isInternalEmailSmokeDraft(sendConfirmationEmail) ? (
               <div className="mt-4 grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
-                <EvidenceLine label="Smoke test ID" value={String(sendConfirmationEmail.tags?.smoke_test_id || "")} />
-                <EvidenceLine label="Recipient" value={emailRecipient(sendConfirmationEmail)} />
-                <EvidenceLine label="Workspace" value={String(sendConfirmationEmail.tags?.workspace_name || "Current workspace")} />
-                <EvidenceLine label="Sender" value={String(sendConfirmationEmail.tags?.sender_email || "Not returned")} />
-                <EvidenceLine label="Provider" value={providerLabel(String(sendConfirmationEmail.tags?.sender_provider || ""))} />
+                <EvidenceLine label={t("Smoke test ID")} value={String(sendConfirmationEmail.tags?.smoke_test_id || "")} />
+                <EvidenceLine label={t("Recipient")} value={emailRecipient(sendConfirmationEmail)} />
+                <EvidenceLine label={t("Workspace")} value={String(sendConfirmationEmail.tags?.workspace_name || t("Current workspace"))} />
+                <EvidenceLine label={t("Sender")} value={String(sendConfirmationEmail.tags?.sender_email || t("Not returned"))} />
+                <EvidenceLine label={t("Sender type")} value={t(providerLabel(String(sendConfirmationEmail.tags?.sender_provider || "")))} />
               </div>
             ) : (
               <div className="mt-4 grid gap-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-sm">
@@ -1196,12 +1197,12 @@ function EmailsSection() {
                   const edit = draftEdits[sendConfirmationEmail.id] || { recipient_email: emailRecipient(sendConfirmationEmail, relatedCompany), subject: sendConfirmationEmail.subject || "", body: sendConfirmationEmail.body || sendConfirmationEmail.preview || "" };
                   return (
                     <>
-                      <EvidenceLine label="Sender" value={String(sender?.oauth_mailbox || sender?.sender_email || "Sender not connected")} />
-                      <EvidenceLine label="Recipient" value={edit.recipient_email || "Recipient not returned by this backend response"} />
-                      <EvidenceLine label="Subject" value={edit.subject || "No subject"} />
+                      <EvidenceLine label={t("Sender")} value={String(sender?.oauth_mailbox || sender?.sender_email || t("Sender not connected"))} />
+                      <EvidenceLine label={t("Recipient")} value={edit.recipient_email || t("Recipient was not returned.")} />
+                      <EvidenceLine label={t("Subject")} value={edit.subject || t("No subject")} />
                       <div>
-                        <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">Full body</p>
-                        <pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-xl bg-white p-3 text-sm leading-6 text-slate-800">{edit.body || "No body"}</pre>
+                        <p className="text-xs font-black uppercase tracking-[0.08em] text-[var(--ui-text-soft)]">{t("Full body")}</p>
+                        <pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap rounded-xl bg-white p-3 text-sm leading-6 text-slate-800">{edit.body || t("No body")}</pre>
                       </div>
                     </>
                   );
@@ -1209,10 +1210,10 @@ function EmailsSection() {
               </div>
             )}
             <div className="mt-5 flex flex-wrap justify-end gap-2">
-              <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => setSendConfirmationEmail(null)}>Cancel</AppButton>
-              <AppButton size="sm" disabled={Boolean(busy)} onClick={() => void confirmSend(sendConfirmationEmail)} aria-label={`Confirm Send ${sendConfirmationEmail.subject || sendConfirmationEmail.id}`}>
+              <AppButton variant="secondary" size="sm" disabled={Boolean(busy)} onClick={() => setSendConfirmationEmail(null)}>{t("Cancel")}</AppButton>
+              <AppButton size="sm" disabled={Boolean(busy)} onClick={() => void confirmSend(sendConfirmationEmail)} aria-label={`${t("Confirm send")} ${sendConfirmationEmail.subject || sendConfirmationEmail.id}`}>
                 {busy === `send:${sendConfirmationEmail.id}` ? <Loader2 className="animate-spin" size={16} /> : <Send size={16} />}
-                Confirm Send
+                {t("Confirm send")}
               </AppButton>
             </div>
           </div>

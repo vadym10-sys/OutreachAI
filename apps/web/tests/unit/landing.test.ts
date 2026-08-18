@@ -70,6 +70,40 @@ describe("i18n", () => {
     expect(translateVisibleText("New leads found: 12", "pl")).toBe("Nowe leady znalezione: 12");
   });
 
+  it("localizes AI Tasks and email approval workspace controls across supported locales", () => {
+    const requiredKeys = [
+      "aiTasks.resume",
+      "aiTasks.timeline",
+      "aiTasks.technicalDetails",
+      "aiTasks.retry",
+      "aiTasks.dryRun",
+      "aiTasks.forceDryRunNotice",
+      "aiTasks.forceDryRunHelp",
+      "Track replies",
+      "Refresh",
+      "Email Approval Workspace: drafts and sent emails stay in one review queue. Sending is available only after manual approval and a separate final send confirmation.",
+      "AI creates drafts only",
+      "Approving verifies the draft. Sending still requires a separate explicit confirmation.",
+    ];
+
+    for (const key of requiredKeys) {
+      for (const locale of locales) {
+        expect(translate(key, locale), `${locale}.${key}`).toBeTruthy();
+      }
+    }
+
+    expect(translate("aiTasks.resume", "ru")).toBe("Продолжить");
+    expect(translate("aiTasks.timeline", "ru")).toBe("Ход выполнения");
+    expect(translate("aiTasks.technicalDetails", "ru")).toBe("Технические детали");
+    expect(translate("Track replies", "ru")).toBe("Отслеживать ответы");
+    expect(translate("Refresh", "ru")).toBe("Обновить");
+    expect(translate("AI creates drafts only", "ru")).toBe("AI создаёт только черновики");
+    expect(translate("aiTasks.forceDryRunNotice", "ru")).toBe("Безопасный тестовый режим обязателен.");
+
+    const russianValues = requiredKeys.map((key) => translate(key, "ru")).join(" ");
+    expect(russianValues).not.toMatch(/\b(Continue|Timeline|Technical details|Track replies|Refresh|dry-run|Dry-run|Approval Workspace|Approve verifies)\b/);
+  });
+
   it("keeps main workflow pages from mixing English labels into Russian UI", () => {
     const phrases = [
       "Find real companies and turn each into a sales opportunity.",

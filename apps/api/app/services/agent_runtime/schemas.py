@@ -181,6 +181,7 @@ class AgentRunTraceOut(StrictModel):
 class AgentRuntimeStatusOut(StrictModel):
     enabled: bool
     can_create_runs: bool
+    force_dry_run: bool = True
     registered_tools_count: int = Field(ge=0)
 
 

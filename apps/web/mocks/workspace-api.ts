@@ -594,7 +594,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     }
     if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, currentWorkspace);
     if (apiPath === "/api/workspace-app/agent-runs/status") {
-      return fulfillJson(route, { enabled: true, can_create_runs: true, registered_tools_count: 9 });
+      return fulfillJson(route, { enabled: true, can_create_runs: true, force_dry_run: true, registered_tools_count: 9 });
     }
     if (apiPath === "/api/workspace-app/agent-runs" && route.request().method() === "GET") {
       const statusFilter = url.searchParams.get("status") || "";
@@ -608,7 +608,7 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
         id: "aaaaaaaa-3333-4333-8333-aaaaaaaa3333",
         status: "completed",
         objective: body.objective || "New AI task",
-        dry_run: body.dry_run !== false,
+        dry_run: true,
         current_step_index: 0,
         current_step_name: "Find companies",
         created_at: new Date().toISOString(),

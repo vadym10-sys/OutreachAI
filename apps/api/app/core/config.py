@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     openai_max_retries: int = 2
     ai_rate_limit_per_minute: int = 30
     ai_control_plane_enabled: bool = False
+    ai_control_plane_force_dry_run: bool = True
     ai_memory_default_enabled: bool = False
     ai_memory_embeddings_enabled: bool = True
     ai_memory_max_items: int = 12

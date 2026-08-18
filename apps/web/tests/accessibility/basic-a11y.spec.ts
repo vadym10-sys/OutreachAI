@@ -60,6 +60,7 @@ test("AI Tasks exposes named controls and landmarks", async ({ page }, testInfo)
   await expect(page.getByRole("heading", { name: "AI Tasks" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "What should AI do?" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Start task" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /Safe dry-run mode/ })).toBeDisabled();
   await guards.assertClean();
 });

@@ -73,6 +73,7 @@ describe("Agent Runtime API contracts", () => {
     expect(parseAgentRuntimeResponse(agentRuntimeStatusSchema, {
       enabled: false,
       can_create_runs: false,
+      force_dry_run: true,
       registered_tools_count: 9,
       future_field: true
     }, "status").registered_tools_count).toBe(9);
