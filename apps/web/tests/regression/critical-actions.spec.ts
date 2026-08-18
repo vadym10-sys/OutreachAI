@@ -3,6 +3,18 @@ import { mockWorkspaceApi, qaCompany } from "../../mocks/workspace-api";
 import { installQaGuards } from "../helpers/qa-guards";
 
 test.beforeEach(async ({ page }) => {
+  await page.context().addCookies([
+    {
+      name: "outreachai_locale",
+      value: "en",
+      domain: "127.0.0.1",
+      path: "/"
+    }
+  ]);
+  await page.addInitScript(() => {
+    window.localStorage.setItem("outreachai.locale", "en");
+    document.cookie = "outreachai_locale=en; path=/; SameSite=Lax";
+  });
   await mockWorkspaceApi(page);
 });
 
@@ -54,7 +66,7 @@ test("AI-first flow saves a company to CRM and leaves draft approval manual", as
   await expect(page.getByText("draft", { exact: true })).toBeVisible();
 
   await page.goto("/dashboard/emails");
-  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Emails" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
   await expect(page.getByText("Manual approval required.")).toBeVisible();
   await guards.assertClean();
@@ -142,7 +154,7 @@ test("email action HTTP errors are shown as failures, not success notices", asyn
     }
   });
   await page.goto("/dashboard/emails");
-  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Emails" })).toBeVisible();
   const approveResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve")
   );
@@ -160,12 +172,12 @@ test("non-owner can edit draft recipient before approve and send confirmation us
     }
   });
   await page.goto("/dashboard/emails");
-  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Emails" })).toBeVisible();
   await page.getByLabel("Recipient email").fill("reviewed.recipient@recipient-safety-mail.com");
   const editResponse = page.waitForResponse((response) =>
     response.request().method() === "PATCH" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333")
   );
-  await page.getByRole("button", { name: /Save email edits/ }).click();
+  await page.getByRole("button", { name: "Save edits Quick idea for Hill Country Build Co" }).click();
   await expect((await editResponse).ok()).toBe(true);
   expect(patchPayload).toMatchObject({
     recipient_email: "reviewed.recipient@recipient-safety-mail.com",
@@ -180,13 +192,13 @@ test("non-owner can edit draft recipient before approve and send confirmation us
   await expect((await approveResponse).ok()).toBe(true);
   await expect(page.getByLabel("Recipient email")).toBeDisabled();
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Final send confirmation" })).toBeVisible();
   await expect(page.getByRole("dialog").getByText("qa.sender@example.com")).toBeVisible();
   await expect(page.getByRole("dialog").getByText("reviewed.recipient@recipient-safety-mail.com")).toBeVisible();
   await expect(page.getByRole("dialog").getByText("Quick idea for Hill Country Build Co")).toBeVisible();
   await expect(page.getByRole("dialog").getByText("Hi Jane, I noticed a website conversion opportunity.")).toBeVisible();
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Final send confirmation" })).toHaveCount(0);
 });
 
 test("email approval send and reply tracking stay connected end to end", async ({ page }) => {
@@ -197,7 +209,7 @@ test("email approval send and reply tracking stay connected end to end", async (
     }
   });
   await page.goto("/dashboard/emails");
-  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Emails" })).toBeVisible();
 
   const approveResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/approve")
@@ -207,7 +219,7 @@ test("email approval send and reply tracking stay connected end to end", async (
   await expect(page.getByText(/ready to send/i)).toBeVisible();
 
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Final send confirmation" })).toBeVisible();
   await expect(page.getByRole("dialog").getByText("OutreachAI will send this approved email only after this confirmation.")).toBeVisible();
   await expect(page.getByRole("dialog").getByText("Sender", { exact: true })).toBeVisible();
   await expect(page.getByRole("dialog").getByText("qa.sender@example.com")).toBeVisible();
@@ -220,7 +232,7 @@ test("email approval send and reply tracking stay connected end to end", async (
   const sendResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/send")
   );
-  await page.getByRole("button", { name: "Confirm Send" }).click();
+  await page.getByRole("button", { name: "Confirm send" }).click();
   await expect((await sendResponse).ok()).toBe(true);
   expect(approvePayload).toMatchObject({
     confirmed_exact_draft: true,
@@ -274,13 +286,13 @@ test("email recovery requires mailbox confirmation and does not resend automatic
   });
 
   await page.goto("/dashboard/emails");
-  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Emails" })).toBeVisible();
   await expect(page.getByText("Delivery confirmation required")).toBeVisible();
-  await expect(page.getByText("Check Gmail or SMTP Sent for this mailbox.")).toBeVisible();
+  await expect(page.getByText("Check Sent for this mailbox.")).toBeVisible();
   await expect(page.getByRole("button", { name: /Recover for retry/ })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
 
-  await page.getByLabel("I checked Gmail/SMTP Sent and this email was not sent.").check();
+  await page.getByLabel("I checked Sent and this email was not sent.").check();
   const recoverResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/33333333-3333-3333-3333-333333333333/recover")
   );
@@ -344,13 +356,13 @@ test("ordinary workspace owner can create internal test draft without sending", 
   const approveResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/bbbbbbbb-1111-4111-8111-bbbbbbbb1111/approve")
   );
-  await page.getByRole("button", { name: /Approve email/ }).click();
+  await page.getByRole("button", { name: /^Approve \[OutreachAI Internal Smoke Draft\]/ }).click();
   await expect((await approveResponse).ok()).toBe(true);
-  await page.getByRole("button", { name: /Send email/ }).click();
-  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await page.getByRole("button", { name: /^Send \[OutreachAI Internal Smoke Draft\]/ }).click();
+  await expect(page.getByRole("dialog", { name: "Final send confirmation" })).toBeVisible();
   await expect(page.getByRole("dialog").getByText("romaniukvadym10+client-smoke-20260812-1@gmail.com")).toBeVisible();
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Final send confirmation" })).toHaveCount(0);
   expect(sendRequests).toBe(0);
 });
 
@@ -392,28 +404,28 @@ test("owner production email smoke-test UI stops before final send", async ({ pa
   await expect(page.getByText("Production smoke-test draft")).toBeVisible();
   await expect(page.getByLabel("Body")).toHaveValue(/Internal OutreachAI production email smoke test/);
   await expect(page.getByTestId("evidence-recipient").getByText("owner@smoke-safety-mail.com", { exact: true })).toBeVisible();
-  await expect(page.getByText("Provider")).toBeVisible();
+  await expect(page.getByText("Sender type")).toBeVisible();
   await expect(page.getByText("Smoke test ID", { exact: true })).toBeVisible();
 
   await page.getByLabel("Subject").fill("[OutreachAI Production Smoke Test] reviewed");
   const editResponse = page.waitForResponse((response) =>
     response.request().method() === "PATCH" && response.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111")
   );
-  await page.getByRole("button", { name: /Save email edits/ }).click();
+  await page.getByRole("button", { name: /^Save edits \[OutreachAI Production Smoke Test\]/ }).click();
   await expect((await editResponse).ok()).toBe(true);
 
   const approveResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().includes("/api/workspace-app/emails/aaaaaaaa-1111-4111-8111-aaaaaaaa1111/approve")
   );
-  await page.getByRole("button", { name: /Approve email/ }).click();
+  await page.getByRole("button", { name: "Approve [OutreachAI Production Smoke Test] reviewed" }).click();
   await expect((await approveResponse).ok()).toBe(true);
   await expect(page.getByText("Email approved. It is ready to send, but nothing was sent automatically.")).toBeVisible();
 
-  await page.getByRole("button", { name: /Send email/ }).click();
-  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toBeVisible();
+  await page.getByRole("button", { name: "Send [OutreachAI Production Smoke Test] reviewed" }).click();
+  await expect(page.getByRole("dialog", { name: "Final send confirmation" })).toBeVisible();
   await expect(page.getByRole("dialog").getByText("owner@smoke-safety-mail.com")).toBeVisible();
   await page.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("dialog", { name: "Final Send confirmation" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Final send confirmation" })).toHaveCount(0);
   expect(smokeSendRequests).toBe(0);
 
   await page.goto("/dashboard/settings");
@@ -482,7 +494,7 @@ test("email workspace can load older inbox reply pages", async ({ page }) => {
   await mockWorkspaceApi(page, { "GET /api/inbox": { body: replies } });
 
   await page.goto("/dashboard/emails");
-  await expect(page.getByRole("heading", { name: "Письма" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Emails" })).toBeVisible();
   await expect(page.getByText("Older reply 25")).toHaveCount(0);
 
   const olderPageResponse = page.waitForResponse((response) => response.url().includes("/api/inbox?page_size=25&cursor="));
