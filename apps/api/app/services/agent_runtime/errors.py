@@ -43,6 +43,10 @@ class AgentRunStateError(AgentRuntimeError):
     category = "invalid_run_state"
 
 
+class AgentRunJobClaimLost(AgentRuntimeError):
+    category = "stale_job_claim"
+
+
 class IdempotencyConflictError(AgentRunStateError):
     category = "idempotency_conflict"
 

@@ -252,6 +252,65 @@ class AgentRun(Base):
     workspace: Mapped[Workspace] = relationship()
 
 
+class AgentRunJob(Base):
+    __tablename__ = "agent_run_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('start', 'resume')",
+            name="ck_agent_run_jobs_operation",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'retrying', 'succeeded', 'failed', 'cancelled')",
+            name="ck_agent_run_jobs_status",
+        ),
+        Index("idx_agent_run_jobs_workspace_status", "workspace_id", "status", "available_at"),
+        Index("idx_agent_run_jobs_run_operation", "run_id", "operation", "created_at"),
+        Index("idx_agent_run_jobs_claim_token", "claim_token"),
+        Index(
+            "uq_agent_run_jobs_active_operation",
+            "workspace_id",
+            "run_id",
+            "operation",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running', 'retrying')"),
+            sqlite_where=text("status IN ('queued', 'running', 'retrying')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True
+    )
+    operation: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    locked_by: Mapped[str] = mapped_column(String(120), default="", index=True)
+    claim_token: Mapped[str] = mapped_column(String(128), default="", index=True)
+    locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    request_id: Mapped[str] = mapped_column(String(160), default="", index=True)
+    error_category: Mapped[str] = mapped_column(String(80), default="", index=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True)
+    run: Mapped[AgentRun] = relationship()
+    workspace: Mapped[Workspace] = relationship()
+
+
 class AgentStep(Base):
     __tablename__ = "agent_steps"
     __table_args__ = (
