@@ -23227,6 +23227,21 @@ def _create_agent_run(
     )
 
 
+def _agent_runtime_registry_with_provider_call_recorder(provider_calls: list[dict[str, Any]]):
+    from app.services.agent_runtime.adapters import AgentToolAdapters
+    from app.services.agent_runtime.registry import build_default_tool_registry
+
+    adapters = AgentToolAdapters()
+    handlers = adapters.handlers()
+
+    def forbidden_send(context, payload):
+        provider_calls.append(payload.model_dump(mode="json"))
+        raise AssertionError("send provider must not be called by this regression test")
+
+    handlers["send_email"] = forbidden_send
+    return build_default_tool_registry(handlers)
+
+
 def test_agent_runtime_feature_flag_default_off_blocks_create(monkeypatch) -> None:
     from app.api import agent_runtime as agent_runtime_api
     from app.models.entities import AgentRun
@@ -23258,6 +23273,245 @@ def test_agent_runtime_feature_flag_default_off_blocks_create(monkeypatch) -> No
     assert planner.calls == 0
     with get_sessionmaker()() as db:
         assert db.query(AgentRun).count() == 0
+
+
+def test_agent_runtime_status_and_list_runs_are_workspace_scoped_with_cursor(monkeypatch) -> None:
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-list-{uuid4()}@example.com",
+    }
+    other_headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-list-other-{uuid4()}@example.com",
+    }
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "List one completed run"},
+            }
+        ],
+    )
+    completed = _create_agent_run(headers, "List completed AI task.")
+
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "crm",
+                "title": "Save candidate",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": "List Runtime CRM",
+                    "website": "https://list-runtime-crm.example",
+                    "contact_email": "buyer@list-runtime-crm.example",
+                },
+            }
+        ],
+    )
+    waiting = _create_agent_run(headers, "List waiting AI task.")
+    other = _create_agent_run(other_headers, "Other workspace AI task.")
+
+    status_response = client.get("/api/workspace-app/agent-runs/status", headers=headers)
+    first_page = client.get("/api/workspace-app/agent-runs?limit=1", headers=headers)
+    next_cursor = first_page.json()["next_cursor"]
+    second_page = client.get(
+        f"/api/workspace-app/agent-runs?limit=1&cursor={next_cursor}",
+        headers=headers,
+    )
+    filtered = client.get(
+        "/api/workspace-app/agent-runs?status=waiting_approval",
+        headers=headers,
+    )
+    cross_workspace_detail = client.get(
+        f"/api/workspace-app/agent-runs/{completed.json()['run']['id']}",
+        headers=other_headers,
+    )
+    invalid_cursor = client.get(
+        "/api/workspace-app/agent-runs?cursor=not-a-cursor",
+        headers=headers,
+    )
+
+    assert completed.status_code == 202
+    assert waiting.status_code == 202
+    assert other.status_code == 202
+    assert status_response.status_code == 200
+    assert status_response.json()["enabled"] is True
+    assert status_response.json()["can_create_runs"] is True
+    assert status_response.json()["registered_tools_count"] >= 1
+    assert first_page.status_code == 200
+    assert first_page.json()["limit"] == 1
+    assert first_page.json()["has_more"] is True
+    assert first_page.json()["runs"][0]["id"] == waiting.json()["run"]["id"]
+    assert second_page.status_code == 200
+    assert second_page.json()["runs"][0]["id"] == completed.json()["run"]["id"]
+    assert filtered.status_code == 200
+    assert [item["id"] for item in filtered.json()["runs"]] == [waiting.json()["run"]["id"]]
+    assert all(item["workspace_id"] != other.json()["run"]["workspace_id"] for item in first_page.json()["runs"])
+    assert cross_workspace_detail.status_code == 404
+    assert invalid_cursor.status_code == 400
+
+
+def test_agent_runtime_status_reads_when_disabled_and_mutations_fail_closed(monkeypatch) -> None:
+    from app.api import agent_runtime as agent_runtime_api
+    from app.models.entities import AgentApprovalRequest, AgentRun
+    from app.services.agent_runtime.orchestrator import AgentRuntimeOrchestrator
+
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-disabled-mutate-{uuid4()}@example.com",
+    }
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "crm",
+                "title": "Save candidate",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": "Disabled Mutating CRM",
+                    "website": "https://disabled-mutating.example",
+                    "contact_email": "buyer@disabled-mutating.example",
+                },
+            }
+        ],
+    )
+    created = _create_agent_run(headers, "Create a pending approval before disable.")
+    run_id = created.json()["run"]["id"]
+    approval_id = created.json()["approvals"][0]["id"]
+
+    monkeypatch.setattr(
+        agent_runtime_api,
+        "_orchestrator",
+        AgentRuntimeOrchestrator(feature_enabled=False),
+    )
+    status_response = client.get("/api/workspace-app/agent-runs/status", headers=headers)
+    list_response = client.get("/api/workspace-app/agent-runs", headers=headers)
+    approve = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/approve",
+        headers=headers,
+        json={"approval_request_id": approval_id, "idempotency_key": "disabled-approve"},
+    )
+    reject = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/reject",
+        headers=headers,
+        json={"approval_request_id": approval_id, "reason": "disabled"},
+    )
+    resume = client.post(f"/api/workspace-app/agent-runs/{run_id}/resume", headers=headers)
+    cancel = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/cancel",
+        headers=headers,
+        json={"reason": "disabled"},
+    )
+
+    assert status_response.status_code == 200
+    assert status_response.json() == {
+        "enabled": False,
+        "can_create_runs": False,
+        "registered_tools_count": status_response.json()["registered_tools_count"],
+    }
+    assert status_response.json()["registered_tools_count"] >= 1
+    assert list_response.status_code == 200
+    assert list_response.json()["runs"][0]["id"] == run_id
+    assert approve.status_code == 503
+    assert reject.status_code == 503
+    assert resume.status_code == 503
+    assert cancel.status_code == 503
+    with get_sessionmaker()() as db:
+        run = db.get(AgentRun, UUID(run_id))
+        approval = db.get(AgentApprovalRequest, UUID(approval_id))
+        assert run is not None
+        assert approval is not None
+        assert run.status == "waiting_approval"
+        assert approval.approval_state == "pending"
+
+
+def test_agent_runtime_approval_queue_filters_paginates_and_isolates(monkeypatch) -> None:
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-approvals-{uuid4()}@example.com",
+    }
+    other_headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-approvals-other-{uuid4()}@example.com",
+    }
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "crm",
+                "title": "Save candidate",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": "Approval Queue CRM",
+                    "website": "https://approval-queue.example",
+                    "contact_email": "buyer@approval-queue.example",
+                },
+            }
+        ],
+    )
+    crm_run = _create_agent_run(headers, "Queue CRM approval.")
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "send",
+                "title": "Send email",
+                "tool_name": "send_email",
+                "arguments": {"email_id": str(uuid4())},
+            }
+        ],
+    )
+    send_run = _create_agent_run(headers, "Queue send approval.")
+    other_run = _create_agent_run(other_headers, "Other workspace pending approval.")
+
+    first_page = client.get("/api/workspace-app/agent-runs/approvals?limit=1", headers=headers)
+    next_cursor = first_page.json()["next_cursor"]
+    second_page = client.get(
+        f"/api/workspace-app/agent-runs/approvals?limit=1&cursor={next_cursor}",
+        headers=headers,
+    )
+    approval_id = send_run.json()["approvals"][0]["id"]
+    approved = client.post(
+        f"/api/workspace-app/agent-runs/{send_run.json()['run']['id']}/approve",
+        headers=headers,
+        json={
+            "approval_request_id": approval_id,
+            "idempotency_key": "send-approval-separated",
+            "manual_draft_approval": True,
+            "final_send_confirmation": True,
+        },
+    )
+    approved_queue = client.get(
+        "/api/workspace-app/agent-runs/approvals?status=approved",
+        headers=headers,
+    )
+    pending_queue = client.get(
+        "/api/workspace-app/agent-runs/approvals?status=pending",
+        headers=headers,
+    )
+
+    assert crm_run.status_code == 202
+    assert send_run.status_code == 202
+    assert other_run.status_code == 202
+    assert first_page.status_code == 200
+    assert first_page.json()["has_more"] is True
+    assert first_page.json()["approvals"][0]["run_id"] == send_run.json()["run"]["id"]
+    assert second_page.status_code == 200
+    assert second_page.json()["approvals"][0]["run_id"] == crm_run.json()["run"]["id"]
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "waiting_approval"
+    assert approved_queue.status_code == 200
+    assert [item["id"] for item in approved_queue.json()["approvals"]] == [approval_id]
+    assert pending_queue.status_code == 200
+    assert [item["run_id"] for item in pending_queue.json()["approvals"]] == [crm_run.json()["run"]["id"]]
+    assert all(
+        item["workspace_id"] != other_run.json()["run"]["workspace_id"]
+        for item in first_page.json()["approvals"] + second_page.json()["approvals"]
+    )
 
 
 def test_agent_runtime_tool_registry_endpoint_returns_strict_workspace_tools() -> None:
@@ -23694,6 +23948,176 @@ def test_agent_runtime_run_dry_run_prevents_email_draft_creation(monkeypatch) ->
     assert payload["steps"][0]["input"]["dry_run"] is True
     assert payload["steps"][0]["output"]["status"] == "dry_run"
     assert draft_count == 0
+
+
+def test_agent_runtime_generate_email_draft_keeps_execution_body_and_redacts_api(
+    monkeypatch,
+) -> None:
+    from app.models.entities import AgentStep
+
+    provider_calls: list[dict[str, Any]] = []
+    registry = _agent_runtime_registry_with_provider_call_recorder(provider_calls)
+    subject = f"Agent Runtime Raw Draft {uuid4()}"
+    body = f"Unique private email body {uuid4()} that must reach the local draft."
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "draft",
+                "title": "Generate draft",
+                "tool_name": "generate_email_draft",
+                "arguments": {
+                    "recipient_email": "buyer@agent-runtime-raw-draft.example",
+                    "subject": subject,
+                    "body": body,
+                    "dry_run": False,
+                },
+            }
+        ],
+        registry=registry,
+    )
+
+    response = _create_agent_run(
+        USER_A_AUTH,
+        "Create a local draft without sending.",
+        dry_run=False,
+    )
+    payload = response.json()
+    run_id = payload["run"]["id"]
+    detail = client.get(f"/api/workspace-app/agent-runs/{run_id}", headers=USER_A_AUTH)
+    trace = client.get(f"/api/workspace-app/agent-runs/{run_id}/trace", headers=USER_A_AUTH)
+    detail_text = json.dumps(detail.json(), sort_keys=True)
+    trace_text = json.dumps(trace.json(), sort_keys=True)
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"])
+        email = db.scalar(
+            select(EmailMessage).where(
+                EmailMessage.workspace_id == workspace_id,
+                EmailMessage.subject == subject,
+            )
+        )
+        draft_step = db.scalar(
+            select(AgentStep).where(
+                AgentStep.workspace_id == workspace_id,
+                AgentStep.run_id == UUID(run_id),
+                AgentStep.tool_name == "generate_email_draft",
+            )
+        )
+
+    assert response.status_code == 202
+    assert payload["run"]["status"] == "completed"
+    assert email is not None
+    assert email.body == body
+    assert email.body != "[REDACTED_CONTENT]"
+    assert draft_step is not None
+    assert draft_step.input_json["body"] == body
+    assert detail.status_code == 200
+    assert detail.json()["steps"][0]["input"]["body"] == "[REDACTED_CONTENT]"
+    assert body not in detail_text
+    assert body not in trace_text
+    assert "[REDACTED_CONTENT]" in detail_text
+    assert "[REDACTED_CONTENT]" in trace_text
+    assert provider_calls == []
+
+
+def test_agent_runtime_resume_keeps_later_draft_arguments_after_approval_pause(
+    monkeypatch,
+) -> None:
+    from app.models.entities import AgentStep
+
+    provider_calls: list[dict[str, Any]] = []
+    registry = _agent_runtime_registry_with_provider_call_recorder(provider_calls)
+    company_name = f"Agent Runtime Resume CRM {uuid4()}"
+    subject = f"Agent Runtime Resume Draft {uuid4()}"
+    body = f"Resume-only private draft body {uuid4()} must survive approval pause."
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "crm",
+                "title": "Save candidate",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": company_name,
+                    "website": "https://agent-runtime-resume-crm.example",
+                    "contact_email": "buyer@agent-runtime-resume-crm.example",
+                    "dry_run": False,
+                },
+            },
+            {
+                "id": "draft",
+                "title": "Generate draft after approval",
+                "tool_name": "generate_email_draft",
+                "arguments": {
+                    "recipient_email": "buyer@agent-runtime-resume-crm.example",
+                    "subject": subject,
+                    "body": body,
+                    "dry_run": False,
+                },
+            },
+        ],
+        registry=registry,
+    )
+
+    created = _create_agent_run(
+        USER_A_AUTH,
+        "Pause for CRM approval, then create the draft after resume.",
+        dry_run=False,
+    )
+    payload = created.json()
+    run_id = payload["run"]["id"]
+    approval_id = payload["approvals"][0]["id"]
+    before_resume_text = json.dumps(payload, sort_keys=True)
+    approved = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/approve",
+        headers=USER_A_AUTH,
+        json={"approval_request_id": approval_id, "idempotency_key": "resume-draft-approval"},
+    )
+    resumed = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/resume",
+        headers=USER_A_AUTH,
+    )
+    detail = client.get(f"/api/workspace-app/agent-runs/{run_id}", headers=USER_A_AUTH)
+    trace = client.get(f"/api/workspace-app/agent-runs/{run_id}/trace", headers=USER_A_AUTH)
+    detail_text = json.dumps(detail.json(), sort_keys=True)
+    trace_text = json.dumps(trace.json(), sort_keys=True)
+
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"])
+        email = db.scalar(
+            select(EmailMessage).where(
+                EmailMessage.workspace_id == workspace_id,
+                EmailMessage.subject == subject,
+            )
+        )
+        draft_step = db.scalar(
+            select(AgentStep).where(
+                AgentStep.workspace_id == workspace_id,
+                AgentStep.run_id == UUID(run_id),
+                AgentStep.tool_name == "generate_email_draft",
+            )
+        )
+
+    assert created.status_code == 202
+    assert payload["run"]["status"] == "waiting_approval"
+    assert body not in before_resume_text
+    assert payload["steps"][1]["input"]["body"] == "[REDACTED_CONTENT]"
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "waiting_approval"
+    assert resumed.status_code == 200
+    assert resumed.json()["run"]["status"] == "completed"
+    assert email is not None
+    assert email.body == body
+    assert email.body != "[REDACTED_CONTENT]"
+    assert draft_step is not None
+    assert draft_step.input_json["body"] == body
+    assert detail.json()["steps"][1]["input"]["body"] == "[REDACTED_CONTENT]"
+    assert body not in detail_text
+    assert body not in trace_text
+    assert "[REDACTED_CONTENT]" in detail_text
+    assert "[REDACTED_CONTENT]" in trace_text
+    assert provider_calls == []
 
 
 def test_agent_runtime_send_email_requires_user_approval_and_final_confirmation(
@@ -25503,7 +25927,10 @@ def test_agent_runtime_approve_resume_is_idempotent_for_crm_write(monkeypatch) -
 
 
 def test_agent_runtime_trace_redacts_secrets_and_marks_untrusted(monkeypatch) -> None:
+    from app.models.entities import AgentTraceEvent
+
     secret_value = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456 refresh_token=secret123"
+    sensitive_body = "This is the full private draft body and must never appear in trace output."
     _install_agent_runtime(
         monkeypatch,
         [
@@ -25516,14 +25943,40 @@ def test_agent_runtime_trace_redacts_secrets_and_marks_untrusted(monkeypatch) ->
         ],
     )
     response = _create_agent_run(USER_A_AUTH, "Trace redaction check.")
-    run_id = response.json()["run"]["id"]
+    run = response.json()["run"]
+    run_id = run["id"]
+    with get_sessionmaker()() as db:
+        db.add(
+            AgentTraceEvent(
+                run_id=UUID(run_id),
+                workspace_id=UUID(run["workspace_id"]),
+                user_id=run["user_id"],
+                event_type="tool.failed",
+                status="failed",
+                tool_name="send_email",
+                error_category="RuntimeError",
+                message=f"Provider failed after reading body={sensitive_body}",
+                data_json={
+                    "tool_arguments": {
+                        "body": sensitive_body,
+                        "email_body": sensitive_body,
+                        "authorization": "Bearer trace-token",
+                    }
+                },
+                untrusted_input=True,
+            )
+        )
+        db.commit()
     trace = client.get(f"/api/workspace-app/agent-runs/{run_id}/trace", headers=USER_A_AUTH)
     trace_text = json.dumps(trace.json(), sort_keys=True)
 
     assert trace.status_code == 200
     assert "abcdefghijklmnopqrstuvwxyz123456" not in trace_text
     assert "secret123" not in trace_text
+    assert sensitive_body not in trace_text
     assert "[REDACTED_SECRET]" in trace_text
+    assert "[REDACTED_CONTENT]" in trace_text
+    assert "This step could not be completed safely." in trace_text
     assert any(event["untrusted_input"] for event in trace.json()["trace"])
 
 

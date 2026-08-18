@@ -401,6 +401,7 @@ function inboxPage(items: unknown[], searchParams: URLSearchParams) {
 type MockOverride = {
   status?: number;
   body: unknown;
+  delayMs?: number;
 };
 
 export async function mockWorkspaceApi(page: Page, overrides: Record<string, MockOverride> = {}) {
@@ -465,11 +466,111 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     progress: { ...qaCustomerFinderJob.progress, stage: "completed", message: "AI Customer Finder completed." },
     results: [{ ...qaCustomerFinderResult, lead_id: "", company_id: "", email_id: "", email_delivery_status: "", simple_status: "", can_send: false }]
   };
+  let currentAgentRun: any = {
+    id: "aaaaaaaa-2222-4222-8222-aaaaaaaa2222",
+    workspace_id: currentWorkspace.id,
+    user_id: "e2e-user",
+    status: "waiting_approval",
+    objective: "Find qualified companies and prepare one reviewed email draft.",
+    dry_run: true,
+    plan: {},
+    current_step_index: 1,
+    current_step_name: "Send email",
+    model: "test-agent-model",
+    prompt_version: "test-agent-plan-v1",
+    token_usage: { prompt_tokens: 120, completion_tokens: 80, total_tokens: 200 },
+    estimated_cost: 0.0123,
+    latency_ms: 2400,
+    error_category: "",
+    idempotency_key: "agent-run-ui",
+    created_at: now,
+    updated_at: now,
+    completed_at: null
+  };
+  let currentAgentSteps: any[] = [
+    {
+      id: "bbbbbbbb-2222-4222-8222-bbbbbbbb2222",
+      run_id: currentAgentRun.id,
+      workspace_id: currentWorkspace.id,
+      step_index: 0,
+      status: "completed",
+      title: "Find companies",
+      tool_name: "search_companies",
+      input: { query: "qualified companies", dry_run: true },
+      output: { status: "dry_run", dry_run: true, results: [{ company: "QA Builder Co" }] },
+      approval_state: "none",
+      error_category: "",
+      latency_ms: 900,
+      created_at: now,
+      updated_at: now,
+      completed_at: now
+    },
+    {
+      id: "cccccccc-2222-4222-8222-cccccccc2222",
+      run_id: currentAgentRun.id,
+      workspace_id: currentWorkspace.id,
+      step_index: 1,
+      status: "waiting_approval",
+      title: "Send email",
+      tool_name: "send_email",
+      input: { email_id: "33333333-3333-3333-3333-333333333333" },
+      output: {},
+      approval_state: "pending",
+      error_category: "",
+      latency_ms: 0,
+      created_at: now,
+      updated_at: now,
+      completed_at: null
+    }
+  ];
+  let currentAgentApproval: any = {
+    id: "dddddddd-2222-4222-8222-dddddddd2222",
+    run_id: currentAgentRun.id,
+    step_id: currentAgentSteps[1].id,
+    tool_call_id: "eeeeeeee-2222-4222-8222-eeeeeeee2222",
+    workspace_id: currentWorkspace.id,
+    user_id: "e2e-user",
+    tool_name: "send_email",
+    action_type: "external_side_effect",
+    approval_state: "pending",
+    tool_arguments: { email_id: "33333333-3333-3333-3333-333333333333" },
+    decision: { required_confirmations: ["manual_draft_approval", "separate_final_send_confirmation"] },
+    idempotency_key: "agent-tool-ui",
+    requested_at: now,
+    decided_at: null,
+    decided_by_user_id: ""
+  };
+  let currentAgentTrace: any[] = [
+    {
+      id: "ffffffff-2222-4222-8222-ffffffff2222",
+      run_id: currentAgentRun.id,
+      step_id: currentAgentSteps[0].id,
+      tool_call_id: null,
+      workspace_id: currentWorkspace.id,
+      user_id: "e2e-user",
+      event_type: "tool.succeeded",
+      status: "succeeded",
+      model: "",
+      tool_name: "search_companies",
+      latency_ms: 900,
+      token_usage: {},
+      estimated_cost: null,
+      approval_decision: "",
+      error_category: "",
+      message: "",
+      data: { tool_result: { status: "dry_run", body: "[redacted]" } },
+      untrusted_input: true,
+      created_at: now
+    }
+  ];
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
     const override = overrides[`${route.request().method()} ${apiPath}${url.search}`] || overrides[`${route.request().method()} ${apiPath}`] || overrides[`${apiPath}${url.search}`] || overrides[apiPath];
     if (override) {
+      if (override.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, override.delayMs));
+      }
       if (apiPath === "/api/inbox" && Array.isArray(override.body)) {
         const page = inboxPage(override.body, url.searchParams);
         return fulfillJson(route, page.body, override.status || 200, page.headers);
@@ -492,6 +593,72 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
       return fulfillJson(route, currentWorkspace);
     }
     if (apiPath === "/api/workspace" || apiPath === "/api/workspace/me") return fulfillJson(route, currentWorkspace);
+    if (apiPath === "/api/workspace-app/agent-runs/status") {
+      return fulfillJson(route, { enabled: true, can_create_runs: true, registered_tools_count: 9 });
+    }
+    if (apiPath === "/api/workspace-app/agent-runs" && route.request().method() === "GET") {
+      const statusFilter = url.searchParams.get("status") || "";
+      const runs = statusFilter ? [currentAgentRun].filter((run) => run.status === statusFilter) : [currentAgentRun];
+      return fulfillJson(route, { runs, next_cursor: "", has_more: false, limit: Number(url.searchParams.get("limit") || 20) });
+    }
+    if (apiPath === "/api/workspace-app/agent-runs" && route.request().method() === "POST") {
+      const body = route.request().postDataJSON() as { objective?: string; dry_run?: boolean };
+      currentAgentRun = {
+        ...currentAgentRun,
+        id: "aaaaaaaa-3333-4333-8333-aaaaaaaa3333",
+        status: "completed",
+        objective: body.objective || "New AI task",
+        dry_run: body.dry_run !== false,
+        current_step_index: 0,
+        current_step_name: "Find companies",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        completed_at: new Date().toISOString()
+      };
+      currentAgentSteps = [{
+        ...currentAgentSteps[0],
+        id: "bbbbbbbb-3333-4333-8333-bbbbbbbb3333",
+        run_id: currentAgentRun.id,
+        status: "completed",
+        output: { status: "dry_run", dry_run: true, results: [{ company: "New QA Company" }] }
+      }];
+      currentAgentApproval = { ...currentAgentApproval, run_id: currentAgentRun.id, approval_state: "approved", decided_at: now, decided_by_user_id: "e2e-user" };
+      currentAgentTrace = [{ ...currentAgentTrace[0], run_id: currentAgentRun.id, step_id: currentAgentSteps[0].id }];
+      return fulfillJson(route, { run: currentAgentRun, steps: currentAgentSteps, approvals: [] }, 202);
+    }
+    if (apiPath === "/api/workspace-app/agent-runs/approvals") {
+      const approvalStatus = url.searchParams.get("status") || "pending";
+      const approvals = currentAgentApproval.approval_state === approvalStatus ? [currentAgentApproval] : [];
+      return fulfillJson(route, { approvals, next_cursor: "", has_more: false, limit: Number(url.searchParams.get("limit") || 20) });
+    }
+    const agentRunMatch = apiPath.match(/^\/api\/workspace-app\/agent-runs\/([^/]+)(?:\/([^/]+))?$/);
+    if (agentRunMatch) {
+      const runId = agentRunMatch[1];
+      const action = agentRunMatch[2] || "";
+      if (runId !== currentAgentRun.id) return fulfillJson(route, { detail: "Not found" }, 404);
+      if (!action && route.request().method() === "GET") return fulfillJson(route, { run: currentAgentRun, steps: currentAgentSteps, approvals: [currentAgentApproval] });
+      if (action === "trace" && route.request().method() === "GET") return fulfillJson(route, { run: currentAgentRun, trace: currentAgentTrace });
+      if (action === "approve" && route.request().method() === "POST") {
+        currentAgentApproval = { ...currentAgentApproval, approval_state: "approved", decided_at: new Date().toISOString(), decided_by_user_id: "e2e-user" };
+        currentAgentSteps = currentAgentSteps.map((step) => step.id === currentAgentApproval.step_id ? { ...step, approval_state: "approved" } : step);
+        currentAgentRun = { ...currentAgentRun, status: "waiting_approval", updated_at: new Date().toISOString() };
+        return fulfillJson(route, currentAgentRun);
+      }
+      if (action === "reject" && route.request().method() === "POST") {
+        currentAgentApproval = { ...currentAgentApproval, approval_state: "rejected", decided_at: new Date().toISOString(), decided_by_user_id: "e2e-user" };
+        currentAgentRun = { ...currentAgentRun, status: "cancelled", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() };
+        return fulfillJson(route, currentAgentRun);
+      }
+      if (action === "resume" && route.request().method() === "POST") {
+        currentAgentRun = { ...currentAgentRun, status: "completed", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() };
+        currentAgentSteps = currentAgentSteps.map((step) => step.id === currentAgentApproval.step_id ? { ...step, status: "completed", output: { status: "dry_run", dry_run: true }, completed_at: new Date().toISOString() } : step);
+        return fulfillJson(route, { run: currentAgentRun, steps: currentAgentSteps, approvals: [currentAgentApproval] });
+      }
+      if (action === "cancel" && route.request().method() === "POST") {
+        currentAgentRun = { ...currentAgentRun, status: "cancelled", updated_at: new Date().toISOString(), completed_at: new Date().toISOString() };
+        return fulfillJson(route, currentAgentRun);
+      }
+    }
     if (apiPath === "/api/leads" && route.request().method() === "POST") {
       const body = route.request().postDataJSON() as Partial<typeof qaLead>;
       return fulfillJson(route, {

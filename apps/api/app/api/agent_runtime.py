@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.routes import _current_workspace
@@ -14,6 +14,7 @@ from app.services.agent_runtime.errors import (
     ApprovalStateError,
     FeatureDisabledError,
     IdempotencyConflictError,
+    PaginationCursorError,
 )
 from app.services.agent_runtime.orchestrator import (
     AgentRuntimeOrchestrator,
@@ -21,13 +22,18 @@ from app.services.agent_runtime.orchestrator import (
 )
 from app.services.agent_runtime.schemas import (
     AgentApprovalDecisionIn,
+    AgentApprovalRequestPageOut,
     AgentApprovalRejectIn,
     AgentRunCancelIn,
     AgentRunCreateIn,
     AgentRunDetailOut,
     AgentRunOut,
+    AgentRunPageOut,
+    AgentRuntimeStatusOut,
     AgentRunTraceOut,
     AgentStepOut,
+    ApprovalQueueState,
+    RunStatus,
     ToolRegistryItemOut,
 )
 
@@ -48,6 +54,8 @@ def _http_error(exc: AgentRuntimeError) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail="Idempotency request already exists with a different payload.",
         )
+    if isinstance(exc, PaginationCursorError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pagination cursor.")
     if isinstance(exc, AgentRunStateError):
         message = str(exc)
         if "not found" in message.lower():
@@ -63,6 +71,36 @@ def list_agent_tools(
 ) -> list[ToolRegistryItemOut]:
     _current_workspace(db, user.user_id, user.email)
     return _orchestrator.list_tools()
+
+
+@router.get("/status", response_model=AgentRuntimeStatusOut)
+def get_agent_runtime_status(
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+) -> AgentRuntimeStatusOut:
+    _current_workspace(db, user.user_id, user.email)
+    return _orchestrator.runtime_status()
+
+
+@router.get("/approvals", response_model=AgentApprovalRequestPageOut)
+def list_agent_approvals(
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+    approval_status: ApprovalQueueState = Query(default="pending", alias="status"),
+    cursor: str = Query(default=""),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> AgentApprovalRequestPageOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    try:
+        return _orchestrator.list_approvals(
+            db,
+            workspace_id=workspace.id,
+            approval_state=approval_status,
+            cursor=cursor,
+            limit=limit,
+        )
+    except AgentRuntimeError as exc:
+        raise _http_error(exc) from exc
 
 
 @router.post("", response_model=AgentRunDetailOut, status_code=202)
@@ -87,6 +125,27 @@ def create_agent_run(
         db.rollback()
         raise _http_error(exc) from exc
     return _orchestrator.get_run_detail(db, workspace_id=workspace.id, run_id=run.id)
+
+
+@router.get("", response_model=AgentRunPageOut)
+def list_agent_runs(
+    user: WorkspaceUserContext,
+    db: Session = Depends(get_db),
+    run_status: RunStatus | None = Query(default=None, alias="status"),
+    cursor: str = Query(default=""),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> AgentRunPageOut:
+    workspace = _current_workspace(db, user.user_id, user.email)
+    try:
+        return _orchestrator.list_runs(
+            db,
+            workspace_id=workspace.id,
+            status_filter=run_status,
+            cursor=cursor,
+            limit=limit,
+        )
+    except AgentRuntimeError as exc:
+        raise _http_error(exc) from exc
 
 
 @router.get("/{run_id}", response_model=AgentRunDetailOut)

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton, useAuth, useUser } from "@clerk/nextjs";
 import * as Sentry from "@sentry/nextjs";
-import { ArrowRight, CheckCircle2, Command, Crown, Loader2, Mail, Menu, Search, Settings, Shield, Sparkles, UsersRound } from "lucide-react";
+import { ArrowRight, Bot, CheckCircle2, Command, Crown, Loader2, Mail, Menu, Search, Settings, Shield, Sparkles, UsersRound } from "lucide-react";
 import { e2eUserEmail, isProductionRuntime, ownerEmail } from "@/lib/env";
 import { CheckoutContinuation } from "@/components/billing-client";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -20,6 +20,7 @@ import { Breadcrumbs, CommandDialog, CommandItem, Kbd } from "@/components/desig
 
 const primaryNav = [
   { href: "/dashboard", labelKey: "AI Поиск", icon: Sparkles, aliases: ["/dashboard/leads", "/dashboard/ai-customer-finder"] },
+  { href: "/dashboard/ai-tasks", labelKey: "nav.aiTasks", icon: Bot, aliases: [], featureFlag: "NEXT_PUBLIC_ENABLE_AI_TASKS_NAV", mobilePrimary: false },
   { href: "/dashboard/clients", labelKey: "CRM", icon: UsersRound, aliases: ["/dashboard/crm", "/dashboard/companies", "/dashboard/contacts", "/dashboard/deals"] },
   { href: "/dashboard/emails", labelKey: "Письма", icon: Mail, aliases: ["/dashboard/inbox", "/dashboard/campaigns"] },
   { href: "/dashboard/settings", labelKey: "Настройки", icon: Settings, aliases: ["/dashboard/profile", "/dashboard/billing"] }
@@ -31,11 +32,13 @@ const utilityNav = [
 ] as const;
 
 const featureFlags = {
-  NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true"
+  NEXT_PUBLIC_SHOW_ADMIN_NAV: process.env.NEXT_PUBLIC_SHOW_ADMIN_NAV === "true",
+  NEXT_PUBLIC_ENABLE_AI_TASKS_NAV: process.env.NEXT_PUBLIC_ENABLE_AI_TASKS_NAV === "true"
 };
 
 const navDescriptions: Record<string, string> = {
   "/dashboard": "Ask AI to find first customers with public sources",
+  "/dashboard/ai-tasks": "Start and review safe AI tasks",
   "/dashboard/clients": "Saved CRM clients and source-backed details",
   "/dashboard/emails": "Drafts, approvals and manually confirmed sending",
   "/dashboard/settings": "Workspace, integrations and sender readiness",
@@ -257,7 +260,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
   const { clerkEnabled } = useAuthRuntime();
   const { isOwner, userId, email, workspaceId, ready, getAuthToken } = useDashboardIdentity();
-  const visiblePrimaryNav = useMemo(() => primaryNav, []);
+  const visiblePrimaryNav = useMemo(
+    () => primaryNav.filter((item) => {
+      const featureFlag = "featureFlag" in item ? item.featureFlag : undefined;
+      return !featureFlag || featureFlags[featureFlag];
+    }),
+    []
+  );
   const visibleUtilityNav = useMemo(
     () => utilityNav.filter((item) => {
       const featureFlag = "featureFlag" in item ? item.featureFlag : undefined;
@@ -267,7 +276,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     [isOwner]
   );
   const visibleNav = useMemo(() => [...visiblePrimaryNav, ...visibleUtilityNav], [visiblePrimaryNav, visibleUtilityNav]);
-  const primaryMobileNav = visiblePrimaryNav;
+  const primaryMobileNav = useMemo(
+    () => visiblePrimaryNav.filter((item) => !("mobilePrimary" in item) || item.mobilePrimary !== false),
+    [visiblePrimaryNav]
+  );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");

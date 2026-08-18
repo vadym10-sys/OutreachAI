@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import time
@@ -10,7 +11,7 @@ from uuid import UUID
 
 from openai import OpenAI, OpenAIError
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import String, and_, cast, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -34,6 +35,7 @@ from app.services.agent_runtime.errors import (
     ApprovalStateError,
     FeatureDisabledError,
     IdempotencyConflictError,
+    PaginationCursorError,
     PermissionDeniedError,
     StructuredPlanValidationError,
     ToolArgumentValidationError,
@@ -55,9 +57,12 @@ from app.services.agent_runtime.schemas import (
     AgentApprovalDecisionIn,
     AgentApprovalRequestOut,
     AgentPlan,
+    AgentApprovalRequestPageOut,
     AgentRunCreateIn,
     AgentRunDetailOut,
     AgentRunOut,
+    AgentRunPageOut,
+    AgentRuntimeStatusOut,
     AgentRunTraceOut,
     AgentStepOut,
     AgentTraceEventOut,
@@ -69,7 +74,12 @@ from app.services.agent_runtime.state_machine import (
     transition_run,
     transition_step,
 )
-from app.services.agent_runtime.tracing import error_category, record_trace, sanitize_for_trace
+from app.services.agent_runtime.tracing import (
+    error_category,
+    record_trace,
+    safe_trace_message,
+    sanitize_for_trace,
+)
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, _trust_payload, _trust_system_prompt
 
 PROMPT_VERSION = "agent-runtime-plan-v1"
@@ -79,6 +89,29 @@ GATEWAY_ACTION_BY_TOOL = {
     "send_email": "email.send",
     "sync_replies": "gmail.replies.sync",
 }
+
+
+def _encode_page_cursor(created_at: datetime, item_id: UUID) -> str:
+    payload = {
+        "created_at": created_at.isoformat(timespec="microseconds"),
+        "id": str(item_id),
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_page_cursor(cursor: str) -> tuple[datetime, str]:
+    clean = cursor.strip()
+    if not clean:
+        raise PaginationCursorError("Missing pagination cursor.")
+    try:
+        padded = clean + "=" * (-len(clean) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        created_at = datetime.fromisoformat(str(payload["created_at"]))
+        item_id = str(UUID(str(payload["id"])))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PaginationCursorError("Invalid pagination cursor.") from exc
+    return created_at, item_id
 
 
 @dataclass(frozen=True)
@@ -223,6 +256,107 @@ class AgentRuntimeOrchestrator:
 
     def list_tools(self) -> list[ToolRegistryItemOut]:
         return [tool.public_metadata() for tool in self.registry.all()]
+
+    def runtime_status(self) -> AgentRuntimeStatusOut:
+        enabled = self.feature_enabled
+        return AgentRuntimeStatusOut(
+            enabled=enabled,
+            can_create_runs=enabled,
+            registered_tools_count=len(self.registry.all()),
+        )
+
+    def list_runs(
+        self,
+        db: Session,
+        *,
+        workspace_id: UUID,
+        status_filter: str | None = None,
+        cursor: str = "",
+        limit: int = 20,
+    ) -> AgentRunPageOut:
+        page_limit = max(1, min(int(limit or 20), 50))
+        query = select(AgentRun).where(AgentRun.workspace_id == workspace_id)
+        if status_filter:
+            query = query.where(AgentRun.status == status_filter)
+        if cursor:
+            cursor_created_at, cursor_id = _decode_page_cursor(cursor)
+            query = query.where(
+                or_(
+                    AgentRun.created_at < cursor_created_at,
+                    and_(
+                        AgentRun.created_at == cursor_created_at,
+                        cast(AgentRun.id, String) < cursor_id,
+                    ),
+                )
+            )
+        rows = list(
+            db.scalars(
+                query.order_by(
+                    AgentRun.created_at.desc(),
+                    cast(AgentRun.id, String).desc(),
+                ).limit(page_limit + 1)
+            ).all()
+        )
+        has_more = len(rows) > page_limit
+        page_rows = rows[:page_limit]
+        next_cursor = (
+            _encode_page_cursor(page_rows[-1].created_at, page_rows[-1].id)
+            if has_more and page_rows
+            else ""
+        )
+        return AgentRunPageOut(
+            runs=[run_out(item) for item in page_rows],
+            next_cursor=next_cursor,
+            has_more=has_more,
+            limit=page_limit,
+        )
+
+    def list_approvals(
+        self,
+        db: Session,
+        *,
+        workspace_id: UUID,
+        approval_state: str = "pending",
+        cursor: str = "",
+        limit: int = 20,
+    ) -> AgentApprovalRequestPageOut:
+        page_limit = max(1, min(int(limit or 20), 50))
+        query = select(AgentApprovalRequest).where(
+            AgentApprovalRequest.workspace_id == workspace_id,
+            AgentApprovalRequest.approval_state == approval_state,
+        )
+        if cursor:
+            cursor_requested_at, cursor_id = _decode_page_cursor(cursor)
+            query = query.where(
+                or_(
+                    AgentApprovalRequest.requested_at < cursor_requested_at,
+                    and_(
+                        AgentApprovalRequest.requested_at == cursor_requested_at,
+                        cast(AgentApprovalRequest.id, String) < cursor_id,
+                    ),
+                )
+            )
+        rows = list(
+            db.scalars(
+                query.order_by(
+                    AgentApprovalRequest.requested_at.desc(),
+                    cast(AgentApprovalRequest.id, String).desc(),
+                ).limit(page_limit + 1)
+            ).all()
+        )
+        has_more = len(rows) > page_limit
+        page_rows = rows[:page_limit]
+        next_cursor = (
+            _encode_page_cursor(page_rows[-1].requested_at, page_rows[-1].id)
+            if has_more and page_rows
+            else ""
+        )
+        return AgentApprovalRequestPageOut(
+            approvals=[approval_out(item) for item in page_rows],
+            next_cursor=next_cursor,
+            has_more=has_more,
+            limit=page_limit,
+        )
 
     def create_run(
         self,
@@ -628,9 +762,12 @@ class AgentRuntimeOrchestrator:
             tool=tool,
             arguments=step.input_json or {},
         )
-        step.input_json = sanitize_for_trace(arguments.model_dump(mode="json"))
+        execution_arguments = arguments.model_dump(mode="json")
+        step.input_json = execution_arguments
         decision = self.policy.decision_for_tool(tool)
-        idempotency_key = self._tool_call_idempotency_key(run, step, tool, arguments.model_dump(mode="json"))
+        idempotency_key = self._tool_call_idempotency_key(
+            run, step, tool, execution_arguments
+        )
         tool_call = self._tool_call_for_step(
             db,
             run=run,
@@ -650,7 +787,9 @@ class AgentRuntimeOrchestrator:
         )
         approval: AgentApprovalRequest | None = None
         if decision.requires_approval:
-            approval = self._approval_for_step(db, run=run, step=step, tool_call=tool_call, tool=tool)
+            approval = self._approval_for_step(
+                db, run=run, step=step, tool_call=tool_call, tool=tool
+            )
             if approval.approval_state != "approved":
                 tool_call.status = "waiting_approval"
                 tool_call.approval_state = approval.approval_state
@@ -669,7 +808,7 @@ class AgentRuntimeOrchestrator:
                     tool_name=tool.name,
                     data={
                         "policy": self.policy.approval_request_metadata(tool),
-                        "tool_arguments": step.input_json,
+                        "tool_arguments": sanitize_for_trace(execution_arguments),
                     },
                     untrusted_input=True,
                 )
@@ -682,7 +821,9 @@ class AgentRuntimeOrchestrator:
             transition_step(step, "completed")
             return False
         if tool_call.status in {"running", "failed"}:
-            raise AgentRunStateError(f"Tool call is not retryable in state {tool_call.status}.")
+            raise AgentRunStateError(
+                f"Tool call is not retryable in state {tool_call.status}."
+            )
         transition_step(step, "running")
         tool_call.status = "running"
         tool_call.started_at = datetime.utcnow()
@@ -694,7 +835,7 @@ class AgentRuntimeOrchestrator:
                 db,
                 run=run,
                 tool=tool,
-                arguments=arguments.model_dump(mode="json"),
+                arguments=execution_arguments,
                 workspace=workspace,
                 user_id=user_id,
                 approval=approval,
@@ -721,7 +862,7 @@ class AgentRuntimeOrchestrator:
                 tool_name=tool.name,
                 latency_ms=latency_ms,
                 error=exc,
-                data={"tool_arguments": step.input_json},
+                data={"tool_arguments": sanitize_for_trace(execution_arguments)},
                 untrusted_input=True,
             )
             raise
@@ -906,7 +1047,7 @@ class AgentRuntimeOrchestrator:
                     status="queued",
                     title=item.title,
                     tool_name=item.tool_name,
-                    input_json=sanitize_for_trace(item.arguments),
+                    input_json=item.arguments,
                 )
             )
         db.flush()
@@ -977,7 +1118,7 @@ class AgentRuntimeOrchestrator:
             tool_name=tool.name,
             action_type=tool.action_type,
             approval_state="pending",
-            tool_arguments_json=step.input_json or {},
+            tool_arguments_json=sanitize_for_trace(step.input_json or {}),
             decision_json=self.policy.approval_request_metadata(tool),
             idempotency_key=tool_call.idempotency_key,
         )
@@ -1084,8 +1225,12 @@ def step_out(step: AgentStep) -> AgentStepOut:
         status=step.status,
         title=step.title,
         tool_name=step.tool_name,
-        input=step.input_json if isinstance(step.input_json, dict) else {},
-        output=step.output_json if isinstance(step.output_json, dict) else {},
+        input=sanitize_for_trace(
+            step.input_json if isinstance(step.input_json, dict) else {}
+        ),
+        output=sanitize_for_trace(
+            step.output_json if isinstance(step.output_json, dict) else {}
+        ),
         approval_state=step.approval_state,
         error_category=step.error_category or "",
         latency_ms=int(step.latency_ms or 0),
@@ -1106,8 +1251,14 @@ def approval_out(approval: AgentApprovalRequest) -> AgentApprovalRequestOut:
         tool_name=approval.tool_name,
         action_type=approval.action_type,
         approval_state=approval.approval_state,
-        tool_arguments=approval.tool_arguments_json if isinstance(approval.tool_arguments_json, dict) else {},
-        decision=approval.decision_json if isinstance(approval.decision_json, dict) else {},
+        tool_arguments=sanitize_for_trace(
+            approval.tool_arguments_json
+            if isinstance(approval.tool_arguments_json, dict)
+            else {}
+        ),
+        decision=sanitize_for_trace(
+            approval.decision_json if isinstance(approval.decision_json, dict) else {}
+        ),
         idempotency_key=approval.idempotency_key or "",
         requested_at=approval.requested_at,
         decided_at=approval.decided_at,
@@ -1116,6 +1267,7 @@ def approval_out(approval: AgentApprovalRequest) -> AgentApprovalRequestOut:
 
 
 def trace_out(event) -> AgentTraceEventOut:
+    error_category_value = event.error_category or ""
     return AgentTraceEventOut(
         id=event.id,
         run_id=event.run_id,
@@ -1131,9 +1283,9 @@ def trace_out(event) -> AgentTraceEventOut:
         token_usage=event.token_usage if isinstance(event.token_usage, dict) else {},
         estimated_cost=float(event.estimated_cost) if event.estimated_cost is not None else None,
         approval_decision=event.approval_decision or "",
-        error_category=event.error_category or "",
-        message=event.message or "",
-        data=event.data_json if isinstance(event.data_json, dict) else {},
+        error_category=error_category_value,
+        message=safe_trace_message(event.message or "", error_category_value=error_category_value),
+        data=sanitize_for_trace(event.data_json if isinstance(event.data_json, dict) else {}),
         untrusted_input=bool(event.untrusted_input),
         created_at=event.created_at,
     )
