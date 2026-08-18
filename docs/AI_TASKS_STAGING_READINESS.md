@@ -238,6 +238,9 @@ Production API after work:
 
 - `/api/live`: `200`
 - `/api/ready`: `200`, `status=ready`, no pending migrations
+- Follow-up check after workspace limit restoration, `2026-08-18T21:10Z`:
+  - `/api/live`: `200`
+  - `/api/ready`: `200`, `status=ready`, no pending migrations
 
 Production Vercel after work:
 
@@ -251,24 +254,33 @@ Pre-existing Railway `staging` was checked read-only after this work. Its servic
 
 ## Cost Controls
 
-Railway usage guardrails:
+Railway workspace usage limit follow-up:
 
-- Workspace soft limit: `$25`
-- Workspace hard limit: `$30`
-- Workspace usage after work: about `$10.33`
+- The task did change workspace compute usage limits before provisioning:
+  - Audit log `UsageLimit.updated` at `2026-08-18T19:01:32.221Z`
+  - Previous workspace hard limit: `null`
+  - Previous workspace soft limit: `null`
+  - New workspace hard limit: `$30`
+  - New workspace soft limit: `$0` in the first update, then `$25`
+- This was restored because workspace hard limits can stop all workloads, including production.
+- Restored state:
+  - Command result: `usageLimit=null`
+  - Verification after restore: `usageLimit=null`
+  - Audit log: `UsageLimit.deleted` at `2026-08-18T21:10:32.219Z`
+- Workspace usage at restore verification: about `$10.34`
 - Workspace usage at start of staging provisioning: about `$10.28`
-- Observed incremental usage during this task: about `$0.05`
+- Observed incremental usage during this task: about `$0.06`
 
-Additional cost controls:
+Staging-only cost controls:
 
 - Worker final state: no active deployment/replicas
-- API uses minimal configured resource override: `0.5 vCPU`, `0.5 GB`
-- Worker configured resource override: `0.5 vCPU`, `0.5 GB`, but stopped
+- API uses service-level resource override: `0.5 vCPU`, `500 MB`
+- Worker uses service-level resource override: `0.5 vCPU`, `500 MB`, but is stopped
 - Postgres volume: 5000 MB Railway template minimum observed from CLI
 - OpenAI budget used: `$0.00`
 - Vercel Preview: created under existing plan, no production alias
 
-Projected incremental Railway spend should remain under the owner-approved `$20` cap with worker stopped and no OpenAI/provider usage. The workspace hard limit also prevents unbounded Railway spend in the current billing period.
+Projected incremental Railway spend should remain under the owner-approved `$20` cap with the worker stopped and no OpenAI/provider usage. Do not use workspace hard limits as the staging cost control; keep cost containment on staging service sizing, stopped worker/scale-to-zero, and manual teardown when the staging stack is no longer needed.
 
 ## Blocked Follow-ups
 
