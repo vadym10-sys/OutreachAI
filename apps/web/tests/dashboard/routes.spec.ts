@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { mockWorkspaceApi } from "../../mocks/workspace-api";
 import { expectNoHorizontalOverflow, expectNoSensitiveCustomerText, installQaGuards } from "../helpers/qa-guards";
 
@@ -19,6 +19,22 @@ const legacyRoutes = [
   ["/dashboard/campaigns", "Письма"],
   ["/dashboard/inbox", "Письма"]
 ] as const;
+
+function collectAgentRuntimePosts(page: Page) {
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/workspace-app/agent-runs")) {
+      posts.push(request.url());
+    }
+  });
+  return posts;
+}
+
+async function forceClickIfPresent(locator: Locator) {
+  if (await locator.count()) {
+    await locator.first().click({ force: true }).catch(() => undefined);
+  }
+}
 
 test.describe("AI-first workspace routes", () => {
   test.beforeEach(async ({ page }) => {
@@ -71,6 +87,53 @@ test.describe("AI-first workspace routes", () => {
     await guards.assertClean();
   });
 
+  test("AI Tasks status loading fails closed without posting mutations", async ({ page }) => {
+    await mockWorkspaceApi(page, {
+      "GET /api/workspace-app/agent-runs/status": {
+        body: { enabled: true, can_create_runs: true, registered_tools_count: 9 },
+        delayMs: 1200
+      }
+    });
+    const posts = collectAgentRuntimePosts(page);
+    await page.goto("/dashboard/ai-tasks", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("textbox", { name: "What should AI do?" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Start task" })).toBeDisabled();
+    await forceClickIfPresent(page.getByRole("button", { name: "Start task" }));
+    await forceClickIfPresent(page.getByRole("button", { name: "Approve" }));
+    await forceClickIfPresent(page.getByRole("button", { name: "Reject" }));
+    await forceClickIfPresent(page.getByRole("button", { name: "Continue" }));
+    await forceClickIfPresent(page.getByRole("button", { name: "Cancel" }));
+    await page.waitForTimeout(150);
+    expect(posts).toEqual([]);
+  });
+
+  test("AI Tasks status failure keeps all visible mutations disabled", async ({ page }) => {
+    await mockWorkspaceApi(page, {
+      "GET /api/workspace-app/agent-runs/status": {
+        status: 400,
+        body: { detail: "Traceback: leaked token body should not be displayed." }
+      }
+    });
+    const posts = collectAgentRuntimePosts(page);
+    page.on("dialog", (dialog) => void dialog.dismiss());
+    await page.goto("/dashboard/ai-tasks", { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.getByText(/Traceback|leaked token/i)).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "What should AI do?" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Start task" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Approve" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Reject" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await forceClickIfPresent(page.getByRole("button", { name: "Start task" }));
+    await forceClickIfPresent(page.getByRole("button", { name: "Approve" }));
+    await forceClickIfPresent(page.getByRole("button", { name: "Reject" }));
+    await forceClickIfPresent(page.getByRole("button", { name: "Continue" }));
+    await forceClickIfPresent(page.getByRole("button", { name: "Cancel" }));
+    await page.waitForTimeout(150);
+    expect(posts).toEqual([]);
+  });
+
   test("AI Tasks approval requires draft review and separate continue", async ({ page }, testInfo) => {
     const guards = installQaGuards(page, testInfo);
     await page.goto("/dashboard/ai-tasks", { waitUntil: "domcontentloaded" });
@@ -86,6 +149,9 @@ test.describe("AI-first workspace routes", () => {
     await approved;
     await expect(page.getByText("Approved. Press Continue when you want the task to move on.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
+    const resumed = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes("/api/workspace-app/agent-runs/") && response.url().includes("/resume"));
+    await page.getByRole("button", { name: "Continue" }).click();
+    await resumed;
     await expect(page.getByText("Technical details")).toBeVisible();
     await expect(page.getByText("body")).toHaveCount(0);
     await guards.assertClean();

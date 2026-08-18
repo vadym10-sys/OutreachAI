@@ -133,27 +133,45 @@ export function AiTasksWorkspace() {
   const [trace, setTrace] = useState<AgentTraceEvent[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [loading, setLoading] = useState(true);
+  const [statusChecked, setStatusChecked] = useState(false);
+  const [statusFailed, setStatusFailed] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [checks, setChecks] = useState<ApprovalChecks>({});
 
-  const runtimeDisabled = Boolean(status && (!status.enabled || !status.can_create_runs));
+  const runtimeUnavailable = Boolean(statusChecked && status && (!status.enabled || !status.can_create_runs));
+  const canMutate = Boolean(
+    statusChecked && !statusFailed && status?.enabled === true && status.can_create_runs === true && !loading
+  );
   const selectedRun = selected?.run || null;
   const selectedPendingApprovals = selected?.approvals.filter((approval) => approval.approval_state === "pending") || [];
-  const canResume = Boolean(selectedRun && selectedRun.status === "waiting_approval" && !hasPendingApprovals(selected) && !runtimeDisabled);
+  const canResume = Boolean(selectedRun && selectedRun.status === "waiting_approval" && !hasPendingApprovals(selected) && canMutate);
 
   const loadWorkspace = useCallback(async (preferredRunId?: string) => {
     if (!api.ready) return;
     setLoading(true);
     setError("");
+    setStatusChecked(false);
+    setStatusFailed(false);
+    let nextError = "";
     try {
-      const [runtimeStatus, runPage, approvals] = await Promise.all([
-        api.status(),
+      const runtimeStatus = await api.status();
+      setStatus(runtimeStatus);
+    } catch (statusError) {
+      setStatus(null);
+      setStatusFailed(true);
+      nextError = safeErrorText(statusError, t("aiTasks.loadError"));
+      Sentry.captureException(statusError, { tags: { area: "ai-tasks-status" } });
+      trackEvent("ai_tasks_status_failed", {});
+    } finally {
+      setStatusChecked(true);
+    }
+    try {
+      const [runPage, approvals] = await Promise.all([
         api.listRuns({ limit: 20 }),
         api.listApprovals({ status: "pending", limit: 20 })
       ]);
-      setStatus(runtimeStatus);
       setRuns(runPage.runs);
       setApprovalQueue(approvals.approvals);
       const runId = preferredRunId || selectedRunId || runPage.runs[0]?.id || "";
@@ -174,10 +192,11 @@ export function AiTasksWorkspace() {
         setSelectedRunId("");
       }
     } catch (loadError) {
-      setError(safeErrorText(loadError, t("aiTasks.loadError")));
+      nextError = nextError || safeErrorText(loadError, t("aiTasks.loadError"));
       Sentry.captureException(loadError, { tags: { area: "ai-tasks-load" } });
       trackEvent("ai_tasks_load_failed", {});
     } finally {
+      if (nextError) setError(nextError);
       setLoading(false);
     }
   }, [api, selectedRunId, t]);
@@ -193,7 +212,7 @@ export function AiTasksWorkspace() {
 
   async function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (runtimeDisabled || !objective.trim()) return;
+    if (!canMutate || !objective.trim()) return;
     setBusy("start");
     setNotice("");
     setError("");
@@ -215,6 +234,7 @@ export function AiTasksWorkspace() {
   }
 
   async function approve(approval: AgentApprovalRequest) {
+    if (!canMutate) return;
     const current = checks[approval.id] || { reviewed: false, finalSend: false, generalReview: false };
     const sendApproval = approval.tool_name === "send_email";
     if (sendApproval && (!current.reviewed || !current.finalSend)) {
@@ -248,6 +268,7 @@ export function AiTasksWorkspace() {
   }
 
   async function reject(approval: AgentApprovalRequest) {
+    if (!canMutate) return;
     if (!window.confirm(t("aiTasks.confirmReject"))) return;
     setBusy(`reject:${approval.id}`);
     setError("");
@@ -265,7 +286,7 @@ export function AiTasksWorkspace() {
   }
 
   async function resume() {
-    if (!selectedRun || runtimeDisabled) return;
+    if (!selectedRun || !canMutate) return;
     setBusy("resume");
     setError("");
     try {
@@ -282,7 +303,7 @@ export function AiTasksWorkspace() {
   }
 
   async function cancel() {
-    if (!selectedRun || runtimeDisabled || terminalStatuses.has(selectedRun.status)) return;
+    if (!selectedRun || !canMutate || terminalStatuses.has(selectedRun.status)) return;
     if (!window.confirm(t("aiTasks.confirmCancel"))) return;
     setBusy("cancel");
     setError("");
@@ -316,7 +337,7 @@ export function AiTasksWorkspace() {
               {t("aiTasks.retry")}
             </AppButton>
           </div>
-          {runtimeDisabled ? (
+          {runtimeUnavailable ? (
             <div role="status" className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold leading-6 text-amber-900">
               {t("aiTasks.disabledMessage")}
             </div>
@@ -349,16 +370,16 @@ export function AiTasksWorkspace() {
             value={objective}
             onChange={(event) => setObjective(event.target.value)}
             placeholder={t("aiTasks.objectivePlaceholder")}
-            disabled={runtimeDisabled || busy === "start"}
+            disabled={!canMutate || busy === "start"}
             className="focus-ring mt-3 min-h-40 w-full resize-y rounded-[1.5rem] border border-[var(--ui-border)] bg-[var(--ui-surface-subtle)] p-4 text-base leading-7 text-ink outline-none transition focus:border-[var(--ui-brand)] focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
           />
         </label>
         <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <label className="flex min-h-12 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-bold text-slate-700">
-            <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} disabled={runtimeDisabled || busy === "start"} className="size-4 accent-teal-700" />
+            <input type="checkbox" checked={dryRun} onChange={(event) => setDryRun(event.target.checked)} disabled={!canMutate || busy === "start"} className="size-4 accent-teal-700" />
             {t("aiTasks.dryRun")}
           </label>
-          <AppButton type="submit" disabled={runtimeDisabled || busy === "start" || !objective.trim()} className="w-full sm:w-auto">
+          <AppButton type="submit" disabled={!canMutate || busy === "start" || !objective.trim()} className="w-full sm:w-auto">
             {busy === "start" ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
             {t("aiTasks.start")}
           </AppButton>
@@ -398,7 +419,7 @@ export function AiTasksWorkspace() {
                   {busy === "resume" ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
                   {t("aiTasks.resume")}
                 </AppButton>
-                <AppButton variant="destructive" size="sm" disabled={runtimeDisabled || !selectedRun || terminalStatuses.has(selectedRun.status) || busy === "cancel"} onClick={() => void cancel()}>
+                <AppButton variant="destructive" size="sm" disabled={!canMutate || !selectedRun || terminalStatuses.has(selectedRun.status) || busy === "cancel"} onClick={() => void cancel()}>
                   {busy === "cancel" ? <Loader2 className="animate-spin" size={16} /> : <StopCircle size={16} />}
                   {t("aiTasks.cancel")}
                 </AppButton>
@@ -457,11 +478,11 @@ export function AiTasksWorkspace() {
                       <label className="mt-3 flex gap-2 text-sm font-bold text-amber-950"><input type="checkbox" checked={current.generalReview} onChange={(event) => setChecks((state) => ({ ...state, [approval.id]: { ...current, generalReview: event.target.checked } }))} /> {t("aiTasks.confirmReviewed")}</label>
                     )}
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                      <AppButton size="sm" disabled={runtimeDisabled || busy === `approve:${approval.id}`} onClick={() => void approve(approval)}>
+                      <AppButton size="sm" disabled={!canMutate || busy === `approve:${approval.id}`} onClick={() => void approve(approval)}>
                         {busy === `approve:${approval.id}` ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
                         {t("aiTasks.approve")}
                       </AppButton>
-                      <AppButton variant="destructive" size="sm" disabled={runtimeDisabled || busy === `reject:${approval.id}`} onClick={() => void reject(approval)}>
+                      <AppButton variant="destructive" size="sm" disabled={!canMutate || busy === `reject:${approval.id}`} onClick={() => void reject(approval)}>
                         {busy === `reject:${approval.id}` ? <Loader2 className="animate-spin" size={16} /> : <XCircle size={16} />}
                         {t("aiTasks.reject")}
                       </AppButton>
@@ -474,7 +495,7 @@ export function AiTasksWorkspace() {
                 </div>
               )}
             </div>
-            {runtimeDisabled ? (
+            {!canMutate ? (
               <div className="mt-4 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-900">
                 <AlertTriangle className="shrink-0" size={18} />
                 {t("aiTasks.mutationsDisabled")}

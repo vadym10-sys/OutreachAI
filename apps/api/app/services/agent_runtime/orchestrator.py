@@ -762,9 +762,12 @@ class AgentRuntimeOrchestrator:
             tool=tool,
             arguments=step.input_json or {},
         )
-        step.input_json = sanitize_for_trace(arguments.model_dump(mode="json"))
+        execution_arguments = arguments.model_dump(mode="json")
+        step.input_json = execution_arguments
         decision = self.policy.decision_for_tool(tool)
-        idempotency_key = self._tool_call_idempotency_key(run, step, tool, arguments.model_dump(mode="json"))
+        idempotency_key = self._tool_call_idempotency_key(
+            run, step, tool, execution_arguments
+        )
         tool_call = self._tool_call_for_step(
             db,
             run=run,
@@ -784,7 +787,9 @@ class AgentRuntimeOrchestrator:
         )
         approval: AgentApprovalRequest | None = None
         if decision.requires_approval:
-            approval = self._approval_for_step(db, run=run, step=step, tool_call=tool_call, tool=tool)
+            approval = self._approval_for_step(
+                db, run=run, step=step, tool_call=tool_call, tool=tool
+            )
             if approval.approval_state != "approved":
                 tool_call.status = "waiting_approval"
                 tool_call.approval_state = approval.approval_state
@@ -803,7 +808,7 @@ class AgentRuntimeOrchestrator:
                     tool_name=tool.name,
                     data={
                         "policy": self.policy.approval_request_metadata(tool),
-                        "tool_arguments": step.input_json,
+                        "tool_arguments": sanitize_for_trace(execution_arguments),
                     },
                     untrusted_input=True,
                 )
@@ -816,7 +821,9 @@ class AgentRuntimeOrchestrator:
             transition_step(step, "completed")
             return False
         if tool_call.status in {"running", "failed"}:
-            raise AgentRunStateError(f"Tool call is not retryable in state {tool_call.status}.")
+            raise AgentRunStateError(
+                f"Tool call is not retryable in state {tool_call.status}."
+            )
         transition_step(step, "running")
         tool_call.status = "running"
         tool_call.started_at = datetime.utcnow()
@@ -828,7 +835,7 @@ class AgentRuntimeOrchestrator:
                 db,
                 run=run,
                 tool=tool,
-                arguments=arguments.model_dump(mode="json"),
+                arguments=execution_arguments,
                 workspace=workspace,
                 user_id=user_id,
                 approval=approval,
@@ -855,7 +862,7 @@ class AgentRuntimeOrchestrator:
                 tool_name=tool.name,
                 latency_ms=latency_ms,
                 error=exc,
-                data={"tool_arguments": step.input_json},
+                data={"tool_arguments": sanitize_for_trace(execution_arguments)},
                 untrusted_input=True,
             )
             raise
@@ -1040,7 +1047,7 @@ class AgentRuntimeOrchestrator:
                     status="queued",
                     title=item.title,
                     tool_name=item.tool_name,
-                    input_json=sanitize_for_trace(item.arguments),
+                    input_json=item.arguments,
                 )
             )
         db.flush()
@@ -1111,7 +1118,7 @@ class AgentRuntimeOrchestrator:
             tool_name=tool.name,
             action_type=tool.action_type,
             approval_state="pending",
-            tool_arguments_json=step.input_json or {},
+            tool_arguments_json=sanitize_for_trace(step.input_json or {}),
             decision_json=self.policy.approval_request_metadata(tool),
             idempotency_key=tool_call.idempotency_key,
         )
@@ -1218,8 +1225,12 @@ def step_out(step: AgentStep) -> AgentStepOut:
         status=step.status,
         title=step.title,
         tool_name=step.tool_name,
-        input=step.input_json if isinstance(step.input_json, dict) else {},
-        output=step.output_json if isinstance(step.output_json, dict) else {},
+        input=sanitize_for_trace(
+            step.input_json if isinstance(step.input_json, dict) else {}
+        ),
+        output=sanitize_for_trace(
+            step.output_json if isinstance(step.output_json, dict) else {}
+        ),
         approval_state=step.approval_state,
         error_category=step.error_category or "",
         latency_ms=int(step.latency_ms or 0),
@@ -1240,8 +1251,14 @@ def approval_out(approval: AgentApprovalRequest) -> AgentApprovalRequestOut:
         tool_name=approval.tool_name,
         action_type=approval.action_type,
         approval_state=approval.approval_state,
-        tool_arguments=approval.tool_arguments_json if isinstance(approval.tool_arguments_json, dict) else {},
-        decision=approval.decision_json if isinstance(approval.decision_json, dict) else {},
+        tool_arguments=sanitize_for_trace(
+            approval.tool_arguments_json
+            if isinstance(approval.tool_arguments_json, dict)
+            else {}
+        ),
+        decision=sanitize_for_trace(
+            approval.decision_json if isinstance(approval.decision_json, dict) else {}
+        ),
         idempotency_key=approval.idempotency_key or "",
         requested_at=approval.requested_at,
         decided_at=approval.decided_at,

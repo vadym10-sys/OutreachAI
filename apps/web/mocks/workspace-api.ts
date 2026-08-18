@@ -401,6 +401,7 @@ function inboxPage(items: unknown[], searchParams: URLSearchParams) {
 type MockOverride = {
   status?: number;
   body: unknown;
+  delayMs?: number;
 };
 
 export async function mockWorkspaceApi(page: Page, overrides: Record<string, MockOverride> = {}) {
@@ -567,6 +568,9 @@ export async function mockWorkspaceApi(page: Page, overrides: Record<string, Moc
     const apiPath = url.pathname.replace(/^\/api\/backend/, "");
     const override = overrides[`${route.request().method()} ${apiPath}${url.search}`] || overrides[`${route.request().method()} ${apiPath}`] || overrides[`${apiPath}${url.search}`] || overrides[apiPath];
     if (override) {
+      if (override.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, override.delayMs));
+      }
       if (apiPath === "/api/inbox" && Array.isArray(override.body)) {
         const page = inboxPage(override.body, url.searchParams);
         return fulfillJson(route, page.body, override.status || 200, page.headers);
