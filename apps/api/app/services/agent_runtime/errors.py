@@ -49,3 +49,7 @@ class IdempotencyConflictError(AgentRunStateError):
 
 class PermissionDeniedError(AgentRuntimeError):
     category = "permission_denied"
+
+
+class PaginationCursorError(AgentRuntimeError):
+    category = "invalid_pagination_cursor"

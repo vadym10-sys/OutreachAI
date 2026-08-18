@@ -18,6 +18,7 @@ RunStatus = Literal[
 ]
 StepStatus = Literal["queued", "running", "waiting_approval", "completed", "failed", "skipped"]
 ApprovalState = Literal["none", "pending", "approved", "rejected"]
+ApprovalQueueState = Literal["pending", "approved", "rejected"]
 ToolCallStatus = Literal["pending", "running", "waiting_approval", "succeeded", "failed", "blocked", "skipped"]
 
 
@@ -175,6 +176,26 @@ class AgentRunDetailOut(StrictModel):
 class AgentRunTraceOut(StrictModel):
     run: AgentRunOut
     trace: list[AgentTraceEventOut] = Field(default_factory=list)
+
+
+class AgentRuntimeStatusOut(StrictModel):
+    enabled: bool
+    can_create_runs: bool
+    registered_tools_count: int = Field(ge=0)
+
+
+class AgentRunPageOut(StrictModel):
+    runs: list[AgentRunOut] = Field(default_factory=list)
+    next_cursor: str = ""
+    has_more: bool = False
+    limit: int = Field(ge=1, le=50)
+
+
+class AgentApprovalRequestPageOut(StrictModel):
+    approvals: list[AgentApprovalRequestOut] = Field(default_factory=list)
+    next_cursor: str = ""
+    has_more: bool = False
+    limit: int = Field(ge=1, le=50)
 
 
 class ToolRegistryItemOut(StrictModel):

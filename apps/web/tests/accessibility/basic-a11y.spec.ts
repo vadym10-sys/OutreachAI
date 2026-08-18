@@ -49,5 +49,17 @@ test("mobile navigation exposes touch-friendly primary routes", async ({ page },
   for (const label of ["AI Поиск", "CRM", "Письма", "Настройки"]) {
     await expect(page.getByRole("link", { name: label }).last()).toBeVisible();
   }
+  await expect(page.locator("nav.sticky.top-16 a")).toHaveCount(4);
+  await guards.assertClean();
+});
+
+test("AI Tasks exposes named controls and landmarks", async ({ page }, testInfo) => {
+  const guards = installQaGuards(page, testInfo);
+  await page.goto("/dashboard/ai-tasks");
+  await expect(page.getByRole("main")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AI Tasks" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "What should AI do?" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start task" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   await guards.assertClean();
 });

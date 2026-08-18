@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import time
@@ -10,7 +11,7 @@ from uuid import UUID
 
 from openai import OpenAI, OpenAIError
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import String, and_, cast, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -34,6 +35,7 @@ from app.services.agent_runtime.errors import (
     ApprovalStateError,
     FeatureDisabledError,
     IdempotencyConflictError,
+    PaginationCursorError,
     PermissionDeniedError,
     StructuredPlanValidationError,
     ToolArgumentValidationError,
@@ -55,9 +57,12 @@ from app.services.agent_runtime.schemas import (
     AgentApprovalDecisionIn,
     AgentApprovalRequestOut,
     AgentPlan,
+    AgentApprovalRequestPageOut,
     AgentRunCreateIn,
     AgentRunDetailOut,
     AgentRunOut,
+    AgentRunPageOut,
+    AgentRuntimeStatusOut,
     AgentRunTraceOut,
     AgentStepOut,
     AgentTraceEventOut,
@@ -69,7 +74,12 @@ from app.services.agent_runtime.state_machine import (
     transition_run,
     transition_step,
 )
-from app.services.agent_runtime.tracing import error_category, record_trace, sanitize_for_trace
+from app.services.agent_runtime.tracing import (
+    error_category,
+    record_trace,
+    safe_trace_message,
+    sanitize_for_trace,
+)
 from app.services.ai import ProviderConfigurationError, ProviderRequestError, _trust_payload, _trust_system_prompt
 
 PROMPT_VERSION = "agent-runtime-plan-v1"
@@ -79,6 +89,29 @@ GATEWAY_ACTION_BY_TOOL = {
     "send_email": "email.send",
     "sync_replies": "gmail.replies.sync",
 }
+
+
+def _encode_page_cursor(created_at: datetime, item_id: UUID) -> str:
+    payload = {
+        "created_at": created_at.isoformat(timespec="microseconds"),
+        "id": str(item_id),
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_page_cursor(cursor: str) -> tuple[datetime, str]:
+    clean = cursor.strip()
+    if not clean:
+        raise PaginationCursorError("Missing pagination cursor.")
+    try:
+        padded = clean + "=" * (-len(clean) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        created_at = datetime.fromisoformat(str(payload["created_at"]))
+        item_id = str(UUID(str(payload["id"])))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise PaginationCursorError("Invalid pagination cursor.") from exc
+    return created_at, item_id
 
 
 @dataclass(frozen=True)
@@ -223,6 +256,107 @@ class AgentRuntimeOrchestrator:
 
     def list_tools(self) -> list[ToolRegistryItemOut]:
         return [tool.public_metadata() for tool in self.registry.all()]
+
+    def runtime_status(self) -> AgentRuntimeStatusOut:
+        enabled = self.feature_enabled
+        return AgentRuntimeStatusOut(
+            enabled=enabled,
+            can_create_runs=enabled,
+            registered_tools_count=len(self.registry.all()),
+        )
+
+    def list_runs(
+        self,
+        db: Session,
+        *,
+        workspace_id: UUID,
+        status_filter: str | None = None,
+        cursor: str = "",
+        limit: int = 20,
+    ) -> AgentRunPageOut:
+        page_limit = max(1, min(int(limit or 20), 50))
+        query = select(AgentRun).where(AgentRun.workspace_id == workspace_id)
+        if status_filter:
+            query = query.where(AgentRun.status == status_filter)
+        if cursor:
+            cursor_created_at, cursor_id = _decode_page_cursor(cursor)
+            query = query.where(
+                or_(
+                    AgentRun.created_at < cursor_created_at,
+                    and_(
+                        AgentRun.created_at == cursor_created_at,
+                        cast(AgentRun.id, String) < cursor_id,
+                    ),
+                )
+            )
+        rows = list(
+            db.scalars(
+                query.order_by(
+                    AgentRun.created_at.desc(),
+                    cast(AgentRun.id, String).desc(),
+                ).limit(page_limit + 1)
+            ).all()
+        )
+        has_more = len(rows) > page_limit
+        page_rows = rows[:page_limit]
+        next_cursor = (
+            _encode_page_cursor(page_rows[-1].created_at, page_rows[-1].id)
+            if has_more and page_rows
+            else ""
+        )
+        return AgentRunPageOut(
+            runs=[run_out(item) for item in page_rows],
+            next_cursor=next_cursor,
+            has_more=has_more,
+            limit=page_limit,
+        )
+
+    def list_approvals(
+        self,
+        db: Session,
+        *,
+        workspace_id: UUID,
+        approval_state: str = "pending",
+        cursor: str = "",
+        limit: int = 20,
+    ) -> AgentApprovalRequestPageOut:
+        page_limit = max(1, min(int(limit or 20), 50))
+        query = select(AgentApprovalRequest).where(
+            AgentApprovalRequest.workspace_id == workspace_id,
+            AgentApprovalRequest.approval_state == approval_state,
+        )
+        if cursor:
+            cursor_requested_at, cursor_id = _decode_page_cursor(cursor)
+            query = query.where(
+                or_(
+                    AgentApprovalRequest.requested_at < cursor_requested_at,
+                    and_(
+                        AgentApprovalRequest.requested_at == cursor_requested_at,
+                        cast(AgentApprovalRequest.id, String) < cursor_id,
+                    ),
+                )
+            )
+        rows = list(
+            db.scalars(
+                query.order_by(
+                    AgentApprovalRequest.requested_at.desc(),
+                    cast(AgentApprovalRequest.id, String).desc(),
+                ).limit(page_limit + 1)
+            ).all()
+        )
+        has_more = len(rows) > page_limit
+        page_rows = rows[:page_limit]
+        next_cursor = (
+            _encode_page_cursor(page_rows[-1].requested_at, page_rows[-1].id)
+            if has_more and page_rows
+            else ""
+        )
+        return AgentApprovalRequestPageOut(
+            approvals=[approval_out(item) for item in page_rows],
+            next_cursor=next_cursor,
+            has_more=has_more,
+            limit=page_limit,
+        )
 
     def create_run(
         self,
@@ -1116,6 +1250,7 @@ def approval_out(approval: AgentApprovalRequest) -> AgentApprovalRequestOut:
 
 
 def trace_out(event) -> AgentTraceEventOut:
+    error_category_value = event.error_category or ""
     return AgentTraceEventOut(
         id=event.id,
         run_id=event.run_id,
@@ -1131,9 +1266,9 @@ def trace_out(event) -> AgentTraceEventOut:
         token_usage=event.token_usage if isinstance(event.token_usage, dict) else {},
         estimated_cost=float(event.estimated_cost) if event.estimated_cost is not None else None,
         approval_decision=event.approval_decision or "",
-        error_category=event.error_category or "",
-        message=event.message or "",
-        data=event.data_json if isinstance(event.data_json, dict) else {},
+        error_category=error_category_value,
+        message=safe_trace_message(event.message or "", error_category_value=error_category_value),
+        data=sanitize_for_trace(event.data_json if isinstance(event.data_json, dict) else {}),
         untrusted_input=bool(event.untrusted_input),
         created_at=event.created_at,
     )

@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
-import { AlertTriangle, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Trash2, UsersRound } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, ChevronDown, ExternalLink, Loader2, Mail, RefreshCw, Send, Settings, ShieldCheck, Sparkles, Trash2, UsersRound } from "lucide-react";
 import { AppBadge, AppButton, EmptyStateView, LoadingStateView, SurfaceCard } from "@/components/design-system";
 import { useAuthRuntime } from "@/components/app-providers";
 import { friendlyErrorMessage } from "@/lib/client-api";
@@ -39,6 +39,7 @@ const detailSummaryClass = "flex min-h-11 cursor-pointer items-center justify-be
 const qaAuthEnabled = process.env.NEXT_PUBLIC_APP_ENV === "test"
   && process.env.NEXT_PUBLIC_CLERK_E2E_BYPASS === "true"
   && (process.env.NEXT_PUBLIC_API_URL === "http://127.0.0.1:8000" || process.env.NEXT_PUBLIC_API_URL === "http://localhost:8000");
+const aiTasksNavEnabled = process.env.NEXT_PUBLIC_ENABLE_AI_TASKS_NAV === "true";
 
 function pretty(value: string) {
   const text = value.replace(/_/g, " ");
@@ -578,6 +579,7 @@ function customerFinderScoreTiles(company: CrmCompany) {
 function AssistantSection() {
   const api = useAiFirstApi();
   const router = useRouter();
+  const { t } = useI18n();
   const [businessDescription, setBusinessDescription] = useState("");
   const [website, setWebsite] = useState("");
   const [advanced, setAdvanced] = useState(blankCommand);
@@ -818,6 +820,7 @@ function AssistantSection() {
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
             <Link href="/dashboard/clients" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-black text-ink">Открыть CRM</Link>
             <Link href="/dashboard/emails" className="focus-ring inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-black text-ink">Проверить письма</Link>
+            {aiTasksNavEnabled ? <Link href="/dashboard/ai-tasks" className="focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-black text-ink sm:col-span-2"><Bot size={16} />{t("aiTasks.open")}</Link> : null}
           </div>
         </PremiumPanel>
       </section>

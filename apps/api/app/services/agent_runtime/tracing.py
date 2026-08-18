@@ -13,6 +13,19 @@ SENSITIVE_KEY_RE = re.compile(
     r"(authorization|cookie|set_cookie|set-cookie|api_key|apikey|access_token|refresh_token|oauth|password|secret|client_secret|private_key|token)",
     re.IGNORECASE,
 )
+EMAIL_CONTENT_KEY_RE = re.compile(
+    r"(^|_)(body|email_body|draft_body|message_body|html_body|text_body)($|_)",
+    re.IGNORECASE,
+)
+
+
+def _is_email_content_fingerprint(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value.keys()).issubset({"sha256", "length"})
+        and isinstance(value.get("sha256"), str)
+        and isinstance(value.get("length"), int)
+    )
 
 
 def sanitize_for_trace(value: Any, *, max_string_length: int = 4000, _depth: int = 0) -> Any:
@@ -30,6 +43,13 @@ def sanitize_for_trace(value: Any, *, max_string_length: int = 4000, _depth: int
             key_text = str(key)
             if SENSITIVE_KEY_RE.search(key_text):
                 clean[key_text] = "[REDACTED_SECRET]"
+            elif EMAIL_CONTENT_KEY_RE.search(key_text):
+                if _is_email_content_fingerprint(item):
+                    clean[key_text] = sanitize_for_trace(
+                        item, max_string_length=max_string_length, _depth=_depth + 1
+                    )
+                else:
+                    clean[key_text] = "[REDACTED_CONTENT]"
             else:
                 clean[key_text] = sanitize_for_trace(
                     item, max_string_length=max_string_length, _depth=_depth + 1
@@ -41,6 +61,12 @@ def sanitize_for_trace(value: Any, *, max_string_length: int = 4000, _depth: int
             for item in list(value)[:100]
         ]
     return redact_sensitive_text(str(value), max_length=max_string_length)
+
+
+def safe_trace_message(message: str, *, error_category_value: str = "") -> str:
+    if error_category_value:
+        return "This step could not be completed safely."
+    return redact_sensitive_text(message, max_length=1000)
 
 
 def error_category(exc: Exception) -> str:
@@ -92,7 +118,7 @@ def record_trace(
         estimated_cost=estimated_cost,
         approval_decision=approval_decision,
         error_category=err_category,
-        message=redact_sensitive_text(message, max_length=1000),
+        message=safe_trace_message(message, error_category_value=err_category),
         data_json=sanitize_for_trace(data or {}),
         untrusted_input=untrusted_input,
     )
