@@ -14,6 +14,7 @@ import { trackEvent } from "@/lib/posthog";
 type ApprovalChecks = Record<string, { reviewed: boolean; finalSend: boolean; generalReview: boolean }>;
 
 const terminalStatuses = new Set(["completed", "failed", "cancelled"]);
+const pollingStatuses = new Set(["queued", "planning", "running"]);
 const sensitiveKeyPattern = /(authorization|cookie|api_key|apikey|access_token|refresh_token|oauth|password|secret|token|body|email_body|html_body|text_body)/i;
 const internalMessagePattern = /(adapter|backend|control plane|exception|provider|raw error|secret|sql|stack|token|tool|traceback)/i;
 
@@ -150,12 +151,14 @@ export function AiTasksWorkspace() {
   const forceDryRun = status?.force_dry_run === true;
   const effectiveDryRun = forceDryRun || dryRun;
   const selectedRun = selected?.run || null;
+  const selectedPollingRunId = selectedRun?.id || "";
+  const selectedPollingStatus = selectedRun?.status || "";
   const selectedPendingApprovals = selected?.approvals.filter((approval) => approval.approval_state === "pending") || [];
   const canResume = Boolean(selectedRun && selectedRun.status === "waiting_approval" && !hasPendingApprovals(selected) && canMutate);
 
-  const loadWorkspace = useCallback(async (preferredRunId?: string) => {
+  const loadWorkspace = useCallback(async (preferredRunId?: string, options: { background?: boolean } = {}) => {
     if (!api.ready) return;
-    setLoading(true);
+    if (!options.background) setLoading(true);
     setError("");
     setStatusChecked(false);
     setStatusFailed(false);
@@ -202,7 +205,7 @@ export function AiTasksWorkspace() {
       trackEvent("ai_tasks_load_failed", {});
     } finally {
       if (nextError) setError(nextError);
-      setLoading(false);
+      if (!options.background) setLoading(false);
     }
   }, [api, selectedRunId, t]);
 
@@ -211,9 +214,50 @@ export function AiTasksWorkspace() {
     return () => window.clearTimeout(timer);
   }, [loadWorkspace]);
 
-  async function refresh(runId = selectedRunId) {
-    await loadWorkspace(runId || undefined);
-  }
+  const refreshRun = useCallback(async (runId: string) => {
+    if (!api.ready || !runId) return;
+    try {
+      const detail = await api.getRun(runId);
+      setSelected(detail);
+      setSelectedRunId(detail.run.id);
+      setRuns((current) => {
+        let found = false;
+        const next = current.map((item) => {
+          if (item.id !== detail.run.id) return item;
+          found = true;
+          return detail.run;
+        });
+        return found ? next : [detail.run, ...current].slice(0, 20);
+      });
+      setApprovalQueue((current) => {
+        const pendingForRun = detail.approvals.filter((approval) => approval.approval_state === "pending");
+        const otherRuns = current.filter((approval) => approval.run_id !== detail.run.id);
+        return [...pendingForRun, ...otherRuns].slice(0, 20);
+      });
+      try {
+        const nextTrace = await api.getTrace(runId);
+        setTrace(nextTrace.trace);
+      } catch (traceError) {
+        setTrace([]);
+        Sentry.captureException(traceError, { tags: { area: "ai-tasks-trace" } });
+      }
+    } catch (pollError) {
+      setError(safeErrorText(pollError, t("aiTasks.loadError")));
+      Sentry.captureException(pollError, { tags: { area: "ai-tasks-run-poll" } });
+    }
+  }, [api, t]);
+
+  const refresh = useCallback(async (runId = selectedRunId, background = false) => {
+    await loadWorkspace(runId || undefined, { background });
+  }, [loadWorkspace, selectedRunId]);
+
+  useEffect(() => {
+    if (!api.ready || !selectedPollingRunId || !pollingStatuses.has(selectedPollingStatus)) return undefined;
+    const timer = window.setInterval(() => {
+      void refreshRun(selectedPollingRunId);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [api.ready, refreshRun, selectedPollingRunId, selectedPollingStatus]);
 
   async function startRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -228,7 +272,7 @@ export function AiTasksWorkspace() {
       setObjective("");
       setNotice(t("aiTasks.started"));
       trackEvent("ai_tasks_run_started", { dry_run: effectiveDryRun, force_dry_run: forceDryRun });
-      await refresh(created.run.id);
+      await refreshRun(created.run.id);
     } catch (startError) {
       setError(safeErrorText(startError, t("aiTasks.startError")));
       Sentry.captureException(startError, { tags: { area: "ai-tasks-start" } });
@@ -299,7 +343,7 @@ export function AiTasksWorkspace() {
       setSelected(detail);
       setNotice(t("aiTasks.resumed"));
       trackEvent("ai_tasks_resumed", {});
-      await refresh(detail.run.id);
+      await refreshRun(detail.run.id);
     } catch (resumeError) {
       setError(safeErrorText(resumeError, t("aiTasks.resumeError")));
     } finally {

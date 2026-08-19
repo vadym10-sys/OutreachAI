@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     ai_rate_limit_per_minute: int = 30
     ai_control_plane_enabled: bool = False
     ai_control_plane_force_dry_run: bool = True
+    ai_tasks_worker_mode: str = ""
+    ai_tasks_worker_poll_seconds: float = 2.0
+    ai_tasks_worker_claim_timeout_seconds: int = 900
+    ai_tasks_worker_max_attempts: int = 3
     ai_memory_default_enabled: bool = False
     ai_memory_embeddings_enabled: bool = True
     ai_memory_max_items: int = 12

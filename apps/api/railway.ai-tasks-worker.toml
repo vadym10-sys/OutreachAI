@@ -1,0 +1,17 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = [
+	"/apps/api/Dockerfile",
+	"/apps/api/requirements.txt",
+	"/apps/api/railway.ai-tasks-worker.toml",
+	"/apps/api/app/jobs/agent_runtime_worker.py",
+	"/apps/api/app/core/**",
+	"/apps/api/app/models/**",
+	"/apps/api/app/db/**",
+	"/apps/api/app/services/agent_runtime/**"
+]
+
+[deploy]
+startCommand = "python -m app.jobs.agent_runtime_worker"
+restartPolicyType = "ON_FAILURE"

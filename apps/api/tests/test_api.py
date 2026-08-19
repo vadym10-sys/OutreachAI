@@ -90,6 +90,8 @@ from app.api.routes import (
 )  # noqa: E402
 from app.models.entities import (
     ActionPolicyEnforcement,
+    AgentRun,
+    AgentRunJob,
     AICustomerFinderSource,
     AIMemoryEntry,
     AISalesEmployee,
@@ -2894,6 +2896,8 @@ class _FakePostgresConnection:
                 )
             if "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in sql:
                 self.state.tables.add("action_policy_enforcements")
+            if "CREATE TABLE IF NOT EXISTS agent_run_jobs" in sql:
+                self.state.tables.add("agent_run_jobs")
             return _FakeScalarResult()
         if "CREATE TABLE IF NOT EXISTS backup_runs" in sql:
             self.state.tables.add("backup_runs")
@@ -2914,6 +2918,9 @@ class _FakePostgresConnection:
             return _FakeScalarResult()
         if "CREATE TABLE IF NOT EXISTS action_policy_enforcements" in sql:
             self.state.tables.add("action_policy_enforcements")
+            return _FakeScalarResult()
+        if "CREATE TABLE IF NOT EXISTS agent_run_jobs" in sql:
+            self.state.tables.add("agent_run_jobs")
             return _FakeScalarResult()
         if "INSERT INTO schema_migrations" in sql:
             assert params
@@ -3050,6 +3057,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(
         "021_plan_usage_reservations",
         "022_agent_runtime_control_plane",
         "023_action_policy_enforcements",
+        "024_agent_run_jobs",
     }
     state.tables.update(
         {
@@ -3062,6 +3070,7 @@ def test_postgres_migration_runner_drops_invalid_concurrent_index_before_retry(
             "agent_approval_requests",
             "agent_trace_events",
             "action_policy_enforcements",
+            "agent_run_jobs",
         }
     )
     state.invalid_indexes.add("idx_audit_logs_workspace_lead_created_id")
@@ -3312,6 +3321,7 @@ def test_postgres_migration_failure_sets_negative_schema_status(
         "agent_approval_requests",
         "agent_trace_events",
         "action_policy_enforcements",
+        "agent_run_jobs",
     }
     assert "synthetic migration failure" in status.error
 
@@ -23212,13 +23222,81 @@ def _install_agent_runtime(
     return planner
 
 
+def _drain_agent_runtime_jobs(max_jobs: int = 10) -> None:
+    from app.api import agent_runtime as agent_runtime_api
+    from app.services.agent_runtime.jobs import (
+        claim_next_agent_run_job,
+        fail_or_retry_agent_run_job,
+        mark_agent_run_job_cancelled,
+        mark_agent_run_job_succeeded,
+    )
+
+    for _ in range(max_jobs):
+        with get_sessionmaker()() as claim_db:
+            job = claim_next_agent_run_job(
+                claim_db,
+                worker_id=f"test-agent-runtime-{uuid4()}",
+                lease_seconds=60,
+            )
+            if job is None:
+                return
+            job_id = job.id
+            claim_token = job.claim_token
+        with get_sessionmaker()() as db:
+            process_job = db.get(AgentRunJob, job_id)
+            if process_job is None:
+                continue
+            try:
+                run = agent_runtime_api._orchestrator.execute_claimed_job(
+                    db,
+                    job=process_job,
+                    claim_token=claim_token,
+                )
+                if run.status == "cancelled":
+                    mark_agent_run_job_cancelled(
+                        db,
+                        job=process_job,
+                        claim_token=claim_token,
+                    )
+                elif run.status == "failed":
+                    fail_or_retry_agent_run_job(
+                        db,
+                        job=process_job,
+                        claim_token=claim_token,
+                        exc=RuntimeError(run.error_category or "agent_run_failed"),
+                        retryable=False,
+                    )
+                else:
+                    mark_agent_run_job_succeeded(
+                        db,
+                        job=process_job,
+                        claim_token=claim_token,
+                    )
+            except Exception as exc:
+                db.rollback()
+                retry_db = get_sessionmaker()()
+                try:
+                    retry_job = retry_db.get(AgentRunJob, job_id)
+                    if retry_job is not None:
+                        fail_or_retry_agent_run_job(
+                            retry_db,
+                            job=retry_job,
+                            claim_token=claim_token,
+                            exc=exc,
+                            retryable=False,
+                        )
+                finally:
+                    retry_db.close()
+
+
 def _create_agent_run(
     headers: dict[str, str],
     objective: str,
     idempotency_key: str = "",
     dry_run: bool = False,
+    drain: bool = True,
 ):
-    return client.post(
+    response = client.post(
         "/api/workspace-app/agent-runs",
         headers=headers,
         json={
@@ -23227,6 +23305,45 @@ def _create_agent_run(
             "dry_run": dry_run,
         },
     )
+    if response.status_code == 202 and drain:
+        run_id = response.json()["run"]["id"]
+        _drain_agent_runtime_jobs()
+        detail = client.get(
+            f"/api/workspace-app/agent-runs/{run_id}",
+            headers=headers,
+        )
+        response._content = detail.content
+    return response
+
+
+def _create_agent_run_queued(
+    headers: dict[str, str],
+    objective: str,
+    idempotency_key: str = "",
+    dry_run: bool = False,
+):
+    return _create_agent_run(
+        headers,
+        objective,
+        idempotency_key=idempotency_key,
+        dry_run=dry_run,
+        drain=False,
+    )
+
+
+def _resume_agent_run_and_drain(headers: dict[str, str], run_id: str):
+    response = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/resume",
+        headers=headers,
+    )
+    if response.status_code == 200:
+        _drain_agent_runtime_jobs()
+        detail = client.get(
+            f"/api/workspace-app/agent-runs/{run_id}",
+            headers=headers,
+        )
+        response._content = detail.content
+    return response
 
 
 def _agent_runtime_registry_with_provider_call_recorder(provider_calls: list[dict[str, Any]]):
@@ -23275,6 +23392,523 @@ def test_agent_runtime_feature_flag_default_off_blocks_create(monkeypatch) -> No
     assert planner.calls == 0
     with get_sessionmaker()() as db:
         assert db.query(AgentRun).count() == 0
+
+
+def test_agent_runtime_create_returns_queued_and_enqueues_start_job(monkeypatch) -> None:
+    from app.models.entities import AgentRun
+
+    planner = _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Should run later"},
+            }
+        ],
+    )
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"agent-queued-{uuid4()}@example.com",
+    }
+
+    response = _create_agent_run_queued(
+        headers,
+        "Queue a safe AI task and return immediately.",
+        idempotency_key="queued-start-once",
+        dry_run=False,
+    )
+
+    assert response.status_code == 202
+    assert response.json()["run"]["status"] == "queued"
+    assert response.json()["run"]["dry_run"] is False
+    assert response.json()["steps"] == []
+    assert response.json()["approvals"] == []
+    assert planner.calls == 0
+    with get_sessionmaker()() as db:
+        run = db.get(AgentRun, UUID(response.json()["run"]["id"]))
+        assert run is not None
+        jobs = list(
+            db.scalars(
+                select(AgentRunJob).where(
+                    AgentRunJob.run_id == run.id,
+                    AgentRunJob.operation == "start",
+                )
+            ).all()
+        )
+        assert len(jobs) == 1
+        assert jobs[0].status == "queued"
+    _drain_agent_runtime_jobs()
+
+
+def test_agent_runtime_worker_entrypoint_config_and_legacy_loop_guard() -> None:
+    from app.jobs.agent_runtime_worker import (
+        AgentRuntimeWorkerConfigurationError,
+        validate_ai_tasks_worker_configuration,
+    )
+
+    root = REPO_ROOT
+    legacy_config = root / "apps" / "api" / "railway.worker.toml"
+    worker_config = root / "apps" / "api" / "railway.ai-tasks-worker.toml"
+    worker_source = (
+        root / "apps" / "api" / "app" / "jobs" / "agent_runtime_worker.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'startCommand = "python -m app.jobs.worker"' in legacy_config.read_text(
+        encoding="utf-8"
+    )
+    assert (
+        'startCommand = "python -m app.jobs.agent_runtime_worker"'
+        in worker_config.read_text(encoding="utf-8")
+    )
+    assert "app.jobs.worker" not in worker_source
+    assert "EnrichmentJob" not in worker_source
+    assert "process_autopilot" not in worker_source
+    assert "run_continuous" not in worker_source
+    assert "run_nightly" not in worker_source
+
+    valid = Settings(
+        app_env="staging",
+        ai_tasks_worker_mode="staging_fake",
+        ai_control_plane_enabled=True,
+        ai_control_plane_force_dry_run=True,
+    )
+    validate_ai_tasks_worker_configuration(valid)
+    invalid_modes = [
+        Settings(
+            app_env="production",
+            ai_tasks_worker_mode="staging_fake",
+            ai_control_plane_enabled=True,
+            ai_control_plane_force_dry_run=True,
+        ),
+        Settings(
+            app_env="staging",
+            ai_tasks_worker_mode="",
+            ai_control_plane_enabled=True,
+            ai_control_plane_force_dry_run=True,
+        ),
+        Settings(
+            app_env="staging",
+            ai_tasks_worker_mode="staging_fake",
+            ai_control_plane_enabled=False,
+            ai_control_plane_force_dry_run=True,
+        ),
+        Settings(
+            app_env="staging",
+            ai_tasks_worker_mode="staging_fake",
+            ai_control_plane_enabled=True,
+            ai_control_plane_force_dry_run=False,
+        ),
+    ]
+    for settings in invalid_modes:
+        with pytest.raises(AgentRuntimeWorkerConfigurationError):
+            validate_ai_tasks_worker_configuration(settings)
+
+
+def test_agent_runtime_job_claim_fencing_and_expired_lease_recovery(monkeypatch) -> None:
+    from app.api import agent_runtime as agent_runtime_api
+    from app.services.agent_runtime.errors import AgentRunJobClaimLost
+    from app.services.agent_runtime.jobs import (
+        claim_next_agent_run_job,
+        mark_agent_run_job_succeeded,
+    )
+
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Run once after claim recovery"},
+            }
+        ],
+    )
+    created = _create_agent_run_queued(
+        USER_A_AUTH,
+        "Exercise claim fencing for one background job.",
+        idempotency_key=f"claim-fencing-{uuid4()}",
+    )
+    run_id = UUID(created.json()["run"]["id"])
+
+    def claim(worker: str):
+        with get_sessionmaker()() as db:
+            job = claim_next_agent_run_job(db, worker_id=worker, lease_seconds=60)
+            return (job.id, job.claim_token) if job else None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(claim, ["worker-a", "worker-b"]))
+    claimed = [item for item in results if item is not None]
+    assert len(claimed) == 1
+    job_id, stale_token = claimed[0]
+
+    with get_sessionmaker()() as db:
+        job = db.get(AgentRunJob, job_id)
+        assert job is not None
+        job.lease_expires_at = datetime.utcnow() - timedelta(seconds=1)
+        db.commit()
+
+    with get_sessionmaker()() as db:
+        recovered = claim_next_agent_run_job(db, worker_id="worker-recovered", lease_seconds=60)
+        assert recovered is not None
+        assert recovered.id == job_id
+        assert recovered.claim_token != stale_token
+        recovered_token = recovered.claim_token
+
+    with get_sessionmaker()() as db:
+        stale_job = db.get(AgentRunJob, job_id)
+        assert stale_job is not None
+        with pytest.raises(AgentRunJobClaimLost):
+            agent_runtime_api._orchestrator.execute_claimed_job(
+                db,
+                job=stale_job,
+                claim_token=stale_token,
+            )
+        assert (
+            mark_agent_run_job_succeeded(
+                db,
+                job=stale_job,
+                claim_token=stale_token,
+            )
+            is False
+        )
+
+    with get_sessionmaker()() as db:
+        current_job = db.get(AgentRunJob, job_id)
+        assert current_job is not None
+        run = agent_runtime_api._orchestrator.execute_claimed_job(
+            db,
+            job=current_job,
+            claim_token=recovered_token,
+        )
+        assert run.id == run_id
+        assert run.status == "completed"
+        assert mark_agent_run_job_succeeded(
+            db,
+            job=current_job,
+            claim_token=recovered_token,
+        )
+
+    with get_sessionmaker()() as db:
+        job = db.get(AgentRunJob, job_id)
+        assert job is not None
+        assert job.status == "succeeded"
+
+
+def test_agent_runtime_approve_does_not_enqueue_resume_and_resume_is_unique(
+    monkeypatch,
+) -> None:
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "crm",
+                "title": "Save candidate",
+                "tool_name": "save_to_crm",
+                "arguments": {
+                    "company_name": f"Resume Unique {uuid4()}",
+                    "website": "https://resume-unique.example",
+                    "contact_email": "buyer@resume-unique.example",
+                },
+            }
+        ],
+        force_dry_run=True,
+    )
+    created = _create_agent_run(
+        USER_A_AUTH,
+        "Pause, approve, and resume only on explicit continue.",
+        idempotency_key=f"approve-resume-split-{uuid4()}",
+    )
+    run_id = created.json()["run"]["id"]
+    approval_id = created.json()["approvals"][0]["id"]
+
+    approved = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/approve",
+        headers=USER_A_AUTH,
+        json={"approval_request_id": approval_id, "idempotency_key": "split-approve"},
+    )
+    with get_sessionmaker()() as db:
+        resume_jobs_after_approve = (
+            db.scalar(
+                select(func.count())
+                .select_from(AgentRunJob)
+                .where(
+                    AgentRunJob.run_id == UUID(run_id),
+                    AgentRunJob.operation == "resume",
+                )
+            )
+            or 0
+        )
+
+    first_resume = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/resume",
+        headers=USER_A_AUTH,
+    )
+    second_resume = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/resume",
+        headers=USER_A_AUTH,
+    )
+    with get_sessionmaker()() as db:
+        active_resume_jobs = (
+            db.scalar(
+                select(func.count())
+                .select_from(AgentRunJob)
+                .where(
+                    AgentRunJob.run_id == UUID(run_id),
+                    AgentRunJob.operation == "resume",
+                    AgentRunJob.status.in_(("queued", "running", "retrying")),
+                )
+            )
+            or 0
+        )
+
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "waiting_approval"
+    assert resume_jobs_after_approve == 0
+    assert first_resume.status_code == 200
+    assert first_resume.json()["run"]["status"] == "queued"
+    assert second_resume.status_code == 409
+    assert active_resume_jobs == 1
+
+
+def test_agent_runtime_cancel_before_and_after_claim_blocks_execution(
+    monkeypatch,
+) -> None:
+    from app.api import agent_runtime as agent_runtime_api
+    from app.services.agent_runtime.jobs import (
+        claim_next_agent_run_job,
+        mark_agent_run_job_cancelled,
+    )
+
+    planner = _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Must not execute"},
+            }
+        ],
+    )
+    before = _create_agent_run_queued(
+        USER_A_AUTH,
+        "Cancel before claim.",
+        idempotency_key=f"cancel-before-{uuid4()}",
+    )
+    before_run_id = before.json()["run"]["id"]
+    cancelled_before = client.post(
+        f"/api/workspace-app/agent-runs/{before_run_id}/cancel",
+        headers=USER_A_AUTH,
+        json={"reason": "cancel before claim"},
+    )
+    _drain_agent_runtime_jobs()
+
+    after = _create_agent_run_queued(
+        USER_A_AUTH,
+        "Cancel after claim.",
+        idempotency_key=f"cancel-after-{uuid4()}",
+    )
+    after_run_id = after.json()["run"]["id"]
+    with get_sessionmaker()() as db:
+        claimed = claim_next_agent_run_job(db, worker_id="cancel-after", lease_seconds=60)
+        assert claimed is not None
+        job_id = claimed.id
+        token = claimed.claim_token
+    cancelled_after = client.post(
+        f"/api/workspace-app/agent-runs/{after_run_id}/cancel",
+        headers=USER_A_AUTH,
+        json={"reason": "cancel after claim"},
+    )
+    with get_sessionmaker()() as db:
+        job = db.get(AgentRunJob, job_id)
+        assert job is not None
+        run = agent_runtime_api._orchestrator.execute_claimed_job(
+            db,
+            job=job,
+            claim_token=token,
+        )
+        assert run.status == "cancelled"
+        assert mark_agent_run_job_cancelled(db, job=job, claim_token=token)
+
+    with get_sessionmaker()() as db:
+        before_steps = (
+            db.scalar(
+                select(func.count())
+                .select_from(AgentRunJob)
+                .where(
+                    AgentRunJob.run_id == UUID(before_run_id),
+                    AgentRunJob.status == "cancelled",
+                )
+            )
+            or 0
+        )
+        after_job = db.get(AgentRunJob, job_id)
+
+    assert cancelled_before.status_code == 200
+    assert cancelled_before.json()["status"] == "cancelled"
+    assert cancelled_after.status_code == 200
+    assert cancelled_after.json()["status"] == "cancelled"
+    assert before_steps == 1
+    assert after_job is not None
+    assert after_job.status == "cancelled"
+    assert planner.calls == 0
+
+
+def test_agent_runtime_worker_blocks_revoked_user_permissions(monkeypatch) -> None:
+    _install_agent_runtime(
+        monkeypatch,
+        [
+            {
+                "id": "context",
+                "title": "Understand business",
+                "tool_name": "understand_business",
+                "arguments": {"objective": "Should not run without access"},
+            }
+        ],
+    )
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"revoked-agent-{uuid4()}@example.com",
+    }
+    created = _create_agent_run_queued(
+        headers,
+        "Run after access is revoked.",
+        idempotency_key=f"revoked-access-{uuid4()}",
+    )
+    run_id = UUID(created.json()["run"]["id"])
+    workspace_id = UUID(created.json()["run"]["workspace_id"])
+    with get_sessionmaker()() as db:
+        workspace = db.get(Workspace, workspace_id)
+        assert workspace is not None
+        workspace.owner_user_id = f"other-owner-{uuid4()}@example.com"
+        db.query(WorkspaceMember).filter(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == headers["X-Test-User-Email"],
+        ).update({"status": "revoked"})
+        db.commit()
+
+    _drain_agent_runtime_jobs()
+
+    with get_sessionmaker()() as db:
+        run = db.get(AgentRun, run_id)
+        job = db.scalar(select(AgentRunJob).where(AgentRunJob.run_id == run_id))
+        assert run is not None
+        assert job is not None
+        assert run.status == "failed"
+        assert run.error_category == "permission_denied"
+        assert job.status == "failed"
+
+
+def test_agent_runtime_staging_fake_worker_completes_without_writes_or_providers(
+    monkeypatch,
+) -> None:
+    from app.jobs import agent_runtime_worker
+    from app.services.agent_runtime.staging_fake import staging_fake_provider_call_count
+
+    monkeypatch.setattr(get_settings(), "app_env", "development")
+    monkeypatch.setattr(get_settings(), "ai_tasks_worker_mode", "staging_fake")
+    monkeypatch.setattr(get_settings(), "ai_control_plane_enabled", True)
+    monkeypatch.setattr(get_settings(), "ai_control_plane_force_dry_run", True)
+    monkeypatch.setattr(get_settings(), "openai_api_key", "")
+    headers = {
+        "Authorization": "Bearer dev",
+        "X-Test-User-Email": f"staging-fake-{uuid4()}@example.com",
+    }
+    before_counts = {}
+    with get_sessionmaker()() as db:
+        workspace_id = UUID(client.get("/api/workspace/me", headers=headers).json()["id"])
+        for model, key in (
+            (Company, "companies"),
+            (Lead, "leads"),
+            (EmailMessage, "emails"),
+        ):
+            before_counts[key] = (
+                db.scalar(
+                    select(func.count()).select_from(model).where(model.workspace_id == workspace_id)
+                )
+                or 0
+            )
+    created = _create_agent_run_queued(
+        headers,
+        "Synthetic smoke task with input dry_run false.",
+        idempotency_key=f"staging-fake-{uuid4()}",
+        dry_run=False,
+    )
+    run_id = created.json()["run"]["id"]
+
+    assert created.status_code == 202
+    assert created.json()["run"]["status"] == "queued"
+    assert created.json()["run"]["dry_run"] is True
+    monkeypatch.setattr(get_settings(), "app_env", "staging")
+    assert agent_runtime_worker.run_agent_runtime_worker_once(worker_id="fake-start")
+    monkeypatch.setattr(get_settings(), "app_env", "development")
+    waiting = client.get(f"/api/workspace-app/agent-runs/{run_id}", headers=headers)
+    approval_id = waiting.json()["approvals"][0]["id"]
+    approved = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/approve",
+        headers=headers,
+        json={"approval_request_id": approval_id, "idempotency_key": "fake-approve"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "waiting_approval"
+    with get_sessionmaker()() as db:
+        resume_jobs = (
+            db.scalar(
+                select(func.count())
+                .select_from(AgentRunJob)
+                .where(
+                    AgentRunJob.run_id == UUID(run_id),
+                    AgentRunJob.operation == "resume",
+                )
+            )
+            or 0
+        )
+    assert resume_jobs == 0
+    resumed = client.post(
+        f"/api/workspace-app/agent-runs/{run_id}/resume",
+        headers=headers,
+    )
+    assert resumed.status_code == 200
+    assert resumed.json()["run"]["status"] == "queued"
+    monkeypatch.setattr(get_settings(), "app_env", "staging")
+    assert agent_runtime_worker.run_agent_runtime_worker_once(worker_id="fake-resume")
+    monkeypatch.setattr(get_settings(), "app_env", "development")
+    completed = client.get(f"/api/workspace-app/agent-runs/{run_id}", headers=headers)
+    completed_text = json.dumps(completed.json(), sort_keys=True)
+
+    with get_sessionmaker()() as db:
+        after_counts = {}
+        for model, key in (
+            (Company, "companies"),
+            (Lead, "leads"),
+            (EmailMessage, "emails"),
+        ):
+            after_counts[key] = (
+                db.scalar(
+                    select(func.count()).select_from(model).where(model.workspace_id == workspace_id)
+                )
+                or 0
+            )
+        jobs = list(
+            db.scalars(
+                select(AgentRunJob)
+                .where(AgentRunJob.run_id == UUID(run_id))
+                .order_by(AgentRunJob.created_at.asc())
+            ).all()
+        )
+
+    assert waiting.json()["run"]["status"] == "waiting_approval"
+    assert completed.status_code == 200
+    assert completed.json()["run"]["status"] == "completed"
+    assert completed.json()["run"]["dry_run"] is True
+    assert before_counts == after_counts
+    assert staging_fake_provider_call_count() == 0
+    assert {job.operation for job in jobs} == {"start", "resume"}
+    assert all(job.status == "succeeded" for job in jobs)
+    assert "Synthetic smoke task with input dry_run false." not in completed_text
+    assert "Synthetic dry-run body" not in completed_text
 
 
 def test_agent_runtime_status_and_list_runs_are_workspace_scoped_with_cursor(monkeypatch) -> None:
@@ -23847,9 +24481,7 @@ def test_agent_runtime_force_dry_run_e2e_approve_resume_without_side_effects(
             "reason": "Reviewed dry-run CRM action.",
         },
     )
-    resumed = client.post(
-        f"/api/workspace-app/agent-runs/{run_id}/resume", headers=headers
-    )
+    resumed = _resume_agent_run_and_drain(headers, run_id)
     detail = client.get(f"/api/workspace-app/agent-runs/{run_id}", headers=headers)
     trace = client.get(f"/api/workspace-app/agent-runs/{run_id}/trace", headers=headers)
     cross_workspace = client.get(
@@ -24112,9 +24744,7 @@ def test_agent_runtime_run_dry_run_forces_crm_dry_run_after_approval_resume(monk
         headers=USER_A_AUTH,
         json={"approval_request_id": approval_id, "idempotency_key": "dry-crm-approval"},
     )
-    resumed = client.post(
-        f"/api/workspace-app/agent-runs/{run_id}/resume", headers=USER_A_AUTH
-    )
+    resumed = _resume_agent_run_and_drain(USER_A_AUTH, run_id)
 
     with get_sessionmaker()() as db:
         workspace_id = UUID(
@@ -24324,10 +24954,7 @@ def test_agent_runtime_resume_keeps_later_draft_arguments_after_approval_pause(
         headers=USER_A_AUTH,
         json={"approval_request_id": approval_id, "idempotency_key": "resume-draft-approval"},
     )
-    resumed = client.post(
-        f"/api/workspace-app/agent-runs/{run_id}/resume",
-        headers=USER_A_AUTH,
-    )
+    resumed = _resume_agent_run_and_drain(USER_A_AUTH, run_id)
     detail = client.get(f"/api/workspace-app/agent-runs/{run_id}", headers=USER_A_AUTH)
     trace = client.get(f"/api/workspace-app/agent-runs/{run_id}/trace", headers=USER_A_AUTH)
     detail_text = json.dumps(detail.json(), sort_keys=True)
@@ -26139,13 +26766,13 @@ def test_agent_runtime_approve_resume_is_idempotent_for_crm_write(monkeypatch) -
         headers=USER_A_AUTH,
         json={"approval_request_id": approval_id, "idempotency_key": "approve-once"},
     )
-    first_resume = client.post(f"/api/workspace-app/agent-runs/{run_id}/resume", headers=USER_A_AUTH)
+    first_resume = _resume_agent_run_and_drain(USER_A_AUTH, run_id)
     second_approve = client.post(
         f"/api/workspace-app/agent-runs/{run_id}/approve",
         headers=USER_A_AUTH,
         json={"approval_request_id": approval_id, "idempotency_key": "approve-once"},
     )
-    second_resume = client.post(f"/api/workspace-app/agent-runs/{run_id}/resume", headers=USER_A_AUTH)
+    second_resume = _resume_agent_run_and_drain(USER_A_AUTH, run_id)
 
     with get_sessionmaker()() as db:
         workspace_id = UUID(client.get("/api/workspace/me", headers=USER_A_AUTH).json()["id"])

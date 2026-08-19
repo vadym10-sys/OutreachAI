@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from collections.abc import Callable
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -18,6 +19,7 @@ from app.core.config import get_settings
 from app.models.entities import (
     AgentApprovalRequest,
     AgentRun,
+    AgentRunJob,
     AgentStep,
     AgentTraceEvent,
     AgentToolCall,
@@ -41,7 +43,13 @@ from app.services.agent_runtime.errors import (
     ToolArgumentValidationError,
     ToolOutputValidationError,
     ToolExecutionBlockedError,
+    AgentRunJobClaimLost,
     UnknownToolError,
+)
+from app.services.agent_runtime.jobs import (
+    assert_agent_run_job_claim_current,
+    cancel_active_agent_run_jobs,
+    enqueue_agent_run_job,
 )
 from app.services.agent_runtime.model_usage import (
     estimated_cost_for_usage,
@@ -389,8 +397,14 @@ class AgentRuntimeOrchestrator:
                 raise IdempotencyConflictError(
                     "Idempotency request already exists with a different payload."
                 )
+            if existing.status not in RUN_TERMINAL_STATUSES and existing.status != "waiting_approval":
+                enqueue_agent_run_job(
+                    db,
+                    run=existing,
+                    operation="start",
+                    request_id=request_id,
+                )
             return existing
-        started = time.perf_counter()
         run = AgentRun(
             workspace_id=workspace.id,
             user_id=user_id,
@@ -398,13 +412,22 @@ class AgentRuntimeOrchestrator:
             objective=payload.objective,
             dry_run=effective_dry_run,
             input_json=sanitize_for_trace(
-                {"objective": payload.objective, "dry_run": effective_dry_run}
+                {
+                    "objective": {
+                        "sha256": hashlib.sha256(
+                            payload.objective.encode("utf-8")
+                        ).hexdigest(),
+                        "length": len(payload.objective),
+                    },
+                    "dry_run": effective_dry_run,
+                }
             ),
             idempotency_key=payload.idempotency_key.strip(),
             request_fingerprint=request_fingerprint,
         )
         db.add(run)
         db.flush()
+        enqueue_agent_run_job(db, run=run, operation="start", request_id=request_id)
         record_trace(
             db,
             run_id=run.id,
@@ -414,45 +437,132 @@ class AgentRuntimeOrchestrator:
             status=run.status,
             data={"request_id": request_id},
         )
+        run.updated_at = datetime.utcnow()
+        db.flush()
+        return run
+
+    def execute_claimed_job(
+        self,
+        db: Session,
+        *,
+        job: AgentRunJob,
+        claim_token: str,
+    ) -> AgentRun:
+        self._require_enabled()
+        assert_agent_run_job_claim_current(db, job_id=job.id, claim_token=claim_token)
+        run = db.scalar(select(AgentRun).where(AgentRun.id == job.run_id))
+        if run is None:
+            raise AgentRunStateError("Agent run not found.")
+        workspace = db.get(Workspace, run.workspace_id)
+        if workspace is None:
+            raise AgentRunStateError("Agent run workspace not found.")
+        if job.workspace_id != run.workspace_id:
+            raise AgentRunStateError("Agent run job workspace mismatch.")
+        if run.status in RUN_TERMINAL_STATUSES:
+            return run
         try:
-            transition_run(run, "planning")
-            plan_result = self.planner.plan(
-                objective=payload.objective,
-                workspace=workspace,
-                tools=self.registry.all(),
-            )
-            validated_plan = self._validate_plan(run=run, plan=plan_result.plan)
-            run.model = plan_result.model
-            run.prompt_version = plan_result.prompt_version
-            run.token_usage_json = merge_token_usage(
-                run.token_usage_json, plan_result.token_usage
-            )
-            run.estimated_cost = plan_result.estimated_cost
-            run.latency_ms = plan_result.latency_ms
-            run.plan_json = sanitize_for_trace(validated_plan.model_dump())
+            self._require_workspace_access(db, workspace=workspace, user_id=run.user_id)
+        except PermissionDeniedError as exc:
+            transition_run(run, "failed", error_category=error_category(exc))
             record_trace(
                 db,
                 run_id=run.id,
                 workspace_id=workspace.id,
-                user_id=user_id,
-                event_type="model.plan",
-                status="succeeded",
-                model=run.model,
-                latency_ms=plan_result.latency_ms,
-                token_usage=plan_result.token_usage.model_dump(),
-                estimated_cost=plan_result.estimated_cost,
-                data=run.plan_json,
-                untrusted_input=True,
+                user_id=run.user_id,
+                event_type="run.permission_denied",
+                status="failed",
+                error=exc,
             )
-            self._create_steps(db, run=run, plan=validated_plan)
-            transition_run(run, "running")
+            db.flush()
+            return run
+
+        def claim_guard() -> None:
+            assert_agent_run_job_claim_current(
+                db,
+                job_id=job.id,
+                claim_token=claim_token,
+            )
+
+        if job.operation == "start":
+            return self._execute_start_job(
+                db,
+                run=run,
+                workspace=workspace,
+                request_id=job.request_id,
+                claim_guard=claim_guard,
+            )
+        if job.operation == "resume":
+            return self._execute_resume_job(
+                db,
+                run=run,
+                workspace=workspace,
+                request_id=job.request_id,
+                claim_guard=claim_guard,
+            )
+        raise AgentRunStateError("Unsupported agent run job operation.")
+
+    def _execute_start_job(
+        self,
+        db: Session,
+        *,
+        run: AgentRun,
+        workspace: Workspace,
+        request_id: str,
+        claim_guard: Callable[[], None] | None = None,
+    ) -> AgentRun:
+        started = time.perf_counter()
+        try:
+            if run.status == "waiting_approval":
+                return run
+            if not self._run_has_steps(db, run=run):
+                self._guard_job_and_run(run, claim_guard)
+                transition_run(run, "planning")
+                plan_result = self.planner.plan(
+                    objective=run.objective,
+                    workspace=workspace,
+                    tools=self.registry.all(),
+                )
+                self._guard_job_and_run(run, claim_guard)
+                validated_plan = self._validate_plan(run=run, plan=plan_result.plan)
+                safe_plan = sanitize_for_trace(validated_plan.model_dump())
+                if isinstance(safe_plan, dict):
+                    safe_plan["objective"] = "[REDACTED_CONTENT]"
+                run.model = plan_result.model
+                run.prompt_version = plan_result.prompt_version
+                run.token_usage_json = merge_token_usage(
+                    run.token_usage_json, plan_result.token_usage
+                )
+                run.estimated_cost = plan_result.estimated_cost
+                run.latency_ms = plan_result.latency_ms
+                run.plan_json = safe_plan
+                record_trace(
+                    db,
+                    run_id=run.id,
+                    workspace_id=workspace.id,
+                    user_id=run.user_id,
+                    event_type="model.plan",
+                    status="succeeded",
+                    model=run.model,
+                    latency_ms=plan_result.latency_ms,
+                    token_usage=plan_result.token_usage.model_dump(),
+                    estimated_cost=plan_result.estimated_cost,
+                    data=safe_plan,
+                    untrusted_input=True,
+                )
+                self._create_steps(db, run=run, plan=validated_plan)
+            self._guard_job_and_run(run, claim_guard)
+            if run.status not in {"running", "waiting_approval"}:
+                transition_run(run, "running")
             self._execute_available_steps(
                 db,
                 run=run,
                 workspace=workspace,
-                user_id=user_id,
+                user_id=run.user_id,
                 request_id=request_id,
+                claim_guard=claim_guard,
             )
+        except AgentRunJobClaimLost:
+            raise
         except Exception as exc:
             transition_run(run, "failed", error_category=error_category(exc))
             run.latency_ms = run.latency_ms or round((time.perf_counter() - started) * 1000)
@@ -460,13 +570,40 @@ class AgentRuntimeOrchestrator:
                 db,
                 run_id=run.id,
                 workspace_id=workspace.id,
-                user_id=user_id,
+                user_id=run.user_id,
                 event_type="run.failed",
                 status="failed",
                 error=exc,
                 untrusted_input=True,
             )
         run.updated_at = datetime.utcnow()
+        db.flush()
+        return run
+
+    def _execute_resume_job(
+        self,
+        db: Session,
+        *,
+        run: AgentRun,
+        workspace: Workspace,
+        request_id: str,
+        claim_guard: Callable[[], None] | None = None,
+    ) -> AgentRun:
+        if run.status in RUN_TERMINAL_STATUSES:
+            return run
+        if self._has_pending_approvals(db, run=run):
+            raise AgentRunStateError("Agent run still has pending approvals.")
+        self._guard_job_and_run(run, claim_guard)
+        if run.status in {"queued", "waiting_approval"}:
+            transition_run(run, "running")
+        self._execute_available_steps(
+            db,
+            run=run,
+            workspace=workspace,
+            user_id=run.user_id,
+            request_id=request_id,
+            claim_guard=claim_guard,
+        )
         db.flush()
         return run
 
@@ -634,13 +771,23 @@ class AgentRuntimeOrchestrator:
             return run
         if run.status != "waiting_approval":
             raise AgentRunStateError("Only runs waiting for approval can be resumed.")
-        transition_run(run, "running")
-        self._execute_available_steps(
+        if self._has_pending_approvals(db, run=run):
+            raise AgentRunStateError("Agent run still has pending approvals.")
+        transition_run(run, "queued")
+        enqueue_agent_run_job(
             db,
             run=run,
-            workspace=workspace,
-            user_id=user_id,
+            operation="resume",
             request_id=request_id,
+        )
+        record_trace(
+            db,
+            run_id=run.id,
+            workspace_id=workspace.id,
+            user_id=user_id,
+            event_type="run.resume_queued",
+            status=run.status,
+            data={"request_id": request_id},
         )
         db.flush()
         return run
@@ -659,6 +806,12 @@ class AgentRuntimeOrchestrator:
         if run.status in RUN_TERMINAL_STATUSES:
             return run
         transition_run(run, "cancelled")
+        cancel_active_agent_run_jobs(
+            db,
+            workspace_id=workspace.id,
+            run_id=run.id,
+            reason=reason,
+        )
         record_trace(
             db,
             run_id=run.id,
@@ -671,6 +824,56 @@ class AgentRuntimeOrchestrator:
         db.flush()
         return run
 
+    def _run_has_steps(self, db: Session, *, run: AgentRun) -> bool:
+        return bool(
+            db.scalar(
+                select(AgentStep.id)
+                .where(
+                    AgentStep.workspace_id == run.workspace_id,
+                    AgentStep.run_id == run.id,
+                )
+                .limit(1)
+            )
+        )
+
+    def _has_pending_approvals(self, db: Session, *, run: AgentRun) -> bool:
+        return bool(
+            db.scalar(
+                select(AgentApprovalRequest.id)
+                .where(
+                    AgentApprovalRequest.workspace_id == run.workspace_id,
+                    AgentApprovalRequest.run_id == run.id,
+                    AgentApprovalRequest.approval_state == "pending",
+                )
+                .limit(1)
+            )
+        )
+
+    def _require_workspace_access(
+        self,
+        db: Session,
+        *,
+        workspace: Workspace,
+        user_id: str,
+    ) -> None:
+        allowed = self.permission_resolver.allowed_permissions(
+            db,
+            workspace=workspace,
+            user_id=user_id,
+        )
+        if "workspace:read" not in allowed:
+            raise PermissionDeniedError("Workspace access was revoked.")
+
+    def _guard_job_and_run(
+        self,
+        run: AgentRun,
+        claim_guard: Callable[[], None] | None = None,
+    ) -> None:
+        if claim_guard is not None:
+            claim_guard()
+        if run.status == "cancelled":
+            raise AgentRunStateError("Agent run was cancelled.")
+
     def _execute_available_steps(
         self,
         db: Session,
@@ -679,7 +882,9 @@ class AgentRuntimeOrchestrator:
         workspace: Workspace,
         user_id: str,
         request_id: str,
+        claim_guard: Callable[[], None] | None = None,
     ) -> None:
+        self._guard_job_and_run(run, claim_guard)
         has_failed_tool = False
         failed_error_category = ""
         steps = list(
@@ -690,6 +895,7 @@ class AgentRuntimeOrchestrator:
             ).all()
         )
         for step in steps:
+            self._guard_job_and_run(run, claim_guard)
             if step.status in {"completed", "skipped"}:
                 continue
             if step.status == "failed":
@@ -705,6 +911,7 @@ class AgentRuntimeOrchestrator:
                     workspace=workspace,
                     user_id=user_id,
                     request_id=request_id,
+                    claim_guard=claim_guard,
                 )
             except (UnknownToolError, ToolArgumentValidationError, ToolOutputValidationError) as exc:
                 transition_step(step, "failed", error_category=error_category(exc))
@@ -743,6 +950,7 @@ class AgentRuntimeOrchestrator:
                 continue
             if blocked:
                 return
+        self._guard_job_and_run(run, claim_guard)
         if has_failed_tool:
             transition_run(
                 run, "failed", error_category=failed_error_category or "tool_failed"
@@ -767,7 +975,9 @@ class AgentRuntimeOrchestrator:
         workspace: Workspace,
         user_id: str,
         request_id: str,
+        claim_guard: Callable[[], None] | None = None,
     ) -> bool:
+        self._guard_job_and_run(run, claim_guard)
         tool = self.registry.get(step.tool_name)
         arguments = self._validate_and_prepare_arguments(
             run=run,
@@ -836,6 +1046,7 @@ class AgentRuntimeOrchestrator:
             raise AgentRunStateError(
                 f"Tool call is not retryable in state {tool_call.status}."
             )
+        self._guard_job_and_run(run, claim_guard)
         transition_step(step, "running")
         tool_call.status = "running"
         tool_call.started_at = datetime.utcnow()
@@ -853,6 +1064,7 @@ class AgentRuntimeOrchestrator:
                 approval=approval,
                 idempotency_key=idempotency_key,
             )
+            self._guard_job_and_run(run, claim_guard)
             raw_output = tool.handler(context, arguments)
             output = tool.validate_output(raw_output)
         except Exception as exc:
@@ -1049,7 +1261,17 @@ class AgentRuntimeOrchestrator:
         raise PermissionDeniedError("Tool permission denied.")
 
     def _create_steps(self, db: Session, *, run: AgentRun, plan: AgentPlan) -> None:
+        existing_indexes = set(
+            db.scalars(
+                select(AgentStep.step_index).where(
+                    AgentStep.workspace_id == run.workspace_id,
+                    AgentStep.run_id == run.id,
+                )
+            ).all()
+        )
         for index, item in enumerate(plan.steps):
+            if index in existing_indexes:
+                continue
             db.add(
                 AgentStep(
                     run_id=run.id,
@@ -1222,7 +1444,7 @@ def run_out(run: AgentRun) -> AgentRunOut:
         workspace_id=run.workspace_id,
         user_id=run.user_id,
         status=run.status,
-        objective=run.objective,
+        objective="[REDACTED_CONTENT]" if run.objective else "",
         dry_run=bool(run.dry_run),
         plan=run.plan_json if isinstance(run.plan_json, dict) else {},
         current_step_index=int(run.current_step_index or 0),

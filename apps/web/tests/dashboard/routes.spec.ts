@@ -42,6 +42,7 @@ async function mockForcedDryRunAgentFlow(page: Page) {
   let run: any = null;
   let steps: any[] = [];
   let approval: any = null;
+  let detailReads = 0;
   const trace = [{
     id: "trace-forced-dry-run",
     run_id: "run-forced-dry-run",
@@ -88,12 +89,12 @@ async function mockForcedDryRunAgentFlow(page: Page) {
         id: "run-forced-dry-run",
         workspace_id: workspaceId,
         user_id: "e2e-user",
-        status: "waiting_approval",
+        status: "queued",
         objective: body.objective || "Find a potential company and prepare safe outreach.",
         dry_run: true,
         plan: {},
-        current_step_index: 1,
-        current_step_name: "Prepare CRM action",
+        current_step_index: 0,
+        current_step_name: "",
         model: "mock-planner",
         prompt_version: "mock-plan-v1",
         token_usage: { total_tokens: 42 },
@@ -105,83 +106,92 @@ async function mockForcedDryRunAgentFlow(page: Page) {
         updated_at: now,
         completed_at: null
       };
-      steps = [
-        {
-          id: "step-search",
-          run_id: run.id,
-          workspace_id: workspaceId,
-          step_index: 0,
-          status: "completed",
-          title: "Find potential companies",
-          tool_name: "search_companies",
-          input: { query: "local service company", dry_run: true },
-          output: { status: "dry_run", dry_run: true, results: [{ company: "Safe Dry Run Co" }] },
-          approval_state: "none",
-          error_category: "",
-          latency_ms: 12,
-          created_at: now,
-          updated_at: now,
-          completed_at: now
-        },
-        {
-          id: "step-crm",
-          run_id: run.id,
-          workspace_id: workspaceId,
-          step_index: 1,
-          status: "waiting_approval",
-          title: "Prepare CRM action",
-          tool_name: "save_to_crm",
-          input: { company_name: "Safe Dry Run Co", dry_run: true },
-          output: {},
-          approval_state: "pending",
-          error_category: "",
-          latency_ms: 0,
-          created_at: now,
-          updated_at: now,
-          completed_at: null
-        },
-        {
-          id: "step-draft",
-          run_id: run.id,
-          workspace_id: workspaceId,
-          step_index: 2,
-          status: "queued",
-          title: "Prepare email draft",
-          tool_name: "generate_email_draft",
-          input: { subject: "Safe intro", dry_run: true },
-          output: {},
-          approval_state: "none",
-          error_category: "",
-          latency_ms: 0,
-          created_at: now,
-          updated_at: now,
-          completed_at: null
-        }
-      ];
-      approval = {
-        id: "approval-crm",
-        run_id: run.id,
-        step_id: "step-crm",
-        tool_call_id: "tool-call-crm",
-        workspace_id: workspaceId,
-        user_id: "e2e-user",
-        tool_name: "save_to_crm",
-        action_type: "crm_action",
-        approval_state: "pending",
-        tool_arguments: { company_name: "Safe Dry Run Co", dry_run: true },
-        decision: {},
-        idempotency_key: "approval-crm",
-        requested_at: now,
-        decided_at: null,
-        decided_by_user_id: ""
-      };
-      return route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ run, steps, approvals: [approval] }) });
+      steps = [];
+      approval = null;
+      detailReads = 0;
+      return route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ run, steps, approvals: [] }) });
     }
     const match = apiPath.match(/^\/api\/workspace-app\/agent-runs\/([^/]+)(?:\/([^/]+))?$/);
     if (!match) return route.fallback();
     const action = match[2] || "";
     if (!run || match[1] !== run.id) return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "Not found" }) });
-    if (!action && method === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ run, steps, approvals: approval ? [approval] : [] }) });
+    if (!action && method === "GET") {
+      detailReads += 1;
+      if (run.status === "queued" && detailReads >= 2) {
+        run = { ...run, status: "waiting_approval", current_step_index: 1, current_step_name: "Prepare CRM action", updated_at: new Date().toISOString() };
+        steps = [
+          {
+            id: "step-search",
+            run_id: run.id,
+            workspace_id: workspaceId,
+            step_index: 0,
+            status: "completed",
+            title: "Find potential companies",
+            tool_name: "search_companies",
+            input: { query: "local service company", dry_run: true },
+            output: { status: "dry_run", dry_run: true, results: [{ company: "Safe Dry Run Co" }] },
+            approval_state: "none",
+            error_category: "",
+            latency_ms: 12,
+            created_at: now,
+            updated_at: now,
+            completed_at: now
+          },
+          {
+            id: "step-crm",
+            run_id: run.id,
+            workspace_id: workspaceId,
+            step_index: 1,
+            status: "waiting_approval",
+            title: "Prepare CRM action",
+            tool_name: "save_to_crm",
+            input: { company_name: "Safe Dry Run Co", dry_run: true },
+            output: {},
+            approval_state: "pending",
+            error_category: "",
+            latency_ms: 0,
+            created_at: now,
+            updated_at: now,
+            completed_at: null
+          },
+          {
+            id: "step-draft",
+            run_id: run.id,
+            workspace_id: workspaceId,
+            step_index: 2,
+            status: "queued",
+            title: "Prepare email draft",
+            tool_name: "generate_email_draft",
+            input: { subject: "Safe intro", dry_run: true },
+            output: {},
+            approval_state: "none",
+            error_category: "",
+            latency_ms: 0,
+            created_at: now,
+            updated_at: now,
+            completed_at: null
+          }
+        ];
+        approval = {
+          id: "approval-crm",
+          run_id: run.id,
+          step_id: "step-crm",
+          tool_call_id: "tool-call-crm",
+          workspace_id: workspaceId,
+          user_id: "e2e-user",
+          tool_name: "save_to_crm",
+          action_type: "internal_write",
+          approval_state: "pending",
+          tool_arguments: { company_name: "Safe Dry Run Co", dry_run: true },
+          decision: {},
+          idempotency_key: "approval-crm",
+          requested_at: now,
+          decided_at: null,
+          decided_by_user_id: ""
+        };
+      }
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ run, steps, approvals: approval ? [approval] : [] }) });
+    }
     if (action === "trace" && method === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ run, trace }) });
     if (action === "approve" && method === "POST") {
       approveCalls += 1;
@@ -335,6 +345,20 @@ test.describe("AI-first workspace routes", () => {
     await expect(page.getByText("Dry-run completed. No external action was taken.")).toBeVisible();
     expect(flow.sendEndpointCalls).toEqual([]);
     await guards.assertClean();
+  });
+
+  test("AI Tasks polls queued runs without duplicate create posts", async ({ page }) => {
+    const flow = await mockForcedDryRunAgentFlow(page);
+    await page.goto("/dashboard/ai-tasks", { waitUntil: "domcontentloaded" });
+    await page.getByRole("textbox", { name: "What should AI do?" }).fill("Find one company and wait for approval.");
+    await page.getByRole("button", { name: "Start task" }).click();
+    await expect(page.getByRole("button", { name: /Find one company and wait for approval/ }).getByText("Queued")).toBeVisible();
+    expect(flow.createBodies).toHaveLength(1);
+    await expect(page.getByText("Prepare CRM action", { exact: true })).toBeVisible();
+    await page.waitForTimeout(2300);
+    expect(flow.createBodies).toHaveLength(1);
+    expect(flow.approveCalls).toBe(0);
+    expect(flow.resumeCalls).toBe(0);
   });
 
   test("AI Tasks status failure keeps all visible mutations disabled", async ({ page }) => {
