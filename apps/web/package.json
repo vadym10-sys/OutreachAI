@@ -17,38 +17,38 @@
     "qa": "npm run lint && npm run typecheck && npm test -- --run && npm run build && npm run e2e"
   },
   "dependencies": {
-    "@clerk/nextjs": "^7.5.8",
-    "@sentry/nextjs": "^10.62.0",
+    "@clerk/nextjs": "^7.7.6",
+    "@sentry/nextjs": "^10.70.0",
     "@stripe/stripe-js": "^4.1.0",
     "logrocket": "^12.1.1",
     "lucide-react": "^0.468.0",
-    "next": "^16.2.9",
-    "posthog-js": "^1.395.0",
+    "next": "^16.3.1",
+    "posthog-js": "^1.417.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.12.7",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@clerk/testing": "^2.2.18",
-    "@playwright/test": "^1.44.1",
+    "@clerk/testing": "^2.2.24",
+    "@playwright/test": "^1.62.1",
     "@testing-library/react": "^15.0.7",
     "@types/node": "^20.14.8",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "autoprefixer": "^10.4.19",
+    "autoprefixer": "^10.5.4",
     "eslint": "^9.39.2",
-    "eslint-config-next": "^16.2.12",
-    "postcss": "8.5.25",
+    "eslint-config-next": "^16.3.1",
+    "postcss": "8.5.26",
     "tailwindcss": "^3.4.4",
     "typescript": "^5.5.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "dompurify": "3.4.13",
     "minimatch": "^10.0.3",
     "nanoid": "3.3.18",
     "sharp": "^0.35.3",
-    "postcss": "8.5.25"
+    "postcss": "8.5.26"
   }
 }
